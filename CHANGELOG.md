@@ -1,3 +1,7 @@
+# 1.0.12
+**tasks:**
+ - 1.0.12 build [\#83](https://github.com/TremoloSecurity/kube-oidc-proxy/issues/83)
+
 # 1.0.11
 
 **bugs:**
