@@ -2,12 +2,22 @@
 package app
 
 import (
+	"context"
+	"fmt"
+	"os"
 	"strconv"
 
 	"github.com/spf13/cobra"
+	apiserverapi "k8s.io/apiserver/pkg/apis/apiserver"
+	apiserverv1beta1 "k8s.io/apiserver/pkg/apis/apiserver/v1beta1"
+	"k8s.io/apiserver/pkg/authentication/authenticator"
+	tokenunion "k8s.io/apiserver/pkg/authentication/token/union"
 	"k8s.io/apiserver/pkg/server"
+	"k8s.io/apiserver/pkg/server/dynamiccertificates"
+	"k8s.io/apiserver/plugin/pkg/authenticator/token/oidc"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/klog/v2"
 
 	"github.com/jetstack/kube-oidc-proxy/cmd/app/options"
 	"github.com/jetstack/kube-oidc-proxy/pkg/probe"
@@ -100,27 +110,35 @@ func buildRunCommand(stopCh <-chan struct{}, opts *options.Options) *cobra.Comma
 			}
 
 			subectAccessReviewer, err := subjectaccessreview.New(kubeclient.AuthorizationV1().SubjectAccessReviews())
-
 			if err != nil {
 				return err
 			}
 
-			// Initialise proxy with OIDC token authenticator
-			p, err := proxy.New(restConfig, opts.OIDCAuthentication, opts.Audit,
+			tokenAuther, issuerURLs, err := buildTokenAuther(opts)
+			if err != nil {
+				return err
+			}
+
+			// Initialise proxy with token authenticator
+			p, err := proxy.New(restConfig, tokenAuther, opts.Audit,
 				tokenReviewer, subectAccessReviewer, secureServingInfo, proxyConfig)
 			if err != nil {
 				return err
 			}
 
-			// Create a fake JWT to set up readiness probe
-			fakeJWT, err := util.FakeJWT(opts.OIDCAuthentication.IssuerURL)
-			if err != nil {
-				return err
+			// Build a fake JWT per issuer for the readiness probe.
+			fakeJWTs := make([]string, 0, len(issuerURLs))
+			for _, issuerURL := range issuerURLs {
+				fakeJWT, err := util.FakeJWT(issuerURL)
+				if err != nil {
+					return err
+				}
+				fakeJWTs = append(fakeJWTs, fakeJWT)
 			}
 
 			// Start readiness probe
 			if err := probe.Run(strconv.Itoa(opts.App.ReadinessProbePort),
-				fakeJWT, p.OIDCTokenAuthenticator()); err != nil {
+				fakeJWTs, p.OIDCTokenAuthenticator()); err != nil {
 				return err
 			}
 
@@ -140,4 +158,105 @@ func buildRunCommand(stopCh <-chan struct{}, opts *options.Options) *cobra.Comma
 			return nil
 		},
 	}
+}
+
+// caFromFile implements oidc.CAContentProvider backed by a PEM file.
+type caFromFile struct {
+	path string
+}
+
+func (c caFromFile) CurrentCABundleContent() []byte {
+	data, err := os.ReadFile(c.path)
+	if err != nil {
+		klog.Errorf("failed to read CA file %q: %v", c.path, err)
+	}
+	return data
+}
+
+// caContentProvider returns the CAContentProvider to use for a given path.
+// When path is empty it returns nil, signalling oidc.New() to use the system certificate pool.
+func caContentProvider(path string) oidc.CAContentProvider {
+	if path == "" {
+		return nil
+	}
+	return caFromFile{path: path}
+}
+
+func buildTokenAuther(opts *options.Options) (authenticator.Token, []string, error) {
+	if opts.AuthenticationConfig.ConfigFile != "" {
+		return buildUnionAuther(opts)
+	}
+	return buildSingleAuther(caFromFile{path: opts.OIDCAuthentication.CAFile}, opts.OIDCAuthentication)
+}
+
+func buildSingleAuther(ca caFromFile, o *options.OIDCAuthenticationOptions) (authenticator.Token, []string, error) {
+	usernamePrefix := o.UsernamePrefix
+	groupsPrefix := o.GroupsPrefix
+	jwtConfig := apiserverapi.JWTAuthenticator{
+		Issuer: apiserverapi.Issuer{
+			URL:       o.IssuerURL,
+			Audiences: []string{o.ClientID},
+		},
+		ClaimMappings: apiserverapi.ClaimMappings{
+			Username: apiserverapi.PrefixedClaimOrExpression{
+				Claim:  o.UsernameClaim,
+				Prefix: &usernamePrefix,
+			},
+			Groups: apiserverapi.PrefixedClaimOrExpression{
+				Claim:  o.GroupsClaim,
+				Prefix: &groupsPrefix,
+			},
+		},
+	}
+	auther, err := oidc.New(context.Background(), oidc.Options{
+		CAContentProvider:    caContentProvider(ca.path),
+		SupportedSigningAlgs: o.SigningAlgs,
+		JWTAuthenticator:     jwtConfig,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("creating OIDC authenticator for issuer %q: %w", o.IssuerURL, err)
+	}
+	return auther, []string{o.IssuerURL}, nil
+}
+
+func buildUnionAuther(opts *options.Options) (authenticator.Token, []string, error) {
+	authCfg, err := opts.AuthenticationConfig.Load()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	authers := make([]authenticator.Token, 0, len(authCfg.JWT))
+	issuerURLs := make([]string, 0, len(authCfg.JWT))
+	for _, jwtEntry := range authCfg.JWT {
+		auther, err := oidcAutherFromJWT(jwtEntry, oidc.AllValidSigningAlgorithms())
+		if err != nil {
+			return nil, nil, fmt.Errorf("building authenticator for issuer %q: %w", jwtEntry.Issuer.URL, err)
+		}
+		authers = append(authers, auther)
+		issuerURLs = append(issuerURLs, jwtEntry.Issuer.URL)
+	}
+
+	return tokenunion.NewFailOnError(authers...), issuerURLs, nil
+}
+
+func oidcAutherFromJWT(entry apiserverv1beta1.JWTAuthenticator, signingAlgs []string) (authenticator.Token, error) {
+	var jwtConfig apiserverapi.JWTAuthenticator
+	if err := apiserverv1beta1.Convert_v1beta1_JWTAuthenticator_To_apiserver_JWTAuthenticator(&entry, &jwtConfig, nil); err != nil {
+		return nil, fmt.Errorf("converting JWT authenticator for issuer %q: %w", entry.Issuer.URL, err)
+	}
+
+	var provider oidc.CAContentProvider
+	if entry.Issuer.CertificateAuthority != "" {
+		var err error
+		provider, err = dynamiccertificates.NewStaticCAContent("oidc-authenticator", []byte(entry.Issuer.CertificateAuthority))
+		if err != nil {
+			return nil, fmt.Errorf("invalid certificateAuthority for issuer %q: %w", entry.Issuer.URL, err)
+		}
+	}
+
+	return oidc.New(context.Background(), oidc.Options{
+		CAContentProvider:    provider,
+		SupportedSigningAlgs: signingAlgs,
+		JWTAuthenticator:     jwtConfig,
+	})
 }
