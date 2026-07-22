@@ -9,8 +9,8 @@ import (
 
 	"github.com/spf13/cobra"
 	apiserverapi "k8s.io/apiserver/pkg/apis/apiserver"
-	apiserverv1beta1 "k8s.io/apiserver/pkg/apis/apiserver/v1beta1"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
+	authenticationcel "k8s.io/apiserver/pkg/authentication/cel"
 	tokenunion "k8s.io/apiserver/pkg/authentication/token/union"
 	"k8s.io/apiserver/pkg/server"
 	"k8s.io/apiserver/pkg/server/dynamiccertificates"
@@ -220,7 +220,11 @@ func buildSingleAuther(ca caFromFile, o *options.OIDCAuthenticationOptions) (aut
 }
 
 func buildUnionAuther(opts *options.Options) (authenticator.Token, []string, error) {
-	authCfg, err := opts.AuthenticationConfig.Load()
+	// One CEL compiler shared by document validation and every authenticator:
+	// CEL environments are expensive to construct.
+	compiler := authenticationcel.NewDefaultCompiler()
+
+	authCfg, err := opts.AuthenticationConfig.Load(compiler)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -228,7 +232,7 @@ func buildUnionAuther(opts *options.Options) (authenticator.Token, []string, err
 	authers := make([]authenticator.Token, 0, len(authCfg.JWT))
 	issuerURLs := make([]string, 0, len(authCfg.JWT))
 	for _, jwtEntry := range authCfg.JWT {
-		auther, err := oidcAutherFromJWT(jwtEntry, oidc.AllValidSigningAlgorithms())
+		auther, err := oidcAutherFromJWT(jwtEntry, compiler, oidc.AllValidSigningAlgorithms())
 		if err != nil {
 			return nil, nil, fmt.Errorf("building authenticator for issuer %q: %w", jwtEntry.Issuer.URL, err)
 		}
@@ -236,21 +240,18 @@ func buildUnionAuther(opts *options.Options) (authenticator.Token, []string, err
 		issuerURLs = append(issuerURLs, jwtEntry.Issuer.URL)
 	}
 
+	klog.Infof("configured OIDC issuers: %v", issuerURLs)
+
 	return tokenunion.NewFailOnError(authers...), issuerURLs, nil
 }
 
-func oidcAutherFromJWT(entry apiserverv1beta1.JWTAuthenticator, signingAlgs []string) (authenticator.Token, error) {
-	var jwtConfig apiserverapi.JWTAuthenticator
-	if err := apiserverv1beta1.Convert_v1beta1_JWTAuthenticator_To_apiserver_JWTAuthenticator(&entry, &jwtConfig, nil); err != nil {
-		return nil, fmt.Errorf("converting JWT authenticator for issuer %q: %w", entry.Issuer.URL, err)
-	}
-
+func oidcAutherFromJWT(jwtConfig apiserverapi.JWTAuthenticator, compiler authenticationcel.Compiler, signingAlgs []string) (authenticator.Token, error) {
 	var provider oidc.CAContentProvider
-	if entry.Issuer.CertificateAuthority != "" {
+	if jwtConfig.Issuer.CertificateAuthority != "" {
 		var err error
-		provider, err = dynamiccertificates.NewStaticCAContent("oidc-authenticator", []byte(entry.Issuer.CertificateAuthority))
+		provider, err = dynamiccertificates.NewStaticCAContent("oidc-authenticator", []byte(jwtConfig.Issuer.CertificateAuthority))
 		if err != nil {
-			return nil, fmt.Errorf("invalid certificateAuthority for issuer %q: %w", entry.Issuer.URL, err)
+			return nil, fmt.Errorf("invalid certificateAuthority for issuer %q: %w", jwtConfig.Issuer.URL, err)
 		}
 	}
 
@@ -258,5 +259,6 @@ func oidcAutherFromJWT(entry apiserverv1beta1.JWTAuthenticator, signingAlgs []st
 		CAContentProvider:    provider,
 		SupportedSigningAlgs: signingAlgs,
 		JWTAuthenticator:     jwtConfig,
+		Compiler:             compiler,
 	})
 }

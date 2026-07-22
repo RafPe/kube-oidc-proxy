@@ -3,9 +3,12 @@ package app
 
 import (
 	"os"
+	"path/filepath"
+	"reflect"
 	"testing"
 
-	apiserverv1beta1 "k8s.io/apiserver/pkg/apis/apiserver/v1beta1"
+	apiserverapi "k8s.io/apiserver/pkg/apis/apiserver"
+	authenticationcel "k8s.io/apiserver/pkg/authentication/cel"
 
 	"github.com/jetstack/kube-oidc-proxy/cmd/app/options"
 )
@@ -27,27 +30,27 @@ func writeTempFile(t *testing.T, content string) string {
 
 func TestOIDCAutherFromJWT_Construction(t *testing.T) {
 	emptyPrefix := ""
-	entry := apiserverv1beta1.JWTAuthenticator{
-		Issuer: apiserverv1beta1.Issuer{
+	entry := apiserverapi.JWTAuthenticator{
+		Issuer: apiserverapi.Issuer{
 			URL:       "https://vault.example.com/v1/identity/oidc",
 			Audiences: []string{"my-client"},
 		},
-		ClaimMappings: apiserverv1beta1.ClaimMappings{
-			Username: apiserverv1beta1.PrefixedClaimOrExpression{
+		ClaimMappings: apiserverapi.ClaimMappings{
+			Username: apiserverapi.PrefixedClaimOrExpression{
 				Claim:  "email",
 				Prefix: &emptyPrefix,
 			},
-			Groups: apiserverv1beta1.PrefixedClaimOrExpression{
+			Groups: apiserverapi.PrefixedClaimOrExpression{
 				Claim:  "groups",
 				Prefix: &emptyPrefix,
 			},
 		},
-		UserValidationRules: []apiserverv1beta1.UserValidationRule{
+		UserValidationRules: []apiserverapi.UserValidationRule{
 			{Expression: "!user.username.startsWith('system:')", Message: "no system: prefix"},
 		},
 	}
 
-	auther, err := oidcAutherFromJWT(entry, []string{"RS256"})
+	auther, err := oidcAutherFromJWT(entry, authenticationcel.NewDefaultCompiler(), []string{"RS256"})
 	if err != nil {
 		t.Fatalf("oidcAutherFromJWT() unexpected error: %v", err)
 	}
@@ -137,6 +140,48 @@ jwt:
 		if issuerURLs[i] != want[i] {
 			t.Errorf("buildTokenAuther() issuerURLs[%d] = %q, want %q", i, issuerURLs[i], want[i])
 		}
+	}
+}
+
+func TestBuildUnionAutherFromV1ConfigWithCEL(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.yaml")
+	cfg := `apiVersion: apiserver.config.k8s.io/v1
+kind: AuthenticationConfiguration
+jwt:
+- issuer:
+    url: https://issuer1.example.com
+    audiences: ["aud-one"]
+  claimMappings:
+    username:
+      claim: sub
+      prefix: "one:"
+    groups:
+      expression: '["g:" + claims.owner]'
+- issuer:
+    url: https://issuer2.example.com
+    audiences: ["aud-two"]
+  claimMappings:
+    username:
+      claim: sub
+      prefix: "two:"
+`
+	if err := os.WriteFile(path, []byte(cfg), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := options.New()
+	opts.AuthenticationConfig.ConfigFile = path
+
+	auther, issuerURLs, err := buildTokenAuther(opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if auther == nil {
+		t.Fatal("expected a token authenticator, got nil")
+	}
+	want := []string{"https://issuer1.example.com", "https://issuer2.example.com"}
+	if !reflect.DeepEqual(issuerURLs, want) {
+		t.Fatalf("expected issuer URLs %v, got %v", want, issuerURLs)
 	}
 }
 
