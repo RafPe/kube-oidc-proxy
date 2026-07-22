@@ -190,10 +190,10 @@ func buildTokenAuther(opts *options.Options) (authenticator.Token, []string, err
 	if opts.AuthenticationConfig.ConfigFile != "" {
 		return buildUnionAuther(opts)
 	}
-	return buildSingleAuther(caFromFile{path: opts.OIDCAuthentication.CAFile}, opts.OIDCAuthentication)
+	return buildSingleAuther(opts.OIDCAuthentication)
 }
 
-func buildSingleAuther(ca caFromFile, o *options.OIDCAuthenticationOptions) (authenticator.Token, []string, error) {
+func buildSingleAuther(o *options.OIDCAuthenticationOptions) (authenticator.Token, []string, error) {
 	usernamePrefix := o.UsernamePrefix
 	groupsPrefix := o.GroupsPrefix
 	jwtConfig := apiserverapi.JWTAuthenticator{
@@ -213,7 +213,7 @@ func buildSingleAuther(ca caFromFile, o *options.OIDCAuthenticationOptions) (aut
 		},
 	}
 	auther, err := oidc.New(context.Background(), oidc.Options{
-		CAContentProvider:    caContentProvider(ca.path),
+		CAContentProvider:    caContentProvider(o.CAFile),
 		SupportedSigningAlgs: o.SigningAlgs,
 		JWTAuthenticator:     jwtConfig,
 	})
