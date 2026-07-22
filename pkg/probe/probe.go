@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -32,14 +33,18 @@ type HealthCheck struct {
 	issuers    []IssuerReadiness
 	requireAll bool
 	ready      atomic.Bool
+
+	mu          sync.Mutex
+	initialized map[string]bool
 }
 
 func Run(port string, issuers []IssuerReadiness, requireAll bool, oidcAuther authenticator.Token) error {
 	h := &HealthCheck{
-		handler:    healthcheck.NewHandler(),
-		oidcAuther: oidcAuther,
-		issuers:    issuers,
-		requireAll: requireAll,
+		handler:     healthcheck.NewHandler(),
+		oidcAuther:  oidcAuther,
+		issuers:     issuers,
+		requireAll:  requireAll,
+		initialized: make(map[string]bool),
 	}
 
 	h.handler.AddReadinessCheck("secure serving", h.Check)
@@ -57,32 +62,47 @@ func Run(port string, issuers []IssuerReadiness, requireAll bool, oidcAuther aut
 	return nil
 }
 
+// Check probes every issuer that has not yet been observed as initialized,
+// logs per-issuer transitions and any still-pending issuers, and reports
+// readiness. Once readiness latches (via ready.Store(true)) it always
+// returns nil, but probing and pending-issuer logging continue on every
+// call so operators keep seeing progress for issuers that initialize late.
 func (h *HealthCheck) Check() error {
-	if h.ready.Load() {
-		return nil
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
 	var pending []string
 	for _, issuer := range h.issuers {
+		if h.initialized[issuer.IssuerURL] {
+			continue
+		}
+
 		_, _, err := h.oidcAuther.AuthenticateToken(ctx, issuer.FakeJWT)
 		if err != nil && strings.HasSuffix(err.Error(), "authenticator not initialized") {
 			pending = append(pending, issuer.IssuerURL)
+			continue
 		}
+
+		h.initialized[issuer.IssuerURL] = true
+		klog.Infof("OIDC issuer initialized: %s (%d/%d ready)", issuer.IssuerURL, len(h.initialized), len(h.issuers))
 	}
 
-	initialized := len(h.issuers) - len(pending)
 	if len(pending) > 0 {
 		klog.Infof("readiness: %d/%d OIDC issuers initialized, pending: %v",
-			initialized, len(h.issuers), pending)
+			len(h.initialized), len(h.issuers), pending)
+	}
+
+	if h.ready.Load() {
+		return nil
 	}
 
 	if h.requireAll && len(pending) > 0 {
 		return fmt.Errorf("OIDC providers not yet initialized: %v", pending)
 	}
-	if !h.requireAll && initialized == 0 {
+	if !h.requireAll && len(h.initialized) == 0 {
 		return fmt.Errorf("no OIDC provider initialized yet: %v", pending)
 	}
 
