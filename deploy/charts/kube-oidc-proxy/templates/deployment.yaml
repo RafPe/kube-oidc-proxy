@@ -18,6 +18,8 @@ spec:
   {{ end }}
   template:
     metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/secret_config.yaml") . | sha256sum }}
       labels:
         app.kubernetes.io/name: {{ include "kube-oidc-proxy.name" . }}
         app.kubernetes.io/instance: {{ .Release.Name }}
@@ -50,6 +52,9 @@ spec:
           {{- if .Values.oidc.caPEM }}
           - "--oidc-ca-file=/etc/oidc/oidc-ca.pem"
           {{- end }}
+          {{- end }}
+          {{- if .Values.readinessRequireAllIssuers }}
+          - "--readiness-require-all-issuers"
           {{- end }}
           {{- if .Values.oidc.usernamePrefix }}
           - "--oidc-username-prefix=$(OIDC_USERNAME_PREFIX)"
