@@ -10,7 +10,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	apiserverv1beta1 "k8s.io/apiserver/pkg/apis/apiserver/v1beta1"
+	apiserverv1 "k8s.io/apiserver/pkg/apis/apiserver/v1"
 	"sigs.k8s.io/yaml"
 
 	"github.com/jetstack/kube-oidc-proxy/test/e2e/framework"
@@ -68,27 +68,27 @@ var _ = framework.CasesDescribe("AuthenticationConfiguration multi-issuer", func
 	})
 })
 
-func authConfig(jwts ...apiserverv1beta1.JWTAuthenticator) apiserverv1beta1.AuthenticationConfiguration {
-	return apiserverv1beta1.AuthenticationConfiguration{
+func authConfig(jwts ...apiserverv1.JWTAuthenticator) apiserverv1.AuthenticationConfiguration {
+	return apiserverv1.AuthenticationConfiguration{
 		TypeMeta: metav1.TypeMeta{
-			APIVersion: "apiserver.config.k8s.io/v1beta1",
+			APIVersion: "apiserver.config.k8s.io/v1",
 			Kind:       "AuthenticationConfiguration",
 		},
 		JWT: jwts,
 	}
 }
 
-func jwtAuthenticator(issuerURL, audience string, caBundle []byte) apiserverv1beta1.JWTAuthenticator {
+func jwtAuthenticator(issuerURL, audience string, caBundle []byte) apiserverv1.JWTAuthenticator {
 	emptyPrefix := ""
-	return apiserverv1beta1.JWTAuthenticator{
-		Issuer: apiserverv1beta1.Issuer{
+	return apiserverv1.JWTAuthenticator{
+		Issuer: apiserverv1.Issuer{
 			URL:                  issuerURL,
 			Audiences:            []string{audience},
 			CertificateAuthority: string(caBundle),
 		},
-		ClaimMappings: apiserverv1beta1.ClaimMappings{
-			Username: apiserverv1beta1.PrefixedClaimOrExpression{Claim: "email", Prefix: &emptyPrefix},
-			Groups:   apiserverv1beta1.PrefixedClaimOrExpression{Claim: "groups", Prefix: &emptyPrefix},
+		ClaimMappings: apiserverv1.ClaimMappings{
+			Username: apiserverv1.PrefixedClaimOrExpression{Claim: "email", Prefix: &emptyPrefix},
+			Groups:   apiserverv1.PrefixedClaimOrExpression{Claim: "groups", Prefix: &emptyPrefix},
 		},
 	}
 }
