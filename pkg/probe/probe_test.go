@@ -4,87 +4,98 @@ package probe
 import (
 	"context"
 	"errors"
-	"fmt"
-	"net/http"
 	"testing"
 
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 
-	"github.com/jetstack/kube-oidc-proxy/pkg/util"
+	"github.com/heptiolabs/healthcheck"
 )
 
-type fakeTokenAuthenticator struct {
-	notInitialized bool
+// fakeAuther simulates the union authenticator: tokens listed in notInit
+// hit an issuer whose JWKS is not yet fetched; every other token reaches
+// an initialized issuer and fails ordinary verification.
+type fakeAuther struct {
+	notInit map[string]bool
 }
 
-var _ authenticator.Token = &fakeTokenAuthenticator{}
-
-func (f *fakeTokenAuthenticator) AuthenticateToken(_ context.Context, _ string) (*authenticator.Response, bool, error) {
-	if f.notInitialized {
-		return nil, false, errors.New("foo bar authenticator not initialized")
+func (f *fakeAuther) AuthenticateToken(_ context.Context, token string) (*authenticator.Response, bool, error) {
+	if f.notInit[token] {
+		return nil, false, errors.New("oidc: authenticator not initialized")
 	}
-	return nil, false, errors.New("some other error")
+	return nil, false, errors.New("oidc: verify token: signature invalid")
 }
 
-func TestRun(t *testing.T) {
-	t.Skip("skipping probe test")
+func newTestHealthCheck(requireAll bool, notInit map[string]bool, issuers ...IssuerReadiness) *HealthCheck {
+	return &HealthCheck{
+		handler:    healthcheck.NewHandler(),
+		oidcAuther: &fakeAuther{notInit: notInit},
+		issuers:    issuers,
+		requireAll: requireAll,
+	}
+}
 
-	f := &fakeTokenAuthenticator{notInitialized: true}
+func TestCheckReadiness(t *testing.T) {
+	issuerA := IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"}
+	issuerB := IssuerReadiness{IssuerURL: "https://b.example.com", FakeJWT: "jwt-b"}
 
-	port, err := util.FreePort()
-	if err != nil {
-		t.Fatalf("FreePort() unexpected error: %v", err)
+	tests := []struct {
+		name       string
+		requireAll bool
+		notInit    map[string]bool
+		wantReady  bool
+	}{
+		{
+			name:       "default mode: one of two initialized is ready",
+			requireAll: false,
+			notInit:    map[string]bool{"jwt-b": true},
+			wantReady:  true,
+		},
+		{
+			name:       "default mode: none initialized is not ready",
+			requireAll: false,
+			notInit:    map[string]bool{"jwt-a": true, "jwt-b": true},
+			wantReady:  false,
+		},
+		{
+			name:       "require-all: one pending is not ready",
+			requireAll: true,
+			notInit:    map[string]bool{"jwt-b": true},
+			wantReady:  false,
+		},
+		{
+			name:       "require-all: all initialized is ready",
+			requireAll: true,
+			notInit:    map[string]bool{},
+			wantReady:  true,
+		},
 	}
 
-	fakeJWT1, err := util.FakeJWT("https://issuer1.example.com")
-	if err != nil {
-		t.Fatalf("FakeJWT() unexpected error: %v", err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTestHealthCheck(tc.requireAll, tc.notInit, issuerA, issuerB)
+			err := h.Check()
+			if tc.wantReady && err != nil {
+				t.Fatalf("expected ready, got error: %v", err)
+			}
+			if !tc.wantReady && err == nil {
+				t.Fatal("expected not ready, got nil error")
+			}
+		})
 	}
-	fakeJWT2, err := util.FakeJWT("https://issuer2.example.com")
-	if err != nil {
-		t.Fatalf("FakeJWT() unexpected error: %v", err)
+}
+
+func TestCheckReadinessIsSticky(t *testing.T) {
+	issuerA := IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"}
+	notInit := map[string]bool{}
+	h := newTestHealthCheck(false, notInit, issuerA)
+
+	if err := h.Check(); err != nil {
+		t.Fatalf("expected ready, got: %v", err)
 	}
 
-	if err := Run(port, []string{fakeJWT1, fakeJWT2}, f); err != nil {
-		t.Fatalf("Run() unexpected error: %v", err)
-	}
-
-	url := fmt.Sprintf("http://0.0.0.0:%s", port)
-
-	var resp *http.Response
-	for i := 0; i < 5; i++ {
-		resp, err = http.Get(url + "/ready")
-		if err == nil {
-			break
-		}
-	}
-	if err != nil {
-		t.Fatalf("unexpected error reaching probe: %s", err)
-	}
-
-	if resp.StatusCode != 503 {
-		t.Errorf("expected probe not ready, got %d", resp.StatusCode)
-	}
-
-	// Mark initialized — all JWTs now pass.
-	f.notInitialized = false
-
-	resp, err = http.Get(url + "/ready")
-	if err != nil {
-		t.Fatalf("unexpected error: %s", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Errorf("expected probe ready, got %d", resp.StatusCode)
-	}
-
-	// Once latched ready, stays ready even if authenticator errors again.
-	f.notInitialized = true
-
-	resp, err = http.Get(url + "/ready")
-	if err != nil {
-		t.Fatalf("unexpected error: %s", err)
-	}
-	if resp.StatusCode != 200 {
-		t.Errorf("expected probe to remain ready after latch, got %d", resp.StatusCode)
+	// Simulate the issuer regressing to uninitialized: readiness must stick.
+	notInit["jwt-a"] = true
+	if err := h.Check(); err != nil {
+		t.Fatalf("expected readiness to be sticky, got: %v", err)
 	}
 }

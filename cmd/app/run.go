@@ -126,19 +126,23 @@ func buildRunCommand(stopCh <-chan struct{}, opts *options.Options) *cobra.Comma
 				return err
 			}
 
-			// Build a fake JWT per issuer for the readiness probe.
-			fakeJWTs := make([]string, 0, len(issuerURLs))
+			// Build a per-issuer readiness probe entry.
+			issuerProbes := make([]probe.IssuerReadiness, 0, len(issuerURLs))
 			for _, issuerURL := range issuerURLs {
 				fakeJWT, err := util.FakeJWT(issuerURL)
 				if err != nil {
 					return err
 				}
-				fakeJWTs = append(fakeJWTs, fakeJWT)
+				issuerProbes = append(issuerProbes, probe.IssuerReadiness{
+					IssuerURL: issuerURL,
+					FakeJWT:   fakeJWT,
+				})
 			}
 
 			// Start readiness probe
 			if err := probe.Run(strconv.Itoa(opts.App.ReadinessProbePort),
-				fakeJWTs, p.OIDCTokenAuthenticator()); err != nil {
+				issuerProbes, opts.App.ReadinessRequireAllIssuers,
+				p.OIDCTokenAuthenticator()); err != nil {
 				return err
 			}
 
