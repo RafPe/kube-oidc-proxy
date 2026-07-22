@@ -56,13 +56,13 @@ spec:
           {{- if .Values.readinessRequireAllIssuers }}
           - "--readiness-require-all-issuers"
           {{- end }}
-          {{- if .Values.oidc.usernamePrefix }}
+          {{- if and .Values.oidc.usernamePrefix (not .Values.authenticationConfig.content) }}
           - "--oidc-username-prefix=$(OIDC_USERNAME_PREFIX)"
           {{ end }}
-          {{- if .Values.oidc.groupsClaim }}
+          {{- if and .Values.oidc.groupsClaim (not .Values.authenticationConfig.content) }}
           - "--oidc-groups-claim=$(OIDC_GROUPS_CLAIM)"
           {{ end }}
-          {{- if .Values.oidc.groupsPrefix }}
+          {{- if and .Values.oidc.groupsPrefix (not .Values.authenticationConfig.content) }}
           - "--oidc-groups-prefix=$(OIDC_GROUPS_PREFIX)"
           {{ end }}
           {{- if and .Values.oidc.signingAlgs (not .Values.authenticationConfig.content) }}
@@ -106,21 +106,21 @@ spec:
               name: {{ include "kube-oidc-proxy.fullname" . }}-config
               key: oidc.username-claim
         {{- end }}
-        {{- if .Values.oidc.usernamePrefix }}
+        {{- if and .Values.oidc.usernamePrefix (not .Values.authenticationConfig.content) }}
         - name: OIDC_USERNAME_PREFIX
           valueFrom:
             secretKeyRef:
               name: {{ include "kube-oidc-proxy.fullname" . }}-config
               key: oidc.username-prefix
         {{ end }}
-        {{- if .Values.oidc.groupsClaim }}
+        {{- if and .Values.oidc.groupsClaim (not .Values.authenticationConfig.content) }}
         - name: OIDC_GROUPS_CLAIM
           valueFrom:
             secretKeyRef:
               name: {{ include "kube-oidc-proxy.fullname" . }}-config
               key: oidc.groups-claim
         {{ end }}
-        {{- if .Values.oidc.groupsPrefix }}
+        {{- if and .Values.oidc.groupsPrefix (not .Values.authenticationConfig.content) }}
         - name: OIDC_GROUPS_PREFIX
           valueFrom:
             secretKeyRef:

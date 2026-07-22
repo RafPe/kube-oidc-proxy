@@ -58,9 +58,11 @@ oidc:
   requiredClaims: {}
 
 # Multi-issuer OIDC authentication via AuthenticationConfiguration file
-# (apiserver.config.k8s.io/v1 or v1beta1). Mutually exclusive with oidc.issuerUrl,
-# oidc.clientId, and oidc.usernameClaim. When set, each issuer's CA must be
-# specified inline in the configuration file under issuer.certificateAuthority.
+# (apiserver.config.k8s.io/v1 or v1beta1). Mutually exclusive with ALL oidc.*
+# fields (issuerUrl, clientId, usernameClaim, caPEM, usernamePrefix,
+# groupsClaim, groupsPrefix, signingAlgs, requiredClaims). When set, each
+# issuer's CA must be specified inline in the configuration file under
+# issuer.certificateAuthority.
 authenticationConfig:
   # YAML content of an AuthenticationConfiguration resource.
   # When non-empty, --authentication-config is passed to the proxy and the
