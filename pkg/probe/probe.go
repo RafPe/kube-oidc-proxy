@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/heptiolabs/healthcheck"
@@ -19,19 +20,17 @@ const (
 )
 
 type HealthCheck struct {
-	handler healthcheck.Handler
-
+	handler    healthcheck.Handler
 	oidcAuther authenticator.Token
-	fakeJWT    string
-
-	ready bool
+	fakeJWTs   []string
+	ready      atomic.Bool
 }
 
-func Run(port, fakeJWT string, oidcAuther authenticator.Token) error {
+func Run(port string, fakeJWTs []string, oidcAuther authenticator.Token) error {
 	h := &HealthCheck{
 		handler:    healthcheck.NewHandler(),
 		oidcAuther: oidcAuther,
-		fakeJWT:    fakeJWT,
+		fakeJWTs:   fakeJWTs,
 	}
 
 	h.handler.AddReadinessCheck("secure serving", h.Check)
@@ -50,23 +49,23 @@ func Run(port, fakeJWT string, oidcAuther authenticator.Token) error {
 }
 
 func (h *HealthCheck) Check() error {
-	if h.ready {
+	if h.ready.Load() {
 		return nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	_, _, err := h.oidcAuther.AuthenticateToken(ctx, h.fakeJWT)
-	if err != nil && strings.HasSuffix(err.Error(), "authenticator not initialized") {
-		err = fmt.Errorf("OIDC provider not yet initialized: %s", err)
-		klog.V(4).Infof("%v", err.Error())
-		return err
+	for _, fakeJWT := range h.fakeJWTs {
+		_, _, err := h.oidcAuther.AuthenticateToken(ctx, fakeJWT)
+		if err != nil && strings.HasSuffix(err.Error(), "authenticator not initialized") {
+			err = fmt.Errorf("OIDC provider not yet initialized: %w", err)
+			klog.V(4).Info(err)
+			return err
+		}
 	}
 
-	h.ready = true
-
+	h.ready.Store(true)
 	klog.V(4).Info("OIDC provider initialized.")
-
 	return nil
 }
