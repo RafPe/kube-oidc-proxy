@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"golang.org/x/term"
 	k8sErrors "k8s.io/apimachinery/pkg/util/errors"
 
@@ -79,7 +80,7 @@ func (o *Options) Validate(cmd *cobra.Command) error {
 
 	authConfigSet := o.AuthenticationConfig.ConfigFile != ""
 
-	if authConfigSet && oidcFlagsChanged(cmd) {
+	if authConfigSet && o.oidcFlagsChanged(cmd) {
 		errs = append(errs, fmt.Errorf("authentication-config and --oidc-* flags are mutually exclusive"))
 	}
 
@@ -92,7 +93,7 @@ func (o *Options) Validate(cmd *cobra.Command) error {
 	}
 
 	if o.SecureServing.BindPort == o.App.ReadinessProbePort {
-		errs = append(errs, errors.New("unable to securely serve on port 8080 (used by readiness probe)"))
+		errs = append(errs, fmt.Errorf("unable to securely serve on port %d (used by readiness probe)", o.SecureServing.BindPort))
 	}
 
 	if err := o.Audit.Validate(); len(err) > 0 {
@@ -111,23 +112,15 @@ func (o *Options) Validate(cmd *cobra.Command) error {
 	return nil
 }
 
-var oidcFlagNames = []string{
-	"oidc-issuer-url",
-	"oidc-client-id",
-	"oidc-ca-file",
-	"oidc-username-claim",
-	"oidc-username-prefix",
-	"oidc-groups-claim",
-	"oidc-groups-prefix",
-	"oidc-signing-algs",
-	"oidc-required-claim",
-}
-
-func oidcFlagsChanged(cmd *cobra.Command) bool {
-	for _, name := range oidcFlagNames {
-		if f := cmd.Flag(name); f != nil && f.Changed {
-			return true
+// oidcFlagsChanged reports whether any --oidc-* flag was set on cmd. The flag
+// names are derived from the registered OIDC flag set so the list stays in sync
+// with the flags defined in OIDCAuthenticationOptions.AddFlags automatically.
+func (o *Options) oidcFlagsChanged(cmd *cobra.Command) bool {
+	changed := false
+	o.nfs.FlagSet("OIDC").VisitAll(func(f *pflag.Flag) {
+		if cf := cmd.Flag(f.Name); cf != nil && cf.Changed {
+			changed = true
 		}
-	}
-	return false
+	})
+	return changed
 }

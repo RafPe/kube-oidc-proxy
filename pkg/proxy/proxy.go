@@ -31,9 +31,9 @@ const (
 )
 
 var (
-	errUnauthorized          = errors.New("Unauthorized")
-	errNoName                = errors.New("No name in OIDC info")
-	errNoImpersonationConfig = errors.New("No impersonation configuration in context")
+	errUnauthorized          = errors.New("unauthorized")
+	errNoName                = errors.New("no name in OIDC info")
+	errNoImpersonationConfig = errors.New("no impersonation configuration in context")
 )
 
 type Config struct {

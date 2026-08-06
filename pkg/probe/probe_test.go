@@ -4,6 +4,7 @@ package probe
 import (
 	"context"
 	"errors"
+	"net"
 	"sync"
 	"testing"
 
@@ -14,11 +15,14 @@ import (
 
 // fakeAuther simulates the union authenticator: tokens listed in notInit
 // hit an issuer whose JWKS is not yet fetched; every other token reaches
-// an initialized issuer and fails ordinary verification.
+// an initialized issuer and fails ordinary verification. A per-token error
+// may be supplied via override to model alternate phrasings and transient
+// failures.
 type fakeAuther struct {
-	mu      sync.Mutex
-	notInit map[string]bool
-	calls   map[string]int
+	mu       sync.Mutex
+	notInit  map[string]bool
+	override map[string]error
+	calls    map[string]int
 }
 
 func (f *fakeAuther) AuthenticateToken(_ context.Context, token string) (*authenticator.Response, bool, error) {
@@ -29,6 +33,9 @@ func (f *fakeAuther) AuthenticateToken(_ context.Context, token string) (*authen
 	f.calls[token]++
 	f.mu.Unlock()
 
+	if err, ok := f.override[token]; ok {
+		return nil, false, err
+	}
 	if f.notInit[token] {
 		return nil, false, errors.New("oidc: authenticator not initialized")
 	}
@@ -41,14 +48,18 @@ func (f *fakeAuther) callCount(token string) int {
 	return f.calls[token]
 }
 
-func newTestHealthCheck(requireAll bool, notInit map[string]bool, issuers ...IssuerReadiness) *HealthCheck {
+func newTestHealthCheckWithAuther(requireAll bool, auther authenticator.Token, issuers ...IssuerReadiness) *HealthCheck {
 	return &HealthCheck{
 		handler:     healthcheck.NewHandler(),
-		oidcAuther:  &fakeAuther{notInit: notInit},
+		oidcAuther:  auther,
 		issuers:     issuers,
 		requireAll:  requireAll,
 		initialized: make(map[string]bool),
 	}
+}
+
+func newTestHealthCheck(requireAll bool, notInit map[string]bool, issuers ...IssuerReadiness) *HealthCheck {
+	return newTestHealthCheckWithAuther(requireAll, &fakeAuther{notInit: notInit}, issuers...)
 }
 
 func TestCheckReadiness(t *testing.T) {
@@ -133,7 +144,7 @@ func TestCheckContinuesProbingPendingAfterLatch(t *testing.T) {
 	if err := h.Check(); err != nil {
 		t.Fatalf("expected ready (issuer A initialized), got: %v", err)
 	}
-	if !h.ready.Load() {
+	if !h.ready {
 		t.Fatal("expected readiness to have latched")
 	}
 
@@ -171,5 +182,87 @@ func TestCheckContinuesProbingPendingAfterLatch(t *testing.T) {
 	}
 	if got := fake.callCount("jwt-b"); got != bCallsAfterInit {
 		t.Fatalf("expected issuer B not to be re-probed once initialized, call count changed from %d to %d", bCallsAfterInit, got)
+	}
+}
+
+// TestCheckAlternatePhrasingKeepsPending verifies that the alternate upstream
+// wording "... is not initialized" is still recognised as pending and does not
+// falsely latch readiness.
+func TestCheckAlternatePhrasingKeepsPending(t *testing.T) {
+	issuerA := IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"}
+
+	auther := &fakeAuther{
+		override: map[string]error{
+			"jwt-a": errors.New("oidc: authenticator for issuer is not initialized"),
+		},
+	}
+	h := newTestHealthCheckWithAuther(true, auther, issuerA)
+
+	if err := h.Check(); err == nil {
+		t.Fatal("expected not-ready for alternate 'is not initialized' phrasing, got nil")
+	}
+	if h.ready {
+		t.Fatal("readiness must not latch while the only issuer is uninitialized")
+	}
+	if h.initialized[issuerA.IssuerURL] {
+		t.Fatal("issuer must not be marked initialized for a 'not initialized' error")
+	}
+}
+
+// TestCheckTransientErrorDoesNotLatch verifies that a transient network/timeout
+// error leaves the issuer pending instead of being mistaken for a fetched JWKS
+// (which would falsely latch readiness).
+func TestCheckTransientErrorDoesNotLatch(t *testing.T) {
+	issuerA := IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"}
+
+	tests := map[string]error{
+		"context deadline":    context.DeadlineExceeded,
+		"connection refused":  errors.New(`Get "https://a.example.com/.well-known/openid-configuration": dial tcp 10.0.0.1:443: connect: connection refused`),
+		"net timeout wrapped": &net.OpError{Op: "dial", Err: timeoutError{}},
+	}
+
+	for name, retErr := range tests {
+		t.Run(name, func(t *testing.T) {
+			auther := &fakeAuther{override: map[string]error{"jwt-a": retErr}}
+			h := newTestHealthCheckWithAuther(true, auther, issuerA)
+
+			if err := h.Check(); err == nil {
+				t.Fatal("expected not-ready for transient error, got nil")
+			}
+			if h.ready {
+				t.Fatal("readiness must not latch on a transient error")
+			}
+			if h.initialized[issuerA.IssuerURL] {
+				t.Fatal("issuer must not be marked initialized on a transient error")
+			}
+		})
+	}
+}
+
+// timeoutError is a net.Error whose Timeout reports true, modelling a wrapped
+// i/o timeout surfaced through errors.As.
+type timeoutError struct{}
+
+func (timeoutError) Error() string   { return "i/o timeout" }
+func (timeoutError) Timeout() bool   { return true }
+func (timeoutError) Temporary() bool { return true }
+
+func TestRunReturnsBindError(t *testing.T) {
+	// Occupy the wildcard address, then ask Run to bind the same port so the
+	// bind fails. Run listens on 0.0.0.0, so occupy 0.0.0.0 too: a loopback-only
+	// listener would not necessarily collide with a wildcard bind.
+	occupied, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatalf("reserving port: %v", err)
+	}
+	defer func() { _ = occupied.Close() }()
+
+	_, port, err := net.SplitHostPort(occupied.Addr().String())
+	if err != nil {
+		t.Fatalf("splitting host/port: %v", err)
+	}
+
+	if err := Run(port, nil, false, &fakeAuther{}); err == nil {
+		t.Fatal("expected Run to return an error binding an occupied port, got nil")
 	}
 }

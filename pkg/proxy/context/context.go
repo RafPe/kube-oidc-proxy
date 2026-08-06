@@ -8,8 +8,6 @@ import (
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/client-go/transport"
-
-	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 )
 
 type key int
@@ -49,7 +47,7 @@ func NoImpersonation(req *http.Request) bool {
 func WithImpersonationConfig(req *http.Request, conf *ImpersonationRequest) *http.Request {
 	ctxToReturn := request.WithValue(req.Context(), impersonationConfigKey, conf)
 	if *conf.ImpersonatedUser != nil {
-		ctxToReturn = genericapirequest.WithUser(ctxToReturn, *conf.ImpersonatedUser)
+		ctxToReturn = request.WithUser(ctxToReturn, *conf.ImpersonatedUser)
 	}
 	return req.WithContext(ctxToReturn)
 }

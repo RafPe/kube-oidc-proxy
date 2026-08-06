@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 func TestOidcFlagsChanged(t *testing.T) {
@@ -32,25 +33,28 @@ func TestOidcFlagsChanged(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
+			o := New()
 			cmd := &cobra.Command{}
-			cmd.Flags().String("oidc-issuer-url", "", "")
-			cmd.Flags().String("oidc-client-id", "", "")
-			cmd.Flags().String("oidc-ca-file", "", "")
-			cmd.Flags().String("oidc-username-claim", "", "")
-			cmd.Flags().String("oidc-username-prefix", "", "")
-			cmd.Flags().String("oidc-groups-claim", "", "")
-			cmd.Flags().String("oidc-groups-prefix", "", "")
-			cmd.Flags().StringSlice("oidc-signing-algs", nil, "")
-			cmd.Flags().String("oidc-required-claim", "", "")
-			cmd.Flags().String("secure-port", "", "")
+			o.AddFlags(cmd)
 
-			for _, name := range tc.changedFlags {
-				if err := cmd.Flags().Set(name, "value"); err != nil {
-					t.Fatalf("setting flag %q: %v", name, err)
+			// Guard against a silently-empty derivation: if FlagSet("OIDC")
+			// returned a fresh empty set, oidcFlagsChanged would always report
+			// false and the mutual-exclusion guard would become a no-op.
+			visited := 0
+			o.nfs.FlagSet("OIDC").VisitAll(func(*pflag.Flag) { visited++ })
+			if visited == 0 {
+				t.Fatal("OIDC flag set is empty; oidcFlagsChanged would never detect a changed flag")
+			}
+
+			for _, flagName := range tc.changedFlags {
+				// "8443" is a valid value for every flag exercised here,
+				// including the integer --secure-port.
+				if err := cmd.Flags().Set(flagName, "8443"); err != nil {
+					t.Fatalf("setting flag %q: %v", flagName, err)
 				}
 			}
 
-			if got := oidcFlagsChanged(cmd); got != tc.want {
+			if got := o.oidcFlagsChanged(cmd); got != tc.want {
 				t.Errorf("oidcFlagsChanged() = %v, want %v", got, tc.want)
 			}
 		})
