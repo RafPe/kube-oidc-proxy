@@ -2,8 +2,8 @@
 package token
 
 import (
-	"github.com/jetstack/kube-oidc-proxy/test/e2e/framework"
-	"github.com/jetstack/kube-oidc-proxy/test/e2e/suite/cases/sharedtests"
+	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
+	"github.com/rafpe/kube-oidc-proxy/test/e2e/suite/cases/sharedtests"
 )
 
 var _ = framework.CasesDescribe("Token", func() {

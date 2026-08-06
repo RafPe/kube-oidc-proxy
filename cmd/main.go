@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jetstack/kube-oidc-proxy/cmd/app"
-	"github.com/jetstack/kube-oidc-proxy/pkg/util"
+	"github.com/rafpe/kube-oidc-proxy/cmd/app"
+	"github.com/rafpe/kube-oidc-proxy/pkg/util"
 	"k8s.io/klog/v2"
 )
 
