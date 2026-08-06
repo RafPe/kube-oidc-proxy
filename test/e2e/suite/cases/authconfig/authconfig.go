@@ -13,9 +13,9 @@ import (
 	apiserverv1 "k8s.io/apiserver/pkg/apis/apiserver/v1"
 	"sigs.k8s.io/yaml"
 
-	"github.com/jetstack/kube-oidc-proxy/test/e2e/framework"
-	"github.com/jetstack/kube-oidc-proxy/test/e2e/suite/cases/sharedtests"
-	"github.com/jetstack/kube-oidc-proxy/test/util"
+	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
+	"github.com/rafpe/kube-oidc-proxy/test/e2e/suite/cases/sharedtests"
+	"github.com/rafpe/kube-oidc-proxy/test/util"
 )
 
 const (

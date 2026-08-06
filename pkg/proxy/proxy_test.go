@@ -20,13 +20,13 @@ import (
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/server"
 
-	"github.com/jetstack/kube-oidc-proxy/cmd/app/options"
-	"github.com/jetstack/kube-oidc-proxy/pkg/mocks"
-	"github.com/jetstack/kube-oidc-proxy/pkg/proxy/audit"
-	"github.com/jetstack/kube-oidc-proxy/pkg/proxy/hooks"
-	"github.com/jetstack/kube-oidc-proxy/pkg/proxy/logging"
-	"github.com/jetstack/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
-	fakesubjectaccessreview "github.com/jetstack/kube-oidc-proxy/pkg/proxy/subjectaccessreview/fake"
+	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
+	"github.com/rafpe/kube-oidc-proxy/pkg/mocks"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/audit"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/hooks"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
+	fakesubjectaccessreview "github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview/fake"
 )
 
 type fakeProxy struct {

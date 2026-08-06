@@ -10,7 +10,7 @@ import (
 	apiserverapi "k8s.io/apiserver/pkg/apis/apiserver"
 	authenticationcel "k8s.io/apiserver/pkg/authentication/cel"
 
-	"github.com/jetstack/kube-oidc-proxy/cmd/app/options"
+	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
 )
 
 func writeTempFile(t *testing.T, content string) string {

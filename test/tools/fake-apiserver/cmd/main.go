@@ -7,9 +7,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jetstack/kube-oidc-proxy/pkg/util"
-	"github.com/jetstack/kube-oidc-proxy/test/tools/fake-apiserver/cmd/options"
-	"github.com/jetstack/kube-oidc-proxy/test/tools/fake-apiserver/pkg/server"
+	"github.com/rafpe/kube-oidc-proxy/pkg/util"
+	"github.com/rafpe/kube-oidc-proxy/test/tools/fake-apiserver/cmd/options"
+	"github.com/rafpe/kube-oidc-proxy/test/tools/fake-apiserver/pkg/server"
 )
 
 func main() {

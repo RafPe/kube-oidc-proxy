@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/jetstack/kube-oidc-proxy/cmd/app/options"
+	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
 	"k8s.io/apimachinery/pkg/util/sets"
 	genericapifilters "k8s.io/apiserver/pkg/endpoints/filters"
 	"k8s.io/apiserver/pkg/server"

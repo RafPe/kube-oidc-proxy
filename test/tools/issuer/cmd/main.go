@@ -7,9 +7,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jetstack/kube-oidc-proxy/pkg/util"
-	"github.com/jetstack/kube-oidc-proxy/test/tools/issuer/cmd/options"
-	"github.com/jetstack/kube-oidc-proxy/test/tools/issuer/pkg/issuer"
+	"github.com/rafpe/kube-oidc-proxy/pkg/util"
+	"github.com/rafpe/kube-oidc-proxy/test/tools/issuer/cmd/options"
+	"github.com/rafpe/kube-oidc-proxy/test/tools/issuer/pkg/issuer"
 )
 
 func main() {
