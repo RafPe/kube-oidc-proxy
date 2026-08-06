@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 
 	"github.com/spf13/cobra"
@@ -193,10 +194,25 @@ func buildTokenAuther(opts *options.Options) (authenticator.Token, []string, err
 	return buildSingleAuther(opts.OIDCAuthentication)
 }
 
-func buildSingleAuther(o *options.OIDCAuthenticationOptions) (authenticator.Token, []string, error) {
+// jwtAuthenticatorFromOIDCOptions builds the internal JWTAuthenticator config
+// for the single-issuer (--oidc-*) path. Any --oidc-required-claim key=value
+// pairs are mapped into ClaimValidationRules so the OIDC authenticator enforces
+// them; without this mapping the flag is silently ignored.
+func jwtAuthenticatorFromOIDCOptions(o *options.OIDCAuthenticationOptions) apiserverapi.JWTAuthenticator {
 	usernamePrefix := o.UsernamePrefix
 	groupsPrefix := o.GroupsPrefix
-	jwtConfig := apiserverapi.JWTAuthenticator{
+
+	rules := make([]apiserverapi.ClaimValidationRule, 0, len(o.RequiredClaims))
+	for claim, value := range o.RequiredClaims {
+		rules = append(rules, apiserverapi.ClaimValidationRule{
+			Claim:         claim,
+			RequiredValue: value,
+		})
+	}
+	// Map iteration order is randomized; sort for deterministic construction.
+	sort.Slice(rules, func(i, j int) bool { return rules[i].Claim < rules[j].Claim })
+
+	return apiserverapi.JWTAuthenticator{
 		Issuer: apiserverapi.Issuer{
 			URL:       o.IssuerURL,
 			Audiences: []string{o.ClientID},
@@ -211,7 +227,12 @@ func buildSingleAuther(o *options.OIDCAuthenticationOptions) (authenticator.Toke
 				Prefix: &groupsPrefix,
 			},
 		},
+		ClaimValidationRules: rules,
 	}
+}
+
+func buildSingleAuther(o *options.OIDCAuthenticationOptions) (authenticator.Token, []string, error) {
+	jwtConfig := jwtAuthenticatorFromOIDCOptions(o)
 	auther, err := oidc.New(context.Background(), oidc.Options{
 		CAContentProvider:    caContentProvider(o.CAFile),
 		SupportedSigningAlgs: o.SigningAlgs,
