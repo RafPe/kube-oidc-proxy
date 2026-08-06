@@ -3,6 +3,7 @@ package options
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/pflag"
 
@@ -34,6 +35,14 @@ func (o *OIDCAuthenticationOptions) Validate(authConfigSet bool) error {
 	}
 	if o != nil && (len(o.IssuerURL) > 0) != (len(o.ClientID) > 0) {
 		return fmt.Errorf("oidc-issuer-url and oidc-client-id should be specified together")
+	}
+	// Validate --oidc-ca-file readability up front: an empty path is allowed
+	// (the system root CA set is used), but a configured file that cannot be
+	// read is a hard error rather than being silently swallowed at request time.
+	if o != nil && len(o.CAFile) > 0 {
+		if _, err := os.ReadFile(o.CAFile); err != nil {
+			return fmt.Errorf("oidc-ca-file %q: %w", o.CAFile, err)
+		}
 	}
 	return nil
 }

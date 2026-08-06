@@ -327,7 +327,7 @@ func TestHandlers(t *testing.T) {
 		"an empty request should 401": {
 			req:     new(http.Request),
 			expCode: http.StatusUnauthorized,
-			expBody: errUnauthorized.Error(),
+			expBody: "Unauthorized",
 		},
 		"a request with a badly formed token should 401": {
 			req: &http.Request{
@@ -336,7 +336,7 @@ func TestHandlers(t *testing.T) {
 				},
 			},
 			expCode: http.StatusUnauthorized,
-			expBody: errUnauthorized.Error(),
+			expBody: "Unauthorized",
 		},
 		"a request with a unauthed token should 401": {
 			req: &http.Request{
@@ -351,7 +351,7 @@ func TestHandlers(t *testing.T) {
 				err:  nil,
 			},
 			expCode: http.StatusUnauthorized,
-			expBody: errUnauthorized.Error(),
+			expBody: "Unauthorized",
 		},
 		"a request with an error during token auth should 401": {
 			req: &http.Request{
@@ -366,7 +366,7 @@ func TestHandlers(t *testing.T) {
 				err:  errors.New("some error"),
 			},
 			expCode: http.StatusUnauthorized,
-			expBody: errUnauthorized.Error(),
+			expBody: "Unauthorized",
 		},
 		"a request with an error but passes during token auth should still 401": {
 			req: &http.Request{
@@ -381,7 +381,7 @@ func TestHandlers(t *testing.T) {
 				err:  errors.New("some error"),
 			},
 			expCode: http.StatusUnauthorized,
-			expBody: errUnauthorized.Error(),
+			expBody: "Unauthorized",
 		},
 		"a request with unauth with impersonation should 401": {
 			req: &http.Request{
@@ -397,7 +397,7 @@ func TestHandlers(t *testing.T) {
 				err:  nil,
 			},
 			expCode: http.StatusUnauthorized,
-			expBody: errUnauthorized.Error(),
+			expBody: "Unauthorized",
 		},
 
 		// BEGIN IMPERSONATION TESTS

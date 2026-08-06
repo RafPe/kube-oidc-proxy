@@ -3,12 +3,12 @@ package probe
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/heptiolabs/healthcheck"
@@ -19,6 +19,19 @@ import (
 const (
 	timeout = time.Second * 10
 )
+
+// transientMarkers are substrings that unambiguously identify a transient
+// network/timeout failure while probing an issuer. The set is deliberately
+// conservative: a false "pending" is worse than a false "ready" here, because
+// in require-all mode a healthy issuer wrongly classified as pending would keep
+// the pod from ever becoming ready. Only phrases that cannot appear in an
+// ordinary JWT verification error belong here.
+var transientMarkers = []string{
+	"context deadline exceeded",
+	"connection refused",
+	"no such host",
+	"i/o timeout",
+}
 
 // IssuerReadiness pairs an issuer with the fake JWT used to probe whether
 // its authenticator has completed JWKS initialization.
@@ -32,9 +45,9 @@ type HealthCheck struct {
 	oidcAuther authenticator.Token
 	issuers    []IssuerReadiness
 	requireAll bool
-	ready      atomic.Bool
 
 	mu          sync.Mutex
+	ready       bool
 	initialized map[string]bool
 }
 
@@ -49,17 +62,48 @@ func Run(port string, issuers []IssuerReadiness, requireAll bool, oidcAuther aut
 
 	h.handler.AddReadinessCheck("secure serving", h.Check)
 
+	// Bind synchronously so a failure to acquire the port is surfaced to the
+	// caller at startup rather than being swallowed inside the goroutine.
+	ln, err := net.Listen("tcp", net.JoinHostPort("0.0.0.0", port))
+	if err != nil {
+		return fmt.Errorf("readiness probe failed to listen on port %s: %w", port, err)
+	}
+
 	go func() {
-		for {
-			err := http.ListenAndServe(net.JoinHostPort("0.0.0.0", port), h.handler)
-			if err != nil {
-				klog.Errorf("ready probe listener failed: %s", err)
-			}
-			time.Sleep(5 * time.Second)
+		if err := http.Serve(ln, h.handler); err != nil {
+			klog.Errorf("ready probe listener failed: %s", err)
 		}
 	}()
 
 	return nil
+}
+
+// isNotInitialized reports whether err indicates the issuer's authenticator has
+// not yet completed JWKS initialization. It matches on the stable "not
+// initialized" fragment so both upstream phrasings ("authenticator not
+// initialized" and "... is not initialized") are handled.
+func isNotInitialized(err error) bool {
+	return strings.Contains(err.Error(), "not initialized")
+}
+
+// isTransient reports whether err is a transient network/timeout failure. Such
+// errors must leave the issuer pending rather than latching it as initialized,
+// otherwise a momentary hiccup would be mistaken for a fetched JWKS.
+func isTransient(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	msg := err.Error()
+	for _, marker := range transientMarkers {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // Check probes every issuer that has not yet been observed as initialized,
@@ -81,7 +125,11 @@ func (h *HealthCheck) Check() error {
 		}
 
 		_, _, err := h.oidcAuther.AuthenticateToken(ctx, issuer.FakeJWT)
-		if err != nil && strings.HasSuffix(err.Error(), "authenticator not initialized") {
+		// The issuer counts as initialized only once its authenticator reaches
+		// token verification. A "not initialized" signal (JWKS not fetched yet)
+		// or a transient network/timeout error both leave it pending; check
+		// "not initialized" first since it is the more specific signal.
+		if err != nil && (isNotInitialized(err) || isTransient(err)) {
 			pending = append(pending, issuer.IssuerURL)
 			continue
 		}
@@ -95,7 +143,7 @@ func (h *HealthCheck) Check() error {
 			len(h.initialized), len(h.issuers), pending)
 	}
 
-	if h.ready.Load() {
+	if h.ready {
 		return nil
 	}
 
@@ -106,7 +154,7 @@ func (h *HealthCheck) Check() error {
 		return errors.New("no OIDC provider initialized yet")
 	}
 
-	h.ready.Store(true)
+	h.ready = true
 	klog.V(4).Info("OIDC provider(s) initialized, marking ready.")
 	return nil
 }

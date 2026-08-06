@@ -3,10 +3,10 @@ package proxy
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
-	"k8s.io/apiserver/pkg/authentication/user"
 	authuser "k8s.io/apiserver/pkg/authentication/user"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/client-go/transport"
@@ -94,8 +94,7 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 			return
 		}
 
-		var targetForContext user.Info
-		targetForContext = nil
+		var targetForContext authuser.Info
 
 		var remoteAddr string
 		req, remoteAddr = context.RemoteAddr(req)
@@ -192,7 +191,7 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 				extra["originaluser.jetstack.io-uid"] = []string{userForContext.GetUID()}
 			}
 
-			if userForContext.GetExtra() != nil && len(userForContext.GetExtra()) > 0 {
+			if len(userForContext.GetExtra()) > 0 {
 				jsonExtras, errJsonMarshal := json.Marshal(userForContext.GetExtra())
 				if errJsonMarshal != nil {
 					p.handleError(rw, req, errJsonMarshal)
@@ -237,28 +236,28 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 		// regardless of reason, log failed auth
 		logging.LogFailedRequest(r)
 
-		switch err {
+		switch {
 
 		// Failed auth
-		case errUnauthorized:
+		case errors.Is(err, errUnauthorized):
 			// If Unauthorized then error and report to audit
 			unauthedHandler.ServeHTTP(rw, r)
 			return
 
 			// No name given or available in oidc request
-		case errNoName:
+		case errors.Is(err, errNoName):
 			klog.V(2).Infof("no name available in oidc info %s", r.RemoteAddr)
 			http.Error(rw, "Username claim not available in OIDC Issuer response", http.StatusForbidden)
 			return
 
 			// No impersonation configuration found in context
-		case errNoImpersonationConfig:
+		case errors.Is(err, errNoImpersonationConfig):
 			klog.Errorf("if you are seeing this, there is likely a bug in the proxy (%s): %s", r.RemoteAddr, err)
 			http.Error(rw, "", http.StatusInternalServerError)
 			return
 
 			// No impersonation user found
-		case subjectaccessreview.ErrorNoImpersonationUserFound:
+		case errors.Is(err, subjectaccessreview.ErrorNoImpersonationUserFound):
 			http.Error(rw, subjectaccessreview.ErrorNoImpersonationUserFound.Error(), http.StatusInternalServerError)
 			return
 
@@ -266,7 +265,7 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 		default:
 
 			if strings.Contains(err.Error(), "not allowed to impersonate") {
-				klog.V(2).Infof(err.Error(), r.RemoteAddr)
+				klog.V(2).Infof("%s (%s)", err.Error(), r.RemoteAddr)
 				http.Error(rw, err.Error(), http.StatusForbidden)
 			} else {
 				klog.Errorf("unknown error (%s): %s", r.RemoteAddr, err)
