@@ -59,6 +59,48 @@ func TestOIDCAutherFromJWT_Construction(t *testing.T) {
 	}
 }
 
+func TestJWTAuthenticatorFromOIDCOptions_RequiredClaims(t *testing.T) {
+	t.Run("required claims are mapped into ClaimValidationRules", func(t *testing.T) {
+		o := &options.OIDCAuthenticationOptions{
+			IssuerURL:     "https://vault.example.com",
+			ClientID:      "my-client",
+			UsernameClaim: "email",
+			GroupsClaim:   "groups",
+			SigningAlgs:   []string{"RS256"},
+			RequiredClaims: map[string]string{
+				"hd":   "example.com",
+				"team": "platform",
+			},
+		}
+
+		got := jwtAuthenticatorFromOIDCOptions(o)
+
+		// Sorted by claim name for deterministic construction.
+		want := []apiserverapi.ClaimValidationRule{
+			{Claim: "hd", RequiredValue: "example.com"},
+			{Claim: "team", RequiredValue: "platform"},
+		}
+		if !reflect.DeepEqual(got.ClaimValidationRules, want) {
+			t.Errorf("ClaimValidationRules = %#v, want %#v", got.ClaimValidationRules, want)
+		}
+	})
+
+	t.Run("no required claims yields no rules", func(t *testing.T) {
+		o := &options.OIDCAuthenticationOptions{
+			IssuerURL:     "https://vault.example.com",
+			ClientID:      "my-client",
+			UsernameClaim: "email",
+			GroupsClaim:   "groups",
+			SigningAlgs:   []string{"RS256"},
+		}
+
+		got := jwtAuthenticatorFromOIDCOptions(o)
+		if len(got.ClaimValidationRules) != 0 {
+			t.Errorf("ClaimValidationRules = %#v, want empty", got.ClaimValidationRules)
+		}
+	})
+}
+
 func TestBuildTokenAuther_SingleIssuer(t *testing.T) {
 	opts := &options.Options{
 		OIDCAuthentication: &options.OIDCAuthenticationOptions{
