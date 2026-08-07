@@ -35,6 +35,20 @@ service:
   loadBalancerIP: ""
   # CIDR ranges allowed to reach a LoadBalancer Service.
   loadBalancerSourceRanges: []
+  # Routing of internal (in-cluster) traffic: "Cluster" (default, all endpoints)
+  # or "Local" (only node-local endpoints). Leave empty for the cluster default.
+  internalTrafficPolicy: ""
+  # Routing of external traffic for NodePort/LoadBalancer Services: "Cluster" or
+  # "Local" (preserves client source IP, drops cross-node hops). Ignored for
+  # ClusterIP. Leave empty for the default.
+  externalTrafficPolicy: ""
+  # Topology-aware routing (Kubernetes 1.31+): set to "PreferClose" to prefer
+  # endpoints in the same zone, reducing cross-zone traffic/cost. Leave empty to
+  # disable. Mutually exclusive with the older topologyKeys.
+  trafficDistribution: ""
+  # Session stickiness: "ClientIP" pins a client to one backend pod, or "None".
+  # Usually unnecessary for this stateless proxy. Leave empty for the default.
+  sessionAffinity: ""
 
 # TLS configuration for the proxy's own serving certificate (clients -> proxy).
 tls:
@@ -175,10 +189,18 @@ ingress:
 #    maxSurge: 34%
 #    maxUnavailable: 33%
 
-# PodDisruptionBudget for the proxy Deployment.
+# PodDisruptionBudget for the proxy Deployment. Recommended with replicaCount>1
+# so voluntary disruptions (node drains) keep the proxy available.
 podDisruptionBudget:
   enabled: false
+  # Set EITHER minAvailable OR maxUnavailable (each may be an integer or a
+  # percentage like "50%"). If maxUnavailable is set it takes precedence and
+  # minAvailable is omitted.
   minAvailable: 1
+  maxUnavailable: ""
+  # How the PDB treats not-yet-ready pods during eviction (Kubernetes 1.26+):
+  # "IfHealthyBudget" (default) or "AlwaysAllow". Leave empty for the default.
+  unhealthyPodEvictionPolicy: ""
 
 # Resource requests/limits for the proxy container.
 resources: {}
@@ -202,7 +224,29 @@ nodeSelector: {}
 
 tolerations: []
 
+# Node/pod (anti-)affinity. Empty by default. For HA, spread replicas across
+# nodes with soft pod anti-affinity, e.g.:
+#   affinity:
+#     podAntiAffinity:
+#       preferredDuringSchedulingIgnoredDuringExecution:
+#         - weight: 100
+#           podAffinityTerm:
+#             topologyKey: kubernetes.io/hostname
+#             labelSelector:
+#               matchLabels:
+#                 app.kubernetes.io/name: kube-oidc-proxy
 affinity: {}
+
+# Topology spread constraints for even placement across zones/nodes (preferred
+# over anti-affinity for balanced spread). Empty by default, e.g.:
+#   topologySpreadConstraints:
+#     - maxSkew: 1
+#       topologyKey: topology.kubernetes.io/zone
+#       whenUnsatisfiable: ScheduleAnyway
+#       labelSelector:
+#         matchLabels:
+#           app.kubernetes.io/name: kube-oidc-proxy
+topologySpreadConstraints: []
 
 # Optional PriorityClass for the proxy pod.
 priorityClassName: ""
