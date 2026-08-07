@@ -260,13 +260,18 @@ if [ -n "${GHA_TOKEN_FILE}" ]; then
 fi
 ok "RBAC applied"
 
+# Mint the local Dex token FIRST: mint_dex_token runs its own Dex port-forward
+# and tears it down (stop_pf) when done. Doing this before the proxy forward
+# exists means stop_pf only kills the Dex forward -- so we never kill and
+# re-bind local 8443, which was racy (intermittent "connection refused").
+log "Minting a local Dex token"
+DEX_TOKEN="$(mint_dex_token)"
+
+# Establish the proxy port-forward ONCE and keep it for every assertion below.
 log "Port-forwarding the proxy"
 port_forward 8443 443 -n "${PROXY_NS}" "svc/${PROXY_RELEASE}"
 
-# ---- Assertion 1: local Dex issuer still works through the multi-issuer proxy.
-log "Minting a local Dex token and authenticating through the proxy"
-DEX_TOKEN="$(mint_dex_token)"
-port_forward 8443 443 -n "${PROXY_NS}" "svc/${PROXY_RELEASE}"
+# ---- Assertion 1: local Dex issuer works through the multi-issuer proxy.
 write_kubeconfig "${DEX_TOKEN}" "${GEN}/kubeconfig-local.yaml"
 check_identity "${GEN}/kubeconfig-local.yaml" "oidc-local:${DEX_USER}" "Local Dex issuer"
 
