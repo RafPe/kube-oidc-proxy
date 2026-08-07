@@ -1,0 +1,36 @@
+name: helm-chart
+
+on:
+  push:
+    branches:
+      - 'main'
+    paths:
+      - 'deploy/charts/kube-oidc-proxy/**'
+      - '.github/workflows/helm.yaml'
+  pull_request:
+    paths:
+      - 'deploy/charts/kube-oidc-proxy/**'
+      - '.github/workflows/helm.yaml'
+
+jobs:
+  lint-and-template:
+    runs-on: ubuntu-latest
+    env:
+      CHART: deploy/charts/kube-oidc-proxy
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: helm lint (single-issuer fixture)
+        run: helm lint "$CHART" -f "$CHART/ci/single-issuer-values.yaml"
+
+      - name: helm lint (multi-issuer fixture)
+        run: helm lint "$CHART" -f "$CHART/ci/multi-issuer-values.yaml"
+
+      - name: helm template (single-issuer fixture)
+        run: helm template ci-single "$CHART" -f "$CHART/ci/single-issuer-values.yaml" > /dev/null
+
+      - name: helm template (multi-issuer fixture)
+        run: helm template ci-multi "$CHART" -f "$CHART/ci/multi-issuer-values.yaml" > /dev/null

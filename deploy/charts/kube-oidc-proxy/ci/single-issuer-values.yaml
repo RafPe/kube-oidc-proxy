@@ -1,0 +1,10 @@
+# CI fixture: single-issuer mode.
+# Exercises the --oidc-* flag path including repeatable --oidc-required-claim.
+oidc:
+  clientId: my-client
+  issuerUrl: https://accounts.google.com
+  usernameClaim: email
+  groupsClaim: groups
+  requiredClaims:
+    hd: example.com
+    aud: my-client
