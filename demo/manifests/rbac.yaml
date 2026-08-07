@@ -1,0 +1,32 @@
+# Demo RBAC: grant the two impersonated OIDC identities the built-in read-only
+# `view` ClusterRole so `kubectl get` works through the proxy.
+#
+# The usernames below are exactly what kube-oidc-proxy impersonates: the token's
+# `email` claim prefixed per the AuthenticationConfiguration (`oidc-a:` / `oidc-b:`).
+# The proxy's own ServiceAccount already holds the impersonation RBAC granted by
+# the Helm chart (see deploy/charts/kube-oidc-proxy/templates/clusterrole.yaml).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: demo-oidc-a-alice-view
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: User
+    name: "oidc-a:alice@example.com"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: demo-oidc-b-bob-view
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: User
+    name: "oidc-b:bob@example.com"

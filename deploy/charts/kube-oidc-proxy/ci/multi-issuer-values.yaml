@@ -1,0 +1,29 @@
+# CI fixture: multi-issuer mode.
+# authenticationConfig.content is set, so the chart must emit
+# --authentication-config and OMIT every --oidc-* flag. requiredClaims is set
+# on purpose to prove it is ignored (no --oidc-required-claim) in this mode.
+readinessRequireAllIssuers: true
+oidc:
+  requiredClaims:
+    hd: example.com
+authenticationConfig:
+  content: |
+    apiVersion: apiserver.config.k8s.io/v1beta1
+    kind: AuthenticationConfiguration
+    jwt:
+      - issuer:
+          url: https://accounts.google.com
+          audiences:
+            - my-google-client
+        claimMappings:
+          username:
+            claim: email
+            prefix: "google:"
+      - issuer:
+          url: https://token.actions.githubusercontent.com
+          audiences:
+            - my-github-client
+        claimMappings:
+          username:
+            claim: sub
+            prefix: "github:"

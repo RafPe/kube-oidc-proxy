@@ -1,4 +1,21 @@
-1. Get the application URL by running these commands:
+kube-oidc-proxy {{ .Chart.AppVersion }} has been deployed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Authentication mode:
+{{- if .Values.authenticationConfig.content }}
+  MULTI-ISSUER (--authentication-config). Accepting tokens from every issuer in
+  authenticationConfig.content.
+  readinessRequireAllIssuers = {{ .Values.readinessRequireAllIssuers }}
+{{- else }}
+  SINGLE-ISSUER (--oidc-* flags).
+    issuer:   {{ .Values.oidc.issuerUrl | default "<UNSET - set oidc.issuerUrl>" }}
+    clientID: {{ .Values.oidc.clientId | default "<UNSET - set oidc.clientId>" }}
+    username: {{ .Values.oidc.usernameClaim | default "<UNSET - set oidc.usernameClaim>" }}
+{{- end }}
+
+The proxy serves the impersonating Kubernetes API endpoint over HTTPS on
+container port 8443 and a readiness endpoint on 8080 (path /ready).
+
+1. Reach the proxy:
 {{- if .Values.ingress.enabled }}
 {{- range $host := .Values.ingress.hosts }}
   {{- range .paths }}
@@ -8,14 +25,18 @@
 {{- else if contains "NodePort" .Values.service.type }}
   export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "kube-oidc-proxy.fullname" . }})
   export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
-  echo http://$NODE_IP:$NODE_PORT
+  echo "https://$NODE_IP:$NODE_PORT"
 {{- else if contains "LoadBalancer" .Values.service.type }}
      NOTE: It may take a few minutes for the LoadBalancer IP to be available.
-           You can watch the status of by running 'kubectl get --namespace {{ .Release.Namespace }} svc -w {{ include "kube-oidc-proxy.fullname" . }}'
+           Watch its status with: kubectl get --namespace {{ .Release.Namespace }} svc -w {{ include "kube-oidc-proxy.fullname" . }}
   export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "kube-oidc-proxy.fullname" . }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-  echo http://$SERVICE_IP:{{ .Values.service.port }}
+  echo "https://$SERVICE_IP:{{ .Values.service.port }}"
 {{- else if contains "ClusterIP" .Values.service.type }}
   export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "kube-oidc-proxy.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
-  echo "Visit http://127.0.0.1:8080 to use your application"
-  kubectl port-forward $POD_NAME 8080:80
+  kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME 8443:8443
+  echo "Proxy is now reachable at https://127.0.0.1:8443"
 {{- end }}
+
+2. Point kubectl at the proxy by using its serving certificate as the cluster CA
+   and an OIDC token as the bearer token, then run e.g. `kubectl get pods`.
+   The proxy will impersonate the user resolved from the token.

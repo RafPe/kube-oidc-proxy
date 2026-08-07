@@ -78,7 +78,6 @@ clean: ## clean up created files
 	rm -rf \
 		$(BINDIR) \
 		$(CURDIR)/pkg/mocks/authenticator.go \
-		$(CURDIR)/demo/bin \
 		$(CURDIR)/test/e2e/framework/issuer/bin \
 		$(CURDIR)/test/e2e/framework/fake-apiserver/bin
 

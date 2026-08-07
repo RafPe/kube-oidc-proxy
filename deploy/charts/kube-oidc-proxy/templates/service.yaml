@@ -17,6 +17,18 @@ spec:
   loadBalancerSourceRanges:
 {{ toYaml .Values.service.loadBalancerSourceRanges | indent 4 }}
 {{- end }}
+{{- with .Values.service.internalTrafficPolicy }}
+  internalTrafficPolicy: {{ . }}
+{{- end }}
+{{- with .Values.service.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ . }}
+{{- end }}
+{{- with .Values.service.trafficDistribution }}
+  trafficDistribution: {{ . }}
+{{- end }}
+{{- with .Values.service.sessionAffinity }}
+  sessionAffinity: {{ . }}
+{{- end }}
   ports:
     - port: {{ .Values.service.port }}
       targetPort: 8443

@@ -20,15 +20,37 @@ spec:
     metadata:
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/secret_config.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       labels:
         app.kubernetes.io/name: {{ include "kube-oidc-proxy.name" . }}
         app.kubernetes.io/instance: {{ .Release.Name }}
     spec:
       serviceAccountName: {{ include "kube-oidc-proxy.fullname" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.initContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
       - name: {{ .Chart.Name }}
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
+        {{- with .Values.securityContext }}
+        securityContext:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
         ports:
         - containerPort: 8443
         - containerPort: 8080
@@ -68,9 +90,11 @@ spec:
           {{- if and .Values.oidc.signingAlgs (not .Values.authenticationConfig.content) }}
           - "--oidc-signing-algs=$(OIDC_SIGNING_ALGS)"
           {{ end }}
-          {{- if .Values.oidc.requiredClaims }}
-          - "--oidc-signing-algs=$(OIDC_REQUIRED_CLAIMS)"
-          {{ end }}
+          {{- if not .Values.authenticationConfig.content }}
+          {{- range $key, $value := .Values.oidc.requiredClaims }}
+          - "--oidc-required-claim={{ $key }}={{ $value }}"
+          {{- end }}
+          {{- end }}
           {{- if .Values.tokenPassthrough.enabled }}
           - "--token-passthrough"
           {{- if .Values.tokenPassthrough.audiences }}
@@ -134,13 +158,6 @@ spec:
               name: {{ include "kube-oidc-proxy.fullname" . }}-config
               key: oidc.signing-algs
         {{ end }}
-        {{- if .Values.oidc.requiredClaims }}
-        - name: OIDC_REQUIRED_CLAIMS
-          valueFrom:
-            secretKeyRef:
-              name: {{ include "kube-oidc-proxy.fullname" . }}-config
-              key: oidc.required-claims
-        {{ end }}
         volumeMounts:
           {{- if or .Values.oidc.caPEM .Values.authenticationConfig.content }}
           - name: kube-oidc-proxy-config
@@ -187,3 +204,7 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
     {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

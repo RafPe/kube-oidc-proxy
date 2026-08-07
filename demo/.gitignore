@@ -1,4 +1,2 @@
-/secrets
-/.kubeconfig-*
-/bin/
-/.backup-certificates.yaml
+# Runtime-generated certificates, keys, rendered manifests and kubeconfig.
+.generated/

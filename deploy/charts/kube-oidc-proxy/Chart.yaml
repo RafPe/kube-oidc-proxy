@@ -1,9 +1,16 @@
-apiVersion: v1
-appVersion: "v1.0.0"
-description: A Helm chart for kube-oidc-proxy
-home: https://github.com/rafpe/kube-oidc-proxy
+apiVersion: v2
 name: kube-oidc-proxy
-version: 0.3.2
+description: >-
+  A reverse proxy that authenticates requests using OpenID Connect (OIDC) and
+  impersonates the authenticated user against the Kubernetes API server.
+  Supports single-issuer (--oidc-* flags) and multi-issuer
+  (AuthenticationConfiguration) modes.
+type: application
+version: 0.4.0
+appVersion: "1.1.0"
+home: https://github.com/rafpe/kube-oidc-proxy
+sources:
+  - https://github.com/rafpe/kube-oidc-proxy
 maintainers:
-- name: mhrabovcin
-- name: joshvanl
+  - name: RafPe
+    url: https://github.com/RafPe

@@ -34,63 +34,34 @@ Directions on how to deploy OIDC authentication with multi-cluster can be found
 
 ### Quickstart
 
-Deployment yamls can be found in `./deploy/yaml` and will require configuration to
-an exiting OIDC issuer.
-
-This quickstart demo will assume you have a Kubernetes cluster without OIDC
-authentication, as well as an OIDC client created with your chosen
-provider. We will be using a Service with type `LoadBalancer` to expose it to
-the outside world. This can be changed depending on what is available and what
-suites your set up best.
-
-Firstly deploy `kube-oidc-proxy` and it's related resources into your cluster.
-This will create it's Deployment, Service Account and required permissions into
-the newly created `kube-oidc-proxy` Namespace.
+Install with the [Helm chart](./deploy/charts/kube-oidc-proxy/README.md). This
+creates the Deployment, Service, ServiceAccount and RBAC in a
+`kube-oidc-proxy` Namespace:
 
 ```
-$ kubectl apply -f ./deploy/yaml/kube-oidc-proxy.yaml
-$ kubectl get all --namespace kube-oidc-proxy
+helm upgrade --install kube-oidc-proxy ./deploy/charts/kube-oidc-proxy \
+  --namespace kube-oidc-proxy --create-namespace \
+  --set oidc.clientId=<client-id> \
+  --set oidc.issuerUrl=https://<issuer-url> \
+  --set oidc.usernameClaim=email
 ```
 
-This deployment will fail until we create the required secrets. Notice we have
-also not provided any client flags as we are using the in-cluster config with
-it's Service Account.
+See the [chart README](./deploy/charts/kube-oidc-proxy/README.md) for all values —
+including multi-issuer auth (`authenticationConfig.content`), serving TLS
+(cert-manager or chart-generated), and HA settings (PDB, topology spread,
+anti-affinity).
 
-We now wait until we have an external IP address provisioned.
-
-```
-$ kubectl get service --namespace kube-oidc-proxy
-```
-
-We need to generate certificates for `kube-oidc-proxy` to securely serve.  These
-certificates can be generated through `cert-manager`, more information about
-this project found [here](https://github.com/jetstack/cert-manager).
-
-Next, populate the OIDC authenticator Secret using the secrets given to you
-by your OIDC provider in `./deploy/yaml/secrets.yaml`. The OIDC provider CA will be
-different depending on which provider you are using. The easiest way to obtain
-the correct certificate bundle is often by opening the providers URL into a
-browser and fetching them there (typically output by clicking the lock icon on
-your address bar). Google's OIDC provider for example requires CAs from both
-`https://accounts.google.com/.well-known/openid-configuration` and
-`https://www.googleapis.com/oauth2/v3/certs`.
-
-
-Apply the secret manifests.
+Prefer raw manifests for `kubectl apply`? Render them from the chart instead of
+maintaining separate YAML:
 
 ```
-kubectl apply -f ./deploy/yaml/secrets.yaml
+helm template kube-oidc-proxy ./deploy/charts/kube-oidc-proxy \
+  --namespace kube-oidc-proxy -f my-values.yaml > kube-oidc-proxy.yaml
+kubectl apply -f kube-oidc-proxy.yaml
 ```
 
-You can restart the `kube-oidc-proxy` pod to use these new secrets
-now they are available.
-
-```
-kubectl delete pod --namespace kube-oidc-proxy kube-oidc-proxy-*
-```
-
-Finally, create a Kubeconfig to point to `kube-oidc-proxy` and set up your OIDC
-authenticated Kubernetes user.
+Once the proxy Service has an address, create a Kubeconfig to point to
+`kube-oidc-proxy` and set up your OIDC authenticated Kubernetes user.
 
 ```
 apiVersion: v1
