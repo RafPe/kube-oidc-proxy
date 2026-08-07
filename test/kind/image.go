@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
@@ -43,10 +44,15 @@ func (k *Kind) LoadAllImages() error {
 }
 
 func (k *Kind) LoadKubeOIDCProxy() error {
-	binPath := filepath.Join(k.rootPath, "./bin/kube-oidc-proxy")
+	// The proxy Dockerfile copies bin/${TARGETARCH}/kube-oidc-proxy. Under
+	// BuildKit TARGETARCH resolves to the build host architecture, so build the
+	// binary into the matching arch subdirectory and pass TARGETARCH explicitly
+	// for builders that do not populate it automatically.
+	binPath := filepath.Join(k.rootPath, "bin", runtime.GOARCH, "kube-oidc-proxy")
 	mainPath := filepath.Join(k.rootPath, "./cmd/.")
 
-	return k.loadImage(binPath, mainPath, ProxyImageName, k.rootPath)
+	return k.loadImage(binPath, mainPath, ProxyImageName, k.rootPath,
+		"--build-arg", "TARGETARCH="+runtime.GOARCH)
 }
 
 func (k *Kind) LoadIssuer() error {
@@ -73,7 +79,7 @@ func (k *Kind) LoadAuditWebhook() error {
 	return k.loadImage(binPath, mainPath, AuditWebhookImageName, dockerfilePath)
 }
 
-func (k *Kind) loadImage(binPath, mainPath, image, dockerfilePath string) error {
+func (k *Kind) loadImage(binPath, mainPath, image, dockerfilePath string, extraBuildArgs ...string) error {
 	log.Infof("kind: building %q", mainPath)
 
 	if err := os.MkdirAll(filepath.Dir(binPath), 0755); err != nil {
@@ -85,7 +91,9 @@ func (k *Kind) loadImage(binPath, mainPath, image, dockerfilePath string) error 
 		return err
 	}
 
-	err = k.runCmd("docker", "build", "-t", image, dockerfilePath)
+	buildArgs := append([]string{"build"}, extraBuildArgs...)
+	buildArgs = append(buildArgs, "-t", image, dockerfilePath)
+	err = k.runCmd("docker", buildArgs...)
 	if err != nil {
 		return err
 	}
@@ -144,7 +152,10 @@ func (k *Kind) runCmdWithOut(w io.Writer, command string, args ...string) error 
 	cmd.Env = append(cmd.Env,
 		"GO111MODULE=on", "CGO_ENABLED=0", "HOME="+os.Getenv("HOME"),
 		"PATH="+os.Getenv("PATH"),
-		"GOARCH=amd64", "GOOS=linux")
+		// Build test images for the host architecture so the resulting binaries
+		// run on the kind nodes (which match the host arch). Forcing amd64 here
+		// breaks pod startup with "exec format error" on arm64 hosts.
+		"GOARCH="+runtime.GOARCH, "GOOS=linux")
 
 	if err := cmd.Start(); err != nil {
 		return err

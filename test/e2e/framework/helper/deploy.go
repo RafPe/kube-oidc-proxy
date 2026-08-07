@@ -422,18 +422,11 @@ func (h *Helper) deployApp(ns, name string, serviceType corev1.ServiceType, cont
 
 	var netIPs []net.IP
 	if serviceType == corev1.ServiceTypeNodePort {
-		nodes, err := h.KubeClient.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{})
-		if err != nil {
-			return nil, nil, err
-		}
-
-		for _, n := range nodes.Items {
-			for _, addr := range n.Status.Addresses {
-				if addr.Type == corev1.NodeInternalIP {
-					netIPs = append(netIPs, net.ParseIP(addr.Address))
-				}
-			}
-		}
+		// The proxy is reached from the host at https://127.0.0.1:<ProxyNodePort>
+		// (the kind node maps that NodePort to the host loopback). Include
+		// 127.0.0.1 in the serving cert SANs so the client's TLS verification of
+		// that host succeeds.
+		netIPs = append(netIPs, net.ParseIP("127.0.0.1"))
 	}
 
 	keyBundle, err := util.NewTLSSelfSignedCertKey(host, netIPs, nil)
@@ -452,6 +445,12 @@ func (h *Helper) deployApp(ns, name string, serviceType corev1.ServiceType, cont
 					Port:       6443,
 					Protocol:   "TCP",
 					TargetPort: intstr.FromInt(6443),
+					// Pin the NodePort so it lines up with the kind node's
+					// extraPortMappings entry, making the proxy reachable at
+					// https://127.0.0.1:<ProxyNodePort> from the host. Only one
+					// proxy exists at a time (AfterEach deletes it) so there is no
+					// NodePort collision.
+					NodePort: nodePortFor(serviceType),
 				},
 			},
 			Type: serviceType,
@@ -601,4 +600,13 @@ func (h *Helper) deleteApp(ns, name string, extraSecrets ...string) error {
 func (h *Helper) appURL(ns, serviceName, port string) (string, string) {
 	host := fmt.Sprintf("%s.%s.svc.cluster.local", serviceName, ns)
 	return host, fmt.Sprintf("https://%s:%s", host, port)
+}
+
+// nodePortFor returns the fixed NodePort for NodePort services (only the proxy
+// is deployed as a NodePort), or 0 to let Kubernetes allocate one otherwise.
+func nodePortFor(serviceType corev1.ServiceType) int32 {
+	if serviceType == corev1.ServiceTypeNodePort {
+		return kind.ProxyNodePort
+	}
+	return 0
 }

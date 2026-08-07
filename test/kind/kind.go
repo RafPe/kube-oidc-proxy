@@ -23,6 +23,14 @@ import (
 
 const (
 	clusterName = "kube-oidc-proxy-e2e"
+
+	// ProxyNodePort is the fixed NodePort assigned to the proxy Service. It is
+	// mapped to the same port on 127.0.0.1 of the host via the kind node's
+	// extraPortMappings (see New), so the suite reaches the proxy at
+	// https://127.0.0.1:<ProxyNodePort>. This keeps the host->proxy network path
+	// identical on Linux (CI) and macOS, where the kind node's InternalIP sits on
+	// a docker bridge network that is not routable from the host.
+	ProxyNodePort = 31443
 )
 
 type Kind struct {
@@ -68,6 +76,20 @@ func New(rootPath, nodeImage string, masterNodes, workerNodes int) *Kind {
 	}
 
 	conf.Networking.ServiceSubnet = "10.0.0.0/16"
+
+	// Map the proxy's fixed NodePort to the same host port on 127.0.0.1 so the
+	// test process (running on the host) can reach the proxy Service without
+	// depending on the kind node IP being routable from the host. Mapped on a
+	// single node only to avoid a host-port collision across node containers.
+	if len(conf.Nodes) > 0 {
+		conf.Nodes[0].ExtraPortMappings = append(conf.Nodes[0].ExtraPortMappings,
+			configv1alpha4.PortMapping{
+				ContainerPort: ProxyNodePort,
+				HostPort:      ProxyNodePort,
+				ListenAddress: "127.0.0.1",
+				Protocol:      configv1alpha4.PortMappingProtocolTCP,
+			})
+	}
 
 	return &Kind{
 		rootPath:  rootPath,
