@@ -118,7 +118,7 @@ authenticationConfig:
 
 ## ✨ Features
 
-- **Single-issuer OIDC** via the familiar `--oidc-*` flags (issuer, client ID, username/groups claims and prefixes, required claims, signing algorithms).
+- **Standards-based single-issuer OIDC** via the familiar `--oidc-*` flags (issuer, client ID, username/groups claims and prefixes, required claims, signing algorithms) — plain OIDC ID tokens, with flag parity with the API server's own OIDC authenticator.
 - **Multi-issuer OIDC** via a Kubernetes `AuthenticationConfiguration` and a union authenticator — accept tokens from many providers at once.
 - **Configurable readiness** for multi-issuer setups (`--readiness-require-all-issuers`): become ready on the first issuer, or wait for all.
 - **Impersonation, not credential sharing** — the proxy impersonates the end user; RBAC stays authoritative. Supports `kubectl --as`, gated by `SubjectAccessReview`.

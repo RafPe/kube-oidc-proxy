@@ -4,6 +4,10 @@ The proxy binary is `kube-oidc-proxy`. The Helm chart wires these flags from
 values, but you can pass any of them directly (or via `extraArgs`). Flags are
 defined in [`../cmd/app/options/`](../cmd/app/options/).
 
+The proxy authenticates plain OIDC ID tokens, and its `--oidc-*` flags mirror
+the Kubernetes API server's own OIDC authenticator — so single-issuer
+configuration carries over one-to-one.
+
 ## Multi-issuer authentication
 
 | Flag | Default | Description |
