@@ -40,3 +40,37 @@ KUBE_OIDC_PROXY_FAKE_APISERVER=true make dev_cluster_deploy
 # Delete the cluster
 
 To delete the test kind cluster, use `make dev_cluster_destroy`.
+
+# Building from source
+
+Building `kube-oidc-proxy` requires Go 1.17 or higher.
+
+# End-to-end tests
+
+`make e2e` runs the Go end-to-end suite (`test/e2e/suite`) against a real
+Kubernetes cluster. It's hermetic: it builds the proxy and test-tool images from
+source, creates its own [kind](https://kind.sigs.k8s.io) cluster, loads the
+images, runs the suite, and tears the cluster down again on exit (including on
+failure or interrupt). No pre-existing cluster is required.
+
+Prerequisites (all on `PATH`): `go`, `docker` (daemon running), `kind`,
+`kubectl`. Images are built for the host architecture, so the suite runs on both
+`amd64` and `arm64` (e.g. Apple Silicon).
+
+```sh
+make e2e          # build images, spin up kind, run the suite, tear down
+make e2e-clean    # delete a leftover e2e kind cluster (safe if none exists)
+```
+
+Useful overrides: `E2E_TIMEOUT` (Go test timeout, default `30m`) and
+`KUBE_OIDC_PROXY_K8S_VERSION` (kind node image version).
+
+The suite runs in CI on every pull request and on pushes to `main`
+(`.github/workflows/e2e.yaml`). A companion workflow
+(`.github/workflows/e2e-oidc-gha.yaml`) additionally proves the multi-issuer
+union authenticator against the **real** GitHub Actions OIDC issuer alongside a
+local Dex issuer.
+
+To try the multi-issuer flow end to end on a local kind cluster, see the
+[demo](../../demo/README.md) and the
+[kind + GitHub Actions walkthrough](./testing-kind-github-actions.md).

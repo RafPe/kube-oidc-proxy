@@ -1,168 +1,152 @@
-# kube-oidc-proxy
+# 🔐 kube-oidc-proxy
 
-`kube-oidc-proxy` is a reverse proxy server to authenticate users using OIDC to
-Kubernetes API servers where OIDC authentication is not available (i.e. managed 
-Kubernetes providers such as GKE, EKS, etc).
+🔐 **kube-oidc-proxy**: A reverse proxy that authenticates users with OpenID Connect (OIDC) and impersonates them against the Kubernetes API server — bringing OIDC login to managed clusters (EKS, GKE, AKS, …) where you can't set the API server's OIDC flags.
 
-This intermediary server takes `kubectl` requests, authenticates the request using
-the configured OIDC Kubernetes authenticator, then attaches impersonation
-headers based on the OIDC response from the configured provider. This
-impersonated request is then sent to the API server on behalf of the user and
-it's response passed back. The server has flag parity with secure serving and
-OIDC authentication that are available with the Kubernetes API server as well as
-client flags provided by kubectl. In-cluster client authentication is also
-available when running `kube-oidc-proxy` as a pod.
+> [!NOTE]
+> This is a fork of [`TremoloSecurity/kube-oidc-proxy`](https://github.com/TremoloSecurity/kube-oidc-proxy), which is itself a fork of the original [`jetstack/kube-oidc-proxy`](https://github.com/jetstack/kube-oidc-proxy). The headline addition in this fork is **multi-issuer authentication** via `--authentication-config`: a single proxy can accept tokens from several OIDC issuers at once. Optional serving-certificate integration still uses [`jetstack/cert-manager`](https://github.com/jetstack/cert-manager).
 
-Since the proxy server utilises impersonation to forward requests to the API
-server once authenticated, impersonation is disabled for user requests to the
-API server.
+## 🔄 How It Works
 
-![kube-oidc-proxy demo](https://storage.googleapis.com/kube-oidc-proxy/demo-9de755f8e4b4e5dd67d17addf09759860f903098.svg)
+The proxy sits in front of the API server. It validates the bearer token against one or more OIDC issuers, maps the token's claims to a Kubernetes identity, then forwards the request to the API server using its **own ServiceAccount** plus impersonation headers for the mapped user. The API server evaluates **RBAC** for that user as usual — so you get OIDC login without ever touching the API server's `--oidc-*` flags. Full detail in [docs/architecture.md](./docs/architecture.md).
 
-The following is a diagram of the request flow for a user request.
-![kube-oidc-proxy request
-flow](https://storage.googleapis.com/kube-oidc-proxy/diagram-d9623e38a6cd3b585b45f47d80ca1e1c43c7e695.png)
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as kubectl (user)
+    participant P as kube-oidc-proxy
+    participant J as OIDC issuer (JWKS)
+    participant A as kube-apiserver
+    participant R as RBAC
 
-## Quickest Start
-
-OpenUnison integrates kube-oidc-proxy directly, and includes an identity provider and access portal for Kubernetes.  The quickest way to get started with kube-oidc-proxy is to follow the directions for OpenUnison's deployment at https://openunison.github.io/.
-
-## Tutorial
-
-Directions on how to deploy OIDC authentication with multi-cluster can be found
-[here.](./demo/README.md) or there is a [helm chart](./deploy/charts/kube-oidc-proxy/README.md).
-
-### Quickstart
-
-Install with the [Helm chart](./deploy/charts/kube-oidc-proxy/README.md). This
-creates the Deployment, Service, ServiceAccount and RBAC in a
-`kube-oidc-proxy` Namespace:
-
+    U->>P: HTTPS request + Bearer ID token
+    P->>J: Fetch JWKS / discovery (cached)
+    J-->>P: Signing keys
+    P->>P: Validate JWT<br/>(issuer, audience, signature, claims)
+    Note over P: Map claims → username, groups, extra
+    P->>A: Forward request as proxy ServiceAccount<br/>+ Impersonate-User / -Group / -Extra headers
+    A->>R: Authorize impersonated identity
+    R-->>A: Allow / Deny
+    A-->>P: API response
+    P-->>U: API response
 ```
-helm upgrade --install kube-oidc-proxy ./deploy/charts/kube-oidc-proxy \
+
+## 🚀 Quickstart
+
+Install with Helm — from the OCI registry or a local checkout of this repo:
+
+```sh
+# OCI registry (published by the release pipeline)
+helm install kube-oidc-proxy oci://ghcr.io/rafpe/charts/kube-oidc-proxy \
+  --namespace kube-oidc-proxy --create-namespace \
+  --set oidc.clientId=<client-id> \
+  --set oidc.issuerUrl=https://<issuer-url> \
+  --set oidc.usernameClaim=email
+
+# ...or from this checkout
+helm install kube-oidc-proxy ./chart/kube-oidc-proxy \
   --namespace kube-oidc-proxy --create-namespace \
   --set oidc.clientId=<client-id> \
   --set oidc.issuerUrl=https://<issuer-url> \
   --set oidc.usernameClaim=email
 ```
 
-See the [chart README](./deploy/charts/kube-oidc-proxy/README.md) for all values —
-including multi-issuer auth (`authenticationConfig.content`), serving TLS
-(cert-manager or chart-generated), and HA settings (PDB, topology spread,
-anti-affinity).
+> [!IMPORTANT]
+> The image `ghcr.io/rafpe/kube-oidc-proxy:1.1.0` and OCI chart are the **intended** published artifacts; the release pipeline is still pending, so until it lands, install from a local checkout. See [docs/installation.md](./docs/installation.md).
 
-Prefer raw manifests for `kubectl apply`? Render them from the chart instead of
-maintaining separate YAML:
+Then point `kubectl` at the proxy instead of the API server, using the `oidc` auth provider:
 
-```
-helm template kube-oidc-proxy ./deploy/charts/kube-oidc-proxy \
-  --namespace kube-oidc-proxy -f my-values.yaml > kube-oidc-proxy.yaml
-kubectl apply -f kube-oidc-proxy.yaml
-```
-
-Once the proxy Service has an address, create a Kubeconfig to point to
-`kube-oidc-proxy` and set up your OIDC authenticated Kubernetes user.
-
-```
-apiVersion: v1
+```yaml
 clusters:
-- cluster:
-    certificate-authority: *
-    server: https://[url|ip:443]
-  name: *
-contexts:
-- context:
-    cluster: *
-    user: *
-  name: *
-kind: Config
-preferences: {}
+  - cluster:
+      certificate-authority: /path/to/proxy-ca.pem   # the proxy's serving CA
+      server: https://<proxy-address>:443
+    name: my-cluster
 users:
-- name: *
-  user:
-    auth-provider:
-      config:
-        client-id: *
-        client-secret: *
-        id-token: *
-        idp-issuer-url: *
-        refresh-token: *
-      name: oidc
+  - name: my-oidc-user
+    user:
+      auth-provider:
+        name: oidc
+        config:
+          client-id: <client-id>
+          idp-issuer-url: https://<issuer-url>
+          id-token: <id-token>
+          refresh-token: <refresh-token>
 ```
 
-## Configuration
- - [Multi-issuer OIDC authentication](./docs/tasks/multi-issuer.md)
- - [Token Passthrough](./docs/tasks/token-passthrough.md)
- - [No Impersonation](./docs/tasks/no-impersonation.md)
- - [Extra Impersonations Headers](./docs/tasks/extra-impersonation-headers.md)
- - [Auditing](./docs/tasks/auditing.md)
+Full deployment, TLS, and kubeconfig detail: [docs/installation.md](./docs/installation.md).
 
-## Logging
+## 📝 Usage (at a glance)
 
-In addition to auditing, kube-oidc-proxy logs all requests to standard out so the requests can be captured by a common Security Information and Event Management (SIEM) system.  SIEMs will typically import logs directly from containers via tools like fluentd.  This logging is also useful in debugging.  An example successful event:
+The proxy has two **mutually exclusive** modes — configure exactly one.
 
-```
-[2021-11-25T01:05:17+0000] AuSuccess src:[10.42.0.5 / 10.42.1.3, 10.42.0.5] URI:/api/v1/namespaces/openunison/pods?limit=500 inbound:[mlbadmin1 / system:masters|system:authenticated /]
-```
+**Single-issuer** (the classic `--oidc-*` flags):
 
-The first block, between `[]` is an ISO-8601 timestamp.  The next text, `AuSuccess`, indicates that authentication was successful.  the `src` block containers the remote address of the request, followed by the value of the `X-Forwarded-For` HTTP header if provided.  The `URI` is the URL path of the request.  The `inbound` section provides the user name, groups, and extra-info provided to the proxy from the JWT.
-
-When there's an error or failure:
-
-```
-[2021-11-25T01:05:24+0000] AuFail src:[10.42.0.5 / 10.42.1.3] URI:/api/v1/nodes
+```yaml
+oidc:
+  clientId: my-client
+  issuerUrl: https://accounts.google.com
+  usernameClaim: email
+  groupsClaim: groups        # optional
 ```
 
-This is similar to success, but without the token information.
+→ full guide: [docs/usage.md](./docs/usage.md)
 
-## End-User Impersonation
+**Multi-issuer** (accept tokens from several issuers via a Kubernetes `AuthenticationConfiguration`):
 
-kube-oidc-proxy supports the impersonation headers for inbound requests.  This allowes the proxy to support `kubectl --as`.  When impersonation headers are included in a request, the proxy checks that the authenticated user is able to assume the identity of the impersonation headers by submitting `SubjectAccessReview` requests to the API server.  Once authorized, the proxy will send those identity headers instead of headers generated for the authenticated user.  In addition, three `Extra` impersonation headers are sent to the API server to identify the authenticated user who's making the request:
-
-| Header | Description |
-| ------ | ----------- |
-| `originaluser.jetstack.io-user` | The original username |
-| `originaluser.jetstack.io-groups` | The original groups |
-| `originaluser.jetstack.io-extra` | A JSON encoded map of arrays representing all of the `extra` headers included in the original identity |
-
-In addition to sending this `extra` information, the proxy adds an additional section to the logfile that will identify outbound identity data.  When impersonation headers are present, the `AuSuccess` log will look like:
-
-```
-[2021-11-25T01:05:17+0000] AuSuccess src:[10.42.0.5 / 10.42.1.3] URI:/api/v1/namespaces/openunison/pods?limit=500 inbound:[mlbadmin1 / system:masters|system:authenticated /] outbound:[mlbadmin2 / group2|system:authenticated /]
-```
-
-When using `Impersonate-Extra-` headers, the proxy's `ServiceAccount` must be explicitly authorized via RBAC to impersonate whatever the extra key is named.  This is because extras are treated as subresources which must be explicitly authorized.  
-
-
-## Development
-*NOTE*: building kube-oidc-proxy requires Go version 1.17 or higher.
-
-To help with development, there is a suite of tools you can use to deploy a
-functioning proxy from source locally. You can read more
-[here](./docs/tasks/development-testing.md).
-
-### End-to-end tests
-
-`make e2e` runs the Go end-to-end suite (`test/e2e/suite`) against a real
-Kubernetes cluster. It is hermetic: it builds the proxy and the test-tool
-images from source, creates its own [kind](https://kind.sigs.k8s.io) cluster,
-loads the images, runs the suite, and tears the cluster down again on exit
-(including on failure or interrupt). No pre-existing cluster is required.
-
-Prerequisites (all on `PATH`): `go`, `docker` (daemon running), `kind`,
-`kubectl`. Images are built for the host architecture so the suite runs on both
-`amd64` and `arm64` (e.g. Apple Silicon).
-
-```sh
-make e2e          # build images, spin up kind, run the suite, tear down
-make e2e-clean    # delete a leftover e2e kind cluster (safe if none exists)
+```yaml
+authenticationConfig:
+  content: |
+    apiVersion: apiserver.config.k8s.io/v1beta1
+    kind: AuthenticationConfiguration
+    jwt:
+      - issuer:
+          url: https://accounts.google.com
+          audiences: [my-google-client]
+        claimMappings:
+          username: { claim: email, prefix: "google:" }
+      - issuer:
+          url: https://token.actions.githubusercontent.com
+          audiences: [my-github-client]
+        claimMappings:
+          username: { claim: sub, prefix: "github:" }
 ```
 
-Useful overrides: `E2E_TIMEOUT` (Go test timeout, default `30m`) and
-`KUBE_OIDC_PROXY_K8S_VERSION` (kind node image version).
+→ full guide: [docs/tasks/multi-issuer.md](./docs/tasks/multi-issuer.md)
 
-The suite runs in CI on every pull request and on pushes to `main`
-(`.github/workflows/e2e.yaml`). A companion workflow
-(`.github/workflows/e2e-oidc-gha.yaml`) additionally proves the multi-issuer
-union authenticator against the **real** GitHub Actions OIDC issuer alongside a
-local Dex issuer.
+> [!WARNING]
+> When `authenticationConfig.content` is set, the chart passes `--authentication-config` and **omits every `--oidc-*` flag**; the `oidc.*` values are ignored. Don't configure both modes at once.
+
+## ✨ Features
+
+- **Standards-based single-issuer OIDC** via the familiar `--oidc-*` flags (issuer, client ID, username/groups claims and prefixes, required claims, signing algorithms) — plain OIDC ID tokens, with flag parity with the API server's own OIDC authenticator.
+- **Multi-issuer OIDC** via a Kubernetes `AuthenticationConfiguration` and a union authenticator — accept tokens from many providers at once.
+- **Configurable readiness** for multi-issuer setups (`--readiness-require-all-issuers`): become ready on the first issuer, or wait for all.
+- **Impersonation, not credential sharing** — the proxy impersonates the end user; RBAC stays authoritative. Supports `kubectl --as`, gated by `SubjectAccessReview`.
+- **Token passthrough** for non-OIDC bearer tokens (`--token-passthrough`), validated via TokenReview.
+- **Auditable** — every request logged to stdout; original identity recorded via `Extra` headers.
+- **Hardened Helm chart** — self-signed / cert-manager / own-secret TLS, PodDisruptionBudget, topology spread, locked-down SecurityContext by default.
+
+## 📚 Documentation
+
+| Topic | Where |
+| --- | --- |
+| How it works, request flow, union authenticator, readiness | [docs/architecture.md](./docs/architecture.md) |
+| Deployment options, TLS, kubeconfig | [docs/installation.md](./docs/installation.md) |
+| Single- vs multi-issuer walkthrough | [docs/usage.md](./docs/usage.md) |
+| Impersonation model & audit headers | [docs/impersonation.md](./docs/impersonation.md) |
+| All proxy flags | [docs/cli-reference.md](./docs/cli-reference.md) |
+| Troubleshooting & request logs | [docs/troubleshooting.md](./docs/troubleshooting.md) |
+| Security considerations | [docs/security.md](./docs/security.md) |
+| All chart values | [chart/kube-oidc-proxy/README.md](./chart/kube-oidc-proxy/README.md) |
+| Multi-issuer OIDC | [docs/tasks/multi-issuer.md](./docs/tasks/multi-issuer.md) |
+| Token passthrough | [docs/tasks/token-passthrough.md](./docs/tasks/token-passthrough.md) |
+| No impersonation | [docs/tasks/no-impersonation.md](./docs/tasks/no-impersonation.md) |
+| Extra impersonation headers | [docs/tasks/extra-impersonation-headers.md](./docs/tasks/extra-impersonation-headers.md) |
+| Auditing | [docs/tasks/auditing.md](./docs/tasks/auditing.md) |
+| Development & testing | [docs/tasks/development-testing.md](./docs/tasks/development-testing.md) |
+| kind + GitHub Actions walkthrough | [docs/tasks/testing-kind-github-actions.md](./docs/tasks/testing-kind-github-actions.md) |
+| Multi-issuer demo | [demo/README.md](./demo/README.md) |
+
+## 🤝 Contributing
+
+Contributions are welcome — issues and pull requests both. Building requires Go 1.17+. See the [development & testing guide](./docs/tasks/development-testing.md) for running the proxy from source and the hermetic `make e2e` end-to-end suite. To try the multi-issuer flow end to end, start with the [demo](./demo/README.md).
