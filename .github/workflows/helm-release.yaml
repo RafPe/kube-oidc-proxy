@@ -16,7 +16,7 @@ permissions:
   id-token: write # cosign keyless signing
 
 env:
-  CHART_DIR: deploy/charts/kube-oidc-proxy
+  CHART_DIR: chart/kube-oidc-proxy
 
 jobs:
   release-chart:

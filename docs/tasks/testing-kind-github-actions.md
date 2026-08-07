@@ -109,7 +109,7 @@ authenticationConfig:
       #   message: "token not issued for the expected repository"
 EOF
 
-helm install kube-oidc-proxy ./deploy/charts/kube-oidc-proxy \
+helm install kube-oidc-proxy ./chart/kube-oidc-proxy \
   -n kube-oidc-proxy --create-namespace -f /tmp/values-test.yaml
 kubectl -n kube-oidc-proxy rollout status deploy/kube-oidc-proxy --timeout=180s
 
@@ -118,7 +118,7 @@ kubectl -n kube-oidc-proxy logs deploy/kube-oidc-proxy | grep "configured OIDC i
 ```
 
 Config changes later: edit the values file, `helm upgrade kube-oidc-proxy
-./deploy/charts/kube-oidc-proxy -n kube-oidc-proxy -f /tmp/values-test.yaml` —
+./chart/kube-oidc-proxy -n kube-oidc-proxy -f /tmp/values-test.yaml` —
 the checksum annotation rolls the pods automatically.
 
 ## 4. RBAC

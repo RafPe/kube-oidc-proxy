@@ -4,7 +4,7 @@
 # The usernames below are exactly what kube-oidc-proxy impersonates: the token's
 # `email` claim prefixed per the AuthenticationConfiguration (`oidc-a:` / `oidc-b:`).
 # The proxy's own ServiceAccount already holds the impersonation RBAC granted by
-# the Helm chart (see deploy/charts/kube-oidc-proxy/templates/clusterrole.yaml).
+# the Helm chart (see chart/kube-oidc-proxy/templates/clusterrole.yaml).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:

@@ -5,18 +5,18 @@ on:
     branches:
       - 'main'
     paths:
-      - 'deploy/charts/kube-oidc-proxy/**'
+      - 'chart/kube-oidc-proxy/**'
       - '.github/workflows/helm.yaml'
   pull_request:
     paths:
-      - 'deploy/charts/kube-oidc-proxy/**'
+      - 'chart/kube-oidc-proxy/**'
       - '.github/workflows/helm.yaml'
 
 jobs:
   lint-and-template:
     runs-on: ubuntu-latest
     env:
-      CHART: deploy/charts/kube-oidc-proxy
+      CHART: chart/kube-oidc-proxy
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 

@@ -226,7 +226,7 @@ ok "authentication-config.yaml written"
 
 log "Installing kube-oidc-proxy via Helm (multi-issuer mode)"
 helm --kube-context "${CTX}" install "${PROXY_RELEASE}" \
-  "${REPO_ROOT}/deploy/charts/kube-oidc-proxy" \
+  "${REPO_ROOT}/chart/kube-oidc-proxy" \
   --namespace "${PROXY_NS}" --create-namespace \
   -f "${MANIFESTS}/proxy-values.yaml" \
   --set-file authenticationConfig.content="${GEN}/authentication-config.yaml" \

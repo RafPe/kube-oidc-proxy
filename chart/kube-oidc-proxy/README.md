@@ -24,13 +24,14 @@ values are ignored. Do not configure both modes at once.
 
 ## Install
 
-The chart is not published to a registry; install it from a checkout of this
-repository.
+Once the release pipeline is live the chart is published as an OCI artifact at
+`oci://ghcr.io/rafpe/charts/kube-oidc-proxy` (not yet published). Until then,
+install it from a checkout of this repository.
 
 Single-issuer:
 
 ```sh
-helm install kube-oidc-proxy ./deploy/charts/kube-oidc-proxy \
+helm install kube-oidc-proxy ./chart/kube-oidc-proxy \
   --set oidc.clientId=my-client \
   --set oidc.issuerUrl=https://accounts.google.com \
   --set oidc.usernameClaim=email
@@ -39,7 +40,7 @@ helm install kube-oidc-proxy ./deploy/charts/kube-oidc-proxy \
 Or with a values file:
 
 ```sh
-helm install kube-oidc-proxy ./deploy/charts/kube-oidc-proxy -f my-values.yaml
+helm install kube-oidc-proxy ./chart/kube-oidc-proxy -f my-values.yaml
 ```
 
 Uninstall:
@@ -194,6 +195,6 @@ Committed fixtures under `ci/` cover both modes and are used by the
 `helm-chart` GitHub Actions workflow:
 
 ```sh
-helm lint deploy/charts/kube-oidc-proxy -f deploy/charts/kube-oidc-proxy/ci/single-issuer-values.yaml
-helm template t deploy/charts/kube-oidc-proxy -f deploy/charts/kube-oidc-proxy/ci/multi-issuer-values.yaml
+helm lint chart/kube-oidc-proxy -f chart/kube-oidc-proxy/ci/single-issuer-values.yaml
+helm template t chart/kube-oidc-proxy -f chart/kube-oidc-proxy/ci/multi-issuer-values.yaml
 ```

@@ -32,7 +32,7 @@ accounts, no DNS, no browser.
 - Two Dex issuers, each with its own TLS-served OIDC discovery endpoint and one
   static user (`alice@example.com` on A, `bob@example.com` on B).
 - One kube-oidc-proxy, deployed with the Helm chart in
-  [`deploy/charts/kube-oidc-proxy`](../deploy/charts/kube-oidc-proxy), running in
+  [`chart/kube-oidc-proxy`](../chart/kube-oidc-proxy), running in
   multi-issuer mode via `authenticationConfig.content`
   (`apiserver.config.k8s.io/v1`), with `readinessRequireAllIssuers: true` so the
   pod is only Ready once **both** issuers have initialized (JWKS fetched).
