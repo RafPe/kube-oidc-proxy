@@ -173,7 +173,7 @@ func testAuditLogs(f *framework.Framework, podLabelSelector string) {
 
 	var auditLogsBuffer bytes.Buffer
 	err = f.Helper().Kubectl(f.Namespace.Name).RunWithStdout(&auditLogsBuffer,
-		"exec", pods.Items[0].Name, "cat", "/audit-log")
+		"exec", pods.Items[0].Name, "--", "cat", "/audit-log")
 	Expect(err).NotTo(HaveOccurred())
 
 	logs := auditLogsBuffer.Bytes()
