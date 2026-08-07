@@ -140,3 +140,29 @@ When using `Impersonate-Extra-` headers, the proxy's `ServiceAccount` must be ex
 To help with development, there is a suite of tools you can use to deploy a
 functioning proxy from source locally. You can read more
 [here](./docs/tasks/development-testing.md).
+
+### End-to-end tests
+
+`make e2e` runs the Go end-to-end suite (`test/e2e/suite`) against a real
+Kubernetes cluster. It is hermetic: it builds the proxy and the test-tool
+images from source, creates its own [kind](https://kind.sigs.k8s.io) cluster,
+loads the images, runs the suite, and tears the cluster down again on exit
+(including on failure or interrupt). No pre-existing cluster is required.
+
+Prerequisites (all on `PATH`): `go`, `docker` (daemon running), `kind`,
+`kubectl`. Images are built for the host architecture so the suite runs on both
+`amd64` and `arm64` (e.g. Apple Silicon).
+
+```sh
+make e2e          # build images, spin up kind, run the suite, tear down
+make e2e-clean    # delete a leftover e2e kind cluster (safe if none exists)
+```
+
+Useful overrides: `E2E_TIMEOUT` (Go test timeout, default `30m`) and
+`KUBE_OIDC_PROXY_K8S_VERSION` (kind node image version).
+
+The suite runs in CI on every pull request and on pushes to `main`
+(`.github/workflows/e2e.yaml`). A companion workflow
+(`.github/workflows/e2e-oidc-gha.yaml`) additionally proves the multi-issuer
+union authenticator against the **real** GitHub Actions OIDC issuer alongside a
+local Dex issuer.
