@@ -131,14 +131,14 @@ readinessRequireAllIssuers: false
 
 # Token passthrough: forward the original bearer token to the API server for
 # requests whose token is not an OIDC token the proxy can verify.
-# https://github.com/rafpe/kube-oidc-proxy/blob/master/docs/tasks/token-passthrough.md
+# https://github.com/rafpe/kube-oidc-proxy/blob/main/docs/tasks/token-passthrough.md
 tokenPassthrough:
   enabled: false
   # Audiences that passthrough tokens are allowed to have.
   audiences: []
 
 # Extra impersonation headers added to requests forwarded to the API server.
-# https://github.com/rafpe/kube-oidc-proxy/blob/master/docs/tasks/extra-impersonation-headers.md
+# https://github.com/rafpe/kube-oidc-proxy/blob/main/docs/tasks/extra-impersonation-headers.md
 extraImpersonationHeaders:
   # Send the client's source IP as an extra user header.
   clientIP: false

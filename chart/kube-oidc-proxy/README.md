@@ -51,6 +51,10 @@ helm uninstall kube-oidc-proxy
 
 ## Values
 
+Every value in [`values.yaml`](./values.yaml).
+
+### Image & naming
+
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `replicaCount` | int | `1` | Number of proxy replicas. |
@@ -60,42 +64,103 @@ helm uninstall kube-oidc-proxy
 | `imagePullSecrets` | list | `[]` | Secrets for pulling from a private registry. |
 | `nameOverride` | string | `""` | Override the chart-name portion of resource names. |
 | `fullnameOverride` | string | `""` | Override the full release name. |
-| `service.type` | string | `ClusterIP` | Service type. |
+
+### Service
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `service.type` | string | `ClusterIP` | Service type (`ClusterIP`, `NodePort`, `LoadBalancer`). |
 | `service.port` | int | `443` | Service port (forwarded to container port 8443). |
+| `service.annotations` | map | `{}` | Annotations added to the Service (e.g. cloud LB hints). |
 | `service.loadBalancerIP` | string | `""` | Static IP for a LoadBalancer Service. |
 | `service.loadBalancerSourceRanges` | list | `[]` | Allowed source CIDRs for a LoadBalancer Service. |
+| `service.internalTrafficPolicy` | string | `""` | Routing of in-cluster traffic: `Cluster` or `Local`. Empty = cluster default. |
+| `service.externalTrafficPolicy` | string | `""` | Routing of external traffic (NodePort/LoadBalancer): `Cluster` or `Local` (preserves client source IP). Ignored for ClusterIP. |
+| `service.trafficDistribution` | string | `""` | Topology-aware routing (K8s 1.31+): `PreferClose` to prefer same-zone endpoints. Empty = disabled. |
+| `service.sessionAffinity` | string | `""` | Session stickiness: `ClientIP` or `None`. Empty = default. |
+
+### TLS (proxy serving certificate)
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
 | `tls.secretName` | string | `nil` | Name of an existing `kubernetes.io/tls` Secret. If unset, a self-signed cert is generated. |
 | `tls.certManager` | bool | `false` | Let cert-manager issue the serving certificate. |
 | `tls.selfSigned` | bool | `true` | With cert-manager, create a self-signed Issuer. |
 | `tls.issuerName` | string | `nil` | Existing cert-manager Issuer to reference when `selfSigned` is false. |
-| `oidc.clientId` | string | `""` | **Single-issuer**: OIDC client ID. Ignored in multi-issuer mode. |
-| `oidc.issuerUrl` | string | `""` | **Single-issuer**: OIDC issuer URL. Ignored in multi-issuer mode. |
-| `oidc.usernameClaim` | string | `""` | **Single-issuer**: token claim used as username. Ignored in multi-issuer mode. |
-| `oidc.caPEM` | string | `nil` | PEM CA that verifies the issuer TLS connection. Ignored in multi-issuer mode. |
+
+### Authentication — single-issuer
+
+Ignored when `authenticationConfig.content` is set.
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `oidc.clientId` | string | `""` | OIDC client ID expected in the token audience. |
+| `oidc.issuerUrl` | string | `""` | OIDC issuer URL (must serve a discovery document). |
+| `oidc.usernameClaim` | string | `""` | Token claim used as the username. |
+| `oidc.caPEM` | string | `nil` | PEM CA that verifies the issuer TLS connection. |
 | `oidc.usernamePrefix` | string | `nil` | Prefix prepended to usernames. |
 | `oidc.groupsClaim` | string | `nil` | Token claim carrying groups. |
 | `oidc.groupsPrefix` | string | `nil` | Prefix prepended to group names. |
 | `oidc.signingAlgs` | list | `[RS256]` | Accepted JWT signing algorithms. |
 | `oidc.requiredClaims` | map | `{}` | Claims that must equal a value. Each entry becomes a repeatable `--oidc-required-claim=k=v` flag. |
-| `authenticationConfig.content` | string | `""` | **Multi-issuer**: YAML of an `AuthenticationConfiguration`. When set, `--authentication-config` is used and all `--oidc-*` flags are omitted. |
-| `readinessRequireAllIssuers` | bool | `false` | **Multi-issuer**: require every issuer to initialize before the pod is ready. |
-| `tokenPassthrough.enabled` | bool | `false` | Forward non-OIDC bearer tokens to the API server. |
+
+### Authentication — multi-issuer
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `authenticationConfig.content` | string | `""` | YAML of an `AuthenticationConfiguration`. When set, `--authentication-config` is used and all `--oidc-*` flags are omitted. |
+| `readinessRequireAllIssuers` | bool | `false` | Require every issuer to initialize before the pod is ready. Default: ready once at least one initializes. |
+
+### Token passthrough & impersonation
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `tokenPassthrough.enabled` | bool | `false` | Forward non-OIDC bearer tokens to the API server (validated via TokenReview). |
 | `tokenPassthrough.audiences` | list | `[]` | Allowed audiences for passthrough tokens. |
-| `extraImpersonationHeaders.clientIP` | bool | `false` | Send client source IP as an extra user header. |
+| `extraImpersonationHeaders.clientIP` | bool | `false` | Send the client source IP as an extra user header. |
+| `extraImpersonationHeaders.headers` | string | `nil` | Extra `key=value` user headers (`--extra-user-headers`), comma-separated. |
+
+### Extra args, volumes & ingress
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
 | `extraArgs` | map | `{}` | Extra CLI flags passed as `--key=value`. |
 | `extraVolumeMounts` | list | `{}` | Extra container volumeMounts. |
 | `extraVolumes` | list | `{}` | Extra pod volumes. |
 | `ingress.enabled` | bool | `false` | Create an Ingress. |
 | `ingress.annotations` | map | `{}` | Ingress annotations. |
+| `ingress.ingressClassName` | string | `nil` | IngressClass name for the Ingress. |
 | `ingress.hosts` | list | see values | Ingress hosts and paths. |
 | `ingress.tls` | list | `[]` | Ingress TLS blocks. |
-| `podDisruptionBudget.enabled` | bool | `false` | Create a PodDisruptionBudget. |
-| `podDisruptionBudget.minAvailable` | int | `1` | Minimum available pods. |
+
+### High availability & scheduling
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `rollingUpdateStrategy` | map | `nil` | Override the Deployment update strategy (commented out by default). |
+| `podDisruptionBudget.enabled` | bool | `false` | Create a PodDisruptionBudget (recommended with `replicaCount` > 1). |
+| `podDisruptionBudget.minAvailable` | int/string | `1` | Minimum available pods. Ignored if `maxUnavailable` is set. |
+| `podDisruptionBudget.maxUnavailable` | int/string | `""` | Maximum unavailable pods. Takes precedence over `minAvailable`. |
+| `podDisruptionBudget.unhealthyPodEvictionPolicy` | string | `""` | How the PDB treats not-yet-ready pods (K8s 1.26+): `IfHealthyBudget` or `AlwaysAllow`. |
 | `resources` | map | `{}` | Container resource requests/limits. |
 | `initContainers` | list | `[]` | Init containers. |
 | `nodeSelector` | map | `{}` | Node selector. |
 | `tolerations` | list | `[]` | Tolerations. |
-| `affinity` | map | `{}` | Affinity rules. |
+| `affinity` | map | `{}` | Node/pod (anti-)affinity. For HA, spread replicas with soft pod anti-affinity. |
+| `topologySpreadConstraints` | list | `[]` | Even placement across zones/nodes (preferred over anti-affinity for balanced spread). |
+| `priorityClassName` | string | `""` | Optional PriorityClass for the proxy pod. |
+| `podAnnotations` | map | `{}` | Annotations added to the pod template (merged with the chart's config checksum). |
+
+### Security context (hardened by default)
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `podSecurityContext.runAsNonRoot` | bool | `true` | Require the container to run as a non-root user. |
+| `podSecurityContext.runAsUser` | int | `1000` | UID to run as (required because the image sets no `USER`). |
+| `podSecurityContext.seccompProfile.type` | string | `RuntimeDefault` | Seccomp profile for the pod. |
+| `securityContext.allowPrivilegeEscalation` | bool | `false` | Disallow privilege escalation. |
+| `securityContext.readOnlyRootFilesystem` | bool | `true` | Mount the root filesystem read-only. Relax if you write locally (e.g. audit log to a file). |
+| `securityContext.capabilities.drop` | list | `[ALL]` | Linux capabilities dropped from the container. |
 
 ## Single-issuer example
 
@@ -189,6 +254,45 @@ ingress:
         - /
 ```
 
+## High availability
+
+The chart ships single-replica by default. For production, run more than one
+replica and keep them spread and protected during disruptions:
+
+```yaml
+replicaCount: 3
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: kube-oidc-proxy
+```
+
+- A `PodDisruptionBudget` keeps voluntary disruptions (node drains) from taking
+  the proxy fully offline.
+- `topologySpreadConstraints` (preferred) or soft pod `affinity` spread replicas
+  across zones/nodes.
+- In multi-issuer mode, consider `readinessRequireAllIssuers: false` (the
+  default) so a single IdP outage can't block a rollout.
+
+## Security
+
+The chart runs the proxy with a **hardened SecurityContext by default**:
+non-root (`runAsUser: 1000`), read-only root filesystem, all Linux capabilities
+dropped, no privilege escalation, and the `RuntimeDefault` seccomp profile. The
+proxy is a privileged component — its ServiceAccount can impersonate identities
+against the API server — so keep those defaults and restrict who can edit the
+Deployment and its RBAC. See [`../../docs/security.md`](../../docs/security.md).
+
+If you enable a feature that writes to the local filesystem (e.g. an
+`audit-log-path` to a file), add an `emptyDir` via `extraVolumes` /
+`extraVolumeMounts` and relax `securityContext.readOnlyRootFilesystem`.
+
 ## Testing the chart
 
 Committed fixtures under `ci/` cover both modes and are used by the
@@ -198,3 +302,10 @@ Committed fixtures under `ci/` cover both modes and are used by the
 helm lint chart/kube-oidc-proxy -f chart/kube-oidc-proxy/ci/single-issuer-values.yaml
 helm template t chart/kube-oidc-proxy -f chart/kube-oidc-proxy/ci/multi-issuer-values.yaml
 ```
+
+## See also
+
+- [Installation guide](../../docs/installation.md)
+- [Usage: single- vs multi-issuer](../../docs/usage.md)
+- [CLI reference](../../docs/cli-reference.md)
+- [Security considerations](../../docs/security.md)
