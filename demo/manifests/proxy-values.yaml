@@ -1,0 +1,14 @@
+# Helm values for the demo deployment of kube-oidc-proxy.
+#
+# The locally built image is loaded into the kind cluster, so pull it never.
+# authenticationConfig.content is injected by run.sh via
+#   --set-file authenticationConfig.content=<rendered authentication-config>
+# which switches the proxy into multi-issuer mode.
+image:
+  repository: kube-oidc-proxy
+  tag: demo
+  pullPolicy: Never
+
+# Wait for BOTH Dex issuers to initialize (JWKS fetched) before the pod reports
+# ready. Both are up, so this proves multi-issuer initialization end to end.
+readinessRequireAllIssuers: true

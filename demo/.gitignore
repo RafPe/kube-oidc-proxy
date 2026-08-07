@@ -1,0 +1,2 @@
+# Runtime-generated certificates, keys, rendered manifests and kubeconfig.
+.generated/
