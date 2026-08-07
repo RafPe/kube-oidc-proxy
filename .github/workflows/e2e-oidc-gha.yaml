@@ -1,0 +1,87 @@
+name: e2e-oidc-gha
+
+# Multi-issuer e2e against the REAL GitHub Actions OIDC issuer.
+#
+# Mints a genuine GitHub Actions ID token in-job (id-token: write) and proves
+# the kube-oidc-proxy union authenticator accepts it AND a local Dex issuer
+# through a single AuthenticationConfiguration. See
+# hack/ci/gha-multi-issuer-e2e.sh for the full flow and assertions.
+#
+# The minted token's audience MUST match the AuthenticationConfiguration's
+# `audiences` entry; both are set to GHA_AUDIENCE below.
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: e2e-oidc-gha-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GHA_AUDIENCE: kube-oidc-proxy-kind-test
+
+jobs:
+  gha-multi-issuer:
+    # OIDC tokens (id-token: write) are not issued to pull requests from forks,
+    # so skip fork PRs; runs on push to main, workflow_dispatch, and same-repo PRs.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install kind CLI
+        env:
+          KIND_VERSION: v0.31.0
+        run: |
+          curl -fsSLo ./kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          sudo install -m 0755 ./kind /usr/local/bin/kind
+          rm -f ./kind
+          kind version
+
+      - name: Mint a GitHub Actions OIDC token
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          GHA_AUDIENCE: ${{ env.GHA_AUDIENCE }}
+        with:
+          script: |
+            const audience = process.env.GHA_AUDIENCE
+            const token = await core.getIDToken(audience)
+            require('fs').writeFileSync('gha-token.jwt', token)
+            core.setSecret(token)
+            core.info(`minted GitHub Actions OIDC token for audience ${audience}`)
+
+      - name: Run multi-issuer e2e (real GHA issuer + local Dex)
+        env:
+          GHA_TOKEN_FILE: ${{ github.workspace }}/gha-token.jwt
+        run: hack/ci/gha-multi-issuer-e2e.sh
+
+      - name: Remove the minted token
+        if: always()
+        run: rm -f gha-token.jwt
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-oidc-gha-logs
+          path: |
+            artifacts/**
+          if-no-files-found: ignore
+          retention-days: 7
