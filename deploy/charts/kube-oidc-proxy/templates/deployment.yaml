@@ -68,9 +68,11 @@ spec:
           {{- if and .Values.oidc.signingAlgs (not .Values.authenticationConfig.content) }}
           - "--oidc-signing-algs=$(OIDC_SIGNING_ALGS)"
           {{ end }}
-          {{- if .Values.oidc.requiredClaims }}
-          - "--oidc-signing-algs=$(OIDC_REQUIRED_CLAIMS)"
-          {{ end }}
+          {{- if not .Values.authenticationConfig.content }}
+          {{- range $key, $value := .Values.oidc.requiredClaims }}
+          - "--oidc-required-claim={{ $key }}={{ $value }}"
+          {{- end }}
+          {{- end }}
           {{- if .Values.tokenPassthrough.enabled }}
           - "--token-passthrough"
           {{- if .Values.tokenPassthrough.audiences }}
@@ -133,13 +135,6 @@ spec:
             secretKeyRef:
               name: {{ include "kube-oidc-proxy.fullname" . }}-config
               key: oidc.signing-algs
-        {{ end }}
-        {{- if .Values.oidc.requiredClaims }}
-        - name: OIDC_REQUIRED_CLAIMS
-          valueFrom:
-            secretKeyRef:
-              name: {{ include "kube-oidc-proxy.fullname" . }}-config
-              key: oidc.required-claims
         {{ end }}
         volumeMounts:
           {{- if or .Values.oidc.caPEM .Values.authenticationConfig.content }}
