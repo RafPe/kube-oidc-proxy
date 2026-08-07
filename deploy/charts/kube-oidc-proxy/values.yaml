@@ -203,3 +203,30 @@ nodeSelector: {}
 tolerations: []
 
 affinity: {}
+
+# Optional PriorityClass for the proxy pod.
+priorityClassName: ""
+
+# Annotations added to the proxy pod template (merged with the chart's own
+# checksum/config annotation). Useful for Prometheus scrape hints, etc.
+podAnnotations: {}
+
+# Pod-level security context. Hardened by default; override fields or set to {}
+# to relax. runAsUser is required because the image sets no USER, so
+# runAsNonRoot alone would be rejected by admission.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container-level security context. Hardened by default.
+# readOnlyRootFilesystem assumes the proxy needs no writable rootfs. If you
+# enable a feature that writes locally (e.g. audit-log-path to a file), add an
+# emptyDir via extraVolumes/extraVolumeMounts and relax this.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
