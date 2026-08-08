@@ -268,3 +268,10 @@ readinessRequireAllIssuers: false
 - Issuer JWKS endpoints must be reachable from the proxy pod network (not
   from the control plane), so private internal issuers work.
 - Each issuer entry may carry its own `certificateAuthority` inline.
+
+## See also
+
+- [Getting started](./getting-started.md) — install and choose an auth mode.
+- [Configuration reference](./configuration.md) — all flags and impersonation.
+- [Local multi-issuer test: kind and GitHub Actions](./operations.md#local-multi-issuer-test-kind-and-github-actions).
+- [Architecture: union authenticator](./architecture.md#multi-issuer-union-authenticator).

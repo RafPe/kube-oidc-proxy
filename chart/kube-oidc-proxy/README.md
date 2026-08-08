@@ -287,7 +287,7 @@ non-root (`runAsUser: 1000`), read-only root filesystem, all Linux capabilities
 dropped, no privilege escalation, and the `RuntimeDefault` seccomp profile. The
 proxy is a privileged component — its ServiceAccount can impersonate identities
 against the API server — so keep those defaults and restrict who can edit the
-Deployment and its RBAC. See [`../../docs/security.md`](../../docs/security.md).
+Deployment and its RBAC. See [`../../docs/operations.md`](../../docs/operations.md#security).
 
 If you enable a feature that writes to the local filesystem (e.g. an
 `audit-log-path` to a file), add an `emptyDir` via `extraVolumes` /
@@ -305,7 +305,7 @@ helm template t chart/kube-oidc-proxy -f chart/kube-oidc-proxy/ci/multi-issuer-v
 
 ## See also
 
-- [Installation guide](../../docs/installation.md)
-- [Usage: single- vs multi-issuer](../../docs/usage.md)
-- [CLI reference](../../docs/cli-reference.md)
-- [Security considerations](../../docs/security.md)
+- [Getting started](../../docs/getting-started.md)
+- [Multi-issuer authentication](../../docs/multi-issuer.md)
+- [Configuration reference](../../docs/configuration.md)
+- [Operations: security](../../docs/operations.md#security)

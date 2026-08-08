@@ -1,0 +1,39 @@
+name: test
+
+# Unit tests, vet and gofmt. Gates PRs and pushes to main. (e2e runs in e2e.yaml.)
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.26.x"
+
+      - name: Generate mocks
+        run: go run go.uber.org/mock/mockgen -package=mocks -destination pkg/mocks/authenticator.go k8s.io/apiserver/pkg/authentication/authenticator Token
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l cmd pkg test)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-ed:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./cmd/... ./pkg/...
+
+      - name: go test
+        run: go test ./cmd/... ./pkg/...
