@@ -1,0 +1,49 @@
+name: release
+
+# On merge to main, release-drafter drafts (or publishes) a GitHub release and
+# its v* tag from the release/* label on the PR. Publishing the release then
+# builds and publishes the versioned image and Helm chart.
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+
+permissions:
+  contents: write # create the release and tag
+  pull-requests: read
+  packages: write # publish artifacts in the called workflow
+  id-token: write # cosign keyless signing in the called workflow
+
+jobs:
+  tag-and-release:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.drafter.outputs.tag_name }}
+    steps:
+      # A merge labeled release/skip only updates the running draft. Any other
+      # merge publishes the release, which creates the v* tag.
+      - name: Draft or publish the release
+        id: drafter
+        uses: release-drafter/release-drafter@34d80673e067bdc0c24568d3af899c216adcfaa9 # v7.7.0
+        with:
+          config-name: release-drafter.yml
+          publish: ${{ !contains(github.event.pull_request.labels.*.name, 'release/skip') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # The tag above is created with the workflow GITHUB_TOKEN, which never triggers
+  # other workflows — so the release-image workflow is invoked directly instead
+  # of relying on its tag-push trigger.
+  publish-artifacts:
+    name: Publish release artifacts
+    needs: tag-and-release
+    if: github.event.pull_request.merged == true && !contains(github.event.pull_request.labels.*.name, 'release/skip')
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/release-image.yaml
+    with:
+      tag: ${{ needs.tag-and-release.outputs.tag_name }}

@@ -46,6 +46,6 @@ chart, its annotations, and a "Verified Publisher" badge.
 
 Nothing extra is needed per release. Artifact Hub polls the OCI repository and
 picks up new chart versions automatically. The `artifacthub.io/*` annotations in
-`Chart.yaml` travel with each packaged chart, so updating them there updates the
-listing on the next release. Bump the image reference in
-`artifacthub.io/images` whenever `appVersion` changes.
+`Chart.yaml` travel with each packaged chart. The release automation
+(`.github/workflows/release-image.yaml`) already pins the `artifacthub.io/images`
+tag to the released version, so the listing always advertises the matching image.

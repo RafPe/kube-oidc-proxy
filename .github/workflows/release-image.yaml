@@ -1,0 +1,155 @@
+name: release-image
+
+# Builds and publishes the versioned image and Helm chart for a release tag.
+# Tags/releases published by the release workflow are created with GITHUB_TOKEN,
+# which never triggers other workflows — so release.yaml calls this via
+# workflow_call. The tag-push trigger covers manually pushed tags, and
+# workflow_dispatch backfills artifacts for an existing tag.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag (vX.Y.Z) to build and publish.
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (vX.Y.Z) to build and publish.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write # cosign keyless signing
+  packages: write # push to ghcr.io
+
+env:
+  GO_VERSION: "1.26.5"
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0 # full history + tags for version stamping (ldflags)
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+
+      - name: Build binaries (amd64 + arm64) and compute vars
+        run: |
+          set -euo pipefail
+          echo "REPO=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
+              go build -ldflags "-w $(hack/version-ldflags.sh)" \
+              -o "bin/${arch}/kube-oidc-proxy" ./cmd/.
+          done
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ghcr.io/${{ env.REPO }}:${{ env.VERSION }}
+            ghcr.io/${{ env.REPO }}:latest
+
+      - name: Sign image (keyless, by digest)
+        env:
+          REPO: ${{ env.REPO }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign -y "ghcr.io/${REPO}@${DIGEST}"
+
+      - name: Generate SBOM
+        continue-on-error: true
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ghcr.io/${{ env.REPO }}:${{ env.VERSION }}
+          format: spdx-json
+          output-file: /tmp/sbom.spdx.json
+
+      - name: Attach SBOM to image
+        continue-on-error: true
+        env:
+          REPO: ${{ env.REPO }}
+          VERSION: ${{ env.VERSION }}
+        run: cosign attach sbom --sbom /tmp/sbom.spdx.json "ghcr.io/${REPO}:${VERSION}"
+
+  chart:
+    name: chart
+    needs: image
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      CHART_DIR: chart/kube-oidc-proxy
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Set up Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+
+      - name: Package, push & sign chart (OCI)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          REPO="${GITHUB_REPOSITORY,,}"      # rafpe/kube-oidc-proxy
+          OWNER="${REPO%/*}"                 # rafpe
+          OCI="oci://ghcr.io/${OWNER}/charts"
+
+          # Keep the Artifact Hub image annotation pinned to this release.
+          sed -i -E "s|(image: ghcr.io/${OWNER}/kube-oidc-proxy:).*|\1${VERSION}|" "${CHART_DIR}/Chart.yaml"
+
+          helm registry login ghcr.io -u "$ACTOR" -p "$GH_TOKEN"
+          echo "Packaging chart ${VERSION} (appVersion ${VERSION}) -> ${OCI}/kube-oidc-proxy"
+          helm package "$CHART_DIR" --version "$VERSION" --app-version "$VERSION"
+          PKG="kube-oidc-proxy-${VERSION}.tgz"
+
+          OUT="$(helm push "$PKG" "$OCI" 2>&1)"
+          echo "$OUT"
+          DIGEST="$(echo "$OUT" | awk '/Digest:/{print $2}')"
+          REF="ghcr.io/${OWNER}/charts/kube-oidc-proxy@${DIGEST}"
+
+          # cosign authenticates via the docker config, which `helm registry
+          # login` does not populate — log cosign in to GHCR explicitly.
+          echo "${GH_TOKEN}" | cosign login ghcr.io -u "${ACTOR}" --password-stdin
+          cosign sign -y "$REF"

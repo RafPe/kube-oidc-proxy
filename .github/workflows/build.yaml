@@ -1,7 +1,9 @@
 name: build
 
-# Builds the multi-arch image and publishes it to GHCR on every push to main.
-# Tests run in test.yaml / e2e.yaml — this workflow only builds and publishes.
+# Publishes a mutable development image to GHCR on every push to main
+# (:edge and :main-<sha>) for testing unreleased changes. Versioned, immutable
+# releases (:X.Y.Z and :latest) are published by release-image.yaml from a git
+# tag. Tests run in test.yaml / e2e.yaml.
 on:
   push:
     branches:
@@ -13,7 +15,6 @@ permissions:
   packages: write # push to ghcr.io
 
 env:
-  PROJ_VERSION: "1.1.0"
   GO_VERSION: "1.26.5"
 
 jobs:
@@ -41,7 +42,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "REPO=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
-          echo "TAG=${PROJ_VERSION}-$(echo "$GITHUB_SHA" | cut -c1-6)" >> "$GITHUB_ENV"
+          echo "TAG=main-$(echo "$GITHUB_SHA" | cut -c1-6)" >> "$GITHUB_ENV"
           for arch in amd64 arm64; do
             CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
               go build -ldflags "-w $(hack/version-ldflags.sh)" \
@@ -64,8 +65,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: |
             ghcr.io/${{ env.REPO }}:${{ env.TAG }}
-            ghcr.io/${{ env.REPO }}:${{ env.PROJ_VERSION }}
-            ghcr.io/${{ env.REPO }}:latest
+            ghcr.io/${{ env.REPO }}:edge
 
       - name: Sign image (keyless, by digest)
         env:
