@@ -90,20 +90,34 @@ func NewServer(port string, issuers []IssuerReadiness, requireAll bool, oidcAuth
 
 // handler builds the readiness listener's HTTP handler. It exposes a liveness
 // endpoint that is always healthy once the process is serving and a readiness
-// endpoint driven by Check. Unknown paths yield 404 via the ServeMux default.
+// endpoint driven by Check. Both endpoints only answer GET (returning 405
+// otherwise, matching the previous healthcheck handler); unknown paths yield
+// 404 via the ServeMux default.
 func (h *HealthCheck) handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/live", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/live", getOnly(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-	})
-	mux.HandleFunc("/ready", func(w http.ResponseWriter, _ *http.Request) {
+	}))
+	mux.HandleFunc("/ready", getOnly(func(w http.ResponseWriter, _ *http.Request) {
 		if err := h.Check(); err != nil {
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-	})
+	}))
 	return mux
+}
+
+// getOnly rejects any non-GET request with 405 before invoking next, preserving
+// the GET-only contract of the readiness/liveness endpoints.
+func getOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		next(w, r)
+	}
 }
 
 // Start binds the readiness listener synchronously so a failure to acquire the
