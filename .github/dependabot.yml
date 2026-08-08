@@ -11,3 +11,13 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+
+  # Base images in the Dockerfiles (pinned by digest — keep the pins fresh).
+  - package-ecosystem: "docker"
+    directories:
+      - "/"
+      - "/test/tools/issuer"
+      - "/test/tools/fake-apiserver"
+      - "/test/tools/audit-webhook"
+    schedule:
+      interval: "weekly"

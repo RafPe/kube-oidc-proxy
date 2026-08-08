@@ -12,6 +12,9 @@ on:
       - 'chart/kube-oidc-proxy/**'
       - '.github/workflows/helm.yaml'
 
+permissions:
+  contents: read
+
 jobs:
   lint-and-template:
     runs-on: ubuntu-latest

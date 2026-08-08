@@ -63,9 +63,24 @@ Please include:
 
 Dependency CVEs are surfaced automatically by **Dependabot** and by
 **`govulncheck`** running in CI on every pull request and push. Third-party
-GitHub Actions are pinned to commit SHAs, and an
-[OpenSSF Scorecard](https://securityscorecards.dev/) workflow reports on the
-project's supply-chain posture.
+GitHub Actions are pinned to commit SHAs, container base images are pinned by
+digest, and an [OpenSSF Scorecard](https://securityscorecards.dev/) workflow
+reports on the project's supply-chain posture.
+
+### Accepted Scorecard findings
+
+A few Scorecard checks are knowingly accepted rather than "fixed", because they
+do not reflect real risk for this project:
+
+- **Vulnerabilities** — Scorecard lists OSV advisories by dependency *presence*.
+  We gate on **`govulncheck`**, which reports by *reachability*; it is green, so
+  the listed advisories are not reachable from our code.
+- **Code-Review** — the project is currently maintained by a single author, so
+  there are no separate approving reviewers for Scorecard to credit.
+- **Maintained** — flagged only because the fork's repository is recent; it
+  clears on its own as history accrues.
+- **Fuzzing** / **CII-Best-Practices** — aspirational; no fuzz targets or
+  best-practices enrolment yet.
 
 ## Upstream
 

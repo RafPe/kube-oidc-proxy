@@ -1,17 +1,19 @@
 name: mint-oidc-token
 on: workflow_dispatch
 permissions:
-  id-token: write
+  contents: read
 jobs:
   mint:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write # request an OIDC token from GitHub
     steps:
-    - uses: actions/github-script@v7
+    - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
       with:
         script: |
           const t = await core.getIDToken('kube-oidc-proxy-kind-test')
           require('fs').writeFileSync('token.jwt', t)
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: oidc-token
         path: token.jwt
