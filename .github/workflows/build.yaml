@@ -1,114 +1,89 @@
 name: build
+
+# Builds the multi-arch image and publishes it to GHCR on every push to main.
+# Tests run in test.yaml / e2e.yaml — this workflow only builds and publishes.
 on:
   push:
     branches:
-      - 'main'
+      - main
 
 permissions:
-  id-token: write
-  packages: write
-  
+  contents: read
+  id-token: write # cosign keyless signing
+  packages: write # push to ghcr.io
+
+env:
+  PROJ_VERSION: "1.1.0"
+  GO_VERSION: "1.26.5"
+
 jobs:
-  docker:
+  image:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      -
-        name: Set up QEMU
-        uses: docker/setup-qemu-action@v1
-      -
-        name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v1
-      - uses: actions/checkout@v1
-      
-      - name: Setup Go
-        uses: actions/setup-go@v3
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "1.26.5"
+          go-version: ${{ env.GO_VERSION }}
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@main
-      
-      - name: Update go deps
-        run: go mod tidy
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
 
-      - name: install go mock
-        run: go install go.uber.org/mock/mockgen@latest
+      - name: Build binaries (amd64 + arm64) and compute tags
+        run: |
+          set -euo pipefail
+          echo "REPO=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "TAG=${PROJ_VERSION}-$(echo "$GITHUB_SHA" | cut -c1-6)" >> "$GITHUB_ENV"
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
+              go build -ldflags "-w $(hack/version-ldflags.sh)" \
+              -o "bin/${arch}/kube-oidc-proxy" ./cmd/.
+          done
 
-      - name: install go-junit
-        run: go get -u github.com/jstemmer/go-junit-report
-
-      - name: run tests
-        run: make test
-
-      - name: build executable
-        run: make build; ls; ls bin
-      
-      
-      
-      
-      -
-        name: Login to DockerHub
-        uses: docker/login-action@v1 
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          username: ${{ secrets.OU_REG_USER }}
-          password: ${{ secrets.OU_REG_PASSWORD }}
-      
-      - name: Login to container Registry
-        uses: docker/login-action@v2
-        with:
+          registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
-          registry: ghcr.io
 
-      - name: downcase REPO
-        run: |
-          echo "REPO=${GITHUB_REPOSITORY,,}" >>${GITHUB_ENV}
-
-      - name: generate tag
-        run: |-
-            export PROJ_VERSION="1.1.0"
-            echo "Project Version: $PROJ_VERSION"
-            echo "TAG=$PROJ_VERSION-$(echo $GITHUB_SHA | cut -c 1-6)" >> $GITHUB_ENV
-            echo "SHORT_TAG=$PROJ_VERSION" >> $GITHUB_ENV
-      
-      
-      -
-        name: Build and push
-        id: docker_build
-        uses: docker/build-push-action@v2
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
-          context: "."
+          context: .
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ${{ secrets.OU_CONTAINER_DEST }}:${{ env.TAG }}
-            ${{ secrets.OU_CONTAINER_DEST }}:${{ env.SHORT_TAG }}
-            ${{ secrets.OU_CONTAINER_DEST }}
             ghcr.io/${{ env.REPO }}:${{ env.TAG }}
-            ghcr.io/${{ env.REPO }}:${{ env.SHORT_TAG }}
+            ghcr.io/${{ env.REPO }}:${{ env.PROJ_VERSION }}
             ghcr.io/${{ env.REPO }}:latest
 
-      - name: sign images
-        run: |-
-                  cosign sign -y ghcr.io/${{ env.REPO }}:${{ env.TAG }}
+      - name: Sign image (keyless, by digest)
+        env:
+          REPO: ${{ env.REPO }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign -y "ghcr.io/${REPO}@${DIGEST}"
 
-      - uses: anchore/sbom-action@v0
+      - name: Generate SBOM
+        continue-on-error: true
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           image: ghcr.io/${{ env.REPO }}:${{ env.TAG }}
-          format: spdx
-          output-file: /tmp/spdxg
-    
-      - name: attach sbom to images
-        run: |-
-              cosign attach sbom --sbom /tmp/spdxg ghcr.io/${{ env.REPO }}:${{ env.TAG }}
-    
-              
-              GH_SBOM_SHA=$(cosign verify --certificate-oidc-issuer-regexp='.*' --certificate-identity-regexp='.*' ghcr.io/${{ env.REPO }}:${{ env.TAG }} 2>/dev/null | jq -r '.[0].critical.image["docker-manifest-digest"]' | cut -c 8-)
-    
-              
-              echo "GH_SBOM_SHA: $GH_SBOM_SHA"
+          format: spdx-json
+          output-file: /tmp/sbom.spdx.json
 
-              
-              cosign sign -y ghcr.io/${{ env.REPO }}:sha256-$GH_SBOM_SHA.sbom
-          
+      - name: Attach SBOM to image
+        continue-on-error: true
+        env:
+          REPO: ${{ env.REPO }}
+          TAG: ${{ env.TAG }}
+        run: cosign attach sbom --sbom /tmp/sbom.spdx.json "ghcr.io/${REPO}:${TAG}"
