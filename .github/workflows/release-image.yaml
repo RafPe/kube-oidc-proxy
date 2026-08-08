@@ -24,8 +24,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write # cosign keyless signing
-  packages: write # push to ghcr.io
 
 env:
   GO_VERSION: "1.26.5"
@@ -33,6 +31,10 @@ env:
 jobs:
   image:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # cosign keyless signing
+      packages: write # push to ghcr.io
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
@@ -110,6 +112,10 @@ jobs:
     name: chart
     needs: image
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # cosign keyless signing
+      packages: write # push to ghcr.io
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
       CHART_DIR: chart/kube-oidc-proxy

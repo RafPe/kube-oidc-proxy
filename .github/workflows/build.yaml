@@ -11,8 +11,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write # cosign keyless signing
-  packages: write # push to ghcr.io
 
 env:
   GO_VERSION: "1.26.5"
@@ -20,6 +18,10 @@ env:
 jobs:
   image:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # cosign keyless signing
+      packages: write # push to ghcr.io
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

@@ -10,15 +10,15 @@ on:
       - main
 
 permissions:
-  contents: write # create the release and tag
-  pull-requests: read
-  packages: write # publish artifacts in the called workflow
-  id-token: write # cosign keyless signing in the called workflow
+  contents: read
 
 jobs:
   tag-and-release:
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and tag
+      pull-requests: read
     outputs:
       tag_name: ${{ steps.drafter.outputs.tag_name }}
     steps:
