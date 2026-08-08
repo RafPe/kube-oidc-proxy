@@ -1,61 +1,28 @@
 # Contributing
-## DCO Sign off
 
-All authors to the project retain copyright to their work. However, to ensure
-that they are only submitting work that they have rights to, we are requiring
-everyone to acknowledge this by signing their work.
+Thanks for your interest in `kube-oidc-proxy`!
 
-Any copyright notices in this repo should specify the authors as "the Jetstack
-kube-oidc-proxy contributors".
+## Reporting issues
 
-To sign your work, just add a line like this at the end of your commit message:
+Open an issue at https://github.com/RafPe/kube-oidc-proxy/issues with steps to
+reproduce, your Kubernetes and OIDC provider details, and any relevant proxy
+logs.
 
-```
-Signed-off-by: Joe Bloggs <joe@example.com>
-```
+## Development
 
-This can easily be done with the `--signoff` option to `git commit`.
-You can also mass sign-off a whole PR with `git rebase --signoff master`, replacing
-`master` with the branch you are creating a pull request again if not master.
+- Requires Go 1.26+, Docker, and [kind](https://kind.sigs.k8s.io/).
+- Unit tests: `go test ./cmd/... ./pkg/...`
+- End-to-end suite on a local kind cluster: `make e2e` (see
+  [docs/operations.md](./docs/operations.md#development-and-testing)).
 
-By doing this you state that you can certify the following (from https://developercertificate.org/):
+## Pull requests
 
-```
-Developer Certificate of Origin
-Version 1.1
+- Branch from `main`, keep changes focused, and include tests for behaviour changes.
+- CI runs unit tests, the e2e gate, `govulncheck`, and the Helm checks — keep them green.
+- Conventional-style commit messages (`fix:`, `feat:`, `docs:` …) are appreciated.
 
-Copyright (C) 2004, 2006 The Linux Foundation and its contributors.
-1 Letterman Drive
-Suite D4700
-San Francisco, CA, 94129
+## Upstream
 
-Everyone is permitted to copy and distribute verbatim copies of this
-license document, but changing it is not allowed.
-
-
-Developer's Certificate of Origin 1.1
-
-By making a contribution to this project, I certify that:
-
-(a) The contribution was created in whole or in part by me and I
-    have the right to submit it under the open source license
-    indicated in the file; or
-
-(b) The contribution is based upon previous work that, to the best
-    of my knowledge, is covered under an appropriate open source
-    license and I have the right under that license to submit that
-    work with modifications, whether created in whole or in part
-    by me, under the same open source license (unless I am
-    permitted to submit under a different license), as indicated
-    in the file; or
-
-(c) The contribution was provided directly to me by some other
-    person who certified (a), (b) or (c) and I have not modified
-    it.
-
-(d) I understand and agree that this project and the contribution
-    are public and that a record of the contribution (including all
-    personal information I submit with it, including my sign-off) is
-    maintained indefinitely and may be redistributed consistent with
-    this project or the open source license(s) involved.
-```
+This is a fork of [TremoloSecurity/kube-oidc-proxy](https://github.com/TremoloSecurity/kube-oidc-proxy)
+(originally [jetstack/kube-oidc-proxy](https://github.com/jetstack/kube-oidc-proxy)).
+See [MAINTAINING.md](./MAINTAINING.md) for how this fork tracks upstream security fixes.
