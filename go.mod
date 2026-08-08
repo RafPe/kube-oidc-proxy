@@ -4,7 +4,6 @@ go 1.26.5
 
 require (
 	github.com/go-jose/go-jose/v4 v4.1.4
-	github.com/golang/mock v1.6.0
 	github.com/heptiolabs/healthcheck v0.0.0-20211123025425-613501dd5deb
 	github.com/onsi/ginkgo v1.16.5
 	github.com/onsi/gomega v1.40.0
@@ -23,14 +22,6 @@ require (
 	k8s.io/klog/v2 v2.140.0
 	sigs.k8s.io/kind v0.31.0
 	sigs.k8s.io/yaml v1.6.0
-)
-
-replace (
-	github.com/emicklei/go-restful => github.com/emicklei/go-restful/v3 v3.8.0
-	golang.org/x/crypto => golang.org/x/crypto v0.48.0
-	google.golang.org/grpc => google.golang.org/grpc v1.82.1
-
-	gopkg.in/yaml.v3 => gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -125,7 +116,7 @@ require (
 	golang.org/x/tools v0.47.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260414002931-afd174a4e478 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
-	google.golang.org/grpc v1.80.0 // indirect
+	google.golang.org/grpc v1.82.1 // indirect
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
 	gopkg.in/DATA-DOG/go-sqlmock.v1 v1.3.0 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
