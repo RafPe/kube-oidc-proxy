@@ -6,8 +6,8 @@
 #
 # Fill in `repositoryID` with the ID shown on the Artifact Hub control panel
 # after you add the repository, then push this file to the registry.
-repositoryID: REPLACE_WITH_ARTIFACT_HUB_REPOSITORY_ID
+repositoryID: 5d205049-3574-4871-8306-87e6930a3370
 owners:
   - name: RafPe
     # Must match the email on your Artifact Hub account.
-    email: rpieniaz@gmail.com
+    email: rafal@pieniazek.nl
