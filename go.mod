@@ -6,7 +6,6 @@ require (
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/onsi/ginkgo/v2 v2.32.0
 	github.com/onsi/gomega v1.40.0
-	github.com/sebest/xff v0.0.0-20210106013422-671bd2870b3a
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	go.uber.org/mock v0.6.0

@@ -23,6 +23,8 @@ type KubeOIDCProxyOptions struct {
 
 	ExtraHeaderOptions ExtraHeaderOptions
 	TokenPassthrough   TokenPassthroughOptions
+
+	TrustedProxies []string
 }
 
 type TokenPassthroughOptions struct {
@@ -67,6 +69,16 @@ func (k *KubeOIDCProxyOptions) AddFlags(fs *pflag.FlagSet) *KubeOIDCProxyOptions
 			"calls for one request (not per-call), derived from the inbound request "+
 			"context so client cancellation still propagates. Must be greater than 0.")
 
+	fs.StringSliceVar(&k.TrustedProxies, "trusted-proxies", k.TrustedProxies,
+		"Comma-separated list of trusted proxy CIDRs (IPv4 or IPv6, e.g. "+
+			"'10.0.0.0/8,192.168.0.0/16'). X-Forwarded-For is honoured to resolve the "+
+			"client IP (used for the access log and the Impersonate-Extra-Remote-Client-IP "+
+			"header) ONLY when the immediate peer's address falls within one of these "+
+			"networks. When empty (the default) no proxy is trusted and the direct peer "+
+			"address is always used, so clients cannot spoof their IP via forwarded "+
+			"headers. Set this only to the addresses of proxies you operate in front of "+
+			"kube-oidc-proxy.")
+
 	k.TokenPassthrough.AddFlags(fs)
 	k.ExtraHeaderOptions.AddFlags(fs)
 
@@ -91,8 +103,9 @@ func (e *ExtraHeaderOptions) AddFlags(fs *pflag.FlagSet) {
 	fs.BoolVar(&e.EnableClientIPExtraUserHeader, "extra-user-header-client-ip",
 		e.EnableClientIPExtraUserHeader, "(Alpha) If enabled, proxied requests will "+
 			"include the extra user header 'Impersonate-Extra-Remote-Client-IP: "+
-			"<REMOTE_ADDR>' where <REMOTE_ADDR> will contain the remote address of "+
-			"the source of the request.")
+			"<CLIENT_IP>' where <CLIENT_IP> is the resolved client IP of the request. "+
+			"By default this is the direct peer address; X-Forwarded-For is only "+
+			"honoured when the peer is within a --trusted-proxies network.")
 
 	fs.Var(flags.NewStringToStringSliceValue(&e.ExtraUserHeaders), "extra-user-headers",
 		"(Alpha) A list of key value pairs of extra user headers to pass with "+

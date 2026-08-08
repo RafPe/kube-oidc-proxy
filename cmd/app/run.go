@@ -102,6 +102,8 @@ func buildRunCommand(stopCh <-chan struct{}, opts *options.Options) *cobra.Comma
 
 				ExtraUserHeaders:                opts.App.ExtraHeaderOptions.ExtraUserHeaders,
 				ExtraUserHeadersClientIPEnabled: opts.App.ExtraHeaderOptions.EnableClientIPExtraUserHeader,
+
+				TrustedProxies: opts.App.TrustedProxies,
 			}
 
 			// Setup Subject Access Review

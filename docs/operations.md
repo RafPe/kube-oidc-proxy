@@ -22,6 +22,11 @@ Security, troubleshooting, and testing the proxy locally.
 - **Use token passthrough deliberately.** `--token-passthrough` forwards
   non-OIDC tokens after a TokenReview; only enable it (and constrain
   `--token-passthrough-audiences`) when you understand the tokens involved.
+- **Configure trusted proxies before trusting forwarded IPs.** By default the
+  proxy ignores `X-Forwarded-For` and uses the direct peer as the client IP, so
+  clients cannot forge the logged or impersonated client IP. Set
+  `--trusted-proxies` only to CIDRs of proxies you run directly in front of it —
+  see [Trusted proxies and client IP](./configuration.md#trusted-proxies-and-client-ip).
 
 ## Troubleshooting
 
