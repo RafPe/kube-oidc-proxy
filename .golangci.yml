@@ -39,6 +39,12 @@ linters:
           - errcheck
           - gosec
           - revive
+      # Ginkgo/Gomega are dot-imported by convention in the e2e suite; allow it
+      # (revive's dot-imports is already excluded above; ST1001 is staticcheck's).
+      - path: (^|/)test/
+        text: ST1001
+        linters:
+          - staticcheck
       - path: (^|/)hack/
         linters:
           - revive

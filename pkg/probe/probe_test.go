@@ -6,14 +6,13 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"sync"
 	"testing"
 	"time"
 
 	"k8s.io/apiserver/pkg/authentication/authenticator"
-
-	"github.com/heptiolabs/healthcheck"
 )
 
 // fakeAuther simulates the union authenticator: tokens listed in notInit
@@ -53,7 +52,6 @@ func (f *fakeAuther) callCount(token string) int {
 
 func newTestHealthCheckWithAuther(requireAll bool, auther authenticator.Token, issuers ...IssuerReadiness) *HealthCheck {
 	return &HealthCheck{
-		handler:     healthcheck.NewHandler(),
 		oidcAuther:  auther,
 		issuers:     issuers,
 		requireAll:  requireAll,
@@ -239,6 +237,30 @@ func TestCheckTransientErrorDoesNotLatch(t *testing.T) {
 				t.Fatal("issuer must not be marked initialized on a transient error")
 			}
 		})
+	}
+}
+
+// TestHandlerRejectsNonGET verifies the readiness/liveness endpoints answer GET
+// but reject other methods with 405, preserving the previous handler's contract.
+func TestHandlerRejectsNonGET(t *testing.T) {
+	h := newTestHealthCheck(false, nil,
+		IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"})
+	handler := h.handler()
+
+	for _, path := range []string{"/live", "/ready"} {
+		getReq := httptest.NewRequest(http.MethodGet, path, nil)
+		getRec := httptest.NewRecorder()
+		handler.ServeHTTP(getRec, getReq)
+		if getRec.Code == http.StatusMethodNotAllowed {
+			t.Fatalf("GET %s: unexpected 405", path)
+		}
+
+		postReq := httptest.NewRequest(http.MethodPost, path, nil)
+		postRec := httptest.NewRecorder()
+		handler.ServeHTTP(postRec, postReq)
+		if postRec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("POST %s: got %d, want %d", path, postRec.Code, http.StatusMethodNotAllowed)
+		}
 	}
 }
 

@@ -11,7 +11,7 @@ import (
 	"reflect"
 	"time"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	authnv1 "k8s.io/api/authentication/v1"

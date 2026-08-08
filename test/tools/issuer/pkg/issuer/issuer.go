@@ -7,11 +7,11 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"net/http"
+	"os"
 
-	log "github.com/sirupsen/logrus"
+	"k8s.io/klog/v2"
 )
 
 type Issuer struct {
@@ -24,7 +24,7 @@ type Issuer struct {
 }
 
 func New(issuerURL, keyFile, certFile string, stopCh <-chan struct{}) (*Issuer, error) {
-	b, err := ioutil.ReadFile(keyFile)
+	b, err := os.ReadFile(keyFile)
 	if err != nil {
 		return nil, err
 	}
@@ -70,17 +70,17 @@ func (i *Issuer) Run(bindAddress, listenPort string) (<-chan struct{}, error) {
 
 		err := http.ServeTLS(l, i, i.certFile, i.keyFile)
 		if err != nil {
-			log.Errorf("stopped serving TLS (%s): %s", serveAddr, err)
+			klog.Errorf("stopped serving TLS (%s): %s", serveAddr, err)
 		}
 	}()
 
-	log.Infof("mock issuer listening and serving on %s", serveAddr)
+	klog.Infof("mock issuer listening and serving on %s", serveAddr)
 
 	return compCh, nil
 }
 
 func (i *Issuer) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
-	log.Infof("mock issuer received url %s", r.URL)
+	klog.Infof("mock issuer received url %s", r.URL)
 
 	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
 
@@ -89,7 +89,7 @@ func (i *Issuer) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		rw.WriteHeader(http.StatusOK)
 
 		if _, err := rw.Write(i.wellKnownResponse()); err != nil {
-			log.Errorf("failed to write openid-configuration response: %s", err)
+			klog.Errorf("failed to write openid-configuration response: %s", err)
 		}
 
 	case "/certs":
@@ -97,14 +97,14 @@ func (i *Issuer) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 
 		certsDiscovery := i.certsDiscovery()
 		if _, err := rw.Write(certsDiscovery); err != nil {
-			log.Errorf("failed to write certificate discovery response: %s", err)
+			klog.Errorf("failed to write certificate discovery response: %s", err)
 		}
 
 	default:
-		log.Errorf("unexpected URL request: %s", r.URL)
+		klog.Errorf("unexpected URL request: %s", r.URL)
 		rw.WriteHeader(http.StatusNotFound)
 		if _, err := rw.Write([]byte("{}\n")); err != nil {
-			log.Errorf("failed to write data to resposne: %s", err)
+			klog.Errorf("failed to write data to resposne: %s", err)
 		}
 	}
 }

@@ -7,14 +7,13 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"os"
 	"sync"
 
-	log "github.com/sirupsen/logrus"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
+	"k8s.io/klog/v2"
 )
 
 type Sink struct {
@@ -28,7 +27,7 @@ type Sink struct {
 }
 
 func New(logPath, keyFile, certFile string, stopCh <-chan struct{}) (*Sink, error) {
-	b, err := ioutil.ReadFile(keyFile)
+	b, err := os.ReadFile(keyFile)
 	if err != nil {
 		return nil, err
 	}
@@ -74,33 +73,33 @@ func (s *Sink) Run(bindAddress, listenPort string) (<-chan struct{}, error) {
 
 		err := http.ServeTLS(l, s, s.certFile, s.keyFile)
 		if err != nil {
-			log.Errorf("stopped serving TLS (%s): %s", serveAddr, err)
+			klog.Errorf("stopped serving TLS (%s): %s", serveAddr, err)
 		}
 	}()
 
-	log.Infof("audit webhook listening and serving on %s", serveAddr)
+	klog.Infof("audit webhook listening and serving on %s", serveAddr)
 
 	return compCh, nil
 }
 
 func (s *Sink) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
-	log.Infof("%s: audit webhook received url %s", r.RemoteAddr, r.URL)
+	klog.Infof("%s: audit webhook received url %s", r.RemoteAddr, r.URL)
 
 	var events auditv1.EventList
 	err := json.NewDecoder(r.Body).Decode(&events)
 	if err != nil {
-		log.Errorf("%s: failed to decode request body: %s", r.RemoteAddr, err)
+		klog.Errorf("%s: failed to decode request body: %s", r.RemoteAddr, err)
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 		return
 	}
-	log.Infof("%s: got events: %v", r.RemoteAddr, events)
+	klog.Infof("%s: got events: %v", r.RemoteAddr, events)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	f, err := os.OpenFile(s.logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		log.Errorf("%s: failed to open log file: %s", r.RemoteAddr, err)
+		klog.Errorf("%s: failed to open log file: %s", r.RemoteAddr, err)
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -108,7 +107,7 @@ func (s *Sink) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 
 	for _, event := range events.Items {
 		if err := json.NewEncoder(f).Encode(event); err != nil {
-			log.Errorf("%s: failed to write audit event: %s", r.RemoteAddr, err)
+			klog.Errorf("%s: failed to write audit event: %s", r.RemoteAddr, err)
 			http.Error(rw, err.Error(), http.StatusBadRequest)
 			return
 		}

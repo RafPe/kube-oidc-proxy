@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/heptiolabs/healthcheck"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/klog/v2"
 )
@@ -45,7 +44,6 @@ type IssuerReadiness struct {
 }
 
 type HealthCheck struct {
-	handler    healthcheck.Handler
 	oidcAuther authenticator.Token
 	issuers    []IssuerReadiness
 	requireAll bool
@@ -74,22 +72,51 @@ type Server struct {
 // bind or serve until Start is called.
 func NewServer(port string, issuers []IssuerReadiness, requireAll bool, oidcAuther authenticator.Token) *Server {
 	h := &HealthCheck{
-		handler:     healthcheck.NewHandler(),
 		oidcAuther:  oidcAuther,
 		issuers:     issuers,
 		requireAll:  requireAll,
 		initialized: make(map[string]bool),
 	}
 
-	h.handler.AddReadinessCheck("secure serving", h.Check)
-
 	return &Server{
 		hc: h,
 		srv: &http.Server{
 			Addr:    net.JoinHostPort("0.0.0.0", port),
-			Handler: h.handler,
+			Handler: h.handler(),
 		},
 		served: make(chan struct{}),
+	}
+}
+
+// handler builds the readiness listener's HTTP handler. It exposes a liveness
+// endpoint that is always healthy once the process is serving and a readiness
+// endpoint driven by Check. Both endpoints only answer GET (returning 405
+// otherwise, matching the previous healthcheck handler); unknown paths yield
+// 404 via the ServeMux default.
+func (h *HealthCheck) handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/live", getOnly(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	mux.HandleFunc("/ready", getOnly(func(w http.ResponseWriter, _ *http.Request) {
+		if err := h.Check(); err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	return mux
+}
+
+// getOnly rejects any non-GET request with 405 before invoking next, preserving
+// the GET-only contract of the readiness/liveness endpoints.
+func getOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		next(w, r)
 	}
 }
 

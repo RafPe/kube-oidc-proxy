@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -132,7 +132,7 @@ var _ = framework.CasesDescribe("Upgrade", func() {
 		}
 
 		By("Running exec into pod and runing curl on local host")
-		err = exec.Stream(sopt)
+		err = exec.StreamWithContext(context.Background(), sopt)
 		Expect(err).NotTo(HaveOccurred())
 
 		// should have no stderr output
