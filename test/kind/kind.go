@@ -146,23 +146,44 @@ func (k *Kind) Create() error {
 	return nil
 }
 
+// DeleteCluster deletes the named kind cluster. It writes the cluster's
+// kubeconfig to a throwaway temp file (rather than mutating the caller's real
+// kubeconfig) that kind uses to remove the cluster's context, and always
+// cleans that file up.
 func DeleteCluster(name string) error {
 	provider := cluster.NewProvider()
 
 	f, err := os.CreateTemp("", name)
-
-	kubeconfig, err := provider.KubeConfig(clusterName, false)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create temp kubeconfig for cluster %q: %w", name, err)
+	}
+	// Remove the throwaway kubeconfig on every path, success or error.
+	defer func() {
+		if rmErr := os.Remove(f.Name()); rmErr != nil && !os.IsNotExist(rmErr) {
+			log.Errorf("kind: failed to remove temp kubeconfig %q: %s", f.Name(), rmErr)
+		}
+	}()
+
+	kubeconfig, err := provider.KubeConfig(name, false)
+	if err != nil {
+		f.Close()
+		return fmt.Errorf("failed to get kubeconfig for cluster %q: %w", name, err)
 	}
 
 	if _, err := f.Write([]byte(kubeconfig)); err != nil {
-		return err
+		f.Close()
+		return fmt.Errorf("failed to write temp kubeconfig for cluster %q: %w", name, err)
 	}
 
-	f.Close()
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("failed to close temp kubeconfig for cluster %q: %w", name, err)
+	}
 
-	return provider.Delete(clusterName, f.Name())
+	if err := provider.Delete(name, f.Name()); err != nil {
+		return fmt.Errorf("failed to delete cluster %q: %w", name, err)
+	}
+
+	return nil
 }
 
 func (k *Kind) Destroy() error {
@@ -177,8 +198,8 @@ func (k *Kind) Destroy() error {
 		return fmt.Errorf("failed to delete kind cluster: %s", err)
 	}
 
-	if err := os.Remove(k.KubeConfigPath()); err != nil {
-		return fmt.Errorf("failed to delete kubeconfig file: %s", err)
+	if err := os.Remove(k.KubeConfigPath()); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to delete kubeconfig file: %w", err)
 	}
 
 	log.Infof("kind: destroyed cluster %q", clusterName)
@@ -235,8 +256,8 @@ func (k *Kind) errDestroy(err error) error {
 func (k *Kind) waitForNodesReady() error {
 	log.Infof("kind: waiting for all nodes to become ready...")
 
-	return wait.PollImmediate(time.Second*5, time.Minute*10, func() (bool, error) {
-		nodes, err := k.client.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{})
+	return wait.PollUntilContextTimeout(context.Background(), time.Second*5, time.Minute*10, true, func(ctx context.Context) (bool, error) {
+		nodes, err := k.client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 		if err != nil {
 			return false, err
 		}
@@ -277,8 +298,8 @@ func (k *Kind) waitForCoreDNSReady() error {
 }
 
 func (k *Kind) waitForPodsReady(namespace, labelSelector string) error {
-	return wait.PollImmediate(time.Second*5, time.Minute*10, func() (bool, error) {
-		pods, err := k.client.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{
+	return wait.PollUntilContextTimeout(context.Background(), time.Second*5, time.Minute*10, true, func(ctx context.Context) (bool, error) {
+		pods, err := k.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 			LabelSelector: labelSelector,
 		})
 		if err != nil {
