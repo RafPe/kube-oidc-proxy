@@ -1,0 +1,49 @@
+# golangci-lint configuration (schema v2; see https://golangci-lint.run).
+# Kept lean and enforceable: the default analysis linters plus a few
+# high-signal additions requested in issue #60. Findings are fixed category by
+# category rather than globally disabled; any suppression must carry a reason.
+version: "2"
+
+linters:
+  # Defaults already include errcheck, govet, ineffassign, staticcheck and
+  # unused; the list below adds the extra checks called out in #60.
+  enable:
+    - bodyclose
+    - gosec
+    - revive
+  settings:
+    revive:
+      rules:
+        - name: dot-imports
+    staticcheck:
+      checks:
+        - all
+        # ST1000 wants every package's leading comment to be a "Package X ..."
+        # doc comment, but every file here opens with the Jetstack copyright
+        # header instead. That is a house style, not a defect, so exclude just
+        # this one check while keeping the valuable SA* (deprecated-API) checks.
+        - -ST1000
+  exclusions:
+    # Test scaffolding and fixtures get lighter treatment: they are not shipped
+    # and often use patterns (dot-imports for Ginkgo, unchecked cleanup) that
+    # are idiomatic in tests.
+    rules:
+      - path: _test\.go
+        linters:
+          - bodyclose
+          - errcheck
+          - gosec
+      - path: (^|/)test/
+        linters:
+          - bodyclose
+          - errcheck
+          - gosec
+          - revive
+      - path: (^|/)hack/
+        linters:
+          - revive
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

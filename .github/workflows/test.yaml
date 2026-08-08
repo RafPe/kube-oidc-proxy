@@ -1,6 +1,7 @@
 name: test
 
-# Unit tests, vet and gofmt. Gates PRs and pushes to main. (e2e runs in e2e.yaml.)
+# Build, unit tests, vet, gofmt and lint. Gates PRs and pushes to main.
+# (e2e runs in e2e.yaml.)
 on:
   pull_request:
   push:
@@ -27,13 +28,44 @@ jobs:
 
       - name: gofmt
         run: |
-          unformatted="$(gofmt -l cmd pkg test)"
+          unformatted="$(gofmt -l .)"
           if [ -n "$unformatted" ]; then
             echo "These files are not gofmt-ed:"; echo "$unformatted"; exit 1
           fi
 
-      - name: go vet
-        run: go vet ./cmd/... ./pkg/...
+      - name: go build
+        run: go build ./...
 
+      - name: go vet
+        run: go vet ./...
+
+      # e2e packages need Docker + kind and run in e2e.yaml; run unit tests for
+      # the maintained cmd/ and pkg/ packages here.
       - name: go test
         run: go test ./cmd/... ./pkg/...
+
+  lint:
+    # golangci-lint carries pre-existing findings across the repo that are being
+    # retired incrementally, so gate on issues introduced by the PR. This makes
+    # the linter enforce cleanliness going forward without blocking on legacy
+    # debt. Runs on PRs where a base ref is available to diff against.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.26.x"
+
+      - name: Generate mocks
+        run: go run go.uber.org/mock/mockgen -package=mocks -destination pkg/mocks/authenticator.go k8s.io/apiserver/pkg/authentication/authenticator Token
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa # v7
+        with:
+          version: v2.12.2
+          args: --timeout 5m
+          only-new-issues: true

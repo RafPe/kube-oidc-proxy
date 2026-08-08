@@ -16,4 +16,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package main
+// This file is a fixture for the boilerplate header checker
+// (hack/boilerplate/boilerplate_test.py); its header is intentionally wrong so
+// the checker flags it. Same (non-main) package as pass.go so the directory
+// builds under `go build ./...`.
+package boilerplatetest
