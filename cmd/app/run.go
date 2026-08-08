@@ -110,7 +110,7 @@ func buildRunCommand(stopCh <-chan struct{}, opts *options.Options) *cobra.Comma
 				return err
 			}
 
-			subectAccessReviewer, err := subjectaccessreview.New(kubeclient.AuthorizationV1().SubjectAccessReviews(), opts.App.SubjectAccessReviewTimeout)
+			subjectAccessReviewer, err := subjectaccessreview.New(kubeclient.AuthorizationV1().SubjectAccessReviews(), opts.App.SubjectAccessReviewTimeout)
 			if err != nil {
 				return err
 			}
@@ -121,8 +121,15 @@ func buildRunCommand(stopCh <-chan struct{}, opts *options.Options) *cobra.Comma
 			}
 
 			// Initialise proxy with token authenticator
-			p, err := proxy.New(restConfig, tokenAuther, opts.Audit,
-				tokenReviewer, subectAccessReviewer, secureServingInfo, proxyConfig)
+			p, err := proxy.New(proxy.Dependencies{
+				RestConfig:            restConfig,
+				TokenAuthenticator:    tokenAuther,
+				AuditOptions:          opts.Audit,
+				TokenReviewer:         tokenReviewer,
+				SubjectAccessReviewer: subjectAccessReviewer,
+				SecureServingInfo:     secureServingInfo,
+				Config:                proxyConfig,
+			})
 			if err != nil {
 				return err
 			}
@@ -140,10 +147,24 @@ func buildRunCommand(stopCh <-chan struct{}, opts *options.Options) *cobra.Comma
 				})
 			}
 
-			// Start readiness probe
-			if err := probe.Run(strconv.Itoa(opts.App.ReadinessProbePort),
+			// Derive a context cancelled when the app stop signal fires, giving the
+			// readiness server an explicit shutdown path.
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() {
+				select {
+				case <-stopCh:
+					cancel()
+				case <-ctx.Done():
+				}
+			}()
+
+			// Start readiness probe with an explicit lifecycle. Start binds
+			// synchronously so a port-in-use failure surfaces here at startup.
+			probeServer := probe.NewServer(strconv.Itoa(opts.App.ReadinessProbePort),
 				issuerProbes, opts.App.ReadinessRequireAllIssuers,
-				p.OIDCTokenAuthenticator()); err != nil {
+				p.OIDCTokenAuthenticator())
+			if err := probeServer.Start(ctx); err != nil {
 				return err
 			}
 
@@ -155,6 +176,12 @@ func buildRunCommand(stopCh <-chan struct{}, opts *options.Options) *cobra.Comma
 
 			<-waitCh
 			<-listenerStoppedCh
+
+			// Stop the readiness server and wait for its listener to be released.
+			cancel()
+			if err := probeServer.Wait(); err != nil {
+				return err
+			}
 
 			if err := p.RunPreShutdownHooks(); err != nil {
 				return err
