@@ -5,13 +5,14 @@ API server, so security reports are taken seriously and handled with priority.
 
 ## Supported versions
 
-Security fixes are provided for the **latest released version**. Please upgrade
-to the latest release before reporting an issue.
+Security fixes are provided for releases **1.1.0 and newer** — the point at
+which this project became an independent fork. Please upgrade to a supported
+release before reporting an issue.
 
-| Version         | Supported |
-| --------------- | --------- |
-| latest (1.1.x)  | ✅        |
-| older releases  | ❌        |
+| Version             | Supported |
+| ------------------- | --------- |
+| >= 1.1.0            | ✅        |
+| < 1.1.0 (pre-fork)  | ❌        |
 
 ## Reporting a vulnerability
 
