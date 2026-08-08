@@ -23,7 +23,43 @@ var (
 	// the underlying error (including context.Canceled/DeadlineExceeded) is wrapped
 	// alongside it so it remains detectable too.
 	ErrCreateSubjectAccessReview = errors.New("create SubjectAccessReview")
+
+	// ErrImpersonationNotAllowed is the sentinel that classifies an authorization
+	// denial: the requester is not permitted to impersonate a requested resource.
+	// Every denial returned by CheckAuthorizedForImpersonation is an
+	// *ImpersonationAuthError, which matches this sentinel via errors.Is. HTTP
+	// handlers select a 403 with errors.Is(err, ErrImpersonationNotAllowed)
+	// instead of matching on message text.
+	ErrImpersonationNotAllowed = errors.New("not allowed to impersonate")
 )
+
+// ImpersonationAuthError reports that a requester is not authorized to
+// impersonate a particular resource (user, group, uid, or extra info). It
+// classifies as ErrImpersonationNotAllowed through errors.Is so callers can
+// select an HTTP 403 without inspecting the message string, while Error()
+// preserves the human-readable, client-facing wording.
+type ImpersonationAuthError struct {
+	// Requester is the name of the authenticated user attempting impersonation.
+	Requester string
+
+	// Kind is the impersonated resource kind as rendered in the message, e.g.
+	// "user", "group", "uid", or "extra info".
+	Kind string
+
+	// Target is the quoted resource identifier as rendered in the message, e.g.
+	// "'a-user'" or "'foo'='bar'".
+	Target string
+}
+
+func (e *ImpersonationAuthError) Error() string {
+	return fmt.Sprintf("%s is not allowed to impersonate %s %s", e.Requester, e.Kind, e.Target)
+}
+
+// Is reports whether e should be treated as ErrImpersonationNotAllowed, letting
+// errors.Is classify any denial regardless of the concrete resource involved.
+func (e *ImpersonationAuthError) Is(target error) bool {
+	return target == ErrImpersonationNotAllowed
+}
 
 // DefaultTimeout is the default value for the SAR authorization budget. It
 // bounds the total time spent authorizing a single request's impersonation via
@@ -93,7 +129,11 @@ func (subjectAccessReview *SubjectAccessReview) CheckAuthorizedForImpersonation(
 						return nil, err
 					} else {
 						if !result {
-							return nil, fmt.Errorf("%s is not allowed to impersonate user '%s'", requester.GetName(), userToImpersonate)
+							return nil, &ImpersonationAuthError{
+								Requester: requester.GetName(),
+								Kind:      "user",
+								Target:    fmt.Sprintf("'%s'", userToImpersonate),
+							}
 						} else {
 							targetUser.Name = userToImpersonate
 						}
@@ -108,7 +148,11 @@ func (subjectAccessReview *SubjectAccessReview) CheckAuthorizedForImpersonation(
 						return nil, err
 					} else {
 						if !result {
-							return nil, fmt.Errorf("%s is not allowed to impersonate group '%s'", requester.GetName(), groupName)
+							return nil, &ImpersonationAuthError{
+								Requester: requester.GetName(),
+								Kind:      "group",
+								Target:    fmt.Sprintf("'%s'", groupName),
+							}
 						} else {
 							targetUser.Groups = append(targetUser.Groups, groupName)
 						}
@@ -121,7 +165,11 @@ func (subjectAccessReview *SubjectAccessReview) CheckAuthorizedForImpersonation(
 					return nil, err
 				} else {
 					if !result {
-						return nil, fmt.Errorf("%s is not allowed to impersonate uid '%s'", requester.GetName(), uidToImpersonate)
+						return nil, &ImpersonationAuthError{
+							Requester: requester.GetName(),
+							Kind:      "uid",
+							Target:    fmt.Sprintf("'%s'", uidToImpersonate),
+						}
 					} else {
 						targetUser.UID = uidToImpersonate
 					}
@@ -136,8 +184,11 @@ func (subjectAccessReview *SubjectAccessReview) CheckAuthorizedForImpersonation(
 						return nil, err
 					} else {
 						if !result {
-
-							return nil, fmt.Errorf("%s is not allowed to impersonate extra info '%s'='%s'", requester.GetName(), extraName, values[i])
+							return nil, &ImpersonationAuthError{
+								Requester: requester.GetName(),
+								Kind:      "extra info",
+								Target:    fmt.Sprintf("'%s'='%s'", extraName, values[i]),
+							}
 						} else {
 							infoVals, ok := targetUser.Extra[extraName]
 
