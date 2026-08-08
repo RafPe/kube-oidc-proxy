@@ -41,7 +41,7 @@ rules:
 		Expect(err).NotTo(HaveOccurred())
 
 		vols := []corev1.Volume{
-			corev1.Volume{
+			{
 				Name: "audit",
 				VolumeSource: corev1.VolumeSource{
 					ConfigMap: &corev1.ConfigMapVolumeSource{
@@ -102,7 +102,7 @@ users: []`,
 		Expect(err).NotTo(HaveOccurred())
 
 		vols := []corev1.Volume{
-			corev1.Volume{
+			{
 				Name: "audit",
 				VolumeSource: corev1.VolumeSource{
 					ConfigMap: &corev1.ConfigMapVolumeSource{
@@ -112,7 +112,7 @@ users: []`,
 					},
 				},
 			},
-			corev1.Volume{
+			{
 				Name: "audit-webhook",
 				VolumeSource: corev1.VolumeSource{
 					ConfigMap: &corev1.ConfigMapVolumeSource{
@@ -180,7 +180,7 @@ func testAuditLogs(f *framework.Framework, podLabelSelector string) {
 	scanner := bufio.NewScanner(bytes.NewReader(logs))
 
 	expAuditEvents := []auditv1.Event{
-		auditv1.Event{
+		{
 			Level:      auditv1.LevelRequestResponse,
 			Stage:      auditv1.StageRequestReceived,
 			RequestURI: "/api/v1/namespaces/kube-system/pods",
@@ -190,7 +190,7 @@ func testAuditLogs(f *framework.Framework, podLabelSelector string) {
 				Groups:   []string{"group-1", "group-2"},
 			},
 		},
-		auditv1.Event{
+		{
 			Level:      auditv1.LevelRequestResponse,
 			Stage:      auditv1.StageResponseComplete,
 			RequestURI: "/api/v1/namespaces/kube-system/pods",

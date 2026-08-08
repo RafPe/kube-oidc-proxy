@@ -1,4 +1,7 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
+
+// Package tokenreview authenticates bearer tokens by submitting TokenReviews to
+// the Kubernetes API server.
 package tokenreview
 
 import (
@@ -14,7 +17,7 @@ import (
 	clientauthv1 "k8s.io/client-go/kubernetes/typed/authentication/v1"
 	"k8s.io/client-go/rest"
 
-	"github.com/rafpe/kube-oidc-proxy/pkg/util"
+	"github.com/rafpe/kube-oidc-proxy/pkg/util/token"
 )
 
 var (
@@ -39,12 +42,12 @@ func New(restConfig *rest.Config, audiences []string) (*TokenReview, error) {
 }
 
 func (t *TokenReview) Review(req *http.Request) (bool, error) {
-	token, ok := util.ParseTokenFromRequest(req)
+	bearer, ok := token.ParseFromRequest(req)
 	if !ok {
 		return false, errors.New("bearer token not found in request")
 	}
 
-	review := t.buildReview(token)
+	review := t.buildReview(bearer)
 
 	ctx, cancel := context.WithTimeout(req.Context(), timeout)
 	defer cancel()

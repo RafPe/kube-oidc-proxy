@@ -1,4 +1,7 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
+
+// Package hooks provides a concurrency-safe registry of named pre-shutdown
+// hooks that run in registration order during graceful shutdown.
 package hooks
 
 import (

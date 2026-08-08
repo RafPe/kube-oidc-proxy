@@ -1,4 +1,8 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
+
+// Package app assembles the kube-oidc-proxy command: it wires the OIDC
+// authenticator, token/subject-access reviewers, readiness probe and proxy
+// together and runs them until the supplied stop channel is closed.
 package app
 
 import (
@@ -25,7 +29,7 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/tokenreview"
-	"github.com/rafpe/kube-oidc-proxy/pkg/util"
+	"github.com/rafpe/kube-oidc-proxy/pkg/util/token"
 )
 
 func NewRunCommand(stopCh <-chan struct{}) *cobra.Command {
@@ -139,7 +143,7 @@ func buildRunCommand(stopCh <-chan struct{}, opts *options.Options) *cobra.Comma
 			// Build a per-issuer readiness probe entry.
 			issuerProbes := make([]probe.IssuerReadiness, 0, len(issuerURLs))
 			for _, issuerURL := range issuerURLs {
-				fakeJWT, err := util.FakeJWT(issuerURL)
+				fakeJWT, err := token.FakeJWT(issuerURL)
 				if err != nil {
 					return err
 				}

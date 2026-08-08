@@ -1,12 +1,12 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
-package util
+package token
 
 import (
 	"net/http"
 	"testing"
 )
 
-func TestParseTokenFromHeader(t *testing.T) {
+func TestParseFromRequest(t *testing.T) {
 	tests := map[string]struct {
 		req   *http.Request
 		token string
@@ -27,8 +27,8 @@ func TestParseTokenFromHeader(t *testing.T) {
 		"should return !ok if no Authorization header given": {
 			req: &http.Request{
 				Header: map[string][]string{
-					"Random-Header1": []string{"foo bar"},
-					"Random-Header2": []string{"boo koo"},
+					"Random-Header1": {"foo bar"},
+					"Random-Header2": {"boo koo"},
 				},
 			},
 			token: "",
@@ -37,8 +37,8 @@ func TestParseTokenFromHeader(t *testing.T) {
 		"should return !ok if Authorization header is empty": {
 			req: &http.Request{
 				Header: map[string][]string{
-					"Random-Header1": []string{"foo bar"},
-					"Authorization":  []string{},
+					"Random-Header1": {"foo bar"},
+					"Authorization":  {},
 				},
 			},
 			token: "",
@@ -47,8 +47,8 @@ func TestParseTokenFromHeader(t *testing.T) {
 		"should return !ok if Authorization header is only 'bearer'": {
 			req: &http.Request{
 				Header: map[string][]string{
-					"Random-Header1": []string{"foo bar"},
-					"Authorization":  []string{"bearer"},
+					"Random-Header1": {"foo bar"},
+					"Authorization":  {"bearer"},
 				},
 			},
 			token: "",
@@ -57,8 +57,8 @@ func TestParseTokenFromHeader(t *testing.T) {
 		"should return !ok if Authorization header is only 'bearertoken'": {
 			req: &http.Request{
 				Header: map[string][]string{
-					"Random-Header1": []string{"foo bar"},
-					"Authorization":  []string{"bearertoken"},
+					"Random-Header1": {"foo bar"},
+					"Authorization":  {"bearertoken"},
 				},
 			},
 			token: "",
@@ -67,8 +67,8 @@ func TestParseTokenFromHeader(t *testing.T) {
 		"should return 'token' if Authorization header is 'bearer token'": {
 			req: &http.Request{
 				Header: map[string][]string{
-					"Random-Header1": []string{"foo bar"},
-					"Authorization":  []string{"bearer token"},
+					"Random-Header1": {"foo bar"},
+					"Authorization":  {"bearer token"},
 				},
 			},
 			token: "token",
@@ -77,8 +77,8 @@ func TestParseTokenFromHeader(t *testing.T) {
 		"should return !ok if Authorization header is 'bearer token' but not first element": {
 			req: &http.Request{
 				Header: map[string][]string{
-					"Random-Header1": []string{"foo bar"},
-					"Authorization":  []string{"foo bar", "bearer token"},
+					"Random-Header1": {"foo bar"},
+					"Authorization":  {"foo bar", "bearer token"},
 				},
 			},
 			token: "",
@@ -87,8 +87,8 @@ func TestParseTokenFromHeader(t *testing.T) {
 		"should return 'token' if Authorization header is 'bearer token some-other-string'": {
 			req: &http.Request{
 				Header: map[string][]string{
-					"Random-Header1": []string{"foo bar"},
-					"Authorization":  []string{"bearer token some-other-string"},
+					"Random-Header1": {"foo bar"},
+					"Authorization":  {"bearer token some-other-string"},
 				},
 			},
 			token: "token",
@@ -97,8 +97,8 @@ func TestParseTokenFromHeader(t *testing.T) {
 		"should return 'token' if Authorization header is 'bearer token' but mixed capitals on bearer": {
 			req: &http.Request{
 				Header: map[string][]string{
-					"Random-Header1": []string{"foo bar"},
-					"Authorization":  []string{"BeAREr token"},
+					"Random-Header1": {"foo bar"},
+					"Authorization":  {"BeAREr token"},
 				},
 			},
 			token: "token",
@@ -107,8 +107,8 @@ func TestParseTokenFromHeader(t *testing.T) {
 		"should return !ok if Authorization header is 'bearer token' but the header name is title capitalised": {
 			req: &http.Request{
 				Header: map[string][]string{
-					"Random-Header1": []string{"foo bar"},
-					"authorization":  []string{"bearer token"},
+					"Random-Header1": {"foo bar"},
+					"authorization":  {"bearer token"},
 				},
 			},
 			token: "",
@@ -117,8 +117,8 @@ func TestParseTokenFromHeader(t *testing.T) {
 		"should return !ok if Authorization header has multiple spaces between 'bearer' and 'token'": {
 			req: &http.Request{
 				Header: map[string][]string{
-					"Random-Header1": []string{"foo bar"},
-					"Authorization":  []string{"bearer     token"},
+					"Random-Header1": {"foo bar"},
+					"Authorization":  {"bearer     token"},
 				},
 			},
 			token: "",
@@ -128,7 +128,7 @@ func TestParseTokenFromHeader(t *testing.T) {
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			gToken, gok := ParseTokenFromRequest(test.req)
+			gToken, gok := ParseFromRequest(test.req)
 
 			if test.ok != gok {
 				t.Errorf("unexpected ok, exp=%t got=%t",

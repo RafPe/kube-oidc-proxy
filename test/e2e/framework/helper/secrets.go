@@ -24,8 +24,7 @@ func (h *Helper) GetServiceAccountSecret(ns, name string) (*corev1.Secret, error
 			return nil, err
 		}
 	} else {
-		var requestSeconds int64
-		requestSeconds = 600
+		requestSeconds := int64(600)
 
 		// starting in 1.24 ServiceAccounts no longer get Secrets, need to request one bound to a ServiceAccount
 		serviceAccountToken, err := h.KubeClient.CoreV1().ServiceAccounts(ns).CreateToken(context.TODO(), sa.Name, &v1.TokenRequest{

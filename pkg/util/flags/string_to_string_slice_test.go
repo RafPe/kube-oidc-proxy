@@ -26,24 +26,24 @@ func TestStringToStringSliceSet(t *testing.T) {
 			val:      "key1=foo",
 			expError: false,
 			expValues: map[string][]string{
-				"key1": []string{"foo"},
+				"key1": {"foo"},
 			},
 		},
 		"if two keys with two values return": {
 			val:      "key1=foo,key2=bar",
 			expError: false,
 			expValues: map[string][]string{
-				"key1": []string{"foo"},
-				"key2": []string{"bar"},
+				"key1": {"foo"},
+				"key2": {"bar"},
 			},
 		},
 		"if 3 keys with 5 values return": {
 			val:      "key1=foo,key2=bar,key1=a,key2=c,key3=c",
 			expError: false,
 			expValues: map[string][]string{
-				"key1": []string{"foo", "a"},
-				"key2": []string{"bar", "c"},
-				"key3": []string{"c"},
+				"key1": {"foo", "a"},
+				"key2": {"bar", "c"},
+				"key3": {"c"},
 			},
 		},
 		"if key with no value error": {

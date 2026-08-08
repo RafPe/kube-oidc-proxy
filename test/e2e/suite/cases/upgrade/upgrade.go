@@ -26,7 +26,7 @@ import (
 	// required to register oidc auth plugin for rest client
 	_ "k8s.io/client-go/plugin/pkg/client/auth/oidc"
 
-	"github.com/rafpe/kube-oidc-proxy/pkg/util"
+	"github.com/rafpe/kube-oidc-proxy/pkg/util/port"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
 )
 
@@ -157,7 +157,7 @@ var _ = framework.CasesDescribe("Upgrade", func() {
 		portOut := &bytes.Buffer{}
 		portErr := &bytes.Buffer{}
 
-		freePort, err := util.FreePort()
+		freePort, err := port.Free()
 		Expect(err).NotTo(HaveOccurred())
 
 		restConfig := newRestConfig(f)

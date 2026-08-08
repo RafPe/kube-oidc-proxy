@@ -43,8 +43,8 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 var _ = SynchronizedAfterSuite(func() {},
 	func() {
 		if env != nil {
-			if err := env.Destory(); err != nil {
-				klog.Fatalf("Failed to destory environment: %s", err)
+			if err := env.Destroy(); err != nil {
+				klog.Fatalf("Failed to destroy environment: %s", err)
 			}
 		}
 	},

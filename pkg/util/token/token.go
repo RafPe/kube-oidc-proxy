@@ -1,5 +1,8 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
-package util
+
+// Package token provides helpers for extracting bearer tokens from HTTP
+// requests and for generating fake JWTs used to probe issuer readiness.
+package token
 
 import (
 	"net/http"
@@ -10,8 +13,10 @@ import (
 	"github.com/go-jose/go-jose/v4/jwt"
 )
 
-// Return just the token from the header of the request, without 'bearer'.
-func ParseTokenFromRequest(req *http.Request) (string, bool) {
+// ParseFromRequest returns the bearer token from the request's Authorization
+// header, stripped of the leading "bearer" scheme. The second return value
+// reports whether a non-empty bearer token was present.
+func ParseFromRequest(req *http.Request) (string, bool) {
 	if req == nil || req.Header == nil {
 		return "", false
 	}
@@ -28,7 +33,7 @@ func ParseTokenFromRequest(req *http.Request) (string, bool) {
 
 	token := parts[1]
 
-	// Empty bearer tokens aren't valid
+	// Empty bearer tokens aren't valid.
 	if len(token) == 0 {
 		return "", false
 	}
@@ -36,9 +41,9 @@ func ParseTokenFromRequest(req *http.Request) (string, bool) {
 	return token, true
 }
 
-// fakeJWT generates a valid JWT using the passed input parameters which is
-// signed by a generated key. This is useful for checking the status of a
-// signer.
+// FakeJWT generates a valid JWT for the given issuer URL, signed with a
+// generated key. It is useful for probing whether an issuer's authenticator has
+// completed its signer initialization.
 func FakeJWT(issuerURL string) (string, error) {
 	key := []byte("this-is-a-32-byte-long-secret-key!!!!")
 

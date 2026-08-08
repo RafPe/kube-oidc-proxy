@@ -1,4 +1,7 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
+
+// Package audit wires the Kubernetes apiserver audit backend into the proxy,
+// emitting audit events for proxied requests.
 package audit
 
 import (
