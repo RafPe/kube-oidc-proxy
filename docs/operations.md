@@ -65,7 +65,7 @@ A failure omits the token information:
 
 ## Development and testing
 
-Building `kube-oidc-proxy` requires Go 1.17 or higher.
+Building `kube-oidc-proxy` requires Go 1.26 or higher.
 
 ### Local dev cluster
 

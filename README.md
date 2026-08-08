@@ -1,48 +1,26 @@
-# 🔐 kube-oidc-proxy
+[![Build](https://github.com/RafPe/kube-oidc-proxy/actions/workflows/build.yaml/badge.svg)](https://github.com/RafPe/kube-oidc-proxy/actions/workflows/build.yaml)
+[![E2E](https://github.com/RafPe/kube-oidc-proxy/actions/workflows/e2e.yaml/badge.svg)](https://github.com/RafPe/kube-oidc-proxy/actions/workflows/e2e.yaml)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
+[![Go Report Card](https://goreportcard.com/badge/github.com/rafpe/kube-oidc-proxy)](https://goreportcard.com/report/github.com/rafpe/kube-oidc-proxy)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/RafPe/kube-oidc-proxy/badge)](https://securityscorecards.dev/viewer/?uri=github.com/RafPe/kube-oidc-proxy)
 
-🔐 **kube-oidc-proxy**: A reverse proxy that authenticates users with OpenID Connect (OIDC) and impersonates them against the Kubernetes API server — bringing OIDC login to managed clusters (EKS, GKE, AKS, …) where you can't set the API server's OIDC flags.
+# kube-oidc-proxy
 
-> [!NOTE]
-> This is a fork of [`TremoloSecurity/kube-oidc-proxy`](https://github.com/TremoloSecurity/kube-oidc-proxy), which is itself a fork of the original [`jetstack/kube-oidc-proxy`](https://github.com/jetstack/kube-oidc-proxy). The headline addition in this fork is **multi-issuer authentication** via `--authentication-config`: a single proxy can accept tokens from several OIDC issuers at once. Optional serving-certificate integration still uses [`jetstack/cert-manager`](https://github.com/jetstack/cert-manager).
+A reverse proxy that brings OIDC login to managed Kubernetes clusters, with multi-issuer auth in one proxy.
 
-## 🔄 How It Works
+## Why
 
-The proxy sits in front of the API server. It validates the bearer token against one or more OIDC issuers, maps the token's claims to a Kubernetes identity, then forwards the request to the API server using its **own ServiceAccount** plus impersonation headers for the mapped user. The API server evaluates **RBAC** for that user as usual — so you get OIDC login without ever touching the API server's `--oidc-*` flags. Full detail in [docs/architecture.md](./docs/architecture.md).
+- **The problem:** managed clusters (EKS, GKE, AKS, …) don't let you set the API server's `--oidc-*` flags, so you can't wire in your own OIDC provider.
+- **The fix:** the proxy validates the bearer token and impersonates the user against the API server — your existing RBAC stays authoritative.
+- **What's different:** one proxy can accept tokens from many issuers at once via a Kubernetes `AuthenticationConfiguration`.
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant U as kubectl (user)
-    participant P as kube-oidc-proxy
-    participant J as OIDC issuer (JWKS)
-    participant A as kube-apiserver
-    participant R as RBAC
+## Quickstart
 
-    U->>P: HTTPS request + Bearer ID token
-    P->>J: Fetch JWKS / discovery (cached)
-    J-->>P: Signing keys
-    P->>P: Validate JWT<br/>(issuer, audience, signature, claims)
-    Note over P: Map claims → username, groups, extra
-    P->>A: Forward request as proxy ServiceAccount<br/>+ Impersonate-User / -Group / -Extra headers
-    A->>R: Authorize impersonated identity
-    R-->>A: Allow / Deny
-    A-->>P: API response
-    P-->>U: API response
-```
+Prerequisites: a Kubernetes cluster, `kubectl`, Helm 3+, and one or more OIDC issuers (see [prerequisites](./docs/getting-started.md#prerequisites)).
 
-## 🚀 Quickstart
-
-Install with Helm — from the OCI registry or a local checkout of this repo:
+Install the local chart — it pulls the published `ghcr.io/rafpe/kube-oidc-proxy:1.1.0` image:
 
 ```sh
-# OCI registry (published by the release pipeline)
-helm install kube-oidc-proxy oci://ghcr.io/rafpe/charts/kube-oidc-proxy \
-  --namespace kube-oidc-proxy --create-namespace \
-  --set oidc.clientId=<client-id> \
-  --set oidc.issuerUrl=https://<issuer-url> \
-  --set oidc.usernameClaim=email
-
-# ...or from this checkout
 helm install kube-oidc-proxy ./chart/kube-oidc-proxy \
   --namespace kube-oidc-proxy --create-namespace \
   --set oidc.clientId=<client-id> \
@@ -50,48 +28,27 @@ helm install kube-oidc-proxy ./chart/kube-oidc-proxy \
   --set oidc.usernameClaim=email
 ```
 
-> [!IMPORTANT]
-> The image `ghcr.io/rafpe/kube-oidc-proxy:1.1.0` and OCI chart are the **intended** published artifacts; the release pipeline is still pending, so until it lands, install from a local checkout. See [docs/getting-started.md](./docs/getting-started.md).
+Once the OCI chart is published, `oci://ghcr.io/rafpe/charts/kube-oidc-proxy` will work as a drop-in replacement for `./chart/kube-oidc-proxy` (same `--set` flags). Until then, use the local chart above.
 
-Then point `kubectl` at the proxy instead of the API server, using the `oidc` auth provider:
+Verify — port-forward the proxy and ask the cluster who you are:
 
-```yaml
-clusters:
-  - cluster:
-      certificate-authority: /path/to/proxy-ca.pem   # the proxy's serving CA
-      server: https://<proxy-address>:443
-    name: my-cluster
-users:
-  - name: my-oidc-user
-    user:
-      auth-provider:
-        name: oidc
-        config:
-          client-id: <client-id>
-          idp-issuer-url: https://<issuer-url>
-          id-token: <id-token>
-          refresh-token: <refresh-token>
+```sh
+kubectl -n kube-oidc-proxy port-forward svc/kube-oidc-proxy 8443:443 &
+kubectl --server=https://127.0.0.1:8443 --insecure-skip-tls-verify \
+  --token="$ID_TOKEN" auth whoami
 ```
 
-Full deployment, TLS, and kubeconfig detail: [docs/getting-started.md](./docs/getting-started.md).
-
-## 📝 Usage (at a glance)
-
-The proxy has two **mutually exclusive** modes — configure exactly one.
-
-**Single-issuer** (the classic `--oidc-*` flags):
-
-```yaml
-oidc:
-  clientId: my-client
-  issuerUrl: https://accounts.google.com
-  usernameClaim: email
-  groupsClaim: groups        # optional
+```text
+ATTRIBUTE   VALUE
+Username    google:alice@example.com
+Groups      [system:authenticated]
 ```
 
-→ full guide: [docs/getting-started.md](./docs/getting-started.md#single-issuer)
+Full flow — TLS, kubeconfig, and auth modes: [docs/getting-started.md](./docs/getting-started.md).
 
-**Multi-issuer** (accept tokens from several issuers via a Kubernetes `AuthenticationConfiguration`):
+## Multi-issuer authentication
+
+The headline feature: accept tokens from several issuers at once via a Kubernetes `AuthenticationConfiguration`, each with its own audiences and claim prefixes.
 
 ```yaml
 authenticationConfig:
@@ -111,33 +68,42 @@ authenticationConfig:
           username: { claim: sub, prefix: "github:" }
 ```
 
-→ full guide: [docs/multi-issuer.md](./docs/multi-issuer.md)
-
 > [!WARNING]
 > When `authenticationConfig.content` is set, the chart passes `--authentication-config` and **omits every `--oidc-*` flag**; the `oidc.*` values are ignored. Don't configure both modes at once.
 
-## ✨ Features
+Full guide: [docs/multi-issuer.md](./docs/multi-issuer.md).
 
-- **Standards-based single-issuer OIDC** via the familiar `--oidc-*` flags (issuer, client ID, username/groups claims and prefixes, required claims, signing algorithms) — plain OIDC ID tokens, with flag parity with the API server's own OIDC authenticator.
-- **Multi-issuer OIDC** via a Kubernetes `AuthenticationConfiguration` and a union authenticator — accept tokens from many providers at once.
-- **Configurable readiness** for multi-issuer setups (`--readiness-require-all-issuers`): become ready on the first issuer, or wait for all.
-- **Impersonation, not credential sharing** — the proxy impersonates the end user; RBAC stays authoritative. Supports `kubectl --as`, gated by `SubjectAccessReview`.
-- **Token passthrough** for non-OIDC bearer tokens (`--token-passthrough`), validated via TokenReview.
-- **Auditable** — every request logged to stdout; original identity recorded via `Extra` headers.
-- **Hardened Helm chart** — self-signed / cert-manager / own-secret TLS, PodDisruptionBudget, topology spread, locked-down SecurityContext by default.
+## How it works
 
-## 📚 Documentation
+The proxy sits in front of the API server, validates the bearer token against one or more OIDC issuers, and maps the token's claims to a Kubernetes identity. It then forwards the request using its **own ServiceAccount** plus impersonation headers for the mapped user. The API server evaluates **RBAC** for that user as usual — OIDC login without ever touching the `--oidc-*` flags. See [docs/architecture.md](./docs/architecture.md) for the request-flow diagram and union authenticator.
+
+## Features
+
+- **Multi-issuer OIDC** — accept tokens from many providers through one union authenticator.
+- **Single-issuer OIDC** — standards-based, with flag parity with the API server's authenticator.
+- **Impersonation, not credential sharing** — RBAC stays authoritative; `kubectl --as` is gated by `SubjectAccessReview`.
+- **Configurable readiness** — become ready on the first issuer, or wait for all.
+- **Token passthrough** for non-OIDC bearer tokens, validated via `TokenReview`.
+- **Auditable** — every request logged; the original identity is preserved.
+- **Hardened Helm chart** — flexible TLS, PodDisruptionBudget, locked-down SecurityContext by default.
+
+## Documentation
 
 | Topic | Where |
 | --- | --- |
 | **Multi-issuer authentication** (headline feature) | [docs/multi-issuer.md](./docs/multi-issuer.md) |
 | Install, TLS, kubeconfig, auth modes | [docs/getting-started.md](./docs/getting-started.md) |
-| All flags, impersonation, task recipes (passthrough, extra headers, auditing) | [docs/configuration.md](./docs/configuration.md) |
+| All flags, impersonation, task recipes | [docs/configuration.md](./docs/configuration.md) |
 | How it works: request flow, union authenticator, readiness | [docs/architecture.md](./docs/architecture.md) |
 | Security, troubleshooting, request logs, local testing | [docs/operations.md](./docs/operations.md) |
 | All chart values | [chart/kube-oidc-proxy/README.md](./chart/kube-oidc-proxy/README.md) |
 | Multi-issuer demo | [demo/README.md](./demo/README.md) |
 
-## 🤝 Contributing
+## Project status & lineage
 
-Contributions are welcome — issues and pull requests both. Building requires Go 1.17+. See [Operations: development and testing](./docs/operations.md#development-and-testing) for running the proxy from source and the hermetic `make e2e` end-to-end suite. To try the multi-issuer flow end to end, start with the [demo](./demo/README.md).
+> [!NOTE]
+> This is a fork of [`TremoloSecurity/kube-oidc-proxy`](https://github.com/TremoloSecurity/kube-oidc-proxy), itself a fork of the original [`jetstack/kube-oidc-proxy`](https://github.com/jetstack/kube-oidc-proxy). The headline addition in this fork is **multi-issuer authentication** via `--authentication-config`: a single proxy can accept tokens from several OIDC issuers at once. Optional serving-certificate integration still uses [`jetstack/cert-manager`](https://github.com/jetstack/cert-manager).
+
+## Contributing
+
+Contributions are welcome — issues and pull requests both. Building requires Go 1.26. See [Operations: development and testing](./docs/operations.md#development-and-testing) for running the proxy from source and the hermetic `make e2e` end-to-end suite. To try the multi-issuer flow end to end, start with the [demo](./demo/README.md).
