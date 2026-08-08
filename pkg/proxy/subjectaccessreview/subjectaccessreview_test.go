@@ -4,6 +4,7 @@ package subjectaccessreview
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
@@ -94,7 +95,7 @@ func TestSubectAccessReview(t *testing.T) {
 
 			expImpersonationHeaders:  true,
 			expAz:                    false,
-			expErr:                   errors.New("mmosley is not allowed to impersonate user 'jjackson-x'"),
+			expErr:                   &ImpersonationAuthError{Requester: "mmosley", Kind: "user", Target: "'jjackson-x'"},
 			expErrorRbac:             nil,
 			extraImpersonationHeader: false,
 		},
@@ -120,7 +121,7 @@ func TestSubectAccessReview(t *testing.T) {
 
 			expImpersonationHeaders:  true,
 			expAz:                    false,
-			expErr:                   errors.New("mmosley is not allowed to impersonate group 'group4'"),
+			expErr:                   &ImpersonationAuthError{Requester: "mmosley", Kind: "group", Target: "'group4'"},
 			expErrorRbac:             nil,
 			extraImpersonationHeader: false,
 		},
@@ -146,7 +147,7 @@ func TestSubectAccessReview(t *testing.T) {
 
 			expImpersonationHeaders:  true,
 			expAz:                    false,
-			expErr:                   errors.New("mmosley is not allowed to impersonate extra info 'remoteaddr'='1.2.3.5'"),
+			expErr:                   &ImpersonationAuthError{Requester: "mmosley", Kind: "extra info", Target: "'remoteaddr'='1.2.3.5'"},
 			expErrorRbac:             nil,
 			extraImpersonationHeader: false,
 		},
@@ -171,7 +172,7 @@ func TestSubectAccessReview(t *testing.T) {
 
 			expImpersonationHeaders:  true,
 			expAz:                    false,
-			expErr:                   errors.New("mmosley is not allowed to impersonate uid '1-2-3-5'"),
+			expErr:                   &ImpersonationAuthError{Requester: "mmosley", Kind: "uid", Target: "'1-2-3-5'"},
 			expErrorRbac:             nil,
 			extraImpersonationHeader: false,
 		},
@@ -354,6 +355,62 @@ func runTest(t *testing.T, name string, test testT) {
 
 	// everything checks out!
 
+}
+
+// TestImpersonationAuthErrorClassification pins the typed-error contract for
+// issue #51: every denial classifies as ErrImpersonationNotAllowed via
+// errors.Is (and errors.As), unrelated errors do not, and the client-facing
+// message is preserved verbatim.
+func TestImpersonationAuthErrorClassification(t *testing.T) {
+	tests := map[string]struct {
+		err    *ImpersonationAuthError
+		expMsg string
+	}{
+		"user": {
+			err:    &ImpersonationAuthError{Requester: "mmosley", Kind: "user", Target: "'a-user'"},
+			expMsg: "mmosley is not allowed to impersonate user 'a-user'",
+		},
+		"group": {
+			err:    &ImpersonationAuthError{Requester: "mmosley", Kind: "group", Target: "'a-group'"},
+			expMsg: "mmosley is not allowed to impersonate group 'a-group'",
+		},
+		"uid": {
+			err:    &ImpersonationAuthError{Requester: "mmosley", Kind: "uid", Target: "'bar'"},
+			expMsg: "mmosley is not allowed to impersonate uid 'bar'",
+		},
+		"extra info": {
+			err:    &ImpersonationAuthError{Requester: "mmosley", Kind: "extra info", Target: "'foo'='bar'"},
+			expMsg: "mmosley is not allowed to impersonate extra info 'foo'='bar'",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			// Message is stable and client-facing.
+			if got := tc.err.Error(); got != tc.expMsg {
+				t.Errorf("Error() = %q, want %q", got, tc.expMsg)
+			}
+
+			// Classifies as the sentinel through a wrap, without message matching.
+			wrapped := fmt.Errorf("handling request: %w", tc.err)
+			if !errors.Is(wrapped, ErrImpersonationNotAllowed) {
+				t.Errorf("errors.Is(wrapped, ErrImpersonationNotAllowed) = false, want true")
+			}
+
+			var asErr *ImpersonationAuthError
+			if !errors.As(wrapped, &asErr) {
+				t.Errorf("errors.As did not recover *ImpersonationAuthError from %v", wrapped)
+			}
+		})
+	}
+
+	// Unrelated errors must not be misclassified as a denial.
+	if errors.Is(ErrorNoImpersonationUserFound, ErrImpersonationNotAllowed) {
+		t.Error("ErrorNoImpersonationUserFound must not classify as ErrImpersonationNotAllowed")
+	}
+	if errors.Is(errors.New("boom"), ErrImpersonationNotAllowed) {
+		t.Error("arbitrary error must not classify as ErrImpersonationNotAllowed")
+	}
 }
 
 // blockingReviewer is a local test double implementing
