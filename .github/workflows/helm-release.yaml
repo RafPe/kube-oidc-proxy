@@ -62,4 +62,10 @@ jobs:
       - name: Sign chart (keyless)
         env:
           REF: ${{ steps.push.outputs.ref }}
-        run: cosign sign -y "$REF"
+          ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # cosign authenticates via the docker config, which `helm registry
+          # login` does not populate — log cosign in to GHCR explicitly.
+          echo "${GH_TOKEN}" | cosign login ghcr.io -u "${ACTOR}" --password-stdin
+          cosign sign -y "$REF"
