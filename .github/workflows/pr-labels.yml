@@ -1,0 +1,28 @@
+name: pr-labels
+
+# Nudges contributors to set the release/* label that drives the next version.
+# Non-blocking: an unlabeled PR still merges and defaults to a patch release
+# (see .github/release-drafter.yml).
+on:
+  pull_request:
+    types: [opened, reopened, labeled, unlabeled, synchronize]
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  release-label:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for a release/* label
+        env:
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          set -euo pipefail
+          if printf ',%s,' "$LABELS" | grep -qE ',release/(major|minor|patch|skip),'; then
+            echo "Release label present: $LABELS"
+          else
+            echo "::warning::No release/* label on this PR. Merging will default to a patch release. Add release/major, release/minor, release/patch, or release/skip to control the next version."
+          fi
