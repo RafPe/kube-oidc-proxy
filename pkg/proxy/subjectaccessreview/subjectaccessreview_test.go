@@ -2,16 +2,26 @@
 package subjectaccessreview
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview/fake"
 	v1 "k8s.io/api/authorization/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apiserver/pkg/authentication/user"
+	clientazv1 "k8s.io/client-go/kubernetes/typed/authorization/v1"
 )
+
+// errReview is the sentinel injected into the fake reviewer so that error-path
+// tests can assert with errors.Is after the production code wraps the Create
+// error with %w.
+var errReview = errors.New("error authorizing the request")
 
 // stores the context for each test case
 type testT struct {
@@ -186,8 +196,8 @@ func TestSubectAccessReview(t *testing.T) {
 
 			expImpersonationHeaders:  true,
 			expAz:                    false,
-			expErr:                   errors.New("error authorizing the request"),
-			expErrorRbac:             errors.New("error authorizing the request"),
+			expErr:                   errReview,
+			expErrorRbac:             errReview,
 			extraImpersonationHeader: false,
 		},
 
@@ -301,8 +311,14 @@ func runTest(t *testing.T, name string, test testT) {
 			Header: headers,
 		}, test.requester)
 
-	// check if the errors match
-	if !reflect.DeepEqual(test.expErr, err) {
+	// check if the errors match. The backend-error case wraps the sentinel
+	// with %w, so assert with errors.Is there; the other cases build fresh
+	// message-only errors that are only comparable by value.
+	if test.expErrorRbac != nil {
+		if !errors.Is(err, errReview) {
+			t.Errorf("CheckAuthorizedForImpersonation() error = %v, want errors.Is(%v)", err, errReview)
+		}
+	} else if !reflect.DeepEqual(test.expErr, err) {
 		t.Errorf("unexpected error, exp=%t got %t", test.expErr, err)
 	}
 
@@ -334,4 +350,134 @@ func runTest(t *testing.T, name string, test testT) {
 
 	// everything checks out!
 
+}
+
+// blockingReviewer is a local test double implementing
+// clientazv1.SubjectAccessReviewInterface. Only Create is exercised: it counts
+// calls, signals entry once, then blocks until its context is done and returns
+// the context error. This lets the cancellation tests prove that request
+// cancellation and deadlines short-circuit the SAR sequence.
+type blockingReviewer struct {
+	// entered is buffered(1) and signaled with a non-blocking send so a second,
+	// unexpected Create can neither block nor panic.
+	entered chan struct{}
+	calls   atomic.Int32
+}
+
+var _ clientazv1.SubjectAccessReviewInterface = (*blockingReviewer)(nil)
+
+func (b *blockingReviewer) Create(ctx context.Context, _ *v1.SubjectAccessReview, _ metav1.CreateOptions) (*v1.SubjectAccessReview, error) {
+	b.calls.Add(1)
+	select {
+	case b.entered <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// impersonationHeaders returns a request header set with every impersonation
+// kind (user, group, uid, extra) so that short-circuiting after the first
+// blocked SAR check is observable.
+func impersonationHeaders() http.Header {
+	return http.Header{
+		"Impersonate-User":             {"jjackson"},
+		"Impersonate-Group":            {"group3"},
+		"Impersonate-Uid":              {"1-2-3-4"},
+		"Impersonate-Extra-Remoteaddr": {"1.2.3.4"},
+	}
+}
+
+// sarResult carries the return of CheckAuthorizedForImpersonation back from the
+// worker goroutine over a channel, keeping the tests race-clean.
+type sarResult struct {
+	target user.Info
+	err    error
+}
+
+// TestCheckAuthorizedForImpersonationCanceled verifies that cancelling the
+// inbound request context while a SAR check is in flight promptly aborts the
+// sequence with context.Canceled and does not run further checks.
+func TestCheckAuthorizedForImpersonationCanceled(t *testing.T) {
+	reviewer := &blockingReviewer{entered: make(chan struct{}, 1)}
+	sar, err := New(reviewer)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req := (&http.Request{Header: impersonationHeaders()}).WithContext(ctx)
+	requester := &user.DefaultInfo{Name: "mmosley", Groups: []string{"group1"}}
+
+	done := make(chan sarResult, 1)
+	go func() {
+		target, err := sar.CheckAuthorizedForImpersonation(req, requester)
+		done <- sarResult{target: target, err: err}
+	}()
+
+	// Wait for the first (and only) SAR Create to be in flight and blocking.
+	select {
+	case <-reviewer.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SAR Create was never entered")
+	}
+
+	cancel()
+
+	select {
+	case res := <-done:
+		if !errors.Is(res.err, context.Canceled) {
+			t.Errorf("error = %v, want errors.Is(context.Canceled)", res.err)
+		}
+		if res.target != nil {
+			t.Errorf("target = %+v, want nil", res.target)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no return after cancellation")
+	}
+
+	if got := reviewer.calls.Load(); got != 1 {
+		t.Errorf("SAR Create ran %d times, want exactly 1 (later checks must be skipped)", got)
+	}
+}
+
+// TestCheckAuthorizedForImpersonationDeadlineExceeded verifies that a short
+// inbound request deadline aborts the SAR sequence with
+// context.DeadlineExceeded and runs at most the first check.
+func TestCheckAuthorizedForImpersonationDeadlineExceeded(t *testing.T) {
+	reviewer := &blockingReviewer{entered: make(chan struct{}, 1)}
+	sar, err := New(reviewer)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	req := (&http.Request{Header: impersonationHeaders()}).WithContext(ctx)
+	requester := &user.DefaultInfo{Name: "mmosley", Groups: []string{"group1"}}
+
+	done := make(chan sarResult, 1)
+	go func() {
+		target, err := sar.CheckAuthorizedForImpersonation(req, requester)
+		done <- sarResult{target: target, err: err}
+	}()
+
+	select {
+	case res := <-done:
+		if !errors.Is(res.err, context.DeadlineExceeded) {
+			t.Errorf("error = %v, want errors.Is(context.DeadlineExceeded)", res.err)
+		}
+		if res.target != nil {
+			t.Errorf("target = %+v, want nil", res.target)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no return after deadline")
+	}
+
+	if got := reviewer.calls.Load(); got != 1 {
+		t.Errorf("SAR Create ran %d times, want exactly 1 (later checks must be skipped)", got)
+	}
 }

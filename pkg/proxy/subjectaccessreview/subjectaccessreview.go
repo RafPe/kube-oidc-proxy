@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	v1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -17,6 +18,13 @@ import (
 var (
 	ErrorNoImpersonationUserFound = errors.New("no Impersonation-User header found for request")
 )
+
+// sarTimeout bounds the total time spent authorizing a single request's
+// impersonation via SubjectAccessReviews. It covers the whole sequence of
+// checks, not each call, so a stalled API server cannot hold a client
+// connection open indefinitely (the SAR client inherits rest.Config.Timeout,
+// which defaults to zero).
+const sarTimeout = 10 * time.Second
 
 // structure for storing the review data
 type SubjectAccessReview struct {
@@ -34,6 +42,12 @@ func New(subjectAccessReviewer clientazv1.SubjectAccessReviewInterface) (*Subjec
 // checks the request for impersonation headers, validates that the user is able to perform that impersonation,
 // and builds the target object
 func (subjectAccessReview *SubjectAccessReview) CheckAuthorizedForImpersonation(req *http.Request, requester user.Info) (user.Info, error) {
+
+	// Derive one shared budget for the whole SAR sequence from the inbound
+	// request context, so client cancellation propagates and a stalled API
+	// server cannot stall the request indefinitely.
+	ctx, cancel := context.WithTimeout(req.Context(), sarTimeout)
+	defer cancel()
 
 	impersonatedUser := req.Header.Get("impersonate-user")
 
@@ -63,7 +77,7 @@ func (subjectAccessReview *SubjectAccessReview) CheckAuthorizedForImpersonation(
 			if keyToCheck == "impersonate-user" {
 				userToImpersonate := values[0]
 				if userToImpersonate != "" {
-					result, err := subjectAccessReview.checkRbacImpersonationAuthorization("users", userToImpersonate, requester)
+					result, err := subjectAccessReview.checkRbacImpersonationAuthorization(ctx, "users", userToImpersonate, requester)
 					if err != nil {
 						return nil, err
 					} else {
@@ -78,7 +92,7 @@ func (subjectAccessReview *SubjectAccessReview) CheckAuthorizedForImpersonation(
 
 				for i := range values {
 					groupName := values[i]
-					result, err := subjectAccessReview.checkRbacImpersonationAuthorization("groups", groupName, requester)
+					result, err := subjectAccessReview.checkRbacImpersonationAuthorization(ctx, "groups", groupName, requester)
 					if err != nil {
 						return nil, err
 					} else {
@@ -91,7 +105,7 @@ func (subjectAccessReview *SubjectAccessReview) CheckAuthorizedForImpersonation(
 				}
 			} else if keyToCheck == "impersonate-uid" {
 				uidToImpersonate := values[0]
-				result, err := subjectAccessReview.checkRbacImpersonationAuthorization("uids", uidToImpersonate, requester)
+				result, err := subjectAccessReview.checkRbacImpersonationAuthorization(ctx, "uids", uidToImpersonate, requester)
 				if err != nil {
 					return nil, err
 				} else {
@@ -106,7 +120,7 @@ func (subjectAccessReview *SubjectAccessReview) CheckAuthorizedForImpersonation(
 				// the extra name MUST be lowercase...so we'll force to lowercase for the rbac check
 				extraName := strings.ToLower(key[18:])
 				for i := range values {
-					result, err := subjectAccessReview.checkRbacImpersonationAuthorization("userextras/"+extraName, values[i], requester)
+					result, err := subjectAccessReview.checkRbacImpersonationAuthorization(ctx, "userextras/"+extraName, values[i], requester)
 					if err != nil {
 						return nil, err
 					} else {
@@ -159,7 +173,7 @@ func (subjectAccessReview *SubjectAccessReview) CheckAuthorizedForImpersonation(
 }
 
 // submit a SubjectAccessReview request to the API server to validate that impersonation can occur
-func (subjectAccessReview *SubjectAccessReview) checkRbacImpersonationAuthorization(resource string, name string, requester user.Info) (bool, error) {
+func (subjectAccessReview *SubjectAccessReview) checkRbacImpersonationAuthorization(ctx context.Context, resource string, name string, requester user.Info) (bool, error) {
 	extras := map[string]v1.ExtraValue{}
 	var group string
 	var subresource string
@@ -193,10 +207,10 @@ func (subjectAccessReview *SubjectAccessReview) checkRbacImpersonationAuthorizat
 		},
 	}
 
-	reviewResult, err := subjectAccessReview.subjectAccessReviewer.Create(context.TODO(), &clusterSubjectAccessReview, metav1.CreateOptions{})
+	reviewResult, err := subjectAccessReview.subjectAccessReviewer.Create(ctx, &clusterSubjectAccessReview, metav1.CreateOptions{})
 
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("create SubjectAccessReview: %w", err)
 	} else {
 		return reviewResult.Status.Allowed, nil
 	}
