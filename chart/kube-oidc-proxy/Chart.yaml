@@ -6,7 +6,10 @@ description: >-
   Supports single-issuer (--oidc-* flags) and multi-issuer
   (AuthenticationConfiguration) modes.
 type: application
-version: 0.4.0
+# The chart and image share a single version. On a tagged release the
+# automation overrides both `version` and `appVersion` from the git tag
+# (vX.Y.Z); the values here are the development baseline.
+version: 1.1.0
 appVersion: "1.1.0"
 home: https://github.com/rafpe/kube-oidc-proxy
 sources:
@@ -14,3 +17,19 @@ sources:
 maintainers:
   - name: RafPe
     url: https://github.com/RafPe
+annotations:
+  # Metadata consumed by Artifact Hub (https://artifacthub.io) to enrich the
+  # chart listing. See docs/artifact-hub.md for the one-time repo registration.
+  artifacthub.io/category: security
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/prerelease: "false"
+  artifacthub.io/links: |
+    - name: Source
+      url: https://github.com/RafPe/kube-oidc-proxy
+    - name: Documentation
+      url: https://github.com/RafPe/kube-oidc-proxy/tree/main/docs
+    - name: Security policy
+      url: https://github.com/RafPe/kube-oidc-proxy/blob/main/SECURITY.md
+  artifacthub.io/images: |
+    - name: kube-oidc-proxy
+      image: ghcr.io/rafpe/kube-oidc-proxy:1.1.0
