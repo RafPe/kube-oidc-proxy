@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 
 	authuser "k8s.io/apiserver/pkg/authentication/user"
@@ -135,23 +136,16 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 			}
 		}
 
+		// Defensively copy the authenticator-owned collections before enriching
+		// them. user.Info implementations are not required to return fresh
+		// slices/maps, so appending to GetGroups() or writing into GetExtra()
+		// could otherwise mutate cached or shared authenticator state.
+		groups := slices.Clone(user.GetGroups())
+		extra := cloneExtra(user.GetExtra())
+
 		// Ensure group contains allauthenticated builtin
-		allAuthFound := false
-		groups := user.GetGroups()
-		for _, elem := range groups {
-			if elem == authuser.AllAuthenticated {
-				allAuthFound = true
-				break
-			}
-		}
-		if !allAuthFound {
+		if !slices.Contains(groups, authuser.AllAuthenticated) {
 			groups = append(groups, authuser.AllAuthenticated)
-		}
-
-		extra := user.GetExtra()
-
-		if extra == nil {
-			extra = make(map[string][]string)
 		}
 
 		// If client IP user extra header option set then append the remote client
@@ -178,14 +172,8 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 			// so they're recorded in the API server's audit log
 			extra["originaluser.jetstack.io-user"] = []string{userForContext.GetName()}
 
-			numGroups := len(userForContext.GetGroups())
-			if numGroups > 0 {
-				groupNames := make([]string, numGroups)
-				for i, groupName := range userForContext.GetGroups() {
-					groupNames[i] = groupName
-				}
-
-				extra["originaluser.jetstack.io-groups"] = groupNames
+			if origGroups := userForContext.GetGroups(); len(origGroups) > 0 {
+				extra["originaluser.jetstack.io-groups"] = slices.Clone(origGroups)
 			}
 
 			if userForContext.GetUID() != "" {
@@ -262,25 +250,39 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			http.Error(rw, subjectaccessreview.ErrorNoImpersonationUserFound.Error(), http.StatusInternalServerError)
 			return
 
+			// Requester is not authorized to impersonate the requested identity.
+			// Classified by typed error (errors.Is), not by message text.
+		case errors.Is(err, subjectaccessreview.ErrImpersonationNotAllowed):
+			klog.V(2).Infof("impersonation not authorized (%s): %s", r.RemoteAddr, err)
+			http.Error(rw, err.Error(), http.StatusForbidden)
+			return
+
 			// Client canceled the request (SAR or reverse-proxy). Nothing to
 			// write back; the connection is already going away.
 		case errors.Is(err, stdcontext.Canceled):
 			klog.V(4).Infof("request canceled by client: %s", r.RemoteAddr)
 			return
 
-			// Server or unknown error
+			// Server or unknown error. Details stay server-side; the client
+			// receives an empty 500 body.
 		default:
-
-			if strings.Contains(err.Error(), "not allowed to impersonate") {
-				klog.V(2).Infof("%s (%s)", err.Error(), r.RemoteAddr)
-				http.Error(rw, err.Error(), http.StatusForbidden)
-			} else {
-				klog.Errorf("unknown error (%s): %s", r.RemoteAddr, err)
-				http.Error(rw, "", http.StatusInternalServerError)
-			}
-
+			klog.Errorf("unknown error (%s): %s", r.RemoteAddr, err)
+			http.Error(rw, "", http.StatusInternalServerError)
 		}
 	}
+}
+
+// cloneExtra returns a deep copy of an authenticator-owned extra map: both the
+// map and every value slice are freshly allocated, so subsequent enrichment can
+// append to a value slice without mutating collections owned by the
+// authenticator or the configuration caller. A nil input yields a non-nil,
+// ready-to-write map.
+func cloneExtra(in map[string][]string) map[string][]string {
+	out := make(map[string][]string, len(in))
+	for k, v := range in {
+		out[k] = slices.Clone(v)
+	}
+	return out
 }
 
 func (p *Proxy) hasImpersonation(header http.Header) bool {
