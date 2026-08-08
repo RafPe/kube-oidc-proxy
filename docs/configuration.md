@@ -45,6 +45,7 @@ All ignored when `--authentication-config` is set.
 | `--disable-impersonation` | `false` | (Alpha) Forward authenticated requests as-is, without impersonation. |
 | `--extra-user-header-client-ip` | `false` | (Alpha) Add `Impersonate-Extra-Remote-Client-IP` with the request's remote address. |
 | `--extra-user-headers` | — | (Alpha) Extra `key=value` user headers to add to the impersonated request. |
+| `--subject-access-review-timeout` | `5s` | Timeout for authorizing inbound impersonation via `SubjectAccessReview` — a single shared budget across all SAR calls for one request (not per-call). Must be greater than 0. |
 
 ### Serving / TLS & misc
 

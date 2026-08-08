@@ -105,6 +105,10 @@ func (o *Options) Validate(cmd *cobra.Command) error {
 		errs = append(errs, errors.New("cannot add extra user headers when impersonation disabled"))
 	}
 
+	if o.App.SubjectAccessReviewTimeout <= 0 {
+		errs = append(errs, fmt.Errorf("--subject-access-review-timeout must be greater than 0, got %s", o.App.SubjectAccessReviewTimeout))
+	}
+
 	if len(errs) > 0 {
 		return k8sErrors.NewAggregate(errs)
 	}

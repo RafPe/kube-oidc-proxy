@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/pflag"
 	cliflag "k8s.io/component-base/cli/flag"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 	"github.com/rafpe/kube-oidc-proxy/pkg/util/flags"
 )
 
@@ -17,6 +18,8 @@ type KubeOIDCProxyOptions struct {
 	ReadinessRequireAllIssuers bool
 
 	FlushInterval time.Duration
+
+	SubjectAccessReviewTimeout time.Duration
 
 	ExtraHeaderOptions ExtraHeaderOptions
 	TokenPassthrough   TokenPassthroughOptions
@@ -57,6 +60,12 @@ func (k *KubeOIDCProxyOptions) AddFlags(fs *pflag.FlagSet) *KubeOIDCProxyOptions
 			"no periodic flushing is done. A negative value means to flush "+
 			"immediately after each write. Streaming requests such as 'kubectl exec' "+
 			"will ignore this option and flush immediately.")
+
+	fs.DurationVar(&k.SubjectAccessReviewTimeout, "subject-access-review-timeout", subjectaccessreview.DefaultTimeout,
+		"Timeout applied when authorizing a request's impersonation via "+
+			"SubjectAccessReviews. This is a single shared budget across all SAR "+
+			"calls for one request (not per-call), derived from the inbound request "+
+			"context so client cancellation still propagates. Must be greater than 0.")
 
 	k.TokenPassthrough.AddFlags(fs)
 	k.ExtraHeaderOptions.AddFlags(fs)

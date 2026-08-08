@@ -275,7 +275,7 @@ func newTestProxy(t *testing.T) *fakeProxy {
 	fakeToken := mocks.NewMockToken(ctrl)
 	fakeRT := &fakeRT{t: t}
 	fakeSubjectAccessReviewer := fakesubjectaccessreview.New(nil)
-	subjectAccessReview, _ := subjectaccessreview.New(fakeSubjectAccessReviewer)
+	subjectAccessReview, _ := subjectaccessreview.New(fakeSubjectAccessReviewer, subjectaccessreview.DefaultTimeout)
 
 	p := &fakeProxy{
 		ctrl:      ctrl,
