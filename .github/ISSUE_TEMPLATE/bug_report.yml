@@ -1,0 +1,59 @@
+name: Bug report
+description: Report a problem with kube-oidc-proxy
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a report.
+
+        **Do not use this form for security vulnerabilities.** Report those
+        privately — see [SECURITY.md](https://github.com/RafPe/kube-oidc-proxy/blob/main/SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected to happen instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The smallest set of steps that reliably triggers the issue.
+      placeholder: |
+        1. Deploy with values '...'
+        2. Send request '...'
+        3. See error
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / image tag
+      placeholder: ghcr.io/rafpe/kube-oidc-proxy:1.1.0
+    validations:
+      required: true
+  - type: input
+    id: k8s
+    attributes:
+      label: Kubernetes version & provider
+      placeholder: "EKS 1.30 / kind 0.23 / ..."
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Authentication mode
+      options:
+        - single-issuer (--oidc-issuer-url)
+        - multi-issuer (--authentication-config)
+        - not sure
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs and configuration
+      description: Proxy logs, flags/values, and AuthenticationConfiguration (redact tokens and secrets).
+      render: shell
