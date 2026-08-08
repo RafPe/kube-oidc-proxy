@@ -100,7 +100,39 @@ Configuration errors always fail startup, regardless of this flag.
 
 ## Diagrams
 
-<!-- C4 model diagrams (Sub-project 3) will be added here. -->
+These [C4 model](https://c4model.com/) views zoom in from the system in its
+environment down to the request-handling components. For the runtime view of a
+single request, see [Request flow](#request-flow) above.
+
+The diagrams are generated from [`c4/workspace.dsl`](./c4/workspace.dsl)
+(Structurizr DSL) — edit the model there and re-render rather than editing the
+images by hand.
+
+### System context (C4 level 1)
+
+Who talks to the proxy and what it depends on: the user's `kubectl` presents an
+ID token, the proxy verifies it against the external OIDC issuer(s), and then
+impersonates the mapped user to the external Kubernetes API server.
+
+![System context — kube-oidc-proxy](./c4/diagrams/structurizr-SystemContext.png)
+
+### Containers (C4 level 2)
+
+Inside the proxy: TLS is terminated by the serving layer, which drives the
+handler chain. The authenticator validates the token against the union of
+issuers; a token-passthrough fallback and the inbound-`--as` check both consult
+the API server, and the readiness probe watches each issuer's JWKS
+initialization through the authenticator.
+
+![Containers — kube-oidc-proxy](./c4/diagrams/structurizr-Containers.png)
+
+### Handler-chain components (C4 level 3)
+
+A structural view of the serving layer's handler chain, wrapped in execution
+order authenticate then impersonate then audit then reverse proxy. Each stage
+maps to a handler in `pkg/proxy`.
+
+![Components — kube-oidc-proxy](./c4/diagrams/structurizr-Components.png)
 
 ## See also
 

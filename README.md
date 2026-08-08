@@ -75,7 +75,11 @@ Full guide: [docs/multi-issuer.md](./docs/multi-issuer.md).
 
 ## How it works
 
-The proxy sits in front of the API server, validates the bearer token against one or more OIDC issuers, and maps the token's claims to a Kubernetes identity. It then forwards the request using its **own ServiceAccount** plus impersonation headers for the mapped user. The API server evaluates **RBAC** for that user as usual — OIDC login without ever touching the `--oidc-*` flags. See [docs/architecture.md](./docs/architecture.md) for the request-flow diagram and union authenticator.
+The proxy sits in front of the API server, validates the bearer token against one or more OIDC issuers, and maps the token's claims to a Kubernetes identity. It then forwards the request using its **own ServiceAccount** plus impersonation headers for the mapped user. The API server evaluates **RBAC** for that user as usual — OIDC login without ever touching the `--oidc-*` flags.
+
+![kube-oidc-proxy — component view](./docs/c4/diagrams/structurizr-Components.png)
+
+See [docs/architecture.md](./docs/architecture.md) for the full C4 model (system context, containers) and the request-flow sequence.
 
 ## Features
 
