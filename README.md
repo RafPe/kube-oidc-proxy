@@ -3,6 +3,7 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 [![Go Report Card](https://goreportcard.com/badge/github.com/rafpe/kube-oidc-proxy)](https://goreportcard.com/report/github.com/rafpe/kube-oidc-proxy)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/RafPe/kube-oidc-proxy/badge)](https://securityscorecards.dev/viewer/?uri=github.com/RafPe/kube-oidc-proxy)
+[![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/kube-oidc-proxy)](https://artifacthub.io/packages/search?repo=kube-oidc-proxy)
 
 # kube-oidc-proxy
 
