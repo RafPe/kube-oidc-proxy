@@ -43,8 +43,9 @@ All ignored when `--authentication-config` is set.
 | `--token-passthrough` | `false` | (Alpha) Bearer tokens that fail OIDC validation are tried via TokenReview and, if valid, forwarded as-is with no impersonation. |
 | `--token-passthrough-audiences` | — | (Alpha) Allowed audiences for passthrough tokens. |
 | `--disable-impersonation` | `false` | (Alpha) Forward authenticated requests as-is, without impersonation. |
-| `--extra-user-header-client-ip` | `false` | (Alpha) Add `Impersonate-Extra-Remote-Client-IP` with the request's remote address. |
+| `--extra-user-header-client-ip` | `false` | (Alpha) Add `Impersonate-Extra-Remote-Client-IP` with the request's resolved client IP. |
 | `--extra-user-headers` | — | (Alpha) Extra `key=value` user headers to add to the impersonated request. |
+| `--trusted-proxies` | — | Comma-separated trusted proxy CIDRs (IPv4/IPv6). `X-Forwarded-For` is honoured for client-IP resolution only when the immediate peer is within one of these networks. Empty (default) trusts no proxy. See [Trusted proxies and client IP](#trusted-proxies-and-client-ip). |
 | `--subject-access-review-timeout` | `5s` | Timeout for authorizing inbound impersonation via `SubjectAccessReview` — a single shared budget across all SAR calls for one request (not per-call). Must be greater than 0. |
 
 ### Serving / TLS & misc
@@ -137,9 +138,10 @@ details to the target server. Two options are supported.
 --extra-user-header-client-ip
 ```
 
-Proxied requests then carry `Impersonate-Extra-Remote-Client-Ip: <REMOTE_ADDR>`.
-If `X-Forwarded-For` is present, its value is used instead (the source IP may
-otherwise be a proxy, not the real client).
+Proxied requests then carry `Impersonate-Extra-Remote-Client-Ip: <CLIENT_IP>`,
+where `<CLIENT_IP>` is the [resolved client IP](#trusted-proxies-and-client-ip).
+By default this is the direct peer address; `X-Forwarded-For` is only consulted
+when the peer is a configured trusted proxy.
 
 **Arbitrary headers** — comma-separated `key=value` pairs; a key may repeat to
 carry multiple values:
@@ -154,6 +156,53 @@ Proxied requests then carry:
 Impersonate-Extra-Key1: foo,bar
 Impersonate-Extra-Key2: foo
 ```
+
+## Trusted proxies and client IP
+
+The proxy resolves a single **client IP** per request and uses it consistently
+for both the per-request access log (`src_ip`) and, when
+`--extra-user-header-client-ip` is set, the `Impersonate-Extra-Remote-Client-IP`
+header forwarded to the API server.
+
+### Resolution rules
+
+- The **direct peer** (`RemoteAddr`, the TCP source of the connection) is always
+  authoritative.
+- `X-Forwarded-For` is honoured **only when the immediate peer's address falls
+  within a configured `--trusted-proxies` CIDR**. The chain is then walked from
+  the hop nearest the proxy toward the origin, trusted hops are skipped, and the
+  first untrusted address is taken as the client.
+- If the peer is not trusted, if no proxies are configured, or if a forwarded
+  entry is malformed, the direct peer is used.
+- Only `X-Forwarded-For` is parsed. The RFC 7239 `Forwarded` header is **not**
+  honoured.
+
+### Default: trust nothing
+
+`--trusted-proxies` defaults to empty. With no trusted proxies configured, the
+proxy **never** trusts `X-Forwarded-For` and always uses the direct peer as the
+client IP. This is the safe default.
+
+> [!WARNING]
+> `X-Forwarded-For` is a client-supplied header. If the proxy honoured it
+> unconditionally, any client connecting directly could forge its own client IP —
+> poisoning audit logs and the `Remote-Client-IP` impersonation extra. Configure
+> `--trusted-proxies` **only** with the addresses of load balancers or reverse
+> proxies you operate directly in front of `kube-oidc-proxy`. Never include
+> untrusted or client-reachable networks.
+
+### Deployment topology
+
+- **No proxy in front** (clients reach the proxy directly): leave
+  `--trusted-proxies` empty. The direct peer is the client.
+- **Behind a load balancer / ingress that sets `X-Forwarded-For`**: set
+  `--trusted-proxies` to the CIDR(s) the proxy sees those hops arriving from
+  (for example the pod/Service network or the LB's egress range), so the real
+  client IP is recovered from the forwarded chain. Example:
+
+  ```
+  --trusted-proxies=10.0.0.0/8,192.168.0.0/16,fd00::/8
+  ```
 
 ## Auditing
 
