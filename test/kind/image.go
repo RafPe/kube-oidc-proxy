@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -98,7 +97,7 @@ func (k *Kind) loadImage(binPath, mainPath, image, dockerfilePath string, extraB
 		return err
 	}
 
-	tmpDir, err := ioutil.TempDir(os.TempDir(), "kube-oidc-proxy-e2e")
+	tmpDir, err := os.MkdirTemp(os.TempDir(), "kube-oidc-proxy-e2e")
 	if err != nil {
 		return err
 	}
@@ -117,7 +116,7 @@ func (k *Kind) loadImage(binPath, mainPath, image, dockerfilePath string, extraB
 		return err
 	}
 
-	b, err := ioutil.ReadFile(imageArchive)
+	b, err := os.ReadFile(imageArchive)
 	if err != nil {
 		return err
 	}

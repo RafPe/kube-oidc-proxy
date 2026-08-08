@@ -14,23 +14,15 @@ help:  ## display this help
 
 .PHONY: help build docker_build test depend verify all clean generate e2e e2e-clean
 
-UNAME_S := $(shell uname -s)
-GOLANGCILINT_VERSION := 1.21.0
+# golangci-lint is installed via the upstream, GOOS/GOARCH-aware installer,
+# pinned to a supported v2 release. Keep this in lockstep with the version the
+# CI lint job pins (see .github/workflows/test.yaml) so local and CI agree.
+GOLANGCILINT_VERSION := v2.12.2
 # kubectl version used only as a download fallback when no system kubectl is on
 # PATH (the e2e suite prefers the host's kubectl, see the $(BINDIR)/kubectl rule).
 KUBECTL_VERSION ?= v1.31.4
 KUBECTL_OS   := $(shell go env GOOS)
 KUBECTL_ARCH := $(shell go env GOARCH)
-ifeq ($(UNAME_S),Linux)
-	SHASUM := sha256sum -c
-	GOLANGCILINT_URL := https://github.com/golangci/golangci-lint/releases/download/v$(GOLANGCILINT_VERSION)/golangci-lint-$(GOLANGCILINT_VERSION)-linux-amd64.tar.gz
-	GOLANGCILINT_HASH := 2c861f8dc56b560474aa27cab0c075991628cc01af3451e27ac82f5d10d5106b
-endif
-ifeq ($(UNAME_S),Darwin)
-	SHASUM := shasum -a 256 -c
-	GOLANGCILINT_URL := https://github.com/golangci/golangci-lint/releases/download/v$(GOLANGCILINT_VERSION)/golangci-lint-$(GOLANGCILINT_VERSION)-darwin-amd64.tar.gz
-	GOLANGCILINT_HASH := 2b2713ec5007e67883aa501eebb81f22abfab0cf0909134ba90f60a066db3760
-endif
 
 $(BINDIR)/mockgen:
 	mkdir -p $(BINDIR)
@@ -51,17 +43,14 @@ $(BINDIR)/kubectl:
 		chmod +x $(BINDIR)/kubectl; \
 	fi
 
-.PHONY: $(BINDIR)/golangci-lint
-$(BINDIR)/golangci-lint: $(BINDIR)/golangci-lint-$(GOLANGCILINT_VERSION)
-	@ln -fs golangci-lint-$(GOLANGCILINT_VERSION) $(BINDIR)/golangci-lint
-
-$(BINDIR)/golangci-lint-$(GOLANGCILINT_VERSION):
-	mkdir -p $(BINDIR) $(BINDIR)/.golangci-lint
-	curl --fail -sL -o $(BINDIR)/.golangci-lint.tar.gz $(GOLANGCILINT_URL)
-	echo "$(GOLANGCILINT_HASH)  $(BINDIR)/.golangci-lint.tar.gz" | $(SHASUM)
-	tar xvf $(BINDIR)/.golangci-lint.tar.gz -C $(BINDIR)/.golangci-lint
-	mv $(BINDIR)/.golangci-lint/*/golangci-lint $(BINDIR)/golangci-lint-$(GOLANGCILINT_VERSION)
-	rm -rf $(BINDIR)/.golangci-lint $(BINDIR)/.golangci-lint.tar.gz
+# Install golangci-lint using the upstream installer, pinned to the release
+# tag. The installer picks the correct GOOS/GOARCH artifact, replacing the old
+# amd64-only, hardcoded-hash download.
+$(BINDIR)/golangci-lint:
+	mkdir -p $(BINDIR)
+	curl --fail -sSfL \
+		https://raw.githubusercontent.com/golangci/golangci-lint/$(GOLANGCILINT_VERSION)/install.sh \
+		| sh -s -- -b $(BINDIR) $(GOLANGCILINT_VERSION)
 
 depend: $(BINDIR)/mockgen $(BINDIR)/kubectl $(BINDIR)/golangci-lint
 
@@ -78,10 +67,10 @@ go_fmt:
 	fi
 
 go_vet:
-	go vet ./cmd
+	go vet ./...
 
 go_lint: $(BINDIR)/golangci-lint ## lint golang code for problems
-	$(BINDIR)/golangci-lint run --timeout 3m
+	$(BINDIR)/golangci-lint run --timeout 5m ./...
 
 clean: ## clean up created files
 	rm -rf \
@@ -90,7 +79,9 @@ clean: ## clean up created files
 		$(CURDIR)/test/e2e/framework/issuer/bin \
 		$(CURDIR)/test/e2e/framework/fake-apiserver/bin
 
-verify: depend verify_boilerplate go_fmt go_vet go_lint ## verify code and mod
+# generate (not just depend) so pkg/mocks/authenticator.go exists before
+# go_vet ./... and go_lint compile the packages that reference it.
+verify: generate verify_boilerplate go_fmt go_vet go_lint ## verify code and mod
 
 generate: depend ## generates mocks and assets files
 	go generate $$(go list ./pkg/... ./cmd/...)
@@ -112,10 +103,15 @@ e2e: $(BINDIR)/kubectl ## run the e2e suite hermetically (creates + destroys its
 	mkdir -p $(ARTIFACTS)
 	@echo "e2e: removing any stale cluster from a previous run"
 	@$(MAKE) --no-print-directory e2e-clean
-	trap '$(MAKE) --no-print-directory e2e-clean' EXIT; \
+	trap '$(MAKE) --no-print-directory e2e-clean' EXIT INT TERM; \
 	KUBE_OIDC_PROXY_ROOT_PATH="$$(pwd)" go test -timeout $(E2E_TIMEOUT) -v --count=1 ./test/e2e/suite/. 2>&1 | tee $(ARTIFACTS)/e2e.log
 
 e2e-clean: ## delete the e2e kind cluster if present (safe to run anytime)
+	@command -v kind >/dev/null 2>&1 || { \
+		echo "e2e-clean: 'kind' not found on PATH; install kind to create or clean the e2e cluster." >&2; \
+		echo "Without it a leftover cluster cannot be removed and 'e2e' would fail with 'node(s) already exist'." >&2; \
+		exit 1; \
+	}
 	@kind delete cluster --name $(E2E_CLUSTER_NAME) >/dev/null 2>&1 || true
 
 build: generate ## build kube-oidc-proxy
