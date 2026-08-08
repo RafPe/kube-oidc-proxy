@@ -103,18 +103,15 @@ func (h *Helper) WaitForDeploymentToDelete(namespace, name string, timeout time.
 				return false, nil
 			}
 
-			foundPods := false
-
 			for _, pod := range pods.Items {
-				if strings.HasPrefix(pod.ObjectMeta.Name, name+"-") {
-					log.Infof("Pod %s/%s still not terminated", namespace, &pod.ObjectMeta.Name)
-					foundPods = true
+				if strings.HasPrefix(pod.Name, name+"-") {
+					log.Infof("Pod %s/%s still not terminated", namespace, pod.Name)
 					return false, nil
 				}
 			}
 
 			log.Infof("All pods for %s/%s terminated", namespace, name)
-			return !foundPods, nil
+			return true, nil
 		}
 
 		if err != nil {

@@ -14,4 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package main
+// This file is a fixture for the boilerplate header checker
+// (hack/boilerplate/boilerplate_test.py); it only needs a valid header. It is a
+// plain (non-main) package so it builds under `go build ./...`.
+package boilerplatetest
