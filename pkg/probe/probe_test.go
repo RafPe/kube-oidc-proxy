@@ -5,8 +5,11 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
+	"runtime"
 	"sync"
 	"testing"
+	"time"
 
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 
@@ -247,10 +250,27 @@ func (timeoutError) Error() string   { return "i/o timeout" }
 func (timeoutError) Timeout() bool   { return true }
 func (timeoutError) Temporary() bool { return true }
 
-func TestRunReturnsBindError(t *testing.T) {
-	// Occupy the wildcard address, then ask Run to bind the same port so the
-	// bind fails. Run listens on 0.0.0.0, so occupy 0.0.0.0 too: a loopback-only
-	// listener would not necessarily collide with a wildcard bind.
+// freePort reserves and immediately releases a wildcard port, returning its
+// number for a subsequent bind. Server.Start binds 0.0.0.0, so reserve 0.0.0.0.
+func freePort(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatalf("reserving port: %v", err)
+	}
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("splitting host/port: %v", err)
+	}
+	if err := ln.Close(); err != nil {
+		t.Fatalf("releasing reserved port: %v", err)
+	}
+	return port
+}
+
+// TestServerStartReturnsBindError verifies Start surfaces a bind failure to the
+// caller synchronously rather than swallowing it inside a goroutine.
+func TestServerStartReturnsBindError(t *testing.T) {
 	occupied, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
 		t.Fatalf("reserving port: %v", err)
@@ -262,7 +282,166 @@ func TestRunReturnsBindError(t *testing.T) {
 		t.Fatalf("splitting host/port: %v", err)
 	}
 
-	if err := Run(port, nil, false, &fakeAuther{}); err == nil {
-		t.Fatal("expected Run to return an error binding an occupied port, got nil")
+	s := NewServer(port, nil, false, &fakeAuther{})
+	if err := s.Start(context.Background()); err == nil {
+		t.Fatal("expected Start to return an error binding an occupied port, got nil")
+	}
+}
+
+// TestServerStartServesAndShutsDown verifies the full lifecycle: the server
+// serves after Start, stops when its context is cancelled, Wait returns nil for
+// the graceful shutdown, and the listener is released (proving the documented
+// stop path actually frees the port).
+func TestServerStartServesAndShutsDown(t *testing.T) {
+	port := freePort(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	s := NewServer(port, nil, false, &fakeAuther{})
+	if err := s.Start(ctx); err != nil {
+		t.Fatalf("Start returned unexpected error: %v", err)
+	}
+
+	// The liveness endpoint has no checks, so it returns 200 once serving.
+	url := "http://127.0.0.1:" + port + "/live"
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("readiness server not serving after Start: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected status from /live: got %d want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	// Cancelling the context must trigger a graceful shutdown; Wait then returns
+	// the normalized (nil) serve error.
+	cancel()
+	if err := s.Wait(); err != nil {
+		t.Fatalf("Wait returned unexpected error after graceful shutdown: %v", err)
+	}
+
+	// The listener must be released: rebinding the same port must now succeed.
+	ln, err := net.Listen("tcp", net.JoinHostPort("0.0.0.0", port))
+	if err != nil {
+		t.Fatalf("listener not released after shutdown, rebind failed: %v", err)
+	}
+	_ = ln.Close()
+}
+
+// TestServerNoGoroutineLeak verifies repeated Start/shutdown cycles do not leak
+// goroutines (the serve and context-watcher goroutines must both exit).
+func TestServerNoGoroutineLeak(t *testing.T) {
+	// Let any goroutines from earlier tests settle first.
+	baseline := stableGoroutines(t)
+
+	for i := 0; i < 20; i++ {
+		port := freePort(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		s := NewServer(port, nil, false, &fakeAuther{})
+		if err := s.Start(ctx); err != nil {
+			cancel()
+			t.Fatalf("Start returned unexpected error: %v", err)
+		}
+		cancel()
+		if err := s.Wait(); err != nil {
+			t.Fatalf("Wait returned unexpected error: %v", err)
+		}
+	}
+
+	if got := stableGoroutines(t); got > baseline {
+		t.Fatalf("goroutine leak across Start/shutdown cycles: baseline=%d got=%d", baseline, got)
+	}
+}
+
+// stableGoroutines polls until the goroutine count stops decreasing, returning
+// the settled value. This avoids flakiness from goroutines still winding down.
+func stableGoroutines(t *testing.T) int {
+	t.Helper()
+	prev := runtime.NumGoroutine()
+	for i := 0; i < 50; i++ {
+		time.Sleep(10 * time.Millisecond)
+		cur := runtime.NumGoroutine()
+		if cur >= prev {
+			return prev
+		}
+		prev = cur
+	}
+	return prev
+}
+
+// concurrentAuther records the maximum number of AuthenticateToken calls in
+// flight simultaneously. It is used to prove the health-check lock is not held
+// across the authenticator call (#53).
+type concurrentAuther struct {
+	mu      sync.Mutex
+	current int
+	max     int
+
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (c *concurrentAuther) AuthenticateToken(_ context.Context, _ string) (*authenticator.Response, bool, error) {
+	c.mu.Lock()
+	c.current++
+	if c.current > c.max {
+		c.max = c.current
+	}
+	c.mu.Unlock()
+
+	c.entered <- struct{}{}
+	<-c.release
+
+	c.mu.Lock()
+	c.current--
+	c.mu.Unlock()
+
+	// Keep the issuer pending so it is probed on every Check.
+	return nil, false, errors.New("oidc: authenticator not initialized")
+}
+
+func (c *concurrentAuther) maxConcurrent() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.max
+}
+
+// TestCheckDoesNotHoldLockDuringAuth verifies the authenticator call runs
+// lock-free: two concurrent Check calls must be able to sit inside
+// AuthenticateToken simultaneously. If h.mu were held across the call, the
+// second Check would block at entry and the two would serialize (max=1),
+// causing the barrier read below to time out.
+func TestCheckDoesNotHoldLockDuringAuth(t *testing.T) {
+	issuerA := IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"}
+	auther := &concurrentAuther{
+		entered: make(chan struct{}, 2),
+		release: make(chan struct{}),
+	}
+	h := newTestHealthCheckWithAuther(true, auther, issuerA)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = h.Check()
+		}()
+	}
+
+	// Both Check calls must reach the authenticator concurrently.
+	for i := 0; i < 2; i++ {
+		select {
+		case <-auther.entered:
+		case <-time.After(2 * time.Second):
+			close(auther.release)
+			t.Fatal("only one Check reached the authenticator: lock held across auth call")
+		}
+	}
+
+	close(auther.release)
+	wg.Wait()
+
+	if got := auther.maxConcurrent(); got < 2 {
+		t.Fatalf("expected >=2 concurrent authenticator calls, got %d", got)
 	}
 }

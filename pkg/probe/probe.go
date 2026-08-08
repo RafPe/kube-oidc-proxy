@@ -18,6 +18,10 @@ import (
 
 const (
 	timeout = time.Second * 10
+
+	// shutdownTimeout bounds the graceful shutdown of the readiness server so a
+	// stuck connection cannot block process teardown indefinitely.
+	shutdownTimeout = time.Second * 5
 )
 
 // transientMarkers are substrings that unambiguously identify a transient
@@ -51,7 +55,24 @@ type HealthCheck struct {
 	initialized map[string]bool
 }
 
-func Run(port string, issuers []IssuerReadiness, requireAll bool, oidcAuther authenticator.Token) error {
+// Server owns the readiness HTTP listener and gives it an explicit lifecycle:
+// a caller Starts it (binding synchronously), the server serves until the
+// supplied context is cancelled, and Wait reports the terminal serve error.
+type Server struct {
+	hc  *HealthCheck
+	srv *http.Server
+
+	// served is closed once Serve returns; err holds the terminal serve error
+	// (nil after a clean shutdown). Closing served happens-after the write to
+	// err, so Wait observes err safely without additional synchronization.
+	served chan struct{}
+	err    error
+}
+
+// NewServer builds a readiness Server that probes the given issuers via
+// oidcAuther and serves the readiness endpoint on the given port. It does not
+// bind or serve until Start is called.
+func NewServer(port string, issuers []IssuerReadiness, requireAll bool, oidcAuther authenticator.Token) *Server {
 	h := &HealthCheck{
 		handler:     healthcheck.NewHandler(),
 		oidcAuther:  oidcAuther,
@@ -62,20 +83,68 @@ func Run(port string, issuers []IssuerReadiness, requireAll bool, oidcAuther aut
 
 	h.handler.AddReadinessCheck("secure serving", h.Check)
 
-	// Bind synchronously so a failure to acquire the port is surfaced to the
-	// caller at startup rather than being swallowed inside the goroutine.
-	ln, err := net.Listen("tcp", net.JoinHostPort("0.0.0.0", port))
+	return &Server{
+		hc: h,
+		srv: &http.Server{
+			Addr:    net.JoinHostPort("0.0.0.0", port),
+			Handler: h.handler,
+		},
+		served: make(chan struct{}),
+	}
+}
+
+// Start binds the readiness listener synchronously so a failure to acquire the
+// port is surfaced to the caller at startup rather than being swallowed inside
+// a goroutine. On success it serves in the background and gracefully shuts the
+// server down (bounded by shutdownTimeout) once ctx is cancelled. Start returns
+// once the listener is bound; use Wait to block on the terminal serve error.
+func (s *Server) Start(ctx context.Context) error {
+	ln, err := net.Listen("tcp", s.srv.Addr)
 	if err != nil {
-		return fmt.Errorf("readiness probe failed to listen on port %s: %w", port, err)
+		return fmt.Errorf("readiness probe failed to listen on %s: %w", s.srv.Addr, err)
 	}
 
 	go func() {
-		if err := http.Serve(ln, h.handler); err != nil {
-			klog.Errorf("ready probe listener failed: %s", err)
+		serveErr := s.srv.Serve(ln)
+		// A graceful shutdown is expected, not a failure.
+		if errors.Is(serveErr, http.ErrServerClosed) {
+			serveErr = nil
+		}
+		s.err = serveErr
+		close(s.served)
+	}()
+
+	// Bridge context cancellation to a bounded graceful shutdown. This goroutine
+	// exits either when ctx is cancelled or when serving has already stopped, so
+	// it never outlives the server (no leak across repeated Start/Shutdown).
+	go func() {
+		select {
+		case <-ctx.Done():
+			if err := s.Shutdown(); err != nil {
+				klog.Errorf("readiness probe shutdown error: %s", err)
+			}
+		case <-s.served:
 		}
 	}()
 
 	return nil
+}
+
+// Shutdown gracefully stops the readiness server with a bounded timeout. It is
+// safe to call more than once and is invoked automatically when the context
+// passed to Start is cancelled.
+func (s *Server) Shutdown() error {
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	return s.srv.Shutdown(ctx)
+}
+
+// Wait blocks until the server has stopped serving and returns the terminal
+// serve error, with http.ErrServerClosed normalized to nil. It may be called
+// by multiple goroutines.
+func (s *Server) Wait() error {
+	<-s.served
+	return s.err
 }
 
 // isNotInitialized reports whether err indicates the issuer's authenticator has
@@ -115,15 +184,21 @@ func (h *HealthCheck) Check() error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
+	// Snapshot the issuers still needing a probe under the lock, then release it
+	// so the potentially slow AuthenticateToken calls run lock-free. No blocking
+	// authenticator call may run while h.mu is held (#53).
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	var pending []string
+	toProbe := make([]IssuerReadiness, 0, len(h.issuers))
 	for _, issuer := range h.issuers {
-		if h.initialized[issuer.IssuerURL] {
-			continue
+		if !h.initialized[issuer.IssuerURL] {
+			toProbe = append(toProbe, issuer)
 		}
+	}
+	h.mu.Unlock()
 
+	// Probe each not-yet-initialized issuer without holding the lock.
+	var newlyInitialized, pending []string
+	for _, issuer := range toProbe {
 		_, _, err := h.oidcAuther.AuthenticateToken(ctx, issuer.FakeJWT)
 		// The issuer counts as initialized only once its authenticator reaches
 		// token verification. A "not initialized" signal (JWKS not fetched yet)
@@ -133,9 +208,19 @@ func (h *HealthCheck) Check() error {
 			pending = append(pending, issuer.IssuerURL)
 			continue
 		}
+		newlyInitialized = append(newlyInitialized, issuer.IssuerURL)
+	}
 
-		h.initialized[issuer.IssuerURL] = true
-		klog.Infof("OIDC issuer initialized: %s (%d/%d ready)", issuer.IssuerURL, len(h.initialized), len(h.issuers))
+	// Re-acquire the lock to record results and evaluate readiness.
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	for _, issuerURL := range newlyInitialized {
+		if h.initialized[issuerURL] {
+			continue
+		}
+		h.initialized[issuerURL] = true
+		klog.Infof("OIDC issuer initialized: %s (%d/%d ready)", issuerURL, len(h.initialized), len(h.issuers))
 	}
 
 	if len(pending) > 0 {

@@ -51,7 +51,7 @@ type errorHandlerFn func(http.ResponseWriter, *http.Request, error)
 
 type Proxy struct {
 	oidcRequestAuther     *bearertoken.Authenticator
-	tokenAuther           authenticator.Token
+	tokenAuthenticator    authenticator.Token
 	tokenReviewer         *tokenreview.TokenReview
 	subjectAccessReviewer *subjectaccessreview.SubjectAccessReview
 	secureServingInfo     *server.SecureServingInfo
@@ -67,30 +67,84 @@ type Proxy struct {
 	handleError errorHandlerFn
 }
 
-func New(restConfig *rest.Config,
-	tokenAuther authenticator.Token,
-	auditOptions *options.AuditOptions,
-	tokenReviewer *tokenreview.TokenReview,
-	subjectAccessReviewer *subjectaccessreview.SubjectAccessReview,
-	ssinfo *server.SecureServingInfo,
-	config *Config) (*Proxy, error) {
+// Dependencies bundles the collaborators a Proxy needs. Using a named struct
+// keeps call sites self-documenting and lets New validate required
+// dependencies up front rather than failing on the first request.
+//
+// Ownership: New takes ownership of the Config value (it copies it, including
+// the ExtraUserHeaders map, so later mutation of the caller's Config does not
+// change proxy behavior). The remaining pointers are collaborators the Proxy
+// borrows for its lifetime; it does not close or mutate them. The Proxy creates
+// and owns its auditor and shutdown hooks internally.
+type Dependencies struct {
+	RestConfig            *rest.Config
+	TokenAuthenticator    authenticator.Token
+	AuditOptions          *options.AuditOptions
+	TokenReviewer         *tokenreview.TokenReview
+	SubjectAccessReviewer *subjectaccessreview.SubjectAccessReview
+	SecureServingInfo     *server.SecureServingInfo
+	Config                *Config
+}
 
-	auditor, err := audit.New(auditOptions, config.ExternalAddress, ssinfo)
+// New validates deps and constructs a Proxy. Invalid configurations fail here,
+// at construction, rather than on the first request.
+func New(deps Dependencies) (*Proxy, error) {
+	if deps.RestConfig == nil {
+		return nil, errors.New("proxy: RestConfig is required")
+	}
+	if deps.TokenAuthenticator == nil {
+		return nil, errors.New("proxy: TokenAuthenticator is required")
+	}
+	if deps.SubjectAccessReviewer == nil {
+		return nil, errors.New("proxy: SubjectAccessReviewer is required")
+	}
+	if deps.SecureServingInfo == nil {
+		return nil, errors.New("proxy: SecureServingInfo is required")
+	}
+	if deps.Config == nil {
+		return nil, errors.New("proxy: Config is required")
+	}
+	// Reject inconsistent combinations: token-review handling has no reviewer to
+	// call, so enabling it without one can never work.
+	if deps.Config.TokenReview && deps.TokenReviewer == nil {
+		return nil, errors.New("proxy: TokenReview enabled but no TokenReviewer provided")
+	}
+
+	// Copy the Config and its mutable map at the construction boundary so that
+	// mutating the caller's Config (or the map it shares) after New cannot alter
+	// proxy behavior.
+	cfg := *deps.Config
+	cfg.ExtraUserHeaders = cloneHeaderMap(deps.Config.ExtraUserHeaders)
+
+	auditor, err := audit.New(deps.AuditOptions, cfg.ExternalAddress, deps.SecureServingInfo)
 	if err != nil {
 		return nil, err
 	}
 
 	return &Proxy{
-		restConfig:            restConfig,
+		restConfig:            deps.RestConfig,
 		hooks:                 hooks.New(),
-		tokenReviewer:         tokenReviewer,
-		subjectAccessReviewer: subjectAccessReviewer,
-		secureServingInfo:     ssinfo,
-		config:                config,
-		oidcRequestAuther:     bearertoken.New(tokenAuther),
-		tokenAuther:           tokenAuther,
+		tokenReviewer:         deps.TokenReviewer,
+		subjectAccessReviewer: deps.SubjectAccessReviewer,
+		secureServingInfo:     deps.SecureServingInfo,
+		config:                &cfg,
+		oidcRequestAuther:     bearertoken.New(deps.TokenAuthenticator),
+		tokenAuthenticator:    deps.TokenAuthenticator,
 		auditor:               auditor,
 	}, nil
+}
+
+// cloneHeaderMap returns a deep copy of a header map so the Proxy never shares
+// mutable state with its caller. A nil input yields nil.
+func cloneHeaderMap(in map[string][]string) map[string][]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string][]string, len(in))
+	for k, vs := range in {
+		out[k] = append([]string(nil), vs...)
+	}
+	return out
 }
 
 func (p *Proxy) Run(stopCh <-chan struct{}) (<-chan struct{}, <-chan struct{}, error) {
@@ -243,7 +297,7 @@ func (p *Proxy) roundTripperForRestConfig(config *rest.Config) (http.RoundTrippe
 
 // Return the proxy OIDC token authenticator
 func (p *Proxy) OIDCTokenAuthenticator() authenticator.Token {
-	return p.tokenAuther
+	return p.tokenAuthenticator
 }
 
 func (p *Proxy) RunPreShutdownHooks() error {
