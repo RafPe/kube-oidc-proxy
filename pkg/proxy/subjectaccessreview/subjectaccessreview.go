@@ -17,25 +17,36 @@ import (
 
 var (
 	ErrorNoImpersonationUserFound = errors.New("no Impersonation-User header found for request")
+
+	// ErrCreateSubjectAccessReview is the sentinel wrapping a failure to submit a
+	// SubjectAccessReview to the API server. Callers can match it with errors.Is;
+	// the underlying error (including context.Canceled/DeadlineExceeded) is wrapped
+	// alongside it so it remains detectable too.
+	ErrCreateSubjectAccessReview = errors.New("create SubjectAccessReview")
 )
 
-// sarTimeout bounds the total time spent authorizing a single request's
-// impersonation via SubjectAccessReviews. It covers the whole sequence of
-// checks, not each call, so a stalled API server cannot hold a client
-// connection open indefinitely (the SAR client inherits rest.Config.Timeout,
-// which defaults to zero).
-const sarTimeout = 10 * time.Second
+// DefaultTimeout is the default value for the SAR authorization budget. It
+// bounds the total time spent authorizing a single request's impersonation via
+// SubjectAccessReviews. It covers the whole sequence of checks, not each call,
+// so a stalled API server cannot hold a client connection open indefinitely
+// (the SAR client inherits rest.Config.Timeout, which defaults to zero).
+const DefaultTimeout = 5 * time.Second
 
 // structure for storing the review data
 type SubjectAccessReview struct {
 	subjectAccessReviewer clientazv1.SubjectAccessReviewInterface
+
+	// sarTimeout is the single shared budget applied across the whole sequence
+	// of SAR checks for one request.
+	sarTimeout time.Duration
 }
 
 // create a new SubjectAccessReview structure
-func New(subjectAccessReviewer clientazv1.SubjectAccessReviewInterface) (*SubjectAccessReview, error) {
+func New(subjectAccessReviewer clientazv1.SubjectAccessReviewInterface, sarTimeout time.Duration) (*SubjectAccessReview, error) {
 
 	return &SubjectAccessReview{
 		subjectAccessReviewer: subjectAccessReviewer,
+		sarTimeout:            sarTimeout,
 	}, nil
 }
 
@@ -46,7 +57,7 @@ func (subjectAccessReview *SubjectAccessReview) CheckAuthorizedForImpersonation(
 	// Derive one shared budget for the whole SAR sequence from the inbound
 	// request context, so client cancellation propagates and a stalled API
 	// server cannot stall the request indefinitely.
-	ctx, cancel := context.WithTimeout(req.Context(), sarTimeout)
+	ctx, cancel := context.WithTimeout(req.Context(), subjectAccessReview.sarTimeout)
 	defer cancel()
 
 	impersonatedUser := req.Header.Get("impersonate-user")
@@ -210,7 +221,7 @@ func (subjectAccessReview *SubjectAccessReview) checkRbacImpersonationAuthorizat
 	reviewResult, err := subjectAccessReview.subjectAccessReviewer.Create(ctx, &clusterSubjectAccessReview, metav1.CreateOptions{})
 
 	if err != nil {
-		return false, fmt.Errorf("create SubjectAccessReview: %w", err)
+		return false, fmt.Errorf("%w: %w", ErrCreateSubjectAccessReview, err)
 	} else {
 		return reviewResult.Status.Allowed, nil
 	}

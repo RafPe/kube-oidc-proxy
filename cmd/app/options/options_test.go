@@ -4,9 +4,12 @@ package options
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 )
 
 func TestOidcFlagsChanged(t *testing.T) {
@@ -104,6 +107,36 @@ func TestValidate_MutualExclusivity(t *testing.T) {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErrSubstr) {
 					t.Errorf("Validate() error = %v, want error containing %q", err, tc.wantErrSubstr)
 				}
+			}
+		})
+	}
+}
+
+func TestValidate_SubjectAccessReviewTimeout(t *testing.T) {
+	const wantErrSubstr = "--subject-access-review-timeout must be greater than 0"
+
+	tests := map[string]struct {
+		timeout time.Duration
+		wantErr bool
+	}{
+		"default is valid":         {timeout: subjectaccessreview.DefaultTimeout, wantErr: false},
+		"custom positive is valid": {timeout: 2 * time.Second, wantErr: false},
+		"zero is rejected":         {timeout: 0, wantErr: true},
+		"negative is rejected":     {timeout: -1 * time.Second, wantErr: true},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			o := New()
+			cmd := &cobra.Command{}
+			o.AddFlags(cmd)
+
+			o.App.SubjectAccessReviewTimeout = tc.timeout
+
+			err := o.Validate(cmd)
+			gotErr := err != nil && strings.Contains(err.Error(), wantErrSubstr)
+			if gotErr != tc.wantErr {
+				t.Errorf("Validate() timeout error present = %v (err=%v), want %v", gotErr, err, tc.wantErr)
 			}
 		})
 	}

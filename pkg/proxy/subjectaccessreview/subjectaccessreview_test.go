@@ -285,7 +285,7 @@ func runTest(t *testing.T, name string, test testT) {
 		extras[key] = value
 	}
 
-	testReviewer, _ := New(fake.New(test.expErrorRbac))
+	testReviewer, _ := New(fake.New(test.expErrorRbac), DefaultTimeout)
 
 	headers := map[string][]string{}
 
@@ -311,12 +311,16 @@ func runTest(t *testing.T, name string, test testT) {
 			Header: headers,
 		}, test.requester)
 
-	// check if the errors match. The backend-error case wraps the sentinel
-	// with %w, so assert with errors.Is there; the other cases build fresh
+	// check if the errors match. The backend-error case wraps both the
+	// production sentinel and the underlying injected error with the multi-%w
+	// verb, so assert errors.Is against both there; the other cases build fresh
 	// message-only errors that are only comparable by value.
 	if test.expErrorRbac != nil {
+		if !errors.Is(err, ErrCreateSubjectAccessReview) {
+			t.Errorf("CheckAuthorizedForImpersonation() error = %v, want errors.Is(%v)", err, ErrCreateSubjectAccessReview)
+		}
 		if !errors.Is(err, errReview) {
-			t.Errorf("CheckAuthorizedForImpersonation() error = %v, want errors.Is(%v)", err, errReview)
+			t.Errorf("CheckAuthorizedForImpersonation() error = %v, want errors.Is(%v) (underlying error must survive multi-%%w wrap)", err, errReview)
 		}
 	} else if !reflect.DeepEqual(test.expErr, err) {
 		t.Errorf("unexpected error, exp=%t got %t", test.expErr, err)
@@ -400,7 +404,7 @@ type sarResult struct {
 // sequence with context.Canceled and does not run further checks.
 func TestCheckAuthorizedForImpersonationCanceled(t *testing.T) {
 	reviewer := &blockingReviewer{entered: make(chan struct{}, 1)}
-	sar, err := New(reviewer)
+	sar, err := New(reviewer, DefaultTimeout)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -448,7 +452,7 @@ func TestCheckAuthorizedForImpersonationCanceled(t *testing.T) {
 // context.DeadlineExceeded and runs at most the first check.
 func TestCheckAuthorizedForImpersonationDeadlineExceeded(t *testing.T) {
 	reviewer := &blockingReviewer{entered: make(chan struct{}, 1)}
-	sar, err := New(reviewer)
+	sar, err := New(reviewer, DefaultTimeout)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -475,6 +479,49 @@ func TestCheckAuthorizedForImpersonationDeadlineExceeded(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("no return after deadline")
+	}
+
+	if got := reviewer.calls.Load(); got != 1 {
+		t.Errorf("SAR Create ran %d times, want exactly 1 (later checks must be skipped)", got)
+	}
+}
+
+// TestCheckAuthorizedForImpersonationConfiguredTimeout verifies that the
+// configured SAR timeout is honored even when the inbound request carries no
+// deadline of its own: a short timeout passed to New bounds a stalled SAR
+// sequence with context.DeadlineExceeded. The 2s guard keeps a short (50ms)
+// budget distinguishable from a longer one that would only expire much later.
+func TestCheckAuthorizedForImpersonationConfiguredTimeout(t *testing.T) {
+	reviewer := &blockingReviewer{entered: make(chan struct{}, 1)}
+	sar, err := New(reviewer, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// context.Background() has no deadline, so only the configured timeout can
+	// abort the blocked SAR call.
+	req := (&http.Request{Header: impersonationHeaders()}).WithContext(context.Background())
+	requester := &user.DefaultInfo{Name: "mmosley", Groups: []string{"group1"}}
+
+	done := make(chan sarResult, 1)
+	go func() {
+		target, err := sar.CheckAuthorizedForImpersonation(req, requester)
+		done <- sarResult{target: target, err: err}
+	}()
+
+	select {
+	case res := <-done:
+		if !errors.Is(res.err, context.DeadlineExceeded) {
+			t.Errorf("error = %v, want errors.Is(context.DeadlineExceeded)", res.err)
+		}
+		if !errors.Is(res.err, ErrCreateSubjectAccessReview) {
+			t.Errorf("error = %v, want errors.Is(ErrCreateSubjectAccessReview)", res.err)
+		}
+		if res.target != nil {
+			t.Errorf("target = %+v, want nil", res.target)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no return after configured timeout; the New() timeout was not honored")
 	}
 
 	if got := reviewer.calls.Load(); got != 1 {
