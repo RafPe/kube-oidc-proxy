@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/heptiolabs/healthcheck"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/klog/v2"
 )
@@ -45,7 +44,6 @@ type IssuerReadiness struct {
 }
 
 type HealthCheck struct {
-	handler    healthcheck.Handler
 	oidcAuther authenticator.Token
 	issuers    []IssuerReadiness
 	requireAll bool
@@ -74,23 +72,38 @@ type Server struct {
 // bind or serve until Start is called.
 func NewServer(port string, issuers []IssuerReadiness, requireAll bool, oidcAuther authenticator.Token) *Server {
 	h := &HealthCheck{
-		handler:     healthcheck.NewHandler(),
 		oidcAuther:  oidcAuther,
 		issuers:     issuers,
 		requireAll:  requireAll,
 		initialized: make(map[string]bool),
 	}
 
-	h.handler.AddReadinessCheck("secure serving", h.Check)
-
 	return &Server{
 		hc: h,
 		srv: &http.Server{
 			Addr:    net.JoinHostPort("0.0.0.0", port),
-			Handler: h.handler,
+			Handler: h.handler(),
 		},
 		served: make(chan struct{}),
 	}
+}
+
+// handler builds the readiness listener's HTTP handler. It exposes a liveness
+// endpoint that is always healthy once the process is serving and a readiness
+// endpoint driven by Check. Unknown paths yield 404 via the ServeMux default.
+func (h *HealthCheck) handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/live", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/ready", func(w http.ResponseWriter, _ *http.Request) {
+		if err := h.Check(); err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	return mux
 }
 
 // Start binds the readiness listener synchronously so a failure to acquire the

@@ -9,13 +9,13 @@ import (
 	"strings"
 	"time"
 
-	log "github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/klog/v2"
 	configv1alpha4 "sigs.k8s.io/kind/pkg/apis/config/v1alpha4"
 	"sigs.k8s.io/kind/pkg/cluster"
 	"sigs.k8s.io/kind/pkg/cluster/nodes"
@@ -99,10 +99,10 @@ func New(rootPath, nodeImage string, masterNodes, workerNodes int) *Kind {
 }
 
 func (k *Kind) Create() error {
-	log.Infof("kind: using k8s node image %q", k.nodeImage)
+	klog.Infof("kind: using k8s node image %q", k.nodeImage)
 
 	// create kind cluster
-	log.Infof("kind: creating kind cluster %q", clusterName)
+	klog.Infof("kind: creating kind cluster %q", clusterName)
 	k.provider = cluster.NewProvider()
 	if err := k.provider.Create(
 		clusterName,
@@ -141,7 +141,7 @@ func (k *Kind) Create() error {
 		return k.errDestroy(fmt.Errorf("failed to wait for DNS pods to become ready: %s", err))
 	}
 
-	log.Infof("kind: cluster ready %q", clusterName)
+	klog.Infof("kind: cluster ready %q", clusterName)
 
 	return nil
 }
@@ -160,7 +160,7 @@ func DeleteCluster(name string) error {
 	// Remove the throwaway kubeconfig on every path, success or error.
 	defer func() {
 		if rmErr := os.Remove(f.Name()); rmErr != nil && !os.IsNotExist(rmErr) {
-			log.Errorf("kind: failed to remove temp kubeconfig %q: %s", f.Name(), rmErr)
+			klog.Errorf("kind: failed to remove temp kubeconfig %q: %s", f.Name(), rmErr)
 		}
 	}()
 
@@ -189,10 +189,10 @@ func DeleteCluster(name string) error {
 func (k *Kind) Destroy() error {
 	if err := k.collectLogs(); err != nil {
 		// Don't hard fail here as we should still attempt to delete the cluster
-		log.Errorf("kind: failed to collect logs: %s", err)
+		klog.Errorf("kind: failed to collect logs: %s", err)
 	}
 
-	log.Infof("kind: destroying cluster %q", clusterName)
+	klog.Infof("kind: destroying cluster %q", clusterName)
 
 	if err := DeleteCluster(clusterName); err != nil {
 		return fmt.Errorf("failed to delete kind cluster: %s", err)
@@ -202,7 +202,7 @@ func (k *Kind) Destroy() error {
 		return fmt.Errorf("failed to delete kubeconfig file: %w", err)
 	}
 
-	log.Infof("kind: destroyed cluster %q", clusterName)
+	klog.Infof("kind: destroyed cluster %q", clusterName)
 
 	return nil
 }
@@ -211,7 +211,7 @@ func (k *Kind) collectLogs() error {
 	provider := cluster.NewProvider()
 	logDir := filepath.Join(k.rootPath, "artifacts", "logs")
 
-	log.Infof("kind: collecting logs to %q", logDir)
+	klog.Infof("kind: collecting logs to %q", logDir)
 
 	if err := os.RemoveAll(logDir); err != nil {
 		return fmt.Errorf("failed to remove old logs directory: %s", err)
@@ -225,7 +225,7 @@ func (k *Kind) collectLogs() error {
 		return fmt.Errorf("failed to collect logs: %s", err)
 	}
 
-	log.Infof("kind: collected logs at %q", logDir)
+	klog.Infof("kind: collected logs at %q", logDir)
 
 	return nil
 }
@@ -254,7 +254,7 @@ func (k *Kind) errDestroy(err error) error {
 }
 
 func (k *Kind) waitForNodesReady() error {
-	log.Infof("kind: waiting for all nodes to become ready...")
+	klog.Infof("kind: waiting for all nodes to become ready...")
 
 	return wait.PollUntilContextTimeout(context.Background(), time.Second*5, time.Minute*10, true, func(ctx context.Context) (bool, error) {
 		nodes, err := k.client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
@@ -263,7 +263,7 @@ func (k *Kind) waitForNodesReady() error {
 		}
 
 		if len(nodes.Items) == 0 {
-			log.Warn("kind: no nodes found - checking again...")
+			klog.Warning("kind: no nodes found - checking again...")
 			return false, nil
 		}
 
@@ -283,7 +283,7 @@ func (k *Kind) waitForNodesReady() error {
 		}
 
 		if len(notReady) > 0 {
-			log.Infof("kind: nodes not ready: %s",
+			klog.Infof("kind: nodes not ready: %s",
 				strings.Join(notReady, ", "))
 			return false, nil
 		}
@@ -293,7 +293,7 @@ func (k *Kind) waitForNodesReady() error {
 }
 
 func (k *Kind) waitForCoreDNSReady() error {
-	log.Infof("kind: waiting for all DNS pods to become ready...")
+	klog.Infof("kind: waiting for all DNS pods to become ready...")
 	return k.waitForPodsReady("kube-system", "k8s-app=kube-dns")
 }
 
@@ -307,7 +307,7 @@ func (k *Kind) waitForPodsReady(namespace, labelSelector string) error {
 		}
 
 		if len(pods.Items) == 0 {
-			log.Warnf("kind: no pods found in namespace %q with selector %q - checking again...",
+			klog.Warningf("kind: no pods found in namespace %q with selector %q - checking again...",
 				namespace, labelSelector)
 			return false, nil
 		}
@@ -321,7 +321,7 @@ func (k *Kind) waitForPodsReady(namespace, labelSelector string) error {
 		}
 
 		if len(notReady) > 0 {
-			log.Infof("kind: pods not ready: %s",
+			klog.Infof("kind: pods not ready: %s",
 				strings.Join(notReady, ", "))
 			return false, nil
 		}

@@ -12,8 +12,6 @@ import (
 	"time"
 
 	"k8s.io/apiserver/pkg/authentication/authenticator"
-
-	"github.com/heptiolabs/healthcheck"
 )
 
 // fakeAuther simulates the union authenticator: tokens listed in notInit
@@ -53,7 +51,6 @@ func (f *fakeAuther) callCount(token string) int {
 
 func newTestHealthCheckWithAuther(requireAll bool, auther authenticator.Token, issuers ...IssuerReadiness) *HealthCheck {
 	return &HealthCheck{
-		handler:     healthcheck.NewHandler(),
 		oidcAuther:  auther,
 		issuers:     issuers,
 		requireAll:  requireAll,

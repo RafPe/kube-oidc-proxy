@@ -4,11 +4,12 @@ package server
 import (
 	"encoding/pem"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
 	"net/http"
+	"os"
 
-	log "github.com/sirupsen/logrus"
+	"k8s.io/klog/v2"
 )
 
 type Server struct {
@@ -18,7 +19,7 @@ type Server struct {
 }
 
 func New(keyFile, certFile string, stopCh <-chan struct{}) (*Server, error) {
-	b, err := ioutil.ReadFile(keyFile)
+	b, err := os.ReadFile(keyFile)
 	if err != nil {
 		return nil, err
 	}
@@ -57,37 +58,37 @@ func (s *Server) Run(bindAddress, listenPort string) (<-chan struct{}, error) {
 
 		err := http.ServeTLS(l, s, s.certFile, s.keyFile)
 		if err != nil {
-			log.Errorf("stopped serving TLS (%s): %s", serveAddr, err)
+			klog.Errorf("stopped serving TLS (%s): %s", serveAddr, err)
 		}
 	}()
 
-	log.Infof("fake API server listening and serving on %s", serveAddr)
+	klog.Infof("fake API server listening and serving on %s", serveAddr)
 
 	return compCh, nil
 }
 
 func (s *Server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
-	log.Infof("(%s) Fake API server received url %s", r.URL, r.RemoteAddr)
+	klog.Infof("(%s) Fake API server received url %s", r.URL, r.RemoteAddr)
 
-	log.Infof("(%s) Request headers:", r.RemoteAddr)
+	klog.Infof("(%s) Request headers:", r.RemoteAddr)
 	for k, vs := range r.Header {
 		for _, v := range vs {
-			log.Infof("(%s) %s: %s", r.RemoteAddr, k, v)
+			klog.Infof("(%s) %s: %s", r.RemoteAddr, k, v)
 			rw.Header().Add(k, v)
 		}
 	}
 
-	body, err := ioutil.ReadAll(r.Body)
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		log.Errorf("failed to read request body: %s", err)
+		klog.Errorf("failed to read request body: %s", err)
 		rw.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
-	log.Infof("(%s) Request Body: %s", r.RemoteAddr, body)
+	klog.Infof("(%s) Request Body: %s", r.RemoteAddr, body)
 
 	if _, err := rw.Write(body); err != nil {
-		log.Errorf("failed to write request body to response: %s", err)
+		klog.Errorf("failed to write request body to response: %s", err)
 		rw.WriteHeader(http.StatusInternalServerError)
 		return
 	}

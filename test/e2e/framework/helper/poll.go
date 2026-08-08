@@ -9,18 +9,18 @@ import (
 	"strings"
 	"time"
 
-	log "github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
 	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/klog/v2"
 )
 
 func (h *Helper) WaitForDeploymentReady(namespace, name string, timeout time.Duration) error {
-	log.Infof("Waiting for Deployment to become ready %s/%s", namespace, name)
+	klog.Infof("Waiting for Deployment to become ready %s/%s", namespace, name)
 
-	err := wait.PollImmediate(time.Second*2, timeout, func() (bool, error) {
-		deploy, err := h.KubeClient.AppsV1().Deployments(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+	err := wait.PollUntilContextTimeout(context.Background(), time.Second*2, timeout, true, func(ctx context.Context) (bool, error) {
+		deploy, err := h.KubeClient.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			return false, err
 		}
@@ -49,10 +49,10 @@ func (h *Helper) WaitForDeploymentReady(namespace, name string, timeout time.Dur
 }
 
 func (h *Helper) WaitForPodReady(namespace, name string, timeout time.Duration) error {
-	log.Infof("Waiting for Pod to become ready %s/%s", namespace, name)
+	klog.Infof("Waiting for Pod to become ready %s/%s", namespace, name)
 
-	err := wait.PollImmediate(time.Second*2, timeout, func() (bool, error) {
-		pod, err := h.KubeClient.CoreV1().Pods(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+	err := wait.PollUntilContextTimeout(context.Background(), time.Second*2, timeout, true, func(ctx context.Context) (bool, error) {
+		pod, err := h.KubeClient.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			return false, err
 		}
@@ -71,7 +71,7 @@ func (h *Helper) WaitForPodReady(namespace, name string, timeout time.Duration) 
 		}
 
 		if !ready {
-			log.Infof("helper: pod not ready %s/%s: %v",
+			klog.Infof("helper: pod not ready %s/%s: %v",
 				pod.Namespace, pod.Name, pod.Status.Conditions)
 			return false, nil
 		}
@@ -91,13 +91,13 @@ func (h *Helper) WaitForPodReady(namespace, name string, timeout time.Duration) 
 }
 
 func (h *Helper) WaitForDeploymentToDelete(namespace, name string, timeout time.Duration) error {
-	log.Infof("Waiting for Deployment to be deleted: %s/%s", namespace, name)
+	klog.Infof("Waiting for Deployment to be deleted: %s/%s", namespace, name)
 
-	err := wait.PollImmediate(time.Second*2, timeout, func() (bool, error) {
-		_, err := h.KubeClient.AppsV1().Deployments(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+	err := wait.PollUntilContextTimeout(context.Background(), time.Second*2, timeout, true, func(ctx context.Context) (bool, error) {
+		_, err := h.KubeClient.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 		if k8sErrors.IsNotFound(err) {
-			log.Infof("Deployment %s/%s deleted, waiting for pods", namespace, name)
-			pods, err := h.KubeClient.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{})
+			klog.Infof("Deployment %s/%s deleted, waiting for pods", namespace, name)
+			pods, err := h.KubeClient.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
 
 			if err != nil {
 				return false, nil
@@ -105,12 +105,12 @@ func (h *Helper) WaitForDeploymentToDelete(namespace, name string, timeout time.
 
 			for _, pod := range pods.Items {
 				if strings.HasPrefix(pod.Name, name+"-") {
-					log.Infof("Pod %s/%s still not terminated", namespace, pod.Name)
+					klog.Infof("Pod %s/%s still not terminated", namespace, pod.Name)
 					return false, nil
 				}
 			}
 
-			log.Infof("All pods for %s/%s terminated", namespace, name)
+			klog.Infof("All pods for %s/%s terminated", namespace, name)
 			return true, nil
 		}
 
@@ -134,9 +134,9 @@ func (h *Helper) WaitForDeploymentToDelete(namespace, name string, timeout time.
 }
 
 func (h *Helper) WaitForUrlToBeReady(url *url.URL, timeout time.Duration) error {
-	log.Infof("Waiting for URL %s to be ready", url)
+	klog.Infof("Waiting for URL %s to be ready", url)
 
-	err := wait.PollImmediate(time.Second*2, timeout, func() (bool, error) {
+	err := wait.PollUntilContextTimeout(context.Background(), time.Second*2, timeout, true, func(ctx context.Context) (bool, error) {
 		host := url.Host
 		port := url.Port()
 		tocheck := host

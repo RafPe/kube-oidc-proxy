@@ -3,7 +3,7 @@ package helper
 
 import (
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 )
 
@@ -36,7 +36,7 @@ func (r *Requester) Get(target string) ([]byte, *http.Response, error) {
 		return nil, nil, err
 	}
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, nil, err
 	}
