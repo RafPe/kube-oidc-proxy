@@ -4,9 +4,11 @@ package proxy
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"time"
 
 	"k8s.io/apiserver/pkg/authentication/authenticator"
@@ -45,6 +47,12 @@ type Config struct {
 
 	ExtraUserHeaders                map[string][]string
 	ExtraUserHeadersClientIPEnabled bool
+
+	// TrustedProxies is the list of CIDRs (IPv4 or IPv6) whose immediate peers
+	// are trusted to set X-Forwarded-For. It is validated and parsed at
+	// construction. Empty (the default) trusts no proxy, so the direct peer is
+	// always used as the client IP and forwarded headers cannot be spoofed.
+	TrustedProxies []string
 }
 
 type errorHandlerFn func(http.ResponseWriter, *http.Request, error)
@@ -62,6 +70,10 @@ type Proxy struct {
 	noAuthClientTransport http.RoundTripper
 
 	config *Config
+
+	// trustedProxies is the parsed form of config.TrustedProxies, resolved once
+	// at construction and applied to the client-IP resolvers when Run starts.
+	trustedProxies []*net.IPNet
 
 	hooks       *hooks.Hooks
 	handleError errorHandlerFn
@@ -115,6 +127,14 @@ func New(deps Dependencies) (*Proxy, error) {
 	// proxy behavior.
 	cfg := *deps.Config
 	cfg.ExtraUserHeaders = cloneHeaderMap(deps.Config.ExtraUserHeaders)
+	cfg.TrustedProxies = append([]string(nil), deps.Config.TrustedProxies...)
+
+	// Validate trusted-proxy CIDRs up front so a bad configuration fails at
+	// construction rather than silently trusting nothing at request time.
+	trustedProxies, err := parseTrustedProxies(cfg.TrustedProxies)
+	if err != nil {
+		return nil, err
+	}
 
 	auditor, err := audit.New(deps.AuditOptions, cfg.ExternalAddress, deps.SecureServingInfo)
 	if err != nil {
@@ -128,10 +148,34 @@ func New(deps Dependencies) (*Proxy, error) {
 		subjectAccessReviewer: deps.SubjectAccessReviewer,
 		secureServingInfo:     deps.SecureServingInfo,
 		config:                &cfg,
+		trustedProxies:        trustedProxies,
 		oidcRequestAuther:     bearertoken.New(deps.TokenAuthenticator),
 		tokenAuthenticator:    deps.TokenAuthenticator,
 		auditor:               auditor,
 	}, nil
+}
+
+// parseTrustedProxies parses a list of CIDR strings (IPv4 or IPv6) into
+// networks. Empty or whitespace-only entries are rejected so a malformed flag
+// value cannot be silently ignored. A nil/empty input yields a nil slice,
+// meaning no proxy is trusted.
+func parseTrustedProxies(cidrs []string) ([]*net.IPNet, error) {
+	if len(cidrs) == 0 {
+		return nil, nil
+	}
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, c := range cidrs {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			return nil, fmt.Errorf("proxy: empty trusted-proxy CIDR")
+		}
+		_, network, err := net.ParseCIDR(c)
+		if err != nil {
+			return nil, fmt.Errorf("proxy: invalid trusted-proxy CIDR %q: %w", c, err)
+		}
+		nets = append(nets, network)
+	}
+	return nets, nil
 }
 
 // cloneHeaderMap returns a deep copy of a header map so the Proxy never shares
@@ -148,6 +192,13 @@ func cloneHeaderMap(in map[string][]string) map[string][]string {
 }
 
 func (p *Proxy) Run(stopCh <-chan struct{}) (<-chan struct{}, <-chan struct{}, error) {
+	// Apply the trusted-proxy networks to both client-IP resolvers so the audit
+	// log's src_ip and the Remote-Client-IP impersonation extra resolve
+	// identically. Done here (rather than in New) to keep the package-global
+	// setters out of construction-time unit tests.
+	context.SetTrustedProxies(p.trustedProxies)
+	logging.SetTrustedProxies(p.trustedProxies)
+
 	// standard round tripper for proxy to API Server
 	clientRT, err := p.roundTripperForRestConfig(p.restConfig)
 	if err != nil {
