@@ -2,6 +2,7 @@
 package proxy
 
 import (
+	stdcontext "context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -259,6 +260,12 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			// No impersonation user found
 		case errors.Is(err, subjectaccessreview.ErrorNoImpersonationUserFound):
 			http.Error(rw, subjectaccessreview.ErrorNoImpersonationUserFound.Error(), http.StatusInternalServerError)
+			return
+
+			// Client canceled the request (SAR or reverse-proxy). Nothing to
+			// write back; the connection is already going away.
+		case errors.Is(err, stdcontext.Canceled):
+			klog.V(4).Infof("request canceled by client: %s", r.RemoteAddr)
 			return
 
 			// Server or unknown error
