@@ -57,7 +57,7 @@ func (e *Environment) Create() error {
 	return nil
 }
 
-func (e *Environment) Destory() error {
+func (e *Environment) Destroy() error {
 	if e.kind != nil {
 		if err := e.kind.Destroy(); err != nil {
 			return err

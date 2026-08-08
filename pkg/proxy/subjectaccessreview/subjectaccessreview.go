@@ -1,4 +1,9 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
+
+// Package subjectaccessreview authorizes impersonation requests by submitting
+// SubjectAccessReviews to the API server. It exposes typed, sentinel-backed
+// errors so HTTP handlers can select a response status via errors.Is rather
+// than by matching message text.
 package subjectaccessreview
 
 import (
@@ -68,32 +73,38 @@ func (e *ImpersonationAuthError) Is(target error) bool {
 // (the SAR client inherits rest.Config.Timeout, which defaults to zero).
 const DefaultTimeout = 5 * time.Second
 
-// structure for storing the review data
+// SubjectAccessReview authorizes impersonation requests by submitting a
+// SubjectAccessReview to the API server for each impersonated resource. A
+// single shared timeout budget bounds the whole sequence of checks performed
+// for one request.
 type SubjectAccessReview struct {
-	subjectAccessReviewer clientazv1.SubjectAccessReviewInterface
+	reviewer clientazv1.SubjectAccessReviewInterface
 
 	// sarTimeout is the single shared budget applied across the whole sequence
 	// of SAR checks for one request.
 	sarTimeout time.Duration
 }
 
-// create a new SubjectAccessReview structure
-func New(subjectAccessReviewer clientazv1.SubjectAccessReviewInterface, sarTimeout time.Duration) (*SubjectAccessReview, error) {
-
+// New returns a SubjectAccessReview that authorizes impersonation via reviewer,
+// bounding the whole sequence of checks for a single request by sarTimeout.
+func New(reviewer clientazv1.SubjectAccessReviewInterface, sarTimeout time.Duration) (*SubjectAccessReview, error) {
 	return &SubjectAccessReview{
-		subjectAccessReviewer: subjectAccessReviewer,
-		sarTimeout:            sarTimeout,
+		reviewer:   reviewer,
+		sarTimeout: sarTimeout,
 	}, nil
 }
 
-// checks the request for impersonation headers, validates that the user is able to perform that impersonation,
-// and builds the target object
-func (subjectAccessReview *SubjectAccessReview) CheckAuthorizedForImpersonation(req *http.Request, requester user.Info) (user.Info, error) {
-
+// CheckAuthorizedForImpersonation inspects the request's impersonation headers,
+// verifies via SubjectAccessReview that requester is allowed to impersonate
+// each requested target, and returns the resulting impersonated user. It
+// returns a nil user.Info when the request carries no impersonation headers. An
+// authorization denial is returned as an *ImpersonationAuthError, which matches
+// ErrImpersonationNotAllowed via errors.Is.
+func (s *SubjectAccessReview) CheckAuthorizedForImpersonation(req *http.Request, requester user.Info) (user.Info, error) {
 	// Derive one shared budget for the whole SAR sequence from the inbound
 	// request context, so client cancellation propagates and a stalled API
 	// server cannot stall the request indefinitely.
-	ctx, cancel := context.WithTimeout(req.Context(), subjectAccessReview.sarTimeout)
+	ctx, cancel := context.WithTimeout(req.Context(), s.sarTimeout)
 	defer cancel()
 
 	impersonatedUser := req.Header.Get("impersonate-user")
@@ -124,86 +135,69 @@ func (subjectAccessReview *SubjectAccessReview) CheckAuthorizedForImpersonation(
 			if keyToCheck == "impersonate-user" {
 				userToImpersonate := values[0]
 				if userToImpersonate != "" {
-					result, err := subjectAccessReview.checkRbacImpersonationAuthorization(ctx, "users", userToImpersonate, requester)
+					result, err := s.checkRbacImpersonationAuthorization(ctx, "users", userToImpersonate, requester)
 					if err != nil {
 						return nil, err
-					} else {
-						if !result {
-							return nil, &ImpersonationAuthError{
-								Requester: requester.GetName(),
-								Kind:      "user",
-								Target:    fmt.Sprintf("'%s'", userToImpersonate),
-							}
-						} else {
-							targetUser.Name = userToImpersonate
-						}
 					}
-				}
-			} else if keyToCheck == "impersonate-group" {
-
-				for i := range values {
-					groupName := values[i]
-					result, err := subjectAccessReview.checkRbacImpersonationAuthorization(ctx, "groups", groupName, requester)
-					if err != nil {
-						return nil, err
-					} else {
-						if !result {
-							return nil, &ImpersonationAuthError{
-								Requester: requester.GetName(),
-								Kind:      "group",
-								Target:    fmt.Sprintf("'%s'", groupName),
-							}
-						} else {
-							targetUser.Groups = append(targetUser.Groups, groupName)
-						}
-					}
-				}
-			} else if keyToCheck == "impersonate-uid" {
-				uidToImpersonate := values[0]
-				result, err := subjectAccessReview.checkRbacImpersonationAuthorization(ctx, "uids", uidToImpersonate, requester)
-				if err != nil {
-					return nil, err
-				} else {
 					if !result {
 						return nil, &ImpersonationAuthError{
 							Requester: requester.GetName(),
-							Kind:      "uid",
-							Target:    fmt.Sprintf("'%s'", uidToImpersonate),
+							Kind:      "user",
+							Target:    fmt.Sprintf("'%s'", userToImpersonate),
 						}
-					} else {
-						targetUser.UID = uidToImpersonate
+					}
+					targetUser.Name = userToImpersonate
+				}
+			} else if keyToCheck == "impersonate-group" {
+				for i := range values {
+					groupName := values[i]
+					result, err := s.checkRbacImpersonationAuthorization(ctx, "groups", groupName, requester)
+					if err != nil {
+						return nil, err
+					}
+					if !result {
+						return nil, &ImpersonationAuthError{
+							Requester: requester.GetName(),
+							Kind:      "group",
+							Target:    fmt.Sprintf("'%s'", groupName),
+						}
+					}
+					targetUser.Groups = append(targetUser.Groups, groupName)
+				}
+			} else if keyToCheck == "impersonate-uid" {
+				uidToImpersonate := values[0]
+				result, err := s.checkRbacImpersonationAuthorization(ctx, "uids", uidToImpersonate, requester)
+				if err != nil {
+					return nil, err
+				}
+				if !result {
+					return nil, &ImpersonationAuthError{
+						Requester: requester.GetName(),
+						Kind:      "uid",
+						Target:    fmt.Sprintf("'%s'", uidToImpersonate),
 					}
 				}
+				targetUser.UID = uidToImpersonate
 			} else if strings.HasPrefix(keyToCheck, "impersonate-extra-") {
 				// according to https://github.com/kubernetes/kubernetes/blob/555623c07eabf22864f6147736fa191e020cca25/staging/src/k8s.io/apiserver/pkg/authentication/user/user.go#L31-L41
 				// the extra name MUST be lowercase...so we'll force to lowercase for the rbac check
 				extraName := strings.ToLower(key[18:])
 				for i := range values {
-					result, err := subjectAccessReview.checkRbacImpersonationAuthorization(ctx, "userextras/"+extraName, values[i], requester)
+					result, err := s.checkRbacImpersonationAuthorization(ctx, "userextras/"+extraName, values[i], requester)
 					if err != nil {
 						return nil, err
-					} else {
-						if !result {
-							return nil, &ImpersonationAuthError{
-								Requester: requester.GetName(),
-								Kind:      "extra info",
-								Target:    fmt.Sprintf("'%s'='%s'", extraName, values[i]),
-							}
-						} else {
-							infoVals, ok := targetUser.Extra[extraName]
-
-							if !ok {
-								infoVals = make([]string, 0)
-
-							}
-
-							infoVals = append(infoVals, values[i])
-							targetUser.Extra[extraName] = infoVals
+					}
+					if !result {
+						return nil, &ImpersonationAuthError{
+							Requester: requester.GetName(),
+							Kind:      "extra info",
+							Target:    fmt.Sprintf("'%s'='%s'", extraName, values[i]),
 						}
 					}
+					targetUser.Extra[extraName] = append(targetUser.Extra[extraName], values[i])
 				}
 			} else if strings.HasPrefix(keyToCheck, "impersonate-") {
-				// unkown impersonation header, fail
+				// unknown impersonation header, fail
 				return nil, fmt.Errorf("unknown impersonation header '%s'", key)
 			}
 
@@ -211,31 +205,30 @@ func (subjectAccessReview *SubjectAccessReview) CheckAuthorizedForImpersonation(
 
 	}
 
-	if hasImpersonation {
-
-		// first clearing out the old headers
-		newHeaders := http.Header{}
-
-		for k := range req.Header {
-			if _, ok := headersToRemove[k]; !ok {
-				for _, v := range req.Header.Values(k) {
-					newHeaders.Add(k, v)
-				}
-			}
-		}
-
-		//haven't errored out, but has impersonation - returning target user
-		req.Header = newHeaders
-
-		return targetUser, nil
-	} else {
-		//no impersonation, no user to return
+	if !hasImpersonation {
+		// no impersonation, no user to return
 		return nil, nil
 	}
+
+	// Clear out the impersonation headers we consumed before forwarding.
+	newHeaders := http.Header{}
+	for k := range req.Header {
+		if _, ok := headersToRemove[k]; !ok {
+			for _, v := range req.Header.Values(k) {
+				newHeaders.Add(k, v)
+			}
+		}
+	}
+
+	// Authorized: forward the request with the impersonation target.
+	req.Header = newHeaders
+	return targetUser, nil
 }
 
-// submit a SubjectAccessReview request to the API server to validate that impersonation can occur
-func (subjectAccessReview *SubjectAccessReview) checkRbacImpersonationAuthorization(ctx context.Context, resource string, name string, requester user.Info) (bool, error) {
+// checkRbacImpersonationAuthorization submits a SubjectAccessReview to the API
+// server to validate that requester may impersonate the named resource. It
+// reports whether the review allowed the request.
+func (s *SubjectAccessReview) checkRbacImpersonationAuthorization(ctx context.Context, resource string, name string, requester user.Info) (bool, error) {
 	extras := map[string]v1.ExtraValue{}
 	var group string
 	var subresource string
@@ -269,11 +262,9 @@ func (subjectAccessReview *SubjectAccessReview) checkRbacImpersonationAuthorizat
 		},
 	}
 
-	reviewResult, err := subjectAccessReview.subjectAccessReviewer.Create(ctx, &clusterSubjectAccessReview, metav1.CreateOptions{})
-
+	reviewResult, err := s.reviewer.Create(ctx, &clusterSubjectAccessReview, metav1.CreateOptions{})
 	if err != nil {
 		return false, fmt.Errorf("%w: %w", ErrCreateSubjectAccessReview, err)
-	} else {
-		return reviewResult.Status.Allowed, nil
 	}
+	return reviewResult.Status.Allowed, nil
 }

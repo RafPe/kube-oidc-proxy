@@ -4,7 +4,7 @@ package proxy
 import (
 	"bytes"
 	"errors"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -48,7 +48,7 @@ type fakeRT struct {
 	expUser  string
 	expGroup []string
 	expExtra map[string][]string
-	expUid   string
+	expUID   string
 }
 
 func (f *fakeRW) Write(b []byte) (int, error) {
@@ -84,10 +84,10 @@ func (f *fakeRT) RoundTrip(h *http.Request) (*http.Response, error) {
 			f.expUser, h.Header.Get("Impersonate-User"))
 	}
 
-	if h.Header.Get("Impersonate-Uid") != f.expUid {
+	if h.Header.Get("Impersonate-Uid") != f.expUID {
 		logging.LogFailedRequest(h)
 		f.t.Errorf("client transport got unexpected uid impersonation header, exp=%s got=%s",
-			f.expUid, h.Header.Get("Impersonate-Uid"))
+			f.expUID, h.Header.Get("Impersonate-Uid"))
 	}
 
 	if exp, act := sort.StringSlice(f.expGroup), sort.StringSlice(h.Header["Impersonate-Group"]); !reflect.DeepEqual(exp, act) {
@@ -322,7 +322,7 @@ func TestHandlers(t *testing.T) {
 		expUser  string
 		expGroup []string
 		expExtra map[string][]string
-		expUid   string
+		expUID   string
 	}{
 		"an empty request should 401": {
 			req:     new(http.Request),
@@ -547,7 +547,7 @@ func TestHandlers(t *testing.T) {
 			},
 			expCode:  http.StatusOK,
 			expUser:  "jjackson",
-			expUid:   "1-2-3-4",
+			expUID:   "1-2-3-4",
 			expGroup: []string{"group3", "system:authenticated"},
 			expExtra: map[string][]string{
 				"Impersonate-Extra-Originaluser.jetstack.io-User":   {"mmosley"},
@@ -784,9 +784,9 @@ func TestHandlers(t *testing.T) {
 						Name:   "a-user",
 						Groups: []string{"my-group"},
 						Extra: map[string][]string{
-							"foo":     []string{"a", "b"},
-							"bar":     []string{"c", "d"},
-							"foo-bar": []string{"e", "f"},
+							"foo":     {"a", "b"},
+							"bar":     {"c", "d"},
+							"foo-bar": {"e", "f"},
 						},
 					},
 				},
@@ -798,9 +798,9 @@ func TestHandlers(t *testing.T) {
 			expUser:  "a-user",
 			expGroup: []string{"my-group", "system:authenticated"},
 			expExtra: map[string][]string{
-				"Impersonate-Extra-Foo":     []string{"a", "b"},
-				"Impersonate-Extra-Bar":     []string{"c", "d"},
-				"Impersonate-Extra-Foo-Bar": []string{"e", "f"},
+				"Impersonate-Extra-Foo":     {"a", "b"},
+				"Impersonate-Extra-Bar":     {"c", "d"},
+				"Impersonate-Extra-Foo-Bar": {"e", "f"},
 			},
 		},
 		"an authed request with user, group, extra but disabled impersonation should return no impersonation and should 200": {
@@ -816,9 +816,9 @@ func TestHandlers(t *testing.T) {
 						Name:   "a-user",
 						Groups: []string{"my-group"},
 						Extra: map[string][]string{
-							"foo":     []string{"a", "b"},
-							"bar":     []string{"c", "d"},
-							"foo-bar": []string{"e", "f"},
+							"foo":     {"a", "b"},
+							"bar":     {"c", "d"},
+							"foo-bar": {"e", "f"},
 						},
 					},
 				},
@@ -850,7 +850,7 @@ func TestHandlers(t *testing.T) {
 			p.fakeRT.expUser = test.expUser
 			p.fakeRT.expGroup = test.expGroup
 			p.fakeRT.expExtra = test.expExtra
-			p.fakeRT.expUid = test.expUid
+			p.fakeRT.expUID = test.expUID
 
 			if test.config != nil {
 				p.config = test.config
@@ -872,7 +872,7 @@ func TestHandlers(t *testing.T) {
 
 			resp := w.Result()
 
-			body, err := ioutil.ReadAll(resp.Body)
+			body, err := io.ReadAll(resp.Body)
 			if err != nil {
 				t.Errorf("unexpected error: %s", err)
 				t.FailNow()
@@ -910,14 +910,14 @@ func TestHeadersConfig(t *testing.T) {
 		"if extra headers set but no client IP enabled then should return added extras": {
 			config: &Config{
 				ExtraUserHeaders: map[string][]string{
-					"foo": []string{"a", "b"},
-					"bar": []string{"c", "d", "e"},
+					"foo": {"a", "b"},
+					"bar": {"c", "d", "e"},
 				},
 				ExtraUserHeadersClientIPEnabled: false,
 			},
 			expExtra: map[string][]string{
-				"Impersonate-Extra-Foo": []string{"a", "b"},
-				"Impersonate-Extra-Bar": []string{"c", "d", "e"},
+				"Impersonate-Extra-Foo": {"a", "b"},
+				"Impersonate-Extra-Bar": {"c", "d", "e"},
 			},
 		},
 		"if no extra headers set but client IP enabled then should return added client IP": {
@@ -926,21 +926,21 @@ func TestHeadersConfig(t *testing.T) {
 				ExtraUserHeadersClientIPEnabled: true,
 			},
 			expExtra: map[string][]string{
-				"Impersonate-Extra-Remote-Client-Ip": []string{"8.8.8.8"},
+				"Impersonate-Extra-Remote-Client-Ip": {"8.8.8.8"},
 			},
 		},
 		"if extra headers set and client IP enabled then should return extra headers and client IP": {
 			config: &Config{
 				ExtraUserHeaders: map[string][]string{
-					"foo": []string{"a", "b"},
-					"bar": []string{"c", "d", "e"},
+					"foo": {"a", "b"},
+					"bar": {"c", "d", "e"},
 				},
 				ExtraUserHeadersClientIPEnabled: true,
 			},
 			expExtra: map[string][]string{
-				"Impersonate-Extra-Foo":              []string{"a", "b"},
-				"Impersonate-Extra-Bar":              []string{"c", "d", "e"},
-				"Impersonate-Extra-Remote-Client-Ip": []string{"8.8.8.8"},
+				"Impersonate-Extra-Foo":              {"a", "b"},
+				"Impersonate-Extra-Bar":              {"c", "d", "e"},
+				"Impersonate-Extra-Remote-Client-Ip": {"8.8.8.8"},
 			},
 		},
 	}

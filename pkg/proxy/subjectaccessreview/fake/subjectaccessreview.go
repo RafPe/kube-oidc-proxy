@@ -1,4 +1,6 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
+
+// Package fake provides a stub SubjectAccessReviewInterface for use in tests.
 package fake
 
 import (

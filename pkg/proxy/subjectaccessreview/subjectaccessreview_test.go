@@ -48,14 +48,14 @@ type testT struct {
 	extraImpersonationHeader bool
 }
 
-func TestSubectAccessReview(t *testing.T) {
+func TestSubjectAccessReview(t *testing.T) {
 	tests := map[string]testT{
 		"if all reviews pass, user is authorized to impersonate": {
 			requester: &user.DefaultInfo{
 				Name:   "mmosley",
 				Groups: []string{"group1", "group2"},
 				Extra: map[string][]string{
-					"remoteaddr": []string{"1.2.3.4"},
+					"remoteaddr": {"1.2.3.4"},
 				},
 			},
 
@@ -63,7 +63,7 @@ func TestSubectAccessReview(t *testing.T) {
 				Name:   "jjackson",
 				Groups: []string{"group3"},
 				Extra: map[string][]string{
-					"remoteaddr": []string{"1.2.3.4"},
+					"remoteaddr": {"1.2.3.4"},
 				},
 				UID: "1-2-3-4",
 			},
@@ -80,7 +80,7 @@ func TestSubectAccessReview(t *testing.T) {
 				Name:   "mmosley",
 				Groups: []string{"group1", "group2"},
 				Extra: map[string][]string{
-					"remoteaddr": []string{"1.2.3.4"},
+					"remoteaddr": {"1.2.3.4"},
 				},
 			},
 
@@ -88,7 +88,7 @@ func TestSubectAccessReview(t *testing.T) {
 				Name:   "jjackson-x",
 				Groups: []string{"group3"},
 				Extra: map[string][]string{
-					"remoteaddr": []string{"1.2.3.4"},
+					"remoteaddr": {"1.2.3.4"},
 				},
 				UID: "1-2-3-4",
 			},
@@ -105,7 +105,7 @@ func TestSubectAccessReview(t *testing.T) {
 				Name:   "mmosley",
 				Groups: []string{"group1", "group2"},
 				Extra: map[string][]string{
-					"remoteaddr": []string{"1.2.3.4"},
+					"remoteaddr": {"1.2.3.4"},
 				},
 				UID: "1-2-3-4",
 			},
@@ -114,7 +114,7 @@ func TestSubectAccessReview(t *testing.T) {
 				Name:   "jjackson",
 				Groups: []string{"group4"},
 				Extra: map[string][]string{
-					"remoteaddr": []string{"1.2.3.4"},
+					"remoteaddr": {"1.2.3.4"},
 				},
 				UID: "1-2-3-4",
 			},
@@ -131,7 +131,7 @@ func TestSubectAccessReview(t *testing.T) {
 				Name:   "mmosley",
 				Groups: []string{"group1", "group2"},
 				Extra: map[string][]string{
-					"remoteaddr": []string{"1.2.3.4"},
+					"remoteaddr": {"1.2.3.4"},
 				},
 				UID: "1-2-3-4",
 			},
@@ -140,7 +140,7 @@ func TestSubectAccessReview(t *testing.T) {
 				Name:   "jjackson",
 				Groups: []string{"group3"},
 				Extra: map[string][]string{
-					"remoteaddr": []string{"1.2.3.5"},
+					"remoteaddr": {"1.2.3.5"},
 				},
 				UID: "1-2-3-4",
 			},
@@ -157,7 +157,7 @@ func TestSubectAccessReview(t *testing.T) {
 				Name:   "mmosley",
 				Groups: []string{"group1", "group2"},
 				Extra: map[string][]string{
-					"remoteaddr": []string{"1.2.3.4"},
+					"remoteaddr": {"1.2.3.4"},
 				},
 			},
 
@@ -165,7 +165,7 @@ func TestSubectAccessReview(t *testing.T) {
 				Name:   "jjackson",
 				Groups: []string{"group3"},
 				Extra: map[string][]string{
-					"remoteaddr": []string{"1.2.3.4"},
+					"remoteaddr": {"1.2.3.4"},
 				},
 				UID: "1-2-3-5",
 			},
@@ -182,7 +182,7 @@ func TestSubectAccessReview(t *testing.T) {
 				Name:   "mmosley-x",
 				Groups: []string{"group1", "group2"},
 				Extra: map[string][]string{
-					"remoteaddr": []string{"1.2.3.4"},
+					"remoteaddr": {"1.2.3.4"},
 				},
 			},
 
@@ -190,7 +190,7 @@ func TestSubectAccessReview(t *testing.T) {
 				Name:   "jjackson",
 				Groups: []string{"group3"},
 				Extra: map[string][]string{
-					"remoteaddr": []string{"1.2.3.4"},
+					"remoteaddr": {"1.2.3.4"},
 				},
 				UID: "1-2-3-4",
 			},
@@ -207,7 +207,7 @@ func TestSubectAccessReview(t *testing.T) {
 				Name:   "mmosley-x",
 				Groups: []string{"group1", "group2"},
 				Extra: map[string][]string{
-					"remoteaddr": []string{"1.2.3.4"},
+					"remoteaddr": {"1.2.3.4"},
 				},
 			},
 
@@ -225,7 +225,7 @@ func TestSubectAccessReview(t *testing.T) {
 				Name:   "mmosley-x",
 				Groups: []string{"group1", "group2"},
 				Extra: map[string][]string{
-					"remoteaddr": []string{"1.2.3.4"},
+					"remoteaddr": {"1.2.3.4"},
 				},
 			},
 
@@ -233,7 +233,7 @@ func TestSubectAccessReview(t *testing.T) {
 				Name:   "jjackson",
 				Groups: []string{"group3"},
 				Extra: map[string][]string{
-					"remoteaddr": []string{"1.2.3.4"},
+					"remoteaddr": {"1.2.3.4"},
 				},
 				UID: "1-2-3-4",
 			},
@@ -250,7 +250,7 @@ func TestSubectAccessReview(t *testing.T) {
 				Name:   "mmosley-x",
 				Groups: []string{"group1", "group2"},
 				Extra: map[string][]string{
-					"remoteaddr": []string{"1.2.3.4"},
+					"remoteaddr": {"1.2.3.4"},
 				},
 			},
 
@@ -258,7 +258,7 @@ func TestSubectAccessReview(t *testing.T) {
 				Name:   "",
 				Groups: []string{"group3"},
 				Extra: map[string][]string{
-					"remoteaddr": []string{"1.2.3.4"},
+					"remoteaddr": {"1.2.3.4"},
 				},
 				UID: "1-2-3-4",
 			},
@@ -329,7 +329,7 @@ func runTest(t *testing.T, name string, test testT) {
 
 	//check if impersonation was found when expected
 
-	headersFound := !(err == nil && target == nil)
+	headersFound := err != nil || target != nil
 
 	if test.expImpersonationHeaders != headersFound {
 		t.Errorf("unexpected result when checking if impersonation headers were present, exp=%t got=%t", test.expImpersonationHeaders, (err == nil && target == nil))

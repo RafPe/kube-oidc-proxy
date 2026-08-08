@@ -1,4 +1,7 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
+
+// Package proxy implements the reverse proxy that authenticates requests via
+// OIDC and forwards them to the Kubernetes API server using impersonation.
 package proxy
 
 import (
@@ -191,6 +194,9 @@ func cloneHeaderMap(in map[string][]string) map[string][]string {
 	return out
 }
 
+// Run wires up the reverse-proxy handler chain and starts serving until stopCh
+// is closed. It returns a channel that is closed once serving has fully stopped
+// and a second channel that is closed once the listener has stopped accepting.
 func (p *Proxy) Run(stopCh <-chan struct{}) (<-chan struct{}, <-chan struct{}, error) {
 	// Apply the trusted-proxy networks to both client-IP resolvers so the audit
 	// log's src_ip and the Remote-Client-IP impersonation extra resolve
@@ -227,7 +233,7 @@ func (p *Proxy) Run(stopCh <-chan struct{}) (<-chan struct{}, <-chan struct{}, e
 	// get API server url
 	url, err := url.Parse(p.restConfig.Host)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to parse url: %s", err)
+		return nil, nil, fmt.Errorf("failed to parse url: %w", err)
 	}
 
 	p.handleError = p.newErrorHandler()
@@ -346,11 +352,14 @@ func (p *Proxy) roundTripperForRestConfig(config *rest.Config) (http.RoundTrippe
 	return clientRT, nil
 }
 
-// Return the proxy OIDC token authenticator
+// OIDCTokenAuthenticator returns the proxy's OIDC token authenticator.
 func (p *Proxy) OIDCTokenAuthenticator() authenticator.Token {
 	return p.tokenAuthenticator
 }
 
+// RunPreShutdownHooks runs the registered pre-shutdown hooks (currently the
+// audit backend flush) and returns an aggregate of any failures. It should be
+// called once during graceful shutdown.
 func (p *Proxy) RunPreShutdownHooks() error {
 	return p.hooks.RunPreShutdownHooks()
 }

@@ -7,14 +7,14 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/rafpe/kube-oidc-proxy/pkg/util"
+	"github.com/rafpe/kube-oidc-proxy/pkg/util/signals"
 	"github.com/rafpe/kube-oidc-proxy/test/tools/fake-apiserver/cmd/options"
 	"github.com/rafpe/kube-oidc-proxy/test/tools/fake-apiserver/pkg/server"
 )
 
 func main() {
 	opts := new(options.Options)
-	stopCh := util.SignalHandler()
+	stopCh := signals.Handler()
 
 	cmd := &cobra.Command{
 		Use:   "fake-apiserver",

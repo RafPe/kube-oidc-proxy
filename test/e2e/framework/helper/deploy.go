@@ -51,7 +51,7 @@ func (h *Helper) DeployProxy(ns *corev1.Namespace, issuerURL *url.URL, clientID 
 	args = append(args, extraArgs...)
 
 	volumeMounts := []corev1.VolumeMount{
-		corev1.VolumeMount{
+		{
 			MountPath: "/tls",
 			Name:      "tls",
 			ReadOnly:  true,
@@ -72,10 +72,10 @@ func (h *Helper) DeployProxy(ns *corev1.Namespace, issuerURL *url.URL, clientID 
 		Args:            args,
 		VolumeMounts:    volumeMounts,
 		Ports: []corev1.ContainerPort{
-			corev1.ContainerPort{
+			{
 				ContainerPort: 6443,
 			},
-			corev1.ContainerPort{
+			{
 				ContainerPort: 8080,
 			},
 		},
@@ -137,7 +137,7 @@ func (h *Helper) DeployProxy(ns *corev1.Namespace, issuerURL *url.URL, clientID 
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: kind.ProxyImageName + "-",
 			OwnerReferences: []metav1.OwnerReference{
-				metav1.OwnerReference{
+				{
 					APIVersion:         "core/v1",
 					BlockOwnerDeletion: &pTrue,
 					Controller:         &pFalse,
@@ -174,7 +174,7 @@ func (h *Helper) DeployProxy(ns *corev1.Namespace, issuerURL *url.URL, clientID 
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: kind.ProxyImageName + "-impersonate-",
 			OwnerReferences: []metav1.OwnerReference{
-				metav1.OwnerReference{
+				{
 					APIVersion:         "core/v1",
 					BlockOwnerDeletion: &pTrue,
 					Controller:         &pFalse,
@@ -216,7 +216,7 @@ func (h *Helper) DeployProxy(ns *corev1.Namespace, issuerURL *url.URL, clientID 
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: kind.ProxyImageName + "-impersonate-",
 				OwnerReferences: []metav1.OwnerReference{
-					metav1.OwnerReference{
+					{
 						APIVersion:         "core/v1",
 						BlockOwnerDeletion: &pTrue,
 						Controller:         &pFalse,
@@ -242,7 +242,7 @@ func (h *Helper) DeployProxy(ns *corev1.Namespace, issuerURL *url.URL, clientID 
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: kind.ProxyImageName + "-",
 				OwnerReferences: []metav1.OwnerReference{
-					metav1.OwnerReference{
+					{
 						APIVersion:         "core/v1",
 						BlockOwnerDeletion: &pTrue,
 						Controller:         &pFalse,
@@ -283,14 +283,14 @@ func (h *Helper) DeployNamedIssuer(ns, name string) (*util.KeyBundle, *url.URL, 
 			"--tls-private-key-file=/tls/key.pem",
 		},
 		VolumeMounts: []corev1.VolumeMount{
-			corev1.VolumeMount{
+			{
 				MountPath: "/tls",
 				Name:      "tls",
 				ReadOnly:  true,
 			},
 		},
 		Ports: []corev1.ContainerPort{
-			corev1.ContainerPort{
+			{
 				ContainerPort: 6443,
 			},
 		},
@@ -316,14 +316,14 @@ func (h *Helper) DeployFakeAPIServer(ns string) ([]corev1.Volume, *url.URL, erro
 			"--tls-private-key-file=/tls/key.pem",
 		},
 		VolumeMounts: []corev1.VolumeMount{
-			corev1.VolumeMount{
+			{
 				MountPath: "/tls",
 				Name:      "tls",
 				ReadOnly:  true,
 			},
 		},
 		Ports: []corev1.ContainerPort{
-			corev1.ContainerPort{
+			{
 				ContainerPort: 6443,
 			},
 		},
@@ -374,14 +374,14 @@ func (h *Helper) DeployAuditWebhook(ns, logPath string) (corev1.Volume, *url.URL
 			"--audit-file-path=" + logPath,
 		},
 		VolumeMounts: []corev1.VolumeMount{
-			corev1.VolumeMount{
+			{
 				MountPath: "/tls",
 				Name:      "tls",
 				ReadOnly:  true,
 			},
 		},
 		Ports: []corev1.ContainerPort{
-			corev1.ContainerPort{
+			{
 				ContainerPort: 6443,
 			},
 		},

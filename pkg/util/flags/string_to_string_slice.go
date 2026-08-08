@@ -1,4 +1,7 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
+
+// Package flags provides custom pflag.Value implementations used by the
+// command-line interface.
 package flags
 
 import (

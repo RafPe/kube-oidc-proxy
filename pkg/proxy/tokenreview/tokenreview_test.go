@@ -80,7 +80,7 @@ func runTest(t *testing.T, test testT) {
 	authed, err := tReviewer.Review(
 		&http.Request{
 			Header: map[string][]string{
-				"Authorization": []string{"bearer test-token"},
+				"Authorization": {"bearer test-token"},
 			},
 		},
 	)

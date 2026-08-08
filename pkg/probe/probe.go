@@ -1,4 +1,8 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
+
+// Package probe implements the proxy's readiness and liveness HTTP endpoints,
+// reporting readiness once the configured OIDC issuers' authenticators have
+// completed initialization.
 package probe
 
 import (
@@ -43,6 +47,8 @@ type IssuerReadiness struct {
 	FakeJWT   string
 }
 
+// HealthCheck tracks per-issuer OIDC initialization and answers readiness
+// checks. It is safe for concurrent use: its mutable state is guarded by mu.
 type HealthCheck struct {
 	oidcAuther authenticator.Token
 	issuers    []IssuerReadiness
@@ -204,7 +210,7 @@ func isTransient(err error) bool {
 
 // Check probes every issuer that has not yet been observed as initialized,
 // logs per-issuer transitions and any still-pending issuers, and reports
-// readiness. Once readiness latches (via ready.Store(true)) it always
+// readiness. Once readiness latches (h.ready is set true under h.mu) it always
 // returns nil, but probing and pending-issuer logging continue on every
 // call so operators keep seeing progress for issuers that initialize late.
 func (h *HealthCheck) Check() error {

@@ -181,9 +181,9 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 			}
 
 			if len(userForContext.GetExtra()) > 0 {
-				jsonExtras, errJsonMarshal := json.Marshal(userForContext.GetExtra())
-				if errJsonMarshal != nil {
-					p.handleError(rw, req, errJsonMarshal)
+				jsonExtras, errJSONMarshal := json.Marshal(userForContext.GetExtra())
+				if errJSONMarshal != nil {
+					p.handleError(rw, req, errJSONMarshal)
 					return
 				}
 				extra["originaluser.jetstack.io-extra"] = []string{string(jsonExtras)}

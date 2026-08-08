@@ -133,10 +133,10 @@ func (h *Helper) WaitForDeploymentToDelete(namespace, name string, timeout time.
 	return nil
 }
 
-func (h *Helper) WaitForUrlToBeReady(url *url.URL, timeout time.Duration) error {
+func (h *Helper) WaitForURLToBeReady(url *url.URL, timeout time.Duration) error {
 	klog.Infof("Waiting for URL %s to be ready", url)
 
-	err := wait.PollUntilContextTimeout(context.Background(), time.Second*2, timeout, true, func(ctx context.Context) (bool, error) {
+	return wait.PollUntilContextTimeout(context.Background(), time.Second*2, timeout, true, func(ctx context.Context) (bool, error) {
 		host := url.Host
 		port := url.Port()
 		tocheck := host
@@ -148,12 +148,8 @@ func (h *Helper) WaitForUrlToBeReady(url *url.URL, timeout time.Duration) error 
 		con, err := net.DialTimeout("tcp", tocheck, timeout)
 		if err != nil {
 			return false, nil
-		} else {
-			con.Close()
-			return true, nil
 		}
-
+		con.Close()
+		return true, nil
 	})
-
-	return err
 }

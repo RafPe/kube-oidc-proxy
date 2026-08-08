@@ -56,8 +56,8 @@ var _ = framework.CasesDescribe("Headers", func() {
 
 		// Check expected headers
 		for k, v := range map[string][]string{
-			"Impersonate-Extra-Key1": []string{"foo", "bar"},
-			"Impersonate-Extra-Key2": []string{"foo"},
+			"Impersonate-Extra-Key1": {"foo", "bar"},
+			"Impersonate-Extra-Key2": {"foo"},
 		} {
 			if !testutil.StringSlicesEqual(v, cpyHeader[k]) {
 				Expect(fmt.Errorf("expected key %q to have value %q, but got headers: %v",
