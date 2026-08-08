@@ -54,11 +54,11 @@ Every request passes through the same pipeline:
 
 1. **Authenticate.** The bearer token is validated. If it fails OIDC validation
    and token passthrough is enabled, the proxy falls back to a `TokenReview`
-   against the API server (see [token passthrough](./tasks/token-passthrough.md)).
+   against the API server (see [token passthrough](./configuration.md#token-passthrough)).
 2. **Resolve the impersonation target.** If the inbound request also carries
    `Impersonate-*` headers (`kubectl --as`), the proxy runs a
    `SubjectAccessReview` to confirm the authenticated user may assume that
-   identity before honouring it. See [impersonation.md](./impersonation.md).
+   identity before honouring it. See [the impersonation model](./configuration.md#impersonation-model).
 3. **Impersonate.** The proxy rewrites the request to authenticate as its own
    ServiceAccount, attaches the impersonation headers for the resolved identity,
    and records the original caller in `originaluser.jetstack.io-*` extra headers
@@ -70,8 +70,8 @@ Every request passes through the same pipeline:
 
 Single-issuer mode uses the familiar `--oidc-*` flags and trusts exactly one
 issuer. Multi-issuer mode (`--authentication-config`) loads a Kubernetes
-[`AuthenticationConfiguration`](./usage.md) that lists several JWT issuers, each
-with its own audiences and claim mappings.
+[`AuthenticationConfiguration`](./multi-issuer.md) that lists several JWT
+issuers, each with its own audiences and claim mappings.
 
 The proxy builds one authenticator per issuer and combines them into a **union
 authenticator**: an incoming token is offered to each issuer's authenticator in
@@ -104,7 +104,7 @@ Configuration errors always fail startup, regardless of this flag.
 
 ## See also
 
-- [Impersonation model](./impersonation.md)
-- [Usage: single- vs multi-issuer](./usage.md)
-- [CLI reference](./cli-reference.md)
-- [Security considerations](./security.md)
+- [Multi-issuer authentication](./multi-issuer.md)
+- [Getting started](./getting-started.md)
+- [Configuration reference](./configuration.md)
+- [Operations: security](./operations.md#security)

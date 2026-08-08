@@ -51,7 +51,7 @@ helm install kube-oidc-proxy ./chart/kube-oidc-proxy \
 ```
 
 > [!IMPORTANT]
-> The image `ghcr.io/rafpe/kube-oidc-proxy:1.1.0` and OCI chart are the **intended** published artifacts; the release pipeline is still pending, so until it lands, install from a local checkout. See [docs/installation.md](./docs/installation.md).
+> The image `ghcr.io/rafpe/kube-oidc-proxy:1.1.0` and OCI chart are the **intended** published artifacts; the release pipeline is still pending, so until it lands, install from a local checkout. See [docs/getting-started.md](./docs/getting-started.md).
 
 Then point `kubectl` at the proxy instead of the API server, using the `oidc` auth provider:
 
@@ -73,7 +73,7 @@ users:
           refresh-token: <refresh-token>
 ```
 
-Full deployment, TLS, and kubeconfig detail: [docs/installation.md](./docs/installation.md).
+Full deployment, TLS, and kubeconfig detail: [docs/getting-started.md](./docs/getting-started.md).
 
 ## 📝 Usage (at a glance)
 
@@ -89,7 +89,7 @@ oidc:
   groupsClaim: groups        # optional
 ```
 
-→ full guide: [docs/usage.md](./docs/usage.md)
+→ full guide: [docs/getting-started.md](./docs/getting-started.md#single-issuer)
 
 **Multi-issuer** (accept tokens from several issuers via a Kubernetes `AuthenticationConfiguration`):
 
@@ -111,7 +111,7 @@ authenticationConfig:
           username: { claim: sub, prefix: "github:" }
 ```
 
-→ full guide: [docs/tasks/multi-issuer.md](./docs/tasks/multi-issuer.md)
+→ full guide: [docs/multi-issuer.md](./docs/multi-issuer.md)
 
 > [!WARNING]
 > When `authenticationConfig.content` is set, the chart passes `--authentication-config` and **omits every `--oidc-*` flag**; the `oidc.*` values are ignored. Don't configure both modes at once.
@@ -130,23 +130,14 @@ authenticationConfig:
 
 | Topic | Where |
 | --- | --- |
-| How it works, request flow, union authenticator, readiness | [docs/architecture.md](./docs/architecture.md) |
-| Deployment options, TLS, kubeconfig | [docs/installation.md](./docs/installation.md) |
-| Single- vs multi-issuer walkthrough | [docs/usage.md](./docs/usage.md) |
-| Impersonation model & audit headers | [docs/impersonation.md](./docs/impersonation.md) |
-| All proxy flags | [docs/cli-reference.md](./docs/cli-reference.md) |
-| Troubleshooting & request logs | [docs/troubleshooting.md](./docs/troubleshooting.md) |
-| Security considerations | [docs/security.md](./docs/security.md) |
+| **Multi-issuer authentication** (headline feature) | [docs/multi-issuer.md](./docs/multi-issuer.md) |
+| Install, TLS, kubeconfig, auth modes | [docs/getting-started.md](./docs/getting-started.md) |
+| All flags, impersonation, task recipes (passthrough, extra headers, auditing) | [docs/configuration.md](./docs/configuration.md) |
+| How it works: request flow, union authenticator, readiness | [docs/architecture.md](./docs/architecture.md) |
+| Security, troubleshooting, request logs, local testing | [docs/operations.md](./docs/operations.md) |
 | All chart values | [chart/kube-oidc-proxy/README.md](./chart/kube-oidc-proxy/README.md) |
-| Multi-issuer OIDC | [docs/tasks/multi-issuer.md](./docs/tasks/multi-issuer.md) |
-| Token passthrough | [docs/tasks/token-passthrough.md](./docs/tasks/token-passthrough.md) |
-| No impersonation | [docs/tasks/no-impersonation.md](./docs/tasks/no-impersonation.md) |
-| Extra impersonation headers | [docs/tasks/extra-impersonation-headers.md](./docs/tasks/extra-impersonation-headers.md) |
-| Auditing | [docs/tasks/auditing.md](./docs/tasks/auditing.md) |
-| Development & testing | [docs/tasks/development-testing.md](./docs/tasks/development-testing.md) |
-| kind + GitHub Actions walkthrough | [docs/tasks/testing-kind-github-actions.md](./docs/tasks/testing-kind-github-actions.md) |
 | Multi-issuer demo | [demo/README.md](./demo/README.md) |
 
 ## 🤝 Contributing
 
-Contributions are welcome — issues and pull requests both. Building requires Go 1.17+. See the [development & testing guide](./docs/tasks/development-testing.md) for running the proxy from source and the hermetic `make e2e` end-to-end suite. To try the multi-issuer flow end to end, start with the [demo](./demo/README.md).
+Contributions are welcome — issues and pull requests both. Building requires Go 1.17+. See [Operations: development and testing](./docs/operations.md#development-and-testing) for running the proxy from source and the hermetic `make e2e` end-to-end suite. To try the multi-issuer flow end to end, start with the [demo](./demo/README.md).
