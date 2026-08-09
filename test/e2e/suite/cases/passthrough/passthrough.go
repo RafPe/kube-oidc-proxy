@@ -17,8 +17,12 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
 )
 
-var _ = framework.CasesDescribe("Passthrough", func() {
-	f := framework.NewDefaultFramework("passthrough")
+// The specs share the initial issuer and proxy deploy; the second redeploys the
+// proxy itself to enable passthrough. The per-spec Role and RoleBinding below
+// are still created and deleted around every spec, so the shared namespace
+// looks the same to each of them.
+var _ = framework.CasesDescribe("Passthrough", Ordered, ContinueOnFailure, func() {
+	f := framework.NewOrderedDefaultFramework("passthrough")
 
 	var saToken string
 
