@@ -24,8 +24,10 @@ const (
 	authConfigKey    = "config.yaml"
 )
 
-var _ = framework.CasesDescribe("AuthenticationConfiguration multi-issuer", func() {
-	f := framework.NewDefaultFramework("authconfig")
+// Every spec here reads through the same AuthenticationConfiguration proxy
+// deployment and mutates no cluster state, so they all share a single deploy.
+var _ = framework.CasesDescribe("AuthenticationConfiguration multi-issuer", Ordered, ContinueOnFailure, func() {
+	f := framework.NewOrderedDefaultFramework("authconfig")
 
 	var (
 		issuer2Bundle *util.KeyBundle

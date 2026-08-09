@@ -51,15 +51,43 @@ func NewDefaultFramework(baseName string) *Framework {
 }
 
 func NewFramework(baseName string, config *config.Config) *Framework {
-	f := &Framework{
-		BaseName: baseName,
-		config:   config,
-	}
+	f := newFramework(baseName, config)
 
 	JustBeforeEach(f.BeforeEach)
 	AfterEach(f.AfterEach)
 
 	return f
+}
+
+// NewOrderedDefaultFramework is NewOrderedFramework using DefaultConfig.
+func NewOrderedDefaultFramework(baseName string) *Framework {
+	return NewOrderedFramework(baseName, DefaultConfig)
+}
+
+// NewOrderedFramework deploys the namespace, issuer and proxy once for the
+// whole enclosing container rather than once per spec, so a run of specs
+// sharing the same proxy configuration pays for a single deploy. It must be
+// called inside an Ordered container — Ginkgo panics at tree construction
+// otherwise — and only for specs that share a configuration and leave no
+// residue that a sibling spec depends on being absent.
+//
+// Proxy logs are still gathered after every spec; only the teardown of the
+// proxy, issuer and namespace is deferred to the end of the container.
+func NewOrderedFramework(baseName string, config *config.Config) *Framework {
+	f := newFramework(baseName, config)
+
+	BeforeAll(f.BeforeEach)
+	AfterEach(f.gatherProxyLogs)
+	AfterAll(f.deleteResources)
+
+	return f
+}
+
+func newFramework(baseName string, config *config.Config) *Framework {
+	return &Framework{
+		BaseName: baseName,
+		config:   config,
+	}
 }
 
 func (f *Framework) BeforeEach() {
@@ -106,16 +134,25 @@ func (f *Framework) BeforeEach() {
 
 // AfterEach deletes the namespace, after reading its events.
 func (f *Framework) AfterEach() {
-	// Output logs from proxy of test case.
+	f.gatherProxyLogs()
+	f.deleteResources()
+}
+
+// gatherProxyLogs dumps the proxy logs to the test output. It runs after every
+// spec, including in Ordered containers where teardown is deferred, so a
+// failing spec always has the logs of the proxy it ran against.
+func (f *Framework) gatherProxyLogs() {
 	// --all-containers keeps this working when the proxy pod has a sidecar, as
 	// the audit to file case does.
 	err := f.Helper().Kubectl(f.Namespace.Name).Run("logs", "--all-containers", "-lapp=kube-oidc-proxy-e2e")
 	if err != nil {
 		By("Failed to gather logs from kube-oidc-proxy: " + err.Error())
 	}
+}
 
+func (f *Framework) deleteResources() {
 	By("Deleting kube-oidc-proxy deployment")
-	err = f.Helper().DeleteProxy(f.Namespace.Name)
+	err := f.Helper().DeleteProxy(f.Namespace.Name)
 	Expect(err).NotTo(HaveOccurred())
 
 	By("Deleting mock OIDC issuer")
@@ -188,6 +225,9 @@ func (f *Framework) NewProxyClient() kubernetes.Interface {
 	return proxyClient
 }
 
-func CasesDescribe(text string, body func()) bool {
-	return Describe("[TEST] "+text, body)
+// CasesDescribe declares a test case container. args is the container body
+// plus any Ginkgo decorators, such as Ordered and ContinueOnFailure for cases
+// that share a single deploy across their specs.
+func CasesDescribe(text string, args ...interface{}) bool {
+	return Describe("[TEST] "+text, args...)
 }

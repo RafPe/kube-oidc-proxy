@@ -30,11 +30,16 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
 )
 
-var _ = framework.CasesDescribe("Upgrade", func() {
-	f := framework.NewDefaultFramework("upgrade")
+// Both specs stream through the same default proxy deployment to the same echo
+// server pod without mutating it, so the deploy and the echo server setup are
+// shared. The setup has to be shared rather than per-spec: the Role and
+// RoleBinding below have fixed names and are never deleted, so recreating them
+// for a second spec in the same namespace would fail as already existing.
+var _ = framework.CasesDescribe("Upgrade", Ordered, ContinueOnFailure, func() {
+	f := framework.NewOrderedDefaultFramework("upgrade")
 
 	var pod *corev1.Pod
-	JustBeforeEach(func() {
+	BeforeAll(func() {
 		By("Deploying echo server to exec to")
 
 		var err error
