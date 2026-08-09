@@ -62,9 +62,9 @@ The proxy has two **mutually exclusive** modes — configure exactly one.
 
 > [!WARNING]
 > When `authenticationConfig.content` is set, the chart passes
-> `--authentication-config` and **omits every `--oidc-*` flag**; the `oidc.*`
-> values are ignored. Setting both fails startup with
-> `authentication-config and --oidc-* flags are mutually exclusive`.
+> `--authentication-config` and omits issuer-specific `--oidc-*` flags.
+> `oidc.tlsClient` remains available and applies to every configured issuer.
+> Setting issuer-specific values in both modes fails startup.
 
 ### Single-issuer
 

@@ -84,7 +84,7 @@ func (o *Options) Validate(cmd *cobra.Command) error {
 	authConfigSet := o.AuthenticationConfig.ConfigFile != ""
 
 	if authConfigSet && o.oidcFlagsChanged(cmd) {
-		errs = append(errs, fmt.Errorf("authentication-config and --oidc-* flags are mutually exclusive"))
+		errs = append(errs, fmt.Errorf("authentication-config and issuer-specific --oidc-* flags are mutually exclusive"))
 	}
 
 	if err := o.OIDCAuthentication.Validate(authConfigSet); err != nil {
@@ -125,6 +125,9 @@ func (o *Options) Validate(cmd *cobra.Command) error {
 func (o *Options) oidcFlagsChanged(cmd *cobra.Command) bool {
 	changed := false
 	o.nfs.FlagSet("OIDC").VisitAll(func(f *pflag.Flag) {
+		if f.Name == "oidc-tls-client-cert-file" || f.Name == "oidc-tls-client-key-file" {
+			return
+		}
 		if cf := cmd.Flag(f.Name); cf != nil && cf.Changed {
 			changed = true
 		}

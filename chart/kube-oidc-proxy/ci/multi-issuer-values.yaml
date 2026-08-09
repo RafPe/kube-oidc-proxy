@@ -1,11 +1,14 @@
 # CI fixture: multi-issuer mode.
 # authenticationConfig.content is set, so the chart must emit
-# --authentication-config and OMIT every --oidc-* flag. requiredClaims is set
-# on purpose to prove it is ignored (no --oidc-required-claim) in this mode.
+# --authentication-config and omit issuer-specific --oidc-* flags.
+# requiredClaims is set on purpose to prove it is ignored, while tlsClient is
+# set to prove shared OIDC transport credentials remain available.
 readinessRequireAllIssuers: true
 oidc:
   requiredClaims:
     hd: example.com
+  tlsClient:
+    existingSecret: ci-oidc-client-tls
 authenticationConfig:
   content: |
     apiVersion: apiserver.config.k8s.io/v1beta1

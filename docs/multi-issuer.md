@@ -10,7 +10,8 @@ provider can be configured.
 ## Enabling
 
 Pass `--authentication-config=/path/to/config.yaml`. This flag is mutually
-exclusive with all `--oidc-*` flags. Both `apiserver.config.k8s.io/v1` and
+exclusive with issuer-specific `--oidc-*` flags; the optional OIDC TLS client
+certificate/key flags apply to all issuers. Both `apiserver.config.k8s.io/v1` and
 `v1beta1` are accepted; the file is strictly validated at startup (unknown
 fields, duplicate issuers, and invalid CEL expressions are rejected). Only
 the `jwt:` section is supported; `anonymous:` is rejected.

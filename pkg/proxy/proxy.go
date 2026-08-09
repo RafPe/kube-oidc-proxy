@@ -325,28 +325,14 @@ func (p *Proxy) reviewToken(rw http.ResponseWriter, req *http.Request) bool {
 }
 
 func (p *Proxy) roundTripperForRestConfig(config *rest.Config) (http.RoundTripper, error) {
-	// get golang tls config to the API server
-	tlsConfig, err := rest.TLSConfigFor(config)
+	// client-go's transport reloads file-backed client certificates and closes
+	// connections that still use the previous certificate. Restrict ALPN to
+	// HTTP/1.1 because Kubernetes streaming requests upgrade to SPDY.
+	configCopy := rest.CopyConfig(config)
+	configCopy.NextProtos = []string{"http/1.1"}
+	clientRT, err := rest.TransportFor(configCopy)
 	if err != nil {
-		return nil, err
-	}
-
-	// create tls transport to request
-	tlsTransport := &http.Transport{
-		Proxy:           http.ProxyFromEnvironment,
-		TLSClientConfig: tlsConfig,
-	}
-
-	// get kube transport config form rest client config
-	restTransportConfig, err := config.TransportConfig()
-	if err != nil {
-		return nil, err
-	}
-
-	// wrap golang tls config with kube transport round tripper
-	clientRT, err := transport.HTTPWrappersForConfig(restTransportConfig, tlsTransport)
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("building API server transport: %w", err)
 	}
 
 	return clientRT, nil

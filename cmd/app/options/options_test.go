@@ -28,6 +28,10 @@ func TestOidcFlagsChanged(t *testing.T) {
 			changedFlags: []string{"oidc-signing-algs"},
 			want:         true,
 		},
+		"OIDC TLS client certificate is shared with authentication-config": {
+			changedFlags: []string{"oidc-tls-client-cert-file"},
+			want:         false,
+		},
 		"non-oidc flag changed": {
 			changedFlags: []string{"secure-port"},
 			want:         false,
@@ -82,6 +86,10 @@ func TestValidate_MutualExclusivity(t *testing.T) {
 		},
 		"authentication-config without oidc flags is not a mutual exclusivity error": {
 			configFile: "/some/path",
+		},
+		"authentication-config accepts shared OIDC TLS credentials": {
+			configFile:   "/some/path",
+			changedFlags: []string{"oidc-tls-client-cert-file"},
 		},
 	}
 
