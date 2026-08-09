@@ -24,12 +24,23 @@ jobs:
   # cases. hack/verify-e2e-shards.sh (run in test.yaml) keeps a new case from
   # landing without a label and silently running in no shard at all.
   e2e-shard:
+    # The display name lists the cases in each shard so the check is readable in
+    # the UI (e.g. "e2e (impersonation, headers, probe)") instead of a bare
+    # letter. Keep `cases` in sync with the Ginkgo shard-<x> labels on the
+    # matching framework.CasesDescribe containers.
+    name: e2e (${{ matrix.cases }})
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        shard: [a, b, c]
+        include:
+          - shard: a
+            cases: "impersonation, headers, probe"
+          - shard: b
+            cases: "authconfig, upgrade, audit"
+          - shard: c
+            cases: "passthrough, token, rbac"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
