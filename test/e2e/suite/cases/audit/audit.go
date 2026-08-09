@@ -28,10 +28,13 @@ const (
 	// The proxy image is distroless and runs as nonroot, so the audit log has
 	// to be written to a writable emptyDir rather than the root filesystem, and
 	// read back through a sidecar since the proxy image has no shell or cat.
-	auditLogDir      = "/var/log/kube-oidc-proxy"
-	auditLogPath     = auditLogDir + "/audit.log"
-	auditLogVolume   = "audit-log"
-	auditReaderName  = "audit-reader"
+	auditLogDir     = "/var/log/kube-oidc-proxy"
+	auditLogPath    = auditLogDir + "/audit.log"
+	auditLogVolume  = "audit-log"
+	auditReaderName = "audit-reader"
+
+	// webhookAuditPath is where the audit webhook sink writes events inside its
+	// own pod.
 	webhookAuditPath = "/audit-log"
 )
 
@@ -68,8 +71,8 @@ rules:
 
 		// The audit log lives in an emptyDir shared with a reader sidecar. The
 		// sidecar uses the audit webhook image because it is alpine based (so it
-		// has cat), runs as root (so it can read the 0600 log written by the
-		// proxy) and is already loaded into the kind nodes.
+		// has cat), runs as root (so it can read the log file written by the
+		// nonroot proxy) and is already loaded into the kind nodes.
 		extras := &helper.ProxyExtras{
 			Volumes: []corev1.Volume{
 				{
