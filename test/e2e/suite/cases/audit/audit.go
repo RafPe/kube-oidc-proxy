@@ -38,7 +38,7 @@ const (
 	webhookAuditPath = "/audit-log"
 )
 
-var _ = framework.CasesDescribe("Audit", func() {
+var _ = framework.CasesDescribe("Audit", Label("shard-b"), func() {
 	f := framework.NewDefaultFramework("audit")
 
 	It("should be able to write audit logs to file", func() {

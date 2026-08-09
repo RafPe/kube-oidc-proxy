@@ -26,7 +26,7 @@ const (
 
 // Every spec here reads through the same AuthenticationConfiguration proxy
 // deployment and mutates no cluster state, so they all share a single deploy.
-var _ = framework.CasesDescribe("AuthenticationConfiguration multi-issuer", Ordered, ContinueOnFailure, func() {
+var _ = framework.CasesDescribe("AuthenticationConfiguration multi-issuer", Ordered, ContinueOnFailure, Label("shard-b"), func() {
 	f := framework.NewOrderedDefaultFramework("authconfig")
 
 	var (

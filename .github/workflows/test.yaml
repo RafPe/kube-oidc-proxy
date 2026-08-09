@@ -44,6 +44,11 @@ jobs:
       - name: go test
         run: go test ./cmd/... ./pkg/...
 
+      # e2e.yaml runs the suite as three label-filtered shards; an unlabelled
+      # case would run in none of them. Cheap text check, no cluster needed.
+      - name: Verify e2e shard labels
+        run: make verify-e2e-shards
+
   lint:
     # golangci-lint carries pre-existing findings across the repo that are being
     # retired incrementally, so gate on issues introduced by the PR. This makes

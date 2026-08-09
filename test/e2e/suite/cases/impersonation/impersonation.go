@@ -18,7 +18,7 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
 )
 
-var _ = framework.CasesDescribe("Impersonation", func() {
+var _ = framework.CasesDescribe("Impersonation", Label("shard-a"), func() {
 	// These specs all run against a default proxy with impersonation enabled.
 	// The only cluster state they create is cluster-scoped and named by
 	// GenerateName, and none of them assert on its absence, so they share a

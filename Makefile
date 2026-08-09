@@ -12,7 +12,7 @@ export GO111MODULE=on
 help:  ## display this help
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n\nTargets:\n"} /^[a-zA-Z0-9_-]+:.*?##/ { printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
-.PHONY: help build docker_build test depend verify all clean generate e2e e2e-clean
+.PHONY: help build docker_build test depend verify all clean generate e2e e2e-clean verify-e2e-shards
 
 # golangci-lint is installed via the upstream, GOOS/GOARCH-aware installer,
 # pinned to a supported v2 release. Keep this in lockstep with the version the
@@ -96,6 +96,16 @@ test: generate verify ## run all go tests
 E2E_CLUSTER_NAME := kube-oidc-proxy-e2e
 E2E_TIMEOUT      ?= 30m
 
+# Optional Ginkgo label filter, forwarded to the suite binary as
+# --ginkgo.label-filter. CI uses it to split the suite across a matrix of
+# shards (`make e2e GINKGO_LABEL_FILTER=shard-a`, see .github/workflows/e2e.yaml).
+# Empty (the default) runs every case.
+GINKGO_LABEL_FILTER ?=
+ifneq ($(strip $(GINKGO_LABEL_FILTER)),)
+# -args passes everything after it to the test binary, so it must come last.
+E2E_GOTEST_ARGS := -args --ginkgo.label-filter='$(GINKGO_LABEL_FILTER)'
+endif
+
 # Prerequisites (local runs): go, docker (daemon running), kind, and kubectl on
 # PATH. The suite builds and side-loads the proxy + test-tool images itself and
 # creates/destroys its own kind cluster, so no pre-existing cluster is needed.
@@ -104,7 +114,7 @@ e2e: $(BINDIR)/kubectl ## run the e2e suite hermetically (creates + destroys its
 	@echo "e2e: removing any stale cluster from a previous run"
 	@$(MAKE) --no-print-directory e2e-clean
 	trap '$(MAKE) --no-print-directory e2e-clean' EXIT INT TERM; \
-	KUBE_OIDC_PROXY_ROOT_PATH="$$(pwd)" go test -timeout $(E2E_TIMEOUT) -v --count=1 ./test/e2e/suite/. 2>&1 | tee $(ARTIFACTS)/e2e.log
+	KUBE_OIDC_PROXY_ROOT_PATH="$$(pwd)" go test -timeout $(E2E_TIMEOUT) -v --count=1 ./test/e2e/suite/. $(E2E_GOTEST_ARGS) 2>&1 | tee $(ARTIFACTS)/e2e.log
 
 e2e-clean: ## delete the e2e kind cluster if present (safe to run anytime)
 	@command -v kind >/dev/null 2>&1 || { \
@@ -113,6 +123,9 @@ e2e-clean: ## delete the e2e kind cluster if present (safe to run anytime)
 		exit 1; \
 	}
 	@kind delete cluster --name $(E2E_CLUSTER_NAME) >/dev/null 2>&1 || true
+
+verify-e2e-shards: ## check every e2e case container carries exactly one shard label
+	./hack/verify-e2e-shards.sh
 
 build: generate ## build kube-oidc-proxy
 	mkdir -p ./bin/amd64

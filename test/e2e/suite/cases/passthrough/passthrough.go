@@ -21,7 +21,7 @@ import (
 // proxy itself to enable passthrough. The per-spec Role and RoleBinding below
 // are still created and deleted around every spec, so the shared namespace
 // looks the same to each of them.
-var _ = framework.CasesDescribe("Passthrough", Ordered, ContinueOnFailure, func() {
+var _ = framework.CasesDescribe("Passthrough", Ordered, ContinueOnFailure, Label("shard-c"), func() {
 	f := framework.NewOrderedDefaultFramework("passthrough")
 
 	var saToken string

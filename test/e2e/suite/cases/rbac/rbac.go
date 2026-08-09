@@ -15,7 +15,7 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
 )
 
-var _ = framework.CasesDescribe("RBAC", func() {
+var _ = framework.CasesDescribe("RBAC", Label("shard-c"), func() {
 	f := framework.NewDefaultFramework("rbac")
 
 	It("should return with a forbidden request with a valid token without rbac", func() {
