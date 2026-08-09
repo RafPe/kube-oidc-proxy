@@ -17,7 +17,7 @@ carries over one-to-one.
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--authentication-config` | — | Path to an `AuthenticationConfiguration` (`apiserver.config.k8s.io/v1` or `v1beta1`) enabling multi-issuer OIDC. Mutually exclusive with the `--oidc-*` flags. |
+| `--authentication-config` | — | Path to an `AuthenticationConfiguration` (`apiserver.config.k8s.io/v1` or `v1beta1`) enabling multi-issuer OIDC. Mutually exclusive with issuer-specific `--oidc-*` flags; the OIDC TLS client certificate/key flags may be shared by all issuers. |
 | `--readiness-require-all-issuers` | `false` | Report ready only once **every** issuer has initialized (JWKS fetched). Default: ready after the first issuer; others keep initializing in the background. |
 
 ### Single-issuer OIDC
@@ -35,6 +35,22 @@ All ignored when `--authentication-config` is set.
 | `--oidc-groups-prefix` | — | Prefix prepended to group names. |
 | `--oidc-signing-algs` | `RS256` | Comma-separated allowed JOSE signing algorithms. |
 | `--oidc-required-claim` | — | Repeatable `key=value` claim that must be present with a matching value. |
+
+### OIDC issuer mutual TLS
+
+These flags apply to every configured issuer in both single- and multi-issuer
+modes. They must be supplied together.
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--oidc-tls-client-cert-file` | — | X.509 client certificate presented during issuer discovery and JWKS retrieval. |
+| `--oidc-tls-client-key-file` | — | Private key matching the OIDC client certificate. |
+
+File-backed OIDC client credentials are re-read by client-go. When the pair is
+rotated, existing issuer connections are closed and subsequent discovery/JWKS
+requests use the new certificate. The chart exposes this through
+`oidc.tlsClient.existingSecret`; Kubernetes updates to the projected Secret do
+not require a pod restart.
 
 ### Token passthrough & impersonation
 

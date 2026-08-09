@@ -74,8 +74,8 @@ tls:
 #                        readinessRequireAllIssuers).
 #
 # When authenticationConfig.content is non-empty the chart passes
-# --authentication-config to the proxy and OMITS every --oidc-* flag; the oidc.*
-# fields below are ignored. Do not set both.
+# --authentication-config to the proxy and omits issuer-specific --oidc-* flags.
+# oidc.tlsClient is shared by all issuers and remains available in either mode.
 # ---------------------------------------------------------------------------
 oidc:
   # SINGLE-ISSUER (required for mode 1): the OIDC client ID the proxy expects in
@@ -112,9 +112,19 @@ oidc:
   #     aud: my-client
   requiredClaims: {}
 
+  # Optional client credentials for mutual TLS to the OIDC issuer. These apply
+  # to every issuer in both single- and multi-issuer modes. The referenced
+  # Secret must contain a matching certificate/key pair. Projected Secret
+  # updates are reloaded without restarting the proxy.
+  tlsClient:
+    existingSecret: ""
+    certKey: tls.crt
+    keyKey: tls.key
+
 # MULTI-ISSUER (mode 2): accept tokens from several issuers via a Kubernetes
 # AuthenticationConfiguration (apiserver.config.k8s.io/v1 or v1beta1).
-# Mutually exclusive with ALL oidc.* fields above.
+# Mutually exclusive with issuer-specific oidc.* fields above. oidc.tlsClient
+# is shared by every issuer and may be used in this mode.
 authenticationConfig:
   # YAML content of an AuthenticationConfiguration resource. When non-empty,
   # --authentication-config is passed to the proxy and the individual --oidc-*

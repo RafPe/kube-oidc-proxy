@@ -74,7 +74,7 @@ authenticationConfig:
 ```
 
 > [!WARNING]
-> When `authenticationConfig.content` is set, the chart passes `--authentication-config` and **omits every `--oidc-*` flag**; the `oidc.*` values are ignored. Don't configure both modes at once.
+> When `authenticationConfig.content` is set, the chart passes `--authentication-config` and omits issuer-specific `--oidc-*` flags. Optional `oidc.tlsClient` credentials apply to every issuer in either mode.
 
 Full guide: [docs/multi-issuer.md](./docs/multi-issuer.md).
 

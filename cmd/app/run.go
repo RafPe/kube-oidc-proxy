@@ -8,9 +8,11 @@ package app
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/spf13/cobra"
 	apiserverapi "k8s.io/apiserver/pkg/apis/apiserver"
@@ -31,6 +33,8 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/tokenreview"
 	"github.com/rafpe/kube-oidc-proxy/pkg/util/token"
 )
+
+const oidcHTTPTimeout = 30 * time.Second
 
 func NewRunCommand(stopCh <-chan struct{}) *cobra.Command {
 	// Build options
@@ -266,8 +270,18 @@ func jwtAuthenticatorFromOIDCOptions(o *options.OIDCAuthenticationOptions) apise
 
 func buildSingleAuther(o *options.OIDCAuthenticationOptions) (authenticator.Token, []string, error) {
 	jwtConfig := jwtAuthenticatorFromOIDCOptions(o)
+	client, err := oidcHTTPClient(o.CAFile, nil, o.TLSClientCertFile, o.TLSClientKeyFile)
+	if err != nil {
+		return nil, nil, fmt.Errorf("creating OIDC HTTP client for issuer %q: %w", o.IssuerURL, err)
+	}
+
+	provider := caContentProvider(o.CAFile)
+	if client != nil {
+		provider = nil
+	}
 	auther, err := oidc.New(context.Background(), oidc.Options{
-		CAContentProvider:    caContentProvider(o.CAFile),
+		CAContentProvider:    provider,
+		Client:               client,
 		SupportedSigningAlgs: o.SigningAlgs,
 		JWTAuthenticator:     jwtConfig,
 	})
@@ -290,7 +304,7 @@ func buildUnionAuther(opts *options.Options) (authenticator.Token, []string, err
 	authers := make([]authenticator.Token, 0, len(authCfg.JWT))
 	issuerURLs := make([]string, 0, len(authCfg.JWT))
 	for _, jwtEntry := range authCfg.JWT {
-		auther, err := oidcAutherFromJWT(jwtEntry, compiler, oidc.AllValidSigningAlgorithms())
+		auther, err := oidcAutherFromJWT(jwtEntry, compiler, oidc.AllValidSigningAlgorithms(), opts.OIDCAuthentication)
 		if err != nil {
 			return nil, nil, fmt.Errorf("building authenticator for issuer %q: %w", jwtEntry.Issuer.URL, err)
 		}
@@ -303,7 +317,12 @@ func buildUnionAuther(opts *options.Options) (authenticator.Token, []string, err
 	return tokenunion.NewFailOnError(authers...), issuerURLs, nil
 }
 
-func oidcAutherFromJWT(jwtConfig apiserverapi.JWTAuthenticator, compiler authenticationcel.Compiler, signingAlgs []string) (authenticator.Token, error) {
+func oidcAutherFromJWT(
+	jwtConfig apiserverapi.JWTAuthenticator,
+	compiler authenticationcel.Compiler,
+	signingAlgs []string,
+	transportOptions *options.OIDCAuthenticationOptions,
+) (authenticator.Token, error) {
 	var provider oidc.CAContentProvider
 	if jwtConfig.Issuer.CertificateAuthority != "" {
 		var err error
@@ -313,10 +332,44 @@ func oidcAutherFromJWT(jwtConfig apiserverapi.JWTAuthenticator, compiler authent
 		}
 	}
 
+	client, err := oidcHTTPClient(
+		"",
+		[]byte(jwtConfig.Issuer.CertificateAuthority),
+		transportOptions.TLSClientCertFile,
+		transportOptions.TLSClientKeyFile,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("creating OIDC HTTP client for issuer %q: %w", jwtConfig.Issuer.URL, err)
+	}
+	if client != nil {
+		provider = nil
+	}
+
 	return oidc.New(context.Background(), oidc.Options{
 		CAContentProvider:    provider,
+		Client:               client,
 		SupportedSigningAlgs: signingAlgs,
 		JWTAuthenticator:     jwtConfig,
 		Compiler:             compiler,
 	})
+}
+
+func oidcHTTPClient(caFile string, caData []byte, certFile, keyFile string) (*http.Client, error) {
+	if certFile == "" {
+		return nil, nil
+	}
+
+	roundTripper, err := rest.TransportFor(&rest.Config{
+		TLSClientConfig: rest.TLSClientConfig{
+			CAFile:   caFile,
+			CAData:   caData,
+			CertFile: certFile,
+			KeyFile:  keyFile,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("building OIDC TLS transport: %w", err)
+	}
+
+	return &http.Client{Transport: roundTripper, Timeout: oidcHTTPTimeout}, nil
 }

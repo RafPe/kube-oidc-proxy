@@ -75,6 +75,10 @@ spec:
           - "--oidc-ca-file=/etc/oidc/oidc-ca.pem"
           {{- end }}
           {{- end }}
+          {{- if .Values.oidc.tlsClient.existingSecret }}
+          - "--oidc-tls-client-cert-file=/etc/oidc/client-tls/tls.crt"
+          - "--oidc-tls-client-key-file=/etc/oidc/client-tls/tls.key"
+          {{- end }}
           {{- if .Values.readinessRequireAllIssuers }}
           - "--readiness-require-all-issuers"
           {{- end }}
@@ -167,6 +171,11 @@ spec:
           - name: kube-oidc-proxy-tls
             mountPath: /etc/oidc/tls
             readOnly: true
+          {{- if .Values.oidc.tlsClient.existingSecret }}
+          - name: oidc-client-tls
+            mountPath: /etc/oidc/client-tls
+            readOnly: true
+          {{- end }}
           {{- if .Values.extraVolumeMounts }}{{ toYaml .Values.extraVolumeMounts | trim | nindent 10 }}{{ end }}
       volumes:
         {{- if or .Values.oidc.caPEM .Values.authenticationConfig.content }}
@@ -192,6 +201,16 @@ spec:
               path: crt.pem
             - key: tls.key
               path: key.pem
+        {{- if .Values.oidc.tlsClient.existingSecret }}
+        - name: oidc-client-tls
+          secret:
+            secretName: {{ .Values.oidc.tlsClient.existingSecret }}
+            items:
+            - key: {{ .Values.oidc.tlsClient.certKey }}
+              path: tls.crt
+            - key: {{ .Values.oidc.tlsClient.keyKey }}
+              path: tls.key
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

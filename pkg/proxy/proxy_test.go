@@ -8,17 +8,23 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/mock/gomock"
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/request/bearertoken"
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/server"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/cert"
 
 	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
 	"github.com/rafpe/kube-oidc-proxy/pkg/mocks"
@@ -35,6 +41,77 @@ type fakeProxy struct {
 	fakeToken *mocks.MockToken
 	fakeRT    *fakeRT
 	*Proxy
+}
+
+func TestRoundTripperForRestConfigReloadsClientCertificate(t *testing.T) {
+	certFile := filepath.Join(t.TempDir(), "client.crt")
+	keyFile := filepath.Join(filepath.Dir(certFile), "client.key")
+	firstCert, firstKey, err := cert.GenerateSelfSignedCertKey("first-client", nil, nil)
+	if err != nil {
+		t.Fatalf("GenerateSelfSignedCertKey(first-client) error = %v", err)
+	}
+	secondCert, secondKey, err := cert.GenerateSelfSignedCertKey("second-client", nil, nil)
+	if err != nil {
+		t.Fatalf("GenerateSelfSignedCertKey(second-client) error = %v", err)
+	}
+	writeProxyClientKeyPair(t, certFile, keyFile, firstCert, firstKey)
+
+	p := &Proxy{}
+	roundTripper, err := p.roundTripperForRestConfig(&rest.Config{
+		TLSClientConfig: rest.TLSClientConfig{
+			CertFile: certFile,
+			KeyFile:  keyFile,
+		},
+	})
+	if err != nil {
+		t.Fatalf("roundTripperForRestConfig() error = %v", err)
+	}
+	tlsConfig, err := utilnet.TLSClientConfig(roundTripper)
+	if err != nil {
+		t.Fatalf("TLSClientConfig() error = %v", err)
+	}
+	if tlsConfig == nil || tlsConfig.GetClientCertificate == nil {
+		t.Fatal("roundTripperForRestConfig() has no dynamic client-certificate callback")
+	}
+	if len(tlsConfig.NextProtos) != 1 || tlsConfig.NextProtos[0] != "http/1.1" {
+		t.Errorf("roundTripperForRestConfig() NextProtos = %v, want [http/1.1]", tlsConfig.NextProtos)
+	}
+
+	gotFirst, err := tlsConfig.GetClientCertificate(nil)
+	if err != nil {
+		t.Fatalf("GetClientCertificate(first) error = %v", err)
+	}
+	writeProxyClientKeyPair(t, certFile, keyFile, secondCert, secondKey)
+	time.Sleep(1100 * time.Millisecond)
+	gotSecond, err := tlsConfig.GetClientCertificate(nil)
+	if err != nil {
+		t.Fatalf("GetClientCertificate(second) error = %v", err)
+	}
+	if bytes.Equal(gotFirst.Certificate[0], gotSecond.Certificate[0]) {
+		t.Error("GetClientCertificate() returned the original certificate after files rotated")
+	}
+
+	strippedTransport, err := p.roundTripperForRestConfig(&rest.Config{})
+	if err != nil {
+		t.Fatalf("roundTripperForRestConfig(stripped) error = %v", err)
+	}
+	strippedTLSConfig, err := utilnet.TLSClientConfig(strippedTransport)
+	if err != nil {
+		t.Fatalf("TLSClientConfig(stripped) error = %v", err)
+	}
+	if strippedTLSConfig != nil && strippedTLSConfig.GetClientCertificate != nil {
+		t.Error("credential-stripped transport unexpectedly has a client certificate")
+	}
+}
+
+func writeProxyClientKeyPair(t *testing.T, certFile, keyFile string, certData, keyData []byte) {
+	t.Helper()
+	if err := os.WriteFile(certFile, certData, 0600); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", certFile, err)
+	}
+	if err := os.WriteFile(keyFile, keyData, 0600); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", keyFile, err)
+	}
 }
 
 type fakeRW struct {

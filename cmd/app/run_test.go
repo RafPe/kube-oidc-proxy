@@ -2,13 +2,17 @@
 package app
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 	apiserverapi "k8s.io/apiserver/pkg/apis/apiserver"
 	authenticationcel "k8s.io/apiserver/pkg/authentication/cel"
+	"k8s.io/client-go/util/cert"
 
 	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
 )
@@ -50,12 +54,68 @@ func TestOIDCAutherFromJWT_Construction(t *testing.T) {
 		},
 	}
 
-	auther, err := oidcAutherFromJWT(entry, authenticationcel.NewDefaultCompiler(), []string{"RS256"})
+	auther, err := oidcAutherFromJWT(
+		entry,
+		authenticationcel.NewDefaultCompiler(),
+		[]string{"RS256"},
+		&options.OIDCAuthenticationOptions{},
+	)
 	if err != nil {
 		t.Fatalf("oidcAutherFromJWT() unexpected error: %v", err)
 	}
 	if auther == nil {
 		t.Error("oidcAutherFromJWT() returned nil authenticator")
+	}
+}
+
+func TestOIDCHTTPClientReloadsClientCertificate(t *testing.T) {
+	certFile := filepath.Join(t.TempDir(), "client.crt")
+	keyFile := filepath.Join(filepath.Dir(certFile), "client.key")
+
+	firstCert, firstKey, err := cert.GenerateSelfSignedCertKey("first-client", nil, nil)
+	if err != nil {
+		t.Fatalf("GenerateSelfSignedCertKey(first-client) error = %v", err)
+	}
+	secondCert, secondKey, err := cert.GenerateSelfSignedCertKey("second-client", nil, nil)
+	if err != nil {
+		t.Fatalf("GenerateSelfSignedCertKey(second-client) error = %v", err)
+	}
+	writeClientKeyPair(t, certFile, keyFile, firstCert, firstKey)
+
+	client, err := oidcHTTPClient("", nil, certFile, keyFile)
+	if err != nil {
+		t.Fatalf("oidcHTTPClient(%q, %q) error = %v", certFile, keyFile, err)
+	}
+	tlsConfig, err := utilnet.TLSClientConfig(client.Transport)
+	if err != nil {
+		t.Fatalf("TLSClientConfig() error = %v", err)
+	}
+	if tlsConfig == nil || tlsConfig.GetClientCertificate == nil {
+		t.Fatal("oidcHTTPClient() transport has no dynamic client-certificate callback")
+	}
+
+	gotFirst, err := tlsConfig.GetClientCertificate(nil)
+	if err != nil {
+		t.Fatalf("GetClientCertificate(first) error = %v", err)
+	}
+	writeClientKeyPair(t, certFile, keyFile, secondCert, secondKey)
+	time.Sleep(1100 * time.Millisecond)
+	gotSecond, err := tlsConfig.GetClientCertificate(nil)
+	if err != nil {
+		t.Fatalf("GetClientCertificate(second) error = %v", err)
+	}
+	if bytes.Equal(gotFirst.Certificate[0], gotSecond.Certificate[0]) {
+		t.Error("GetClientCertificate() returned the original certificate after files rotated")
+	}
+}
+
+func writeClientKeyPair(t *testing.T, certFile, keyFile string, certData, keyData []byte) {
+	t.Helper()
+	if err := os.WriteFile(certFile, certData, 0600); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", certFile, err)
+	}
+	if err := os.WriteFile(keyFile, keyData, 0600); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", keyFile, err)
 	}
 }
 

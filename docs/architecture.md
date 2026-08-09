@@ -81,8 +81,9 @@ OIDC issuer at the same time. Per-issuer username/group **prefixes** keep
 identities from different issuers from colliding.
 
 The two modes are **mutually exclusive**. When `--authentication-config` is set,
-every `--oidc-*` flag is rejected (`authentication-config and --oidc-* flags are
-mutually exclusive`).
+issuer-specific `--oidc-*` flags are rejected. The optional OIDC TLS client
+certificate/key pair is transport configuration shared by all issuers and is
+therefore accepted in either mode.
 
 ## Readiness semantics
 

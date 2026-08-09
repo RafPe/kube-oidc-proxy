@@ -12,8 +12,9 @@ The chart supports the proxy's two **mutually exclusive** authentication modes:
   `authenticationConfig.content` (and optionally `readinessRequireAllIssuers`).
 
 When `authenticationConfig.content` is non-empty the chart passes
-`--authentication-config` and **omits every `--oidc-*` flag**; the `oidc.*`
-values are ignored. Do not configure both modes at once.
+`--authentication-config` and omits issuer-specific `--oidc-*` flags.
+`oidc.tlsClient` remains available because its credentials apply to every
+issuer in either mode.
 
 ## Prerequisites
 
@@ -110,7 +111,10 @@ Ignored when `authenticationConfig.content` is set.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `authenticationConfig.content` | string | `""` | YAML of an `AuthenticationConfiguration`. When set, `--authentication-config` is used and all `--oidc-*` flags are omitted. |
+| `authenticationConfig.content` | string | `""` | YAML of an `AuthenticationConfiguration`. When set, `--authentication-config` is used and issuer-specific `--oidc-*` flags are omitted. |
+| `oidc.tlsClient.existingSecret` | string | `""` | Existing Secret containing the client certificate/key used for mTLS to every configured OIDC issuer. |
+| `oidc.tlsClient.certKey` | string | `"tls.crt"` | Certificate key in `oidc.tlsClient.existingSecret`. |
+| `oidc.tlsClient.keyKey` | string | `"tls.key"` | Private-key key in `oidc.tlsClient.existingSecret`. |
 | `readinessRequireAllIssuers` | bool | `false` | Require every issuer to initialize before the pod is ready. Default: ready once at least one initializes. |
 
 ### Token passthrough & impersonation

@@ -2,6 +2,7 @@
 package options
 
 import (
+	"crypto/tls"
 	"fmt"
 	"os"
 
@@ -11,25 +12,36 @@ import (
 )
 
 type OIDCAuthenticationOptions struct {
-	CAFile         string
-	ClientID       string
-	IssuerURL      string
-	UsernameClaim  string
-	UsernamePrefix string
-	GroupsClaim    string
-	GroupsPrefix   string
-	SigningAlgs    []string
-	RequiredClaims map[string]string
+	CAFile            string
+	TLSClientCertFile string
+	TLSClientKeyFile  string
+	ClientID          string
+	IssuerURL         string
+	UsernameClaim     string
+	UsernamePrefix    string
+	GroupsClaim       string
+	GroupsPrefix      string
+	SigningAlgs       []string
+	RequiredClaims    map[string]string
 }
 
 func NewOIDCAuthenticationOptions(nfs *cliflag.NamedFlagSets) *OIDCAuthenticationOptions {
 	return new(OIDCAuthenticationOptions).AddFlags(nfs.FlagSet("OIDC"))
 }
 
-// Validate checks the OIDC options. This flag is mutually exclusive with --authentication-config:
-// when authConfigSet is true, --oidc-* flags must not be set (enforced by Options.Validate)
-// and their individual validation is skipped.
+// Validate checks the OIDC options. Issuer-authentication flags are mutually
+// exclusive with --authentication-config, while the TLS client certificate and
+// key apply to both single- and multi-issuer modes.
 func (o *OIDCAuthenticationOptions) Validate(authConfigSet bool) error {
+	if (o.TLSClientCertFile == "") != (o.TLSClientKeyFile == "") {
+		return fmt.Errorf("--oidc-tls-client-cert-file and --oidc-tls-client-key-file must be specified together")
+	}
+	if o.TLSClientCertFile != "" {
+		if _, err := tls.LoadX509KeyPair(o.TLSClientCertFile, o.TLSClientKeyFile); err != nil {
+			return fmt.Errorf("loading OIDC TLS client certificate and key: %w", err)
+		}
+	}
+
 	if authConfigSet {
 		return nil
 	}
@@ -57,6 +69,13 @@ func (o *OIDCAuthenticationOptions) AddFlags(fs *pflag.FlagSet) *OIDCAuthenticat
 	fs.StringVar(&o.CAFile, "oidc-ca-file", o.CAFile, ""+
 		"The OpenID server's certificate will be verified by one of the authorities "+
 		"in the oidc-ca-file, otherwise the host's root CA set will be used")
+
+	fs.StringVar(&o.TLSClientCertFile, "oidc-tls-client-cert-file", o.TLSClientCertFile, ""+
+		"Path to an X.509 client certificate presented to OIDC issuers. "+
+		"Requires --oidc-tls-client-key-file and applies to every configured issuer.")
+
+	fs.StringVar(&o.TLSClientKeyFile, "oidc-tls-client-key-file", o.TLSClientKeyFile, ""+
+		"Path to the private key for --oidc-tls-client-cert-file.")
 
 	fs.StringVar(&o.UsernameClaim, "oidc-username-claim", "sub", ""+
 		"The OpenID claim to use as the username. Note that claims other than the default ('sub') "+

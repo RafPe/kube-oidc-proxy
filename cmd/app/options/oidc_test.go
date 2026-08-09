@@ -88,3 +88,39 @@ func TestOIDCAuthenticationOptions_Validate(t *testing.T) {
 		})
 	}
 }
+
+func TestOIDCAuthenticationOptionsValidateTLSClientCredentials(t *testing.T) {
+	tests := map[string]struct {
+		certFile string
+		keyFile  string
+		wantErr  bool
+	}{
+		"neither file is valid": {},
+		"certificate without key is rejected": {
+			certFile: "/tmp/client.crt",
+			wantErr:  true,
+		},
+		"key without certificate is rejected": {
+			keyFile: "/tmp/client.key",
+			wantErr: true,
+		},
+		"unreadable pair is rejected": {
+			certFile: "/does/not/exist/client.crt",
+			keyFile:  "/does/not/exist/client.key",
+			wantErr:  true,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			o := &OIDCAuthenticationOptions{
+				TLSClientCertFile: tc.certFile,
+				TLSClientKeyFile:  tc.keyFile,
+			}
+			err := o.Validate(true)
+			if gotErr := err != nil; gotErr != tc.wantErr {
+				t.Errorf("Validate(true) error = %v, want error presence = %t", err, tc.wantErr)
+			}
+		})
+	}
+}
