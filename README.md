@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./assets/social-card.png" alt="kube-oidc-proxy — OIDC authentication proxy for managed Kubernetes, with multi-issuer support" width="820">
+</p>
+
 [![Build](https://github.com/RafPe/kube-oidc-proxy/actions/workflows/build.yaml/badge.svg)](https://github.com/RafPe/kube-oidc-proxy/actions/workflows/build.yaml)
 [![E2E](https://github.com/RafPe/kube-oidc-proxy/actions/workflows/e2e.yaml/badge.svg)](https://github.com/RafPe/kube-oidc-proxy/actions/workflows/e2e.yaml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
