@@ -19,17 +19,17 @@ A reverse proxy that brings OIDC login to managed Kubernetes clusters, with mult
 
 Prerequisites: a Kubernetes cluster, `kubectl`, Helm 3+, and one or more OIDC issuers (see [prerequisites](./docs/getting-started.md#prerequisites)).
 
-Install the local chart — it pulls the published `ghcr.io/rafpe/kube-oidc-proxy:1.1.0` image:
+Install from the published, signed OCI chart:
 
 ```sh
-helm install kube-oidc-proxy ./chart/kube-oidc-proxy \
+helm install kube-oidc-proxy oci://ghcr.io/rafpe/charts/kube-oidc-proxy \
   --namespace kube-oidc-proxy --create-namespace \
   --set oidc.clientId=<client-id> \
   --set oidc.issuerUrl=https://<issuer-url> \
   --set oidc.usernameClaim=email
 ```
 
-Once the OCI chart is published, `oci://ghcr.io/rafpe/charts/kube-oidc-proxy` will work as a drop-in replacement for `./chart/kube-oidc-proxy` (same `--set` flags). Until then, use the local chart above.
+Add `--version <x.y.z>` to pin a specific [release](https://github.com/rafpe/kube-oidc-proxy/releases); omit it for the latest. To install from a local checkout instead, swap the chart reference for `./chart/kube-oidc-proxy`.
 
 Verify — port-forward the proxy and ask the cluster who you are:
 

@@ -213,7 +213,7 @@ authenticationConfig:
           expression: '["github:" + claims.repository_owner]'
 EOF
 
-helm install kube-oidc-proxy ./chart/kube-oidc-proxy \
+helm install kube-oidc-proxy oci://ghcr.io/rafpe/charts/kube-oidc-proxy \
   -n kube-oidc-proxy --create-namespace -f /tmp/values-test.yaml
 kubectl -n kube-oidc-proxy rollout status deploy/kube-oidc-proxy --timeout=180s
 
