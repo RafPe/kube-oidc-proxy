@@ -24,14 +24,16 @@ values are ignored. Do not configure both modes at once.
 
 ## Install
 
-Once the release pipeline is live the chart is published as an OCI artifact at
-`oci://ghcr.io/rafpe/charts/kube-oidc-proxy` (not yet published). Until then,
-install it from a checkout of this repository.
+The chart is published as a signed OCI artifact at
+`oci://ghcr.io/rafpe/charts/kube-oidc-proxy`. Add `--version <x.y.z>` to pin a
+specific release (see [releases](https://github.com/rafpe/kube-oidc-proxy/releases));
+omit it for the latest. To work from a local checkout instead, replace the chart
+reference with `./chart/kube-oidc-proxy`.
 
 Single-issuer:
 
 ```sh
-helm install kube-oidc-proxy ./chart/kube-oidc-proxy \
+helm install kube-oidc-proxy oci://ghcr.io/rafpe/charts/kube-oidc-proxy \
   --set oidc.clientId=my-client \
   --set oidc.issuerUrl=https://accounts.google.com \
   --set oidc.usernameClaim=email
@@ -40,7 +42,7 @@ helm install kube-oidc-proxy ./chart/kube-oidc-proxy \
 Or with a values file:
 
 ```sh
-helm install kube-oidc-proxy ./chart/kube-oidc-proxy -f my-values.yaml
+helm install kube-oidc-proxy oci://ghcr.io/rafpe/charts/kube-oidc-proxy -f my-values.yaml
 ```
 
 Uninstall:

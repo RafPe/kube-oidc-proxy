@@ -15,29 +15,26 @@ values reference.
 - Optional: [cert-manager](https://github.com/jetstack/cert-manager), to issue
   the proxy's serving certificate.
 
-> [!IMPORTANT]
-> The image `ghcr.io/rafpe/kube-oidc-proxy:1.1.0` is **published** — the local
-> chart (option 1) pulls it and works today. The OCI chart
-> `oci://ghcr.io/rafpe/charts/kube-oidc-proxy` is not published yet; use it only
-> once the release pipeline lands.
-
 ## Install
 
-### 1. From a local checkout
+### 1. From the OCI registry (recommended)
 
 ```sh
-helm install kube-oidc-proxy ./chart/kube-oidc-proxy \
+helm install kube-oidc-proxy oci://ghcr.io/rafpe/charts/kube-oidc-proxy \
   --namespace kube-oidc-proxy --create-namespace \
   --set oidc.clientId=<client-id> \
   --set oidc.issuerUrl=https://<issuer-url> \
   --set oidc.usernameClaim=email
 ```
 
-### 2. From the OCI registry (once published)
+The chart and image are signed (cosign, keyless). Add `--version <x.y.z>` to pin
+a specific [release](https://github.com/rafpe/kube-oidc-proxy/releases); omit it
+for the latest.
+
+### 2. From a local checkout
 
 ```sh
-helm install kube-oidc-proxy \
-  oci://ghcr.io/rafpe/charts/kube-oidc-proxy \
+helm install kube-oidc-proxy ./chart/kube-oidc-proxy \
   --namespace kube-oidc-proxy --create-namespace \
   --set oidc.clientId=<client-id> \
   --set oidc.issuerUrl=https://<issuer-url> \
