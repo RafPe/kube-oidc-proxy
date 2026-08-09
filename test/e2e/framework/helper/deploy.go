@@ -21,8 +21,23 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/test/util"
 )
 
+// ProxyExtras holds additions to the proxy pod that cannot be expressed with
+// extraVolumes, which are always mounted read only at /<volume name>. Volumes
+// are paired with explicit VolumeMounts on the proxy container, and Containers
+// are added to the pod as sidecars, typically to share one of those volumes.
+type ProxyExtras struct {
+	Volumes      []corev1.Volume
+	VolumeMounts []corev1.VolumeMount
+	Containers   []corev1.Container
+}
+
 func (h *Helper) DeployProxy(ns *corev1.Namespace, issuerURL *url.URL, clientID string,
 	oidcKeyBundle *util.KeyBundle, extraVolumes []corev1.Volume, extraArgs ...string) (*util.KeyBundle, *url.URL, error) {
+	return h.DeployProxyWithExtras(ns, issuerURL, clientID, oidcKeyBundle, extraVolumes, nil, extraArgs...)
+}
+
+func (h *Helper) DeployProxyWithExtras(ns *corev1.Namespace, issuerURL *url.URL, clientID string,
+	oidcKeyBundle *util.KeyBundle, extraVolumes []corev1.Volume, extras *ProxyExtras, extraArgs ...string) (*util.KeyBundle, *url.URL, error) {
 	authConfig := false
 	for _, a := range extraArgs {
 		if strings.HasPrefix(a, "--authentication-config") {
@@ -100,6 +115,16 @@ func (h *Helper) DeployProxy(ns *corev1.Namespace, issuerURL *url.URL, clientID 
 	}
 
 	volumes := extraVolumes
+	if extras != nil {
+		cnt.VolumeMounts = append(cnt.VolumeMounts, extras.VolumeMounts...)
+		volumes = append(volumes, extras.Volumes...)
+	}
+
+	containers := []corev1.Container{cnt}
+	if extras != nil {
+		containers = append(containers, extras.Containers...)
+	}
+
 	if !authConfig {
 		volumes = append(volumes, corev1.Volume{
 			Name: "oidc",
@@ -125,7 +150,7 @@ func (h *Helper) DeployProxy(ns *corev1.Namespace, issuerURL *url.URL, clientID 
 		}
 	}
 
-	bundle, appURL, err := h.deployApp(ns.Name, kind.ProxyImageName, corev1.ServiceTypeNodePort, cnt, volumes...)
+	bundle, appURL, err := h.deployApp(ns.Name, kind.ProxyImageName, corev1.ServiceTypeNodePort, containers, volumes...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -296,7 +321,7 @@ func (h *Helper) DeployNamedIssuer(ns, name string) (*util.KeyBundle, *url.URL, 
 		},
 	}
 
-	bundle, appURL, err := h.deployApp(ns, name, corev1.ServiceTypeClusterIP, cnt)
+	bundle, appURL, err := h.deployApp(ns, name, corev1.ServiceTypeClusterIP, []corev1.Container{cnt})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -329,7 +354,7 @@ func (h *Helper) DeployFakeAPIServer(ns string) ([]corev1.Volume, *url.URL, erro
 		},
 	}
 
-	bundle, appURL, err := h.deployApp(ns, kind.FakeAPIServerImageName, corev1.ServiceTypeClusterIP, cnt)
+	bundle, appURL, err := h.deployApp(ns, kind.FakeAPIServerImageName, corev1.ServiceTypeClusterIP, []corev1.Container{cnt})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -387,7 +412,7 @@ func (h *Helper) DeployAuditWebhook(ns, logPath string) (corev1.Volume, *url.URL
 		},
 	}
 
-	bundle, appURL, err := h.deployApp(ns, kind.AuditWebhookImageName, corev1.ServiceTypeClusterIP, cnt)
+	bundle, appURL, err := h.deployApp(ns, kind.AuditWebhookImageName, corev1.ServiceTypeClusterIP, []corev1.Container{cnt})
 	if err != nil {
 		return corev1.Volume{}, nil, err
 	}
@@ -417,7 +442,7 @@ func (h *Helper) DeployAuditWebhook(ns, logPath string) (corev1.Volume, *url.URL
 	return auditWebhookCAVol, appURL, nil
 }
 
-func (h *Helper) deployApp(ns, name string, serviceType corev1.ServiceType, container corev1.Container, volumes ...corev1.Volume) (*util.KeyBundle, *url.URL, error) {
+func (h *Helper) deployApp(ns, name string, serviceType corev1.ServiceType, containers []corev1.Container, volumes ...corev1.Volume) (*util.KeyBundle, *url.URL, error) {
 	host, appURL := h.appURL(ns, name, "6443")
 
 	var netIPs []net.IP
@@ -501,7 +526,7 @@ func (h *Helper) deployApp(ns, name string, serviceType corev1.ServiceType, cont
 
 				Spec: corev1.PodSpec{
 					ServiceAccountName: name,
-					Containers:         []corev1.Container{container},
+					Containers:         containers,
 					Volumes: append(volumes,
 						corev1.Volume{
 							Name: "tls",

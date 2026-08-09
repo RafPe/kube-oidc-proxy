@@ -107,7 +107,9 @@ func (f *Framework) BeforeEach() {
 // AfterEach deletes the namespace, after reading its events.
 func (f *Framework) AfterEach() {
 	// Output logs from proxy of test case.
-	err := f.Helper().Kubectl(f.Namespace.Name).Run("logs", "-lapp=kube-oidc-proxy-e2e")
+	// --all-containers keeps this working when the proxy pod has a sidecar, as
+	// the audit to file case does.
+	err := f.Helper().Kubectl(f.Namespace.Name).Run("logs", "--all-containers", "-lapp=kube-oidc-proxy-e2e")
 	if err != nil {
 		By("Failed to gather logs from kube-oidc-proxy: " + err.Error())
 	}
@@ -126,6 +128,12 @@ func (f *Framework) AfterEach() {
 }
 
 func (f *Framework) DeployProxyWith(extraVolumes []corev1.Volume, extraArgs ...string) {
+	f.DeployProxyWithExtras(extraVolumes, nil, extraArgs...)
+}
+
+// DeployProxyWithExtras redeploys the proxy with extra volumes, plus writable
+// volumes and sidecar containers that extraVolumes cannot express.
+func (f *Framework) DeployProxyWithExtras(extraVolumes []corev1.Volume, extras *helper.ProxyExtras, extraArgs ...string) {
 	By("Deleting kube-oidc-proxy deployment")
 	err := f.Helper().DeleteProxy(f.Namespace.Name)
 	Expect(err).NotTo(HaveOccurred())
@@ -134,8 +142,8 @@ func (f *Framework) DeployProxyWith(extraVolumes []corev1.Volume, extraArgs ...s
 	Expect(err).NotTo(HaveOccurred())
 
 	By(fmt.Sprintf("Deploying kube-oidc-proxy with extra args %s", extraArgs))
-	f.proxyKeyBundle, f.proxyURL, err = f.helper.DeployProxy(f.Namespace, f.issuerURL,
-		clientID, f.issuerKeyBundle, extraVolumes, extraArgs...)
+	f.proxyKeyBundle, f.proxyURL, err = f.helper.DeployProxyWithExtras(f.Namespace, f.issuerURL,
+		clientID, f.issuerKeyBundle, extraVolumes, extras, extraArgs...)
 	Expect(err).NotTo(HaveOccurred())
 }
 

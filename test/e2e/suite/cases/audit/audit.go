@@ -20,6 +20,19 @@ import (
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
+	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/helper"
+	"github.com/rafpe/kube-oidc-proxy/test/kind"
+)
+
+const (
+	// The proxy image is distroless and runs as nonroot, so the audit log has
+	// to be written to a writable emptyDir rather than the root filesystem, and
+	// read back through a sidecar since the proxy image has no shell or cat.
+	auditLogDir      = "/var/log/kube-oidc-proxy"
+	auditLogPath     = auditLogDir + "/audit.log"
+	auditLogVolume   = "audit-log"
+	auditReaderName  = "audit-reader"
+	webhookAuditPath = "/audit-log"
 )
 
 var _ = framework.CasesDescribe("Audit", func() {
@@ -53,10 +66,47 @@ rules:
 			},
 		}
 
-		By("Deploying proxy with audit policy enabled")
-		f.DeployProxyWith(vols, "--audit-log-path=/audit-log", "--audit-policy-file=/audit/audit.yaml")
+		// The audit log lives in an emptyDir shared with a reader sidecar. The
+		// sidecar uses the audit webhook image because it is alpine based (so it
+		// has cat), runs as root (so it can read the 0600 log written by the
+		// proxy) and is already loaded into the kind nodes.
+		extras := &helper.ProxyExtras{
+			Volumes: []corev1.Volume{
+				{
+					Name: auditLogVolume,
+					VolumeSource: corev1.VolumeSource{
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
+					},
+				},
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				{
+					MountPath: auditLogDir,
+					Name:      auditLogVolume,
+				},
+			},
+			Containers: []corev1.Container{
+				{
+					Name:            auditReaderName,
+					Image:           kind.AuditWebhookImageName,
+					ImagePullPolicy: corev1.PullNever,
+					Command:         []string{"sleep", "86400"},
+					VolumeMounts: []corev1.VolumeMount{
+						{
+							MountPath: auditLogDir,
+							Name:      auditLogVolume,
+							ReadOnly:  true,
+						},
+					},
+				},
+			},
+		}
 
-		testAuditLogs(f, "app=kube-oidc-proxy-e2e")
+		By("Deploying proxy with audit policy enabled")
+		f.DeployProxyWithExtras(vols, extras,
+			"--audit-log-path="+auditLogPath, "--audit-policy-file=/audit/audit.yaml")
+
+		testAuditLogs(f, "app=kube-oidc-proxy-e2e", auditReaderName, auditLogPath)
 	})
 
 	It("should be able to write audit logs to webhook", func() {
@@ -74,7 +124,7 @@ rules:
 		}, metav1.CreateOptions{})
 		Expect(err).NotTo(HaveOccurred())
 
-		extraWebhookVol, webhookURL, err := f.Helper().DeployAuditWebhook(f.Namespace.Name, "/audit-log")
+		extraWebhookVol, webhookURL, err := f.Helper().DeployAuditWebhook(f.Namespace.Name, webhookAuditPath)
 		Expect(err).NotTo(HaveOccurred())
 
 		cmWebhook, err := f.Helper().KubeClient.CoreV1().ConfigMaps(f.Namespace.Name).Create(context.TODO(), &corev1.ConfigMap{
@@ -129,11 +179,14 @@ users: []`,
 		f.DeployProxyWith(vols, "--audit-webhook-config-file=/audit-webhook/kubeconfig.yaml",
 			"--audit-policy-file=/audit/audit.yaml", "--audit-webhook-initial-backoff=1s", "--audit-webhook-batch-max-wait=1s")
 
-		testAuditLogs(f, "app=audit-webhook-e2e")
+		testAuditLogs(f, "app=audit-webhook-e2e", "", webhookAuditPath)
 	})
 })
 
-func testAuditLogs(f *framework.Framework, podLabelSelector string) {
+// testAuditLogs reads the audit log at logPath from the pod matching
+// podLabelSelector. If containerName is non-empty the log is read from that
+// container, otherwise from the pod's default container.
+func testAuditLogs(f *framework.Framework, podLabelSelector, containerName, logPath string) {
 	By("Making calls to proxy to ensure audit get created")
 	token := f.Helper().NewTokenPayload(f.IssuerURL(), f.ClientID(), time.Now().Add(time.Second*5))
 	signedToken, err := f.Helper().SignToken(f.IssuerKeyBundle(), token)
@@ -171,9 +224,14 @@ func testAuditLogs(f *framework.Framework, podLabelSelector string) {
 		Expect(fmt.Errorf("expected single kube-oidc-proxy pod running, got=%d", len(pods.Items))).NotTo(HaveOccurred())
 	}
 
+	execArgs := []string{"exec", pods.Items[0].Name}
+	if containerName != "" {
+		execArgs = append(execArgs, "-c", containerName)
+	}
+	execArgs = append(execArgs, "--", "cat", logPath)
+
 	var auditLogsBuffer bytes.Buffer
-	err = f.Helper().Kubectl(f.Namespace.Name).RunWithStdout(&auditLogsBuffer,
-		"exec", pods.Items[0].Name, "--", "cat", "/audit-log")
+	err = f.Helper().Kubectl(f.Namespace.Name).RunWithStdout(&auditLogsBuffer, execArgs...)
 	Expect(err).NotTo(HaveOccurred())
 
 	logs := auditLogsBuffer.Bytes()
