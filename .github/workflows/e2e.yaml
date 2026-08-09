@@ -18,9 +18,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  e2e-kind:
+  # The suite is split across shards by Ginkgo label (Label("shard-a") etc. on
+  # each framework.CasesDescribe container). Every shard stands up its own kind
+  # cluster, so wall-clock is the slowest shard rather than the sum of all
+  # cases. hack/verify-e2e-shards.sh (run in test.yaml) keeps a new case from
+  # landing without a label and silently running in no shard at all.
+  e2e-shard:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [a, b, c]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -48,14 +57,38 @@ jobs:
           kind version
 
       - name: Run e2e suite
-        run: make e2e
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: make e2e "GINKGO_LABEL_FILTER=shard-$SHARD"
 
       - name: Upload e2e artifacts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: e2e-artifacts
+          # Artifact names must be unique within a run; v7 rejects duplicates.
+          name: e2e-artifacts-${{ matrix.shard }}
           path: |
             artifacts/**
           if-no-files-found: ignore
           retention-days: 7
+
+  # Branch protection requires a check literally named "e2e-kind". The job id
+  # is the check name (no `name:` key here on purpose), so this aggregator keeps
+  # that single required check stable while the work happens in the matrix above.
+  # It is green only when every shard succeeded.
+  e2e-kind:
+    runs-on: ubuntu-latest
+    needs: [e2e-shard]
+    if: always()
+    steps:
+      - name: Check shard results
+        env:
+          # For a matrix job this is the aggregate result across all legs, so a
+          # single failed/cancelled/skipped shard fails the required check.
+          SHARDS_RESULT: ${{ needs.e2e-shard.result }}
+        run: |
+          echo "e2e-shard result: $SHARDS_RESULT"
+          if [ "$SHARDS_RESULT" != "success" ]; then
+            echo "::error::e2e shards did not all succeed (result: $SHARDS_RESULT)"
+            exit 1
+          fi

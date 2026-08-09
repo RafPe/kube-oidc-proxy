@@ -11,7 +11,7 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
 )
 
-var _ = framework.CasesDescribe("Readiness Probe", func() {
+var _ = framework.CasesDescribe("Readiness Probe", Label("shard-a"), func() {
 	f := framework.NewDefaultFramework("readiness-probe")
 
 	It("Should not become ready if the issuer is unavailable", func() {

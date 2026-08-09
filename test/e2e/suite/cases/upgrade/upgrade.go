@@ -35,7 +35,7 @@ import (
 // shared. The setup has to be shared rather than per-spec: the Role and
 // RoleBinding below have fixed names and are never deleted, so recreating them
 // for a second spec in the same namespace would fail as already existing.
-var _ = framework.CasesDescribe("Upgrade", Ordered, ContinueOnFailure, func() {
+var _ = framework.CasesDescribe("Upgrade", Ordered, ContinueOnFailure, Label("shard-b"), func() {
 	f := framework.NewOrderedDefaultFramework("upgrade")
 
 	var pod *corev1.Pod

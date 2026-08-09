@@ -14,7 +14,7 @@ import (
 	testutil "github.com/rafpe/kube-oidc-proxy/test/util"
 )
 
-var _ = framework.CasesDescribe("Headers", func() {
+var _ = framework.CasesDescribe("Headers", Label("shard-a"), func() {
 	f := framework.NewDefaultFramework("headers")
 
 	JustAfterEach(func() {
