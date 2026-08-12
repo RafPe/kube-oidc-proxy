@@ -1,4 +1,6 @@
 #!/bin/sh
+# Copyright Jetstack Ltd. See LICENSE for details.
+
 set -eu
 
 fail() { printf '%s\n' "release-contract-check: $*" >&2; exit 1; }
