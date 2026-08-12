@@ -1,4 +1,6 @@
 # Unreleased
+<!-- next-release -->
+
 **enhancements:**
  - Multi-issuer OIDC authentication via --authentication-config (AuthenticationConfiguration v1/v1beta1), based on [\#85](https://github.com/TremoloSecurity/kube-oidc-proxy/pull/85) with strict versioned config loading, whole-document validation, a shared CEL compiler and configurable readiness (--readiness-require-all-issuers)
 
@@ -87,4 +89,3 @@
 
 **bugs:**
  - update dependencies [\#5](https://github.com/TremoloSecurity/kube-oidc-proxy/issues/5)
-
