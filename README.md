@@ -107,6 +107,17 @@ See [docs/architecture.md](./docs/architecture.md) for the full C4 model (system
 | Security, troubleshooting, request logs, local testing | [docs/operations.md](./docs/operations.md) |
 | All chart values | [chart/kube-oidc-proxy/README.md](./chart/kube-oidc-proxy/README.md) |
 | Multi-issuer demo | [demo/README.md](./demo/README.md) |
+| Release process and recovery | [docs/releases.md](./docs/releases.md) |
+
+## Release process
+
+Releases are review-gated and label-driven. Every ordinary PR carries exactly
+one `release/*` label and every non-skip PR adds a changelog fragment. Ordinary
+merges never publish. A maintainer runs **Prepare Release**, reviews the
+automation-owned `release/next` PR, and its merge triggers verification, the
+full sharded Kind E2E suite, an immutable annotated tag, signed multi-arch
+images, and the matching OCI Helm chart. See [the maintainer
+runbook](./docs/releases.md) for the exact flow and recovery procedure.
 
 ## Project status & lineage
 
