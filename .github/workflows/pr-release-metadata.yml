@@ -15,6 +15,7 @@ jobs:
   release-label:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Check release label and changelog fragments
         env:
           LABELS_JSON: ${{ toJson(github.event.pull_request.labels.*.name) }}
@@ -31,8 +32,16 @@ jobs:
           fi
           count=$(echo "${LABELS_JSON}" | jq '[.[] | select(. == "release/major" or . == "release/minor" or . == "release/patch" or . == "release/skip")] | length')
           [ "${count}" -eq 1 ] || { echo "::error::exactly one release label is required (found ${count})."; exit 1; }
-          label=$(echo "${LABELS_JSON}" | jq -r '.[] | select(startswith("release/"))')
-          fragments=$(gh api --paginate "${CHANGED_FILES_URL}" --jq '[.[] | select(.filename | startswith(".changes/unreleased/") and endswith(".yaml"))] | length' | awk '{ total += $1 } END { print total + 0 }')
+          label=$(echo "${LABELS_JSON}" | jq -r '.[] | select(. == "release/major" or . == "release/minor" or . == "release/patch" or . == "release/skip")')
+          fragment_files=$(gh api --paginate "${CHANGED_FILES_URL}" --jq '.[] | select(.status != "removed" and (.filename | startswith(".changes/unreleased/") and endswith(".yaml"))) | .filename')
+          fragments=$(printf '%s\n' "${fragment_files}" | sed '/^$/d' | wc -l | tr -d ' ')
+          printf '%s\n' "${fragment_files}" | while IFS= read -r fragment; do
+            [ -n "${fragment}" ] || continue
+            kind=$(yq -r '.kind // ""' "${fragment}")
+            body=$(yq -r '.body // ""' "${fragment}")
+            echo "${kind}" | grep -Eq '^(Added|Changed|Deprecated|Removed|Fixed|Security|Dependencies)$' || { echo "::error::${fragment} has unsupported kind"; exit 1; }
+            [ -n "${body}" ] || { echo "::error::${fragment} has an empty body"; exit 1; }
+          done
           if [ "${label}" = "release/skip" ]; then
             [ "${fragments}" -eq 0 ] || { echo "::error::release/skip PRs must not add changelog fragments."; exit 1; }
           else

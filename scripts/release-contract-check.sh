@@ -16,6 +16,7 @@ grep -q "head.ref == 'release/next'" .github/workflows/release.yaml || fail "Rel
 grep -q "contains(github.event.pull_request.labels.*.name, 'autorelease: pending')" .github/workflows/release.yaml || fail "Release must require the automation label"
 grep -q '^  group: release' .github/workflows/release.yaml || fail "Release must be serialized"
 grep -q 'uses: ./.github/workflows/e2e.yaml' .github/workflows/release.yaml || fail "Release must run reusable E2E"
+grep -q 'target_ref: \${{ needs.verify.outputs.sha }}' .github/workflows/release.yaml || fail "Release E2E must test the resolved release commit"
 grep -q 'git tag -a' .github/workflows/release.yaml || fail "Release must create an annotated tag after verification"
 grep -q 'exactly one' .github/workflows/pr-release-metadata.yml || fail "PR metadata must enforce exactly one release label"
 grep -q '.changes/unreleased' .github/workflows/pr-release-metadata.yml || fail "PR metadata must enforce changelog fragments"
