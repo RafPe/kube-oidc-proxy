@@ -1,0 +1,66 @@
+name: fuzz
+
+# Go native fuzzing for the parsers that sit on attacker-controlled input.
+# The seed corpora already run on every PR as part of `go test` in test.yaml;
+# this workflow spends real fuzzing time on a schedule instead of per-PR, so it
+# never gates a merge on a nondeterministic search.
+on:
+  schedule:
+    - cron: "42 5 * * 3" # weekly, Wednesday 05:42 UTC
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: "Duration to fuzz each target (Go duration, e.g. 10m)"
+        required: false
+        default: "5m"
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: ./pkg/util/token
+            target: FuzzParseFromRequest
+          - package: ./pkg/proxy
+            target: FuzzParseTrustedProxies
+          - package: ./pkg/util/flags
+            target: FuzzStringToStringSliceSet
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Generate mocks
+        run: go run go.uber.org/mock/mockgen -package=mocks -destination pkg/mocks/authenticator.go k8s.io/apiserver/pkg/authentication/authenticator Token
+
+      # Inputs go through env rather than ${{ }} interpolation in the shell, so
+      # a dispatch value can never be spliced into the command line.
+      - name: Fuzz
+        env:
+          PACKAGE: ${{ matrix.package }}
+          TARGET: ${{ matrix.target }}
+          FUZZTIME: ${{ inputs.fuzztime || '5m' }}
+        run: go test "$PACKAGE" -run '^$' -fuzz "^${TARGET}\$" -fuzztime "$FUZZTIME"
+
+      # A failing input is written to testdata/fuzz/<target>/; publish it so the
+      # crasher can be committed as a regression seed.
+      - name: Upload failing corpus
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-corpus-${{ matrix.target }}
+          path: ${{ matrix.package }}/testdata/fuzz/
+          if-no-files-found: error
+          retention-days: 14
