@@ -3,7 +3,7 @@ name: Prepare Release
 on:
   workflow_dispatch:
 
-permissions: { contents: write, pull-requests: write }
+permissions: {}
 concurrency:
   group: prepare-release
   cancel-in-progress: false
@@ -11,6 +11,9 @@ concurrency:
 jobs:
   prepare:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # push release/next and let release-drafter stage a draft
+      pull-requests: write # open/update the release PR
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { fetch-depth: 0 }

@@ -8,9 +8,26 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
+	"strings"
 
 	"k8s.io/klog/v2"
 )
+
+// hopByHopHeaders are connection and framing headers that must not be copied
+// from the request onto the response. Reflecting them corrupts the response —
+// most obviously a Content-Length that disagrees with the echoed body.
+var hopByHopHeaders = map[string]bool{
+	"Connection":          true,
+	"Content-Length":      true,
+	"Keep-Alive":          true,
+	"Proxy-Authenticate":  true,
+	"Proxy-Authorization": true,
+	"Te":                  true,
+	"Trailer":             true,
+	"Transfer-Encoding":   true,
+	"Upgrade":             true,
+}
 
 type Server struct {
 	keyFile, certFile string
@@ -68,12 +85,22 @@ func (s *Server) Run(bindAddress, listenPort string) (<-chan struct{}, error) {
 }
 
 func (s *Server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
-	klog.Infof("(%s) Fake API server received url %s", r.URL, r.RemoteAddr)
+	klog.Infof("(%s) Fake API server received url %s", r.RemoteAddr, r.URL)
 
-	klog.Infof("(%s) Request headers:", r.RemoteAddr)
+	// Log header names only, never values. The proxy forwards end-user
+	// credentials upstream (Authorization, Impersonate-*) and this tool's logs
+	// are collected as CI artifacts, so values must not be written out.
+	klog.Infof("(%s) Request header names: %s",
+		r.RemoteAddr, strings.Join(headerNames(r.Header), ", "))
+
+	// Echo the request headers back. The e2e "Headers" case asserts on the
+	// Impersonate-Extra-* headers the proxy added by reading them off this
+	// response, so this reflection is the tool's contract.
 	for k, vs := range r.Header {
+		if hopByHopHeaders[http.CanonicalHeaderKey(k)] {
+			continue
+		}
 		for _, v := range vs {
-			klog.Infof("(%s) %s: %s", r.RemoteAddr, k, v)
 			rw.Header().Add(k, v)
 		}
 	}
@@ -85,13 +112,32 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	klog.Infof("(%s) Request Body: %s", r.RemoteAddr, body)
+	klog.Infof("(%s) Request body: %d bytes", r.RemoteAddr, len(body))
+
+	// The body is caller-controlled and echoed back verbatim, so pin the
+	// response to an opaque type and forbid MIME sniffing — a client must never
+	// interpret it as HTML. Set (not Add) after the echo loop above, so a
+	// reflected request Content-Type cannot win.
+	rw.Header().Set("Content-Type", "application/octet-stream")
+	rw.Header().Set("X-Content-Type-Options", "nosniff")
+
+	// WriteHeader must precede Write: writing first implicitly commits a 200 and
+	// reduces any later WriteHeader to a no-op that logs a superfluous call.
+	rw.WriteHeader(http.StatusOK)
 
 	if _, err := rw.Write(body); err != nil {
 		klog.Errorf("failed to write request body to response: %s", err)
-		rw.WriteHeader(http.StatusInternalServerError)
-		return
 	}
+}
 
-	rw.WriteHeader(http.StatusOK)
+// headerNames returns the sorted header names present on h, so requests can be
+// logged without exposing header values.
+func headerNames(h http.Header) []string {
+	names := make([]string, 0, len(h))
+	for k := range h {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+
+	return names
 }
