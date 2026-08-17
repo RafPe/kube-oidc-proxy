@@ -1,0 +1,14 @@
+# Vulnerability exceptions for OSV-based scanners (OSV-Scanner, OpenSSF
+# Scorecard's Vulnerabilities check). Entries here must state why the advisory
+# does not apply to this project.
+
+[[IgnoredVulns]]
+id = "GO-2026-5932"
+reason = """
+golang.org/x/crypto/openpgp is unmaintained and unsafe by design. The advisory
+has no fixed version, so it cannot be remediated by upgrading. This project does
+not import golang.org/x/crypto/openpgp: x/crypto is an indirect dependency
+pulled in by k8s.io/apiserver, which uses golang.org/x/crypto/cryptobyte only.
+govulncheck (run in .github/workflows/security.yaml) confirms no vulnerable
+symbol is reachable from this codebase.
+"""
