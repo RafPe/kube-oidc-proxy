@@ -88,7 +88,7 @@ generate: depend ## generates mocks and assets files
 
 test: generate verify ## run all go tests
 	mkdir -p $(ARTIFACTS)
-	go test -v -bench $$(go list ./pkg/... ./cmd/... | grep -v pkg/e2e) | tee $(ARTIFACTS)/go-test.stdout
+	go test -v -bench $$(go list ./pkg/... ./cmd/... ./test/tools/... | grep -v pkg/e2e) | tee $(ARTIFACTS)/go-test.stdout
 	cat $(ARTIFACTS)/go-test.stdout | go run github.com/jstemmer/go-junit-report > $(ARTIFACTS)/junit-go-test.xml
 
 # Name of the kind cluster the e2e suite creates (must match the const in

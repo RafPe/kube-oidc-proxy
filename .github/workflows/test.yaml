@@ -16,12 +16,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26.x"
+          go-version-file: go.mod
 
       - name: Generate mocks
         run: go run go.uber.org/mock/mockgen -package=mocks -destination pkg/mocks/authenticator.go k8s.io/apiserver/pkg/authentication/authenticator Token
@@ -40,9 +40,10 @@ jobs:
         run: go vet ./...
 
       # e2e packages need Docker + kind and run in e2e.yaml; run unit tests for
-      # the maintained cmd/ and pkg/ packages here.
+      # the maintained cmd/ and pkg/ packages here, plus the standalone test
+      # tools, which need no cluster.
       - name: go test
-        run: go test ./cmd/... ./pkg/...
+        run: go test ./cmd/... ./pkg/... ./test/tools/...
 
       # e2e.yaml runs the suite as three label-filtered shards; an unlabelled
       # case would run in none of them. Cheap text check, no cluster needed.
@@ -58,12 +59,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26.x"
+          go-version-file: go.mod
 
       - name: Generate mocks
         run: go run go.uber.org/mock/mockgen -package=mocks -destination pkg/mocks/authenticator.go k8s.io/apiserver/pkg/authentication/authenticator Token

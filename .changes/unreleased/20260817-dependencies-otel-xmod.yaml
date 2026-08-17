@@ -1,0 +1,2 @@
+kind: Dependencies
+body: Update go.opentelemetry.io/otel to v1.44.0 and golang.org/x/mod to v0.40.0, clearing three advisories reported against the dependency tree.
