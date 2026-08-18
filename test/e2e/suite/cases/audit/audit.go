@@ -60,25 +60,15 @@ var _ = framework.CasesDescribe("Audit", Label("shard-b"), func() {
 	It("should write a ResponseStarted audit event when a long running request starts", func() {
 		deployProxyWithAuditLogFile(f)
 
-		By("Deploying echo server to exec to")
-		pod, err := f.Helper().KubeClient.CoreV1().Pods(f.Namespace.Name).Create(context.TODO(), &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				GenerateName: "echoserver-",
-			},
-			Spec: corev1.PodSpec{
-				Containers: []corev1.Container{
-					{
-						Name:            "echoserver",
-						Image:           "gcr.io/google_containers/echoserver:1.10",
-						ImagePullPolicy: corev1.PullIfNotPresent,
-					},
-				},
-			},
-		}, metav1.CreateOptions{})
-		Expect(err).NotTo(HaveOccurred())
+		// The exec target is the audit reader sidecar of the proxy pod itself.
+		// It is a shell bearing image that the suite builds for the host
+		// architecture and it is already running, so this needs no further pod
+		// and no image pulled from a registry. The exec still leaves the proxy
+		// as a streaming request to the apiserver, which is what is under test.
+		pod := proxyPod(f)
 
 		By("Creating Role")
-		_, err = f.Helper().KubeClient.RbacV1().Roles(f.Namespace.Name).Create(context.TODO(), &rbacv1.Role{
+		_, err := f.Helper().KubeClient.RbacV1().Roles(f.Namespace.Name).Create(context.TODO(), &rbacv1.Role{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "e2e-test-audit-exec",
 			},
@@ -115,11 +105,6 @@ var _ = framework.CasesDescribe("Audit", Label("shard-b"), func() {
 			}, metav1.CreateOptions{})
 		Expect(err).NotTo(HaveOccurred())
 
-		// Waiting for the pod after the RBAC is created rather than before also
-		// gives the apiserver's authorizer time to observe the new binding.
-		err = f.Helper().WaitForPodReady(f.Namespace.Name, pod.Name, time.Minute*2)
-		Expect(err).NotTo(HaveOccurred())
-
 		By("Running exec into pod through the proxy")
 		restConfig := newExecRestConfig(f)
 
@@ -132,9 +117,9 @@ var _ = framework.CasesDescribe("Audit", Label("shard-b"), func() {
 			Namespace(pod.Namespace).
 			SubResource("exec").
 			VersionedParams(&corev1.PodExecOptions{
-				Container: "echoserver",
+				Container: auditReaderName,
 				Command: []string{
-					"curl", "127.0.0.1:8080", "-s", "-d", "hello world",
+					"sh", "-c", "echo hello world",
 				},
 				Stdout: true,
 				Stderr: true,
@@ -152,8 +137,8 @@ var _ = framework.CasesDescribe("Audit", Label("shard-b"), func() {
 
 		// The stream has to have carried real traffic, otherwise a
 		// ResponseStarted event would prove nothing about streaming requests.
-		Expect(execOut.String()).To(ContainSubstring("Request Body:\nhello world"),
-			"unexpected echoserver response over the exec stream")
+		Expect(execOut.String()).To(ContainSubstring("hello world"),
+			"exec stream carried no output")
 
 		By("Waiting for audit logs to be written")
 		// 5 seconds here is longer than the proxy flush interval.
@@ -364,26 +349,39 @@ func newExecRestConfig(f *framework.Framework) *rest.Config {
 	}
 }
 
-// readAuditLog returns the contents of the audit log at logPath in the pod
-// matching podLabelSelector. If containerName is non-empty the log is read
-// from that container, otherwise from the pod's default container.
-func readAuditLog(f *framework.Framework, podLabelSelector, containerName, logPath string) []byte {
+// proxyPod returns the single running proxy pod.
+func proxyPod(f *framework.Framework) *corev1.Pod {
+	return singlePod(f, "app=kube-oidc-proxy-e2e")
+}
+
+// singlePod returns the only pod matching podLabelSelector, failing the spec
+// if there is not exactly one.
+func singlePod(f *framework.Framework, podLabelSelector string) *corev1.Pod {
 	pods, err := f.Helper().KubeClient.CoreV1().Pods(f.Namespace.Name).List(context.TODO(), metav1.ListOptions{
 		LabelSelector: podLabelSelector,
 	})
 	Expect(err).NotTo(HaveOccurred())
 	if len(pods.Items) != 1 {
-		Expect(fmt.Errorf("expected single kube-oidc-proxy pod running, got=%d", len(pods.Items))).NotTo(HaveOccurred())
+		Expect(fmt.Errorf("expected single pod matching %s running, got=%d", podLabelSelector, len(pods.Items))).NotTo(HaveOccurred())
 	}
 
-	execArgs := []string{"exec", pods.Items[0].Name}
+	return &pods.Items[0]
+}
+
+// readAuditLog returns the contents of the audit log at logPath in the pod
+// matching podLabelSelector. If containerName is non-empty the log is read
+// from that container, otherwise from the pod's default container.
+func readAuditLog(f *framework.Framework, podLabelSelector, containerName, logPath string) []byte {
+	pod := singlePod(f, podLabelSelector)
+
+	execArgs := []string{"exec", pod.Name}
 	if containerName != "" {
 		execArgs = append(execArgs, "-c", containerName)
 	}
 	execArgs = append(execArgs, "--", "cat", logPath)
 
 	var auditLogsBuffer bytes.Buffer
-	err = f.Helper().Kubectl(f.Namespace.Name).RunWithStdout(&auditLogsBuffer, execArgs...)
+	err := f.Helper().Kubectl(f.Namespace.Name).RunWithStdout(&auditLogsBuffer, execArgs...)
 	Expect(err).NotTo(HaveOccurred())
 
 	return auditLogsBuffer.Bytes()
