@@ -45,8 +45,16 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 		// Auth request and handle unauthed
 		info, ok, err := p.oidcRequestAuther.AuthenticateRequest(req)
 		if err != nil {
-			klog.V(5).Infof("Authenticated request failed: %s", err)
+			// An error here means a token was present and failed validation;
+			// an absent or unparseable token yields ok == false with a nil
+			// error. Log it at the level operators run at, not V(5).
+			var remoteAddr string
+			req, remoteAddr = context.RemoteAddr(req)
+			klog.V(2).Infof("failed to authenticate request (%s): %s", remoteAddr, err)
+
 			// Since we have failed OIDC auth, we will try a token review, if enabled.
+			// Routing is deliberately unchanged: falling through to token
+			// passthrough is documented alpha behaviour, not a defect.
 			tokenReviewHandler.ServeHTTP(rw, req)
 			return
 		}

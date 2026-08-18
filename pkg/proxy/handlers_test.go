@@ -2,10 +2,13 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"flag"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -17,6 +20,7 @@ import (
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	authuser "k8s.io/apiserver/pkg/authentication/user"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
+	"k8s.io/klog/v2"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 	fakesubjectaccessreview "github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview/fake"
@@ -69,6 +73,75 @@ func TestWithImpersonateRequestDoesNotMutateAuthenticatorUser(t *testing.T) {
 	if !reflect.DeepEqual(usr.Extra, wantExtra) {
 		t.Errorf("authenticator extra map mutated: got %#v, want %#v", usr.Extra, wantExtra)
 	}
+}
+
+// TestWithAuthenticateRequestLogsValidationFailureAtV2 asserts that a token
+// that was present and failed OIDC validation is reported at a verbosity
+// operators actually run at, with the resolved remote address. Routing is
+// unchanged: the request still falls through to the token-review path.
+func TestWithAuthenticateRequestLogsValidationFailureAtV2(t *testing.T) {
+	buf := captureKlogAtV2(t)
+
+	p := newTestProxy(t)
+
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(
+		nil, false, errors.New("oidc: token is expired"))
+
+	handler := p.withAuthenticateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("inner handler was reached for a token that failed validation")
+	}))
+
+	rw := httptest.NewRecorder()
+	req := reservedIdentityRequest(t, nil)
+	req.RemoteAddr = "8.8.8.8:1234"
+	handler.ServeHTTP(rw, req)
+
+	// Routing is unchanged: token review is disabled here, so the request is
+	// still answered as unauthorized rather than being rejected outright.
+	if got, want := rw.Result().StatusCode, http.StatusUnauthorized; got != want {
+		t.Errorf("unexpected response code, exp=%d got=%d", want, got)
+	}
+
+	klog.Flush()
+	logged := buf.String()
+	if !strings.Contains(logged, "oidc: token is expired") {
+		t.Errorf("validation failure was not logged at V(2), got: %q", logged)
+	}
+	if !strings.Contains(logged, "8.8.8.8") {
+		t.Errorf("validation failure log does not name the remote address, got: %q", logged)
+	}
+
+	p.ctrl.Finish()
+}
+
+// captureKlogAtV2 redirects klog to a buffer at verbosity 2 for the duration of
+// the test. klog's verbosity and output are process-global, so the cleanup
+// restores both — including the output writer, which would otherwise leave
+// later klog calls in this package writing into a dead buffer.
+func captureKlogAtV2(t *testing.T) *bytes.Buffer {
+	t.Helper()
+
+	var fs flag.FlagSet
+	klog.InitFlags(&fs)
+	previousVerbosity := fs.Lookup("v").Value.String()
+	if err := fs.Set("v", "2"); err != nil {
+		t.Fatalf("setting klog verbosity: %s", err)
+	}
+
+	buf := new(bytes.Buffer)
+	klog.LogToStderr(false)
+	klog.SetOutput(buf)
+
+	t.Cleanup(func() {
+		klog.Flush()
+		if err := fs.Set("v", previousVerbosity); err != nil {
+			t.Errorf("restoring klog verbosity: %s", err)
+		}
+		klog.SetOutput(os.Stderr)
+		klog.LogToStderr(true)
+	})
+
+	return buf
 }
 
 // TestCheckReservedIdentity covers the username/group asymmetry. Username has
