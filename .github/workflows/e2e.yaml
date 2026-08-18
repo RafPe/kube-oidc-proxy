@@ -46,7 +46,7 @@ jobs:
           - shard: b
             cases: "authconfig, upgrade, audit"
           - shard: c
-            cases: "passthrough, token, rbac"
+            cases: "passthrough, token, rbac, reserved identity"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
