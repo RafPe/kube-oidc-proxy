@@ -17,6 +17,19 @@ import (
 	"k8s.io/component-base/version"
 )
 
+// longRunningRequests reports whether a request streams for as long as the
+// caller holds it open. It decides when the audit log hears about a request: a
+// short request is recorded once, at completion; a long-running one is recorded
+// when the response starts and again when the stream ends. The generic
+// apiserver default treats only watch this way because a generic API server has
+// no inherent long-running subresources — but everything this proxy forwards
+// goes to a kube-apiserver, so kube-apiserver's own set is the set that applies.
+// Without this, an hour-long exec leaves nothing in the audit log for that hour,
+// and nothing at all if the proxy is killed before the session ends.
+var longRunningRequests = genericfilters.BasicLongRunningRequestCheck(
+	sets.NewString("watch", "proxy"),
+	sets.NewString("attach", "exec", "proxy", "log", "portforward"))
+
 type Audit struct {
 	opts         *options.AuditOptions
 	serverConfig *server.CompletedConfig
@@ -30,11 +43,7 @@ func New(opts *options.AuditOptions, externalAddress string, secureServingInfo *
 		ExternalAddress: externalAddress,
 		SecureServing:   secureServingInfo,
 
-		// Default to treating watch as a long-running operation.
-		// Generic API servers have no inherent long-running subresources.
-		// This is so watch requests are handled correctly in the audit log.
-		LongRunningFunc: genericfilters.BasicLongRunningRequestCheck(
-			sets.NewString("watch"), sets.NewString()),
+		LongRunningFunc: longRunningRequests,
 	}
 
 	// We do not support dynamic auditing, so leave nil
