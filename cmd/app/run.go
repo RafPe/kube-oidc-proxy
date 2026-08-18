@@ -12,6 +12,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -36,6 +37,42 @@ import (
 
 const oidcHTTPTimeout = 30 * time.Second
 
+// reservedIdentityPrefix is the username/group prefix Kubernetes reserves for
+// its own identities. Kept in sync with the runtime guard in
+// pkg/proxy/handlers.go (checkReservedIdentity), which is the load-bearing one.
+const reservedIdentityPrefix = "system:"
+
+// checkReservedIdentityPrefixes refuses to start when the operator's own
+// username or group prefix would itself mint reserved identities for every
+// authenticated user. It is a startup nicety, not the guard: the runtime check
+// in the proxy catches everything this misses, including reserved values that
+// arrive in the claim rather than the prefix.
+//
+// Only the single-issuer path is checked. --oidc-username-prefix and
+// --oidc-groups-prefix are ignored entirely when --authentication-config is set,
+// where prefixes come from the configuration document instead.
+func checkReservedIdentityPrefixes(opts *options.Options) error {
+	if opts.App.AllowReservedIdentityClaims || opts.AuthenticationConfig.ConfigFile != "" {
+		return nil
+	}
+
+	for _, prefix := range []struct {
+		flag  string
+		value string
+	}{
+		{flag: "--oidc-username-prefix", value: opts.OIDCAuthentication.UsernamePrefix},
+		{flag: "--oidc-groups-prefix", value: opts.OIDCAuthentication.GroupsPrefix},
+	} {
+		if strings.HasPrefix(prefix.value, reservedIdentityPrefix) {
+			return fmt.Errorf("%s=%q would prefix every authenticated identity with the "+
+				"Kubernetes-reserved %q; refusing to start (set --allow-reserved-identity-claims to override)",
+				prefix.flag, prefix.value, reservedIdentityPrefix)
+		}
+	}
+
+	return nil
+}
+
 func NewRunCommand(stopCh <-chan struct{}) *cobra.Command {
 	// Build options
 	opts := options.New()
@@ -56,6 +93,10 @@ func buildRunCommand(stopCh <-chan struct{}, opts *options.Options) *cobra.Comma
 		Long: "kube-oidc-proxy is a reverse proxy to authenticate users to Kubernetes API servers with Open ID Connect Authentication.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := opts.Validate(cmd); err != nil {
+				return err
+			}
+
+			if err := checkReservedIdentityPrefixes(opts); err != nil {
 				return err
 			}
 
@@ -112,6 +153,8 @@ func buildRunCommand(stopCh <-chan struct{}, opts *options.Options) *cobra.Comma
 				ExtraUserHeadersClientIPEnabled: opts.App.ExtraHeaderOptions.EnableClientIPExtraUserHeader,
 
 				TrustedProxies: opts.App.TrustedProxies,
+
+				AllowReservedIdentityClaims: opts.App.AllowReservedIdentityClaims,
 			}
 
 			// Setup Subject Access Review
