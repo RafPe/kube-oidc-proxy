@@ -119,6 +119,12 @@ than silently stripped: a caller served without the group they claimed has been
 told the wrong thing about who they are. The rejection is audited against the
 identity that was presented.
 
+Because the check sits in the authentication handler, it applies to **every**
+authenticated request, including under `--disable-impersonation`, where such a
+request was previously forwarded for the API server to authenticate itself. It
+does not apply to requests authenticated by `--token-passthrough`: those never
+reach the OIDC claim mapping, and the API server validates the token itself.
+
 This is defense in depth. The operator-side mitigations remain the primary
 control and are unchanged: set `--oidc-groups-prefix` (and
 `--oidc-username-prefix`) so claims cannot collide with cluster identities, or
