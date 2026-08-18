@@ -1,8 +1,8 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
 
 // Package probe implements the proxy's readiness and liveness HTTP endpoints,
-// reporting readiness once the configured OIDC issuers' authenticators have
-// completed initialization.
+// reporting readiness once the proxy is serving and the configured OIDC
+// issuers' authenticators have completed initialization.
 package probe
 
 import (
@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"k8s.io/apiserver/pkg/authentication/authenticator"
@@ -48,15 +49,27 @@ type IssuerReadiness struct {
 }
 
 // HealthCheck tracks per-issuer OIDC initialization and answers readiness
-// checks. It is safe for concurrent use: its mutable state is guarded by mu.
+// checks. It is safe for concurrent use: its issuer state is guarded by mu.
+//
+// serving is deliberately atomic rather than guarded by mu: Check releases mu
+// before the potentially slow AuthenticateToken calls (#53), and the serving
+// flag must stay readable without re-entangling it with that lock.
 type HealthCheck struct {
 	oidcAuther authenticator.Token
 	issuers    []IssuerReadiness
 	requireAll bool
 
+	serving atomic.Bool
+
 	mu          sync.Mutex
 	ready       bool
 	initialized map[string]bool
+}
+
+// SetServing records that the proxy has started serving. Until it is called,
+// Check reports not-ready regardless of issuer state.
+func (h *HealthCheck) SetServing() {
+	h.serving.Store(true)
 }
 
 // Server owns the readiness HTTP listener and gives it an explicit lifecycle:
@@ -94,9 +107,18 @@ func NewServer(port string, issuers []IssuerReadiness, requireAll bool, oidcAuth
 	}
 }
 
+// SetServing records that the proxy has started serving, so readiness may now
+// depend solely on issuer initialization. It is a pass-through to the
+// underlying HealthCheck, which keeps that type out of the caller's surface.
+func (s *Server) SetServing() {
+	s.hc.SetServing()
+}
+
 // handler builds the readiness listener's HTTP handler. It exposes a liveness
-// endpoint that is always healthy once the process is serving and a readiness
-// endpoint driven by Check. Both endpoints only answer GET (returning 405
+// endpoint that is always healthy once this probe listener is up — it is
+// deliberately not gated on SetServing, since the process is alive long before
+// the proxy serves and gating it would invite restarts during startup — and a
+// readiness endpoint driven by Check. Both endpoints only answer GET (returning 405
 // otherwise, matching the previous healthcheck handler); unknown paths yield
 // 404 via the ServeMux default.
 func (h *HealthCheck) handler() http.Handler {
@@ -208,12 +230,21 @@ func isTransient(err error) bool {
 	return false
 }
 
-// Check probes every issuer that has not yet been observed as initialized,
-// logs per-issuer transitions and any still-pending issuers, and reports
-// readiness. Once readiness latches (h.ready is set true under h.mu) it always
-// returns nil, but probing and pending-issuer logging continue on every
-// call so operators keep seeing progress for issuers that initialize late.
+// Check reports readiness. It first requires the proxy to be serving, then
+// probes every issuer that has not yet been observed as initialized, logging
+// per-issuer transitions and any still-pending issuers. Once readiness latches
+// (h.ready is set true under h.mu) it always returns nil, but probing and
+// pending-issuer logging continue on every call so operators keep seeing
+// progress for issuers that initialize late.
 func (h *HealthCheck) Check() error {
+	// Checked first: it is cheap, and it is the more fundamental condition. An
+	// initialized issuer on a process that is not yet answering requests is not
+	// readiness — advertising it would put the pod into its Service while
+	// requests could only queue.
+	if !h.serving.Load() {
+		return errors.New("proxy is not yet serving")
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
