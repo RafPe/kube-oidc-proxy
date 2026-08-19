@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -102,6 +103,9 @@ func TestCheckReadiness(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newTestHealthCheck(tc.requireAll, tc.notInit, issuerA, issuerB)
+			// This table covers issuer readiness, so open the serving gate;
+			// TestCheckNotReadyBeforeServing covers the gate itself.
+			h.SetServing()
 			err := h.Check()
 			if tc.wantReady && err != nil {
 				t.Fatalf("expected ready, got error: %v", err)
@@ -113,10 +117,82 @@ func TestCheckReadiness(t *testing.T) {
 	}
 }
 
+// TestCheckNotReadyBeforeServing verifies the serving gate: even with every
+// issuer initialized, readiness stays false until the proxy is actually
+// serving. An initialized issuer on a process that is not yet answering
+// requests is not readiness.
+func TestCheckNotReadyBeforeServing(t *testing.T) {
+	issuerA := IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"}
+	h := newTestHealthCheck(true, nil, issuerA)
+
+	err := h.Check()
+	if err == nil {
+		t.Fatal("expected not-ready before the proxy is serving, got nil")
+	}
+	if !strings.Contains(err.Error(), "serving") {
+		t.Fatalf("expected the error to name the serving condition, got: %v", err)
+	}
+	if h.ready {
+		t.Fatal("readiness must not latch before the proxy is serving")
+	}
+}
+
+// TestCheckReadyAfterServing verifies the gate opens: the same health check
+// that reports not-ready before serving reports ready once SetServing is
+// called, so the gate delays readiness rather than blocking it permanently.
+func TestCheckReadyAfterServing(t *testing.T) {
+	issuerA := IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"}
+	h := newTestHealthCheck(true, nil, issuerA)
+
+	if err := h.Check(); err == nil {
+		t.Fatal("expected not-ready before the proxy is serving, got nil")
+	}
+
+	h.SetServing()
+	if err := h.Check(); err != nil {
+		t.Fatalf("expected ready once serving with the issuer initialized, got: %v", err)
+	}
+}
+
+// TestReadyEndpointReportsNotServing verifies the gate is visible over HTTP:
+// /ready answers 503 and names the serving condition, so an operator reading
+// the probe response can tell why the pod is held back.
+func TestReadyEndpointReportsNotServing(t *testing.T) {
+	h := newTestHealthCheck(false, nil,
+		IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"})
+	handler := h.handler()
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("GET /ready before serving: got %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+	if !strings.Contains(rec.Body.String(), "serving") {
+		t.Fatalf("expected the body to name the serving condition, got: %q", rec.Body.String())
+	}
+
+	// Liveness is not gated: the process is alive well before it serves, and
+	// gating it would invite the kubelet to restart the pod during startup.
+	liveRec := httptest.NewRecorder()
+	handler.ServeHTTP(liveRec, httptest.NewRequest(http.MethodGet, "/live", nil))
+	if liveRec.Code != http.StatusOK {
+		t.Fatalf("GET /live before serving: got %d, want %d", liveRec.Code, http.StatusOK)
+	}
+
+	// Once serving, the same endpoint reports ready.
+	h.SetServing()
+	readyRec := httptest.NewRecorder()
+	handler.ServeHTTP(readyRec, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	if readyRec.Code != http.StatusOK {
+		t.Fatalf("GET /ready after serving: got %d, want %d", readyRec.Code, http.StatusOK)
+	}
+}
+
 func TestCheckReadinessIsSticky(t *testing.T) {
 	issuerA := IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"}
 	notInit := map[string]bool{}
 	h := newTestHealthCheck(false, notInit, issuerA)
+	h.SetServing()
 
 	if err := h.Check(); err != nil {
 		t.Fatalf("expected ready, got: %v", err)
@@ -140,6 +216,7 @@ func TestCheckContinuesProbingPendingAfterLatch(t *testing.T) {
 
 	notInit := map[string]bool{"jwt-b": true}
 	h := newTestHealthCheck(false, notInit, issuerA, issuerB)
+	h.SetServing()
 	fake := h.oidcAuther.(*fakeAuther)
 
 	if err := h.Check(); err != nil {
@@ -198,6 +275,7 @@ func TestCheckAlternatePhrasingKeepsPending(t *testing.T) {
 		},
 	}
 	h := newTestHealthCheckWithAuther(true, auther, issuerA)
+	h.SetServing()
 
 	if err := h.Check(); err == nil {
 		t.Fatal("expected not-ready for alternate 'is not initialized' phrasing, got nil")
@@ -226,6 +304,7 @@ func TestCheckTransientErrorDoesNotLatch(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			auther := &fakeAuther{override: map[string]error{"jwt-a": retErr}}
 			h := newTestHealthCheckWithAuther(true, auther, issuerA)
+			h.SetServing()
 
 			if err := h.Check(); err == nil {
 				t.Fatal("expected not-ready for transient error, got nil")
@@ -245,6 +324,8 @@ func TestCheckTransientErrorDoesNotLatch(t *testing.T) {
 func TestHandlerRejectsNonGET(t *testing.T) {
 	h := newTestHealthCheck(false, nil,
 		IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"})
+	// Serving, so GET /ready exercises the readiness path rather than the gate.
+	h.SetServing()
 	handler := h.handler()
 
 	for _, path := range []string{"/live", "/ready"} {
@@ -440,6 +521,8 @@ func TestCheckDoesNotHoldLockDuringAuth(t *testing.T) {
 		release: make(chan struct{}),
 	}
 	h := newTestHealthCheckWithAuther(true, auther, issuerA)
+	// Check returns before reaching the authenticator unless it is serving.
+	h.SetServing()
 
 	var wg sync.WaitGroup
 	for i := 0; i < 2; i++ {

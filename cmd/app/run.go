@@ -184,6 +184,13 @@ func buildRunCommand(stopCh <-chan struct{}, opts *options.Options) *cobra.Comma
 				return err
 			}
 
+			// The handler chain is built and the secure server is serving its
+			// listener. Only now may the pod be advertised as ready: the port
+			// has been bound since SecureServing.ApplyTo above, so before this
+			// point a client connect succeeds and then sits in the backlog
+			// unanswered, and a failure in Run would leave it that way.
+			probeServer.SetServing()
+
 			<-waitCh
 			<-listenerStoppedCh
 
