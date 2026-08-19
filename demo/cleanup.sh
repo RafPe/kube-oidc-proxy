@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright Jetstack Ltd. See LICENSE for details.
 #
 # Tear down the demo: delete the kind cluster and remove generated artifacts.
 set -euo pipefail
