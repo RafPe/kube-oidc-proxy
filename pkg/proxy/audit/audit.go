@@ -44,6 +44,18 @@ func New(opts *options.AuditOptions, externalAddress string, secureServingInfo *
 		SecureServing:   secureServingInfo,
 
 		LongRunningFunc: longRunningRequests,
+
+		// Complete() derives the RequestInfo resolver from this, and
+		// server.NewRequestInfoResolver seeds the resolver with the group
+		// prefix (/apis) plus these legacy, groupless prefixes. Left empty, a
+		// request under /api — the whole core group — parses as a non-resource
+		// request: no resource, no subresource, and a verb that is only the
+		// lowercased HTTP method. The audit event then carries "post" rather
+		// than "create" and no objectRef, and longRunningRequests never sees
+		// the subresource it matches on, so exec, attach, portforward and log
+		// (all of them core group pod subresources) are never treated as long
+		// running however the set above is written.
+		LegacyAPIGroupPrefixes: sets.NewString(server.DefaultLegacyAPIPrefix),
 	}
 
 	// We do not support dynamic auditing, so leave nil

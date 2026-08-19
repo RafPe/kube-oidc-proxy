@@ -164,6 +164,16 @@ var _ = framework.CasesDescribe("Audit", Label("shard-b"), func() {
 			}
 
 			Expect(auditEvent.User.Username).To(Equal("user@example.com"))
+
+			// The classification the long running check reads. A POST to a
+			// subresource is the "create" verb, and the subresource is what
+			// makes the request long running, so an event recording neither
+			// means the request was never resolved as a resource request.
+			Expect(auditEvent.Verb).To(Equal("create"))
+			Expect(auditEvent.ObjectRef).NotTo(BeNil(), "audit event carries no objectRef, so the exec was not audited as a resource request")
+			Expect(auditEvent.ObjectRef.Resource).To(Equal("pods"))
+			Expect(auditEvent.ObjectRef.Subresource).To(Equal("exec"))
+
 			stages = append(stages, auditEvent.Stage)
 		}
 		Expect(scanner.Err()).NotTo(HaveOccurred())
@@ -422,26 +432,39 @@ func testAuditLogs(f *framework.Framework, podLabelSelector, containerName, logP
 	logs := readAuditLog(f, podLabelSelector, containerName, logPath)
 	scanner := bufio.NewScanner(bytes.NewReader(logs))
 
+	// A GET of a collection is the "list" verb, not "get" — "get" is a GET of a
+	// single named object — and a resource request carries an objectRef naming
+	// what was addressed. Both follow from the request being resolved as a
+	// resource request in the core group, which is what an audit consumer
+	// writes policy rules against.
+	expObjectRef := &auditv1.ObjectReference{
+		Resource:   "pods",
+		Namespace:  "kube-system",
+		APIVersion: "v1",
+	}
+
 	expAuditEvents := []auditv1.Event{
 		{
 			Level:      auditv1.LevelRequestResponse,
 			Stage:      auditv1.StageRequestReceived,
 			RequestURI: "/api/v1/namespaces/kube-system/pods",
-			Verb:       "get",
+			Verb:       "list",
 			User: authnv1.UserInfo{
 				Username: "user@example.com",
 				Groups:   []string{"group-1", "group-2"},
 			},
+			ObjectRef: expObjectRef,
 		},
 		{
 			Level:      auditv1.LevelRequestResponse,
 			Stage:      auditv1.StageResponseComplete,
 			RequestURI: "/api/v1/namespaces/kube-system/pods",
-			Verb:       "get",
+			Verb:       "list",
 			User: authnv1.UserInfo{
 				Username: "user@example.com",
 				Groups:   []string{"group-1", "group-2"},
 			},
+			ObjectRef: expObjectRef,
 			ResponseStatus: &metav1.Status{
 				Code: 403,
 			},
@@ -486,6 +509,17 @@ func testAuditLogs(f *framework.Framework, podLabelSelector, containerName, logP
 			gotAuditEvent.ResponseStatus = &metav1.Status{
 				Code:    auditEvent.ResponseStatus.Code,
 				Message: auditEvent.ResponseStatus.Message,
+			}
+		}
+
+		if auditEvent.ObjectRef != nil {
+			gotAuditEvent.ObjectRef = &auditv1.ObjectReference{
+				Resource:    auditEvent.ObjectRef.Resource,
+				Namespace:   auditEvent.ObjectRef.Namespace,
+				Name:        auditEvent.ObjectRef.Name,
+				APIGroup:    auditEvent.ObjectRef.APIGroup,
+				APIVersion:  auditEvent.ObjectRef.APIVersion,
+				Subresource: auditEvent.ObjectRef.Subresource,
 			}
 		}
 

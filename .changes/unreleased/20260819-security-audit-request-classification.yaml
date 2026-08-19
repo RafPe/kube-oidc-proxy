@@ -1,0 +1,11 @@
+kind: Security
+body: >-
+  Audit requests to the core API group (/api/...) are now classified correctly.
+  The audit server config named no legacy API prefix, so every core group
+  request — which is where pods, and therefore exec, attach, portforward and
+  log, live — was recorded as a non-resource request, with the lowercased HTTP
+  method as its verb and no objectRef, and the long-running check could never
+  match a streaming subresource. Audit events for these requests now carry the
+  Kubernetes verb (list, create, watch and so on) and an objectRef naming the
+  resource, namespace, name and subresource. If you parse audit logs or write
+  audit policy rules matching on verb or resource, expect the corrected values.
