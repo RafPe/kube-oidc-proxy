@@ -1,6 +1,17 @@
 # Unreleased
 <!-- next-release -->
 
+## [1.3.0] - 2026-08-19
+
+- Update go.opentelemetry.io/otel to v1.44.0 and golang.org/x/mod to v0.40.0, clearing three advisories reported against the dependency tree.
+- Harden CI — scope the Prepare Release and GitHub Actions OIDC e2e workflow tokens to the jobs that need them, and stop the e2e fake API server from logging request header values or echoing a caller-controlled body as sniffable content.
+- Build against Go 1.26.6, which resolves six reachable Go standard library advisories in crypto/tls, net/http, net/url, html/template, and encoding/asn1.
+- Log OIDC token validation failures at `-v=2` with the resolved remote address, instead of `-v=5`. An error from the bearer-token authenticator always means a token was present and failed validation, so it was previously invisible at any verbosity operators run. Request routing is unchanged.
+- The readiness endpoint now reports not-ready until the proxy is actually serving, instead of reporting ready as soon as an OIDC issuer initialized. Previously the readiness server started before the proxy's handler chain did, so a pod could join its Service while requests to the proxy port could only queue.
+- Audit streaming requests as long-running — exec, attach, portforward, log and proxy are now recorded when the response starts instead of only when the stream ends, so a long session is no longer missing from the audit log while it runs, or entirely if the proxy dies first. These requests now emit a ResponseStarted event as well as ResponseComplete, so audit volume for exec, attach and portforward increases.
+- Refuse authenticated identities carrying the Kubernetes-reserved `system:` prefix from token claims, so an OIDC issuer can no longer mint `system:masters` or a service-account username through the proxy's blanket impersonation rights. The check runs before the SubjectAccessReview that authorizes inbound impersonation, and the 403 is audited against the identity that was presented. `system:authenticated` remains permitted as a group because the proxy adds it to every request itself. Opt out with `--allow-reserved-identity-claims`.
+- Audit requests to the core API group (/api/...) are now classified correctly. The audit server config named no legacy API prefix, so every core group request — which is where pods and services live, and with them exec, attach, portforward, log and proxy — was recorded as a non-resource request, with the lowercased HTTP method as its verb and no objectRef, and neither the long-running check nor a watch could ever be recognised. Audit events for these requests now carry the Kubernetes verb (list, create, watch and so on) and an objectRef naming the resource, namespace, name and subresource. If you parse audit logs or write audit policy rules matching on verb or resource, expect the corrected values.
+
 **enhancements:**
  - Multi-issuer OIDC authentication via --authentication-config (AuthenticationConfiguration v1/v1beta1), based on [\#85](https://github.com/TremoloSecurity/kube-oidc-proxy/pull/85) with strict versioned config loading, whole-document validation, a shared CEL compiler and configurable readiness (--readiness-require-all-issuers)
 

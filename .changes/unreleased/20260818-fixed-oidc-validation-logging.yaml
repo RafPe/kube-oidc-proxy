@@ -1,2 +1,0 @@
-kind: Fixed
-body: Log OIDC token validation failures at `-v=2` with the resolved remote address, instead of `-v=5`. An error from the bearer-token authenticator always means a token was present and failed validation, so it was previously invisible at any verbosity operators run. Request routing is unchanged.

@@ -1,2 +1,0 @@
-kind: Security
-body: Refuse authenticated identities carrying the Kubernetes-reserved `system:` prefix from token claims, so an OIDC issuer can no longer mint `system:masters` or a service-account username through the proxy's blanket impersonation rights. The check runs before the SubjectAccessReview that authorizes inbound impersonation, and the 403 is audited against the identity that was presented. `system:authenticated` remains permitted as a group because the proxy adds it to every request itself. Opt out with `--allow-reserved-identity-claims`.
