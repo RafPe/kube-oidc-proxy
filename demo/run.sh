@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright Jetstack Ltd. See LICENSE for details.
 #
 # One-command, self-contained, multi-issuer demo for kube-oidc-proxy.
 #
