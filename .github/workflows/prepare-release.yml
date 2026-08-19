@@ -13,6 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # push release/next and let release-drafter stage a draft
+      issues: read # read-only: confirm the autorelease label exists, never create it
       pull-requests: write # open/update the release PR
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -30,6 +31,15 @@ jobs:
           test -n "${VERSION}" || { echo "::error::release-drafter produced no version"; exit 1; }
           mapfile -d '' fragments < <(find .changes/unreleased -maxdepth 1 -name '*.yaml' -print0 | sort -z)
           test "${#fragments[@]}" -gt 0 || { echo "::notice::No releasable fragments"; exit 0; }
+          # gh resolves label names before it creates a pull request, so a missing
+          # label aborts the create with release/next already force-pushed.
+          if ! label=$(gh api "repos/${GITHUB_REPOSITORY}/labels/autorelease%3A%20pending" 2>&1); then
+            case "${label}" in
+              *"Not Found"*) echo "::error::repository lacks the 'autorelease: pending' label; see the repository setup section of docs/releases.md" ;;
+              *) echo "::error::could not verify the 'autorelease: pending' label: ${label}" ;;
+            esac
+            exit 1
+          fi
           notes=$(for file in "${fragments[@]}"; do yq -r '"- " + .body' "${file}"; done)
           grep -q '<!-- next-release -->' CHANGELOG.md || { echo "::error::missing changelog marker"; exit 1; }
           { sed -n '1,/<!-- next-release -->/p' CHANGELOG.md; printf '\n## [%s] - %s\n\n%s\n' "${VERSION#v}" "$(date -u +%F)" "${notes}"; sed -n '/<!-- next-release -->/,$p' CHANGELOG.md | tail -n +2; } > CHANGELOG.md.new
@@ -38,5 +48,12 @@ jobs:
           git config user.name github-actions[bot]; git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add CHANGELOG.md .changes; git commit -m "chore: release ${VERSION}"; git push --force origin release/next
           printf '%s\n' "${RELEASE_BODY}" > release-pr-body.md
-          gh pr create --base main --head release/next --title "chore: release ${VERSION}" --label "autorelease: pending" --body-file release-pr-body.md 2>/dev/null ||
-            gh pr edit release/next --title "chore: release ${VERSION}" --add-label "autorelease: pending" --body-file release-pr-body.md
+          # Branch on whether the release PR exists rather than falling back from a
+          # failed create: `create || edit` discards the create's error and reports
+          # whatever the edit then trips on instead.
+          existing=$(gh pr list --head release/next --base main --state open --json number --jq '.[0].number // ""')
+          if [ -n "${existing}" ]; then
+            gh pr edit "${existing}" --title "chore: release ${VERSION}" --add-label "autorelease: pending" --body-file release-pr-body.md
+          else
+            gh pr create --base main --head release/next --title "chore: release ${VERSION}" --label "autorelease: pending" --body-file release-pr-body.md
+          fi
