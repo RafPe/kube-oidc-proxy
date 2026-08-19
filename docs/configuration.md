@@ -63,6 +63,7 @@ not require a pod restart.
 | `--extra-user-headers` | — | (Alpha) Extra `key=value` user headers to add to the impersonated request. |
 | `--trusted-proxies` | — | Comma-separated trusted proxy CIDRs (IPv4/IPv6). `X-Forwarded-For` is honoured for client-IP resolution only when the immediate peer is within one of these networks. Empty (default) trusts no proxy. See [Trusted proxies and client IP](#trusted-proxies-and-client-ip). |
 | `--subject-access-review-timeout` | `5s` | Timeout for authorizing inbound impersonation via `SubjectAccessReview` — a single shared budget across all SAR calls for one request (not per-call). Must be greater than 0. |
+| `--allow-reserved-identity-claims` | `false` | Allow an authentication token to mint `system:`-prefixed identities. See [Reserved `system:` identities](#reserved-system-identities). |
 
 ### Serving / TLS & misc
 
@@ -92,6 +93,51 @@ The proxy also honours impersonation headers on **inbound** requests, so
 the proxy first checks — via `SubjectAccessReview` against the API server — that
 the authenticated user may assume that identity, then forwards the impersonated
 identity instead of the caller's own.
+
+### Reserved `system:` identities
+
+Kubernetes reserves the `system:` prefix for its own identities: `system:masters`
+is bound to `cluster-admin` by default, and `system:serviceaccount:<ns>:<name>`
+is any service account. The chart grants the proxy `impersonate` on `users`,
+`groups` and `serviceaccounts` without `resourceNames`, so an identity carrying
+one of those values is impersonated as-is.
+
+Kubernetes does **not** guard this on claim mappings. By default the proxy
+therefore refuses, with `403`, any authenticated request whose identity carries
+the reserved prefix:
+
+| Field | Rule |
+| --- | --- |
+| Username | Every `system:`-prefixed value is refused — no exceptions, including `system:authenticated`, which an RBAC binding can name as a `User`. |
+| Groups | `system:authenticated` is permitted (the proxy appends it to every request itself); any other `system:` group is refused. |
+
+The check runs in the authentication handler, **before** the `SubjectAccessReview`
+that authorizes inbound impersonation — that review is built with the requester's
+own groups, so a forged `system:` group would otherwise feed the authorization
+decision and not merely the impersonation headers. The identity is refused rather
+than silently stripped: a caller served without the group they claimed has been
+told the wrong thing about who they are. The rejection is audited against the
+identity that was presented.
+
+Because the check sits in the authentication handler, it applies to **every**
+authenticated request, including under `--disable-impersonation`, where such a
+request was previously forwarded for the API server to authenticate itself. It
+does not apply to requests authenticated by `--token-passthrough`: those never
+reach the OIDC claim mapping, and the API server validates the token itself.
+
+This is defense in depth. The operator-side mitigations remain the primary
+control and are unchanged: set `--oidc-groups-prefix` (and
+`--oidc-username-prefix`) so claims cannot collide with cluster identities, or
+express `userValidationRules` in an `--authentication-config` document. The proxy
+refuses to start when either prefix flag itself begins with `system:`.
+
+`Impersonate-*` targets authorized by `SubjectAccessReview` are deliberately left
+alone: an operator who bound RBAC permitting impersonation of `system:masters`
+made that call on purpose, and blocking it would break break-glass access.
+
+Set `--allow-reserved-identity-claims` to opt out and restore the previous
+behaviour. It permits a token claim to mint `system:masters` and any service
+account identity; only enable it if you fully control the issuer's claims.
 
 ### Original-user audit headers
 

@@ -25,6 +25,8 @@ type KubeOIDCProxyOptions struct {
 	TokenPassthrough   TokenPassthroughOptions
 
 	TrustedProxies []string
+
+	AllowReservedIdentityClaims bool
 }
 
 type TokenPassthroughOptions struct {
@@ -78,6 +80,16 @@ func (k *KubeOIDCProxyOptions) AddFlags(fs *pflag.FlagSet) *KubeOIDCProxyOptions
 			"address is always used, so clients cannot spoof their IP via forwarded "+
 			"headers. Set this only to the addresses of proxies you operate in front of "+
 			"kube-oidc-proxy.")
+
+	fs.BoolVar(&k.AllowReservedIdentityClaims, "allow-reserved-identity-claims", false,
+		"If true, an authentication token may mint identities carrying the "+
+			"Kubernetes-reserved 'system:' prefix — including the cluster-admin group "+
+			"'system:masters' and any service account "+
+			"('system:serviceaccount:<namespace>:<name>') as a username. The proxy is "+
+			"granted blanket impersonation rights, so enabling this makes the OIDC "+
+			"issuer's claims a path to those privileges. By default (false) such an "+
+			"identity is refused with 403; 'system:authenticated' remains permitted as "+
+			"a group because the proxy adds it to every request itself.")
 
 	k.TokenPassthrough.AddFlags(fs)
 	k.ExtraHeaderOptions.AddFlags(fs)

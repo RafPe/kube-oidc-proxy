@@ -39,11 +39,22 @@ var (
 	errUnauthorized          = errors.New("unauthorized")
 	errNoName                = errors.New("no name in OIDC info")
 	errNoImpersonationConfig = errors.New("no impersonation configuration in context")
+
+	// errReservedIdentity classifies an authenticated identity whose username or
+	// groups carry the Kubernetes-reserved "system:" prefix. Such an identity may
+	// never originate from a token claim; see checkReservedIdentity.
+	errReservedIdentity = errors.New("reserved identity in authentication token")
 )
 
 type Config struct {
 	DisableImpersonation bool
 	TokenReview          bool
+
+	// AllowReservedIdentityClaims opts out of the reserved-identity guard,
+	// permitting a token claim to mint "system:"-prefixed usernames and groups —
+	// including system:masters and any service account. Off by default; see
+	// checkReservedIdentity for why the guard exists.
+	AllowReservedIdentityClaims bool
 
 	FlushInterval   time.Duration
 	ExternalAddress string

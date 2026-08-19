@@ -9,6 +9,7 @@ import (
 	_ "github.com/rafpe/kube-oidc-proxy/test/e2e/suite/cases/passthrough"
 	_ "github.com/rafpe/kube-oidc-proxy/test/e2e/suite/cases/probe"
 	_ "github.com/rafpe/kube-oidc-proxy/test/e2e/suite/cases/rbac"
+	_ "github.com/rafpe/kube-oidc-proxy/test/e2e/suite/cases/reservedidentity"
 	_ "github.com/rafpe/kube-oidc-proxy/test/e2e/suite/cases/token"
 	_ "github.com/rafpe/kube-oidc-proxy/test/e2e/suite/cases/upgrade"
 )

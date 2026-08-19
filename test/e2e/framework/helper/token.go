@@ -4,6 +4,7 @@ package helper
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -63,6 +64,29 @@ func (h *Helper) SignToken(issuerBundle *util.KeyBundle, tokenPayload []byte) (s
 	}
 
 	return signedToken, nil
+}
+
+// NewTokenPayloadForIdentity returns a token payload for an arbitrary identity,
+// for cases that need claims NewTokenPayload's fixed ones cannot express. The
+// username goes in the "email" claim and the groups in the "groups" claim,
+// matching the --oidc-username-claim/--oidc-groups-claim the suite deploys the
+// proxy with. Marshalled rather than formatted so a value containing a quote or
+// a backslash cannot produce a malformed (or a differently shaped) token.
+func (h *Helper) NewTokenPayloadForIdentity(issuerURL *url.URL, clientID, username string,
+	groups []string, exp time.Time) ([]byte, error) {
+
+	payload, err := json.Marshal(map[string]interface{}{
+		"iss":    issuerURL.String(),
+		"aud":    []string{clientID, "aud-2"},
+		"email":  username,
+		"groups": groups,
+		"exp":    exp.Unix(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal token payload: %s", err)
+	}
+
+	return payload, nil
 }
 
 func (h *Helper) NewTokenPayload(issuerURL *url.URL, clientID string, exp time.Time) []byte {

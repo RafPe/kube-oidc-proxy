@@ -5,6 +5,7 @@ import (
 	stdcontext "context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -19,6 +20,10 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 )
+
+// reservedIdentityPrefix is the username/group prefix Kubernetes reserves for
+// its own identities.
+const reservedIdentityPrefix = "system:"
 
 func (p *Proxy) withHandlers(handler http.Handler) http.Handler {
 	// Set up proxy handlers
@@ -40,8 +45,16 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 		// Auth request and handle unauthed
 		info, ok, err := p.oidcRequestAuther.AuthenticateRequest(req)
 		if err != nil {
-			klog.V(5).Infof("Authenticated request failed: %s", err)
+			// An error here means a token was present and failed validation;
+			// an absent or unparseable token yields ok == false with a nil
+			// error. Log it at the level operators run at, not V(5).
+			var remoteAddr string
+			req, remoteAddr = context.RemoteAddr(req)
+			klog.V(2).Infof("failed to authenticate request (%s): %s", remoteAddr, err)
+
 			// Since we have failed OIDC auth, we will try a token review, if enabled.
+			// Routing is deliberately unchanged: falling through to token
+			// passthrough is documented alpha behaviour, not a defect.
 			tokenReviewHandler.ServeHTTP(rw, req)
 			return
 		}
@@ -57,10 +70,57 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 
 		klog.V(4).Infof("authenticated request: %s", remoteAddr)
 
-		// Add the user info to the request context
+		// Add the user info to the request context. Done before the
+		// reserved-identity check so a rejection is audited against the identity
+		// that was presented.
 		req = req.WithContext(genericapirequest.WithUser(req.Context(), info.User))
+
+		if !p.config.AllowReservedIdentityClaims {
+			if err := checkReservedIdentity(info.User); err != nil {
+				p.handleError(rw, req, err)
+				return
+			}
+		}
+
 		handler.ServeHTTP(rw, req)
 	})
+}
+
+// checkReservedIdentity refuses an identity that a token claim must never be
+// able to produce. system: is reserved by Kubernetes: system:masters is
+// cluster-admin by default, and system:serviceaccount:<ns>:<name> is any
+// service account, both of which this proxy is granted blanket impersonate
+// rights over. Kubernetes does not enforce this on claim mappings.
+//
+// Username has no exception: even system:authenticated can be granted rights by
+// an RBAC binding naming it as a User. Groups permit exactly AllAuthenticated,
+// because withImpersonateRequest appends it to every request anyway, so an IdP
+// that also emits it must not 403 the whole cluster.
+//
+// The identity is refused, not stripped: a caller quietly served without the
+// group they claimed has been told the wrong thing about who they are, and the
+// resulting RBAC denial then looks like a policy bug.
+//
+// This is not implemented as UserValidationRules (CEL) on the JWTAuthenticator,
+// the Kubernetes-native option, because a validation-rule failure surfaces as an
+// authentication error and withAuthenticateRequest routes err != nil into the
+// token-review path: with --token-passthrough on, the rejection would be
+// swallowed and the request silently retried against TokenReview.
+func checkReservedIdentity(info authuser.Info) error {
+	if strings.HasPrefix(info.GetName(), reservedIdentityPrefix) {
+		return fmt.Errorf("%w: username %q", errReservedIdentity, info.GetName())
+	}
+
+	for _, group := range info.GetGroups() {
+		if group == authuser.AllAuthenticated {
+			continue
+		}
+		if strings.HasPrefix(group, reservedIdentityPrefix) {
+			return fmt.Errorf("%w: group %q", errReservedIdentity, group)
+		}
+	}
+
+	return nil
 }
 
 // withTokenReview will attempt a token review on the incoming request, if
@@ -214,6 +274,15 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 		http.Error(rw, "Unauthorized", http.StatusUnauthorized)
 	})
 
+	// Audited through the ordinary request chain rather than the
+	// failed-authentication one: the request authenticated successfully and was
+	// then refused, and the caller has already put the identity in the request
+	// context. The client body carries no claim values; they are logged and
+	// audited instead.
+	forbiddenHandler := audit.NewForbiddenHandler(p.auditor, func(rw http.ResponseWriter, r *http.Request) {
+		http.Error(rw, "identities with the reserved \"system:\" prefix are not accepted from an authentication token", http.StatusForbidden)
+	})
+
 	return func(rw http.ResponseWriter, r *http.Request, err error) {
 
 		if err == nil {
@@ -231,6 +300,12 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 		case errors.Is(err, errUnauthorized):
 			// If Unauthorized then error and report to audit
 			unauthedHandler.ServeHTTP(rw, r)
+			return
+
+			// Authenticated, but the identity is one a token must never mint.
+		case errors.Is(err, errReservedIdentity):
+			klog.V(2).Infof("rejecting reserved identity (%s): %s", r.RemoteAddr, err)
+			forbiddenHandler.ServeHTTP(rw, r)
 			return
 
 			// No name given or available in oidc request

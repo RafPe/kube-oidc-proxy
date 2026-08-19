@@ -298,3 +298,60 @@ func TestBuildTokenAuther_AuthConfig_InvalidFile(t *testing.T) {
 		t.Error("buildTokenAuther() expected error for missing config file, got nil")
 	}
 }
+
+func TestCheckReservedIdentityPrefixes(t *testing.T) {
+	tests := map[string]struct {
+		usernamePrefix string
+		groupsPrefix   string
+		configFile     string
+		allowReserved  bool
+		wantErr        bool
+	}{
+		"no prefixes": {},
+		"ordinary prefixes": {
+			usernamePrefix: "oidc:",
+			groupsPrefix:   "oidc:",
+		},
+		"reserved username prefix": {
+			usernamePrefix: "system:",
+			wantErr:        true,
+		},
+		"reserved groups prefix": {
+			groupsPrefix: "system:serviceaccount:",
+			wantErr:      true,
+		},
+		"reserved prefix with the opt-out set": {
+			usernamePrefix: "system:",
+			groupsPrefix:   "system:",
+			allowReserved:  true,
+		},
+		// --oidc-* prefixes are ignored entirely when an authentication
+		// configuration file is in use, so they must not fail startup.
+		"reserved prefix ignored in multi-issuer mode": {
+			usernamePrefix: "system:",
+			configFile:     "/etc/kube-oidc-proxy/authentication.yaml",
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			opts := &options.Options{
+				OIDCAuthentication: &options.OIDCAuthenticationOptions{
+					UsernamePrefix: test.usernamePrefix,
+					GroupsPrefix:   test.groupsPrefix,
+				},
+				AuthenticationConfig: &options.AuthenticationConfigOptions{ConfigFile: test.configFile},
+				App:                  &options.KubeOIDCProxyOptions{AllowReservedIdentityClaims: test.allowReserved},
+			}
+
+			err := checkReservedIdentityPrefixes(opts)
+
+			if test.wantErr && err == nil {
+				t.Error("checkReservedIdentityPrefixes() = nil, want an error")
+			}
+			if !test.wantErr && err != nil {
+				t.Errorf("checkReservedIdentityPrefixes() = %v, want nil", err)
+			}
+		})
+	}
+}
