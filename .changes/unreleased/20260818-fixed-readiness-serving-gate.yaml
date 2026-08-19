@@ -1,2 +1,0 @@
-kind: Fixed
-body: The readiness endpoint now reports not-ready until the proxy is actually serving, instead of reporting ready as soon as an OIDC issuer initialized. Previously the readiness server started before the proxy's handler chain did, so a pod could join its Service while requests to the proxy port could only queue.

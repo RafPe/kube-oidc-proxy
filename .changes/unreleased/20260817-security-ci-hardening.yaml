@@ -1,2 +1,0 @@
-kind: Security
-body: Harden CI — scope the Prepare Release and GitHub Actions OIDC e2e workflow tokens to the jobs that need them, and stop the e2e fake API server from logging request header values or echoing a caller-controlled body as sniffable content.

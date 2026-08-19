@@ -1,2 +1,0 @@
-kind: Security
-body: Audit streaming requests as long-running — exec, attach, portforward, log and proxy are now recorded when the response starts instead of only when the stream ends, so a long session is no longer missing from the audit log while it runs, or entirely if the proxy dies first. These requests now emit a ResponseStarted event as well as ResponseComplete, so audit volume for exec, attach and portforward increases.

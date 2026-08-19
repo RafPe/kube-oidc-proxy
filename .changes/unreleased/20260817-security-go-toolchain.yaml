@@ -1,2 +1,0 @@
-kind: Security
-body: Build against Go 1.26.6, which resolves six reachable Go standard library advisories in crypto/tls, net/http, net/url, html/template, and encoding/asn1.
