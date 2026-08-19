@@ -17,6 +17,19 @@ import (
 	"k8s.io/component-base/version"
 )
 
+// longRunningRequests reports whether a request streams for as long as the
+// caller holds it open. It decides when the audit log hears about a request: a
+// short request is recorded once, at completion; a long-running one is recorded
+// when the response starts and again when the stream ends. The generic
+// apiserver default treats only watch this way because a generic API server has
+// no inherent long-running subresources — but everything this proxy forwards
+// goes to a kube-apiserver, so kube-apiserver's own set is the set that applies.
+// Without this, an hour-long exec leaves nothing in the audit log for that hour,
+// and nothing at all if the proxy is killed before the session ends.
+var longRunningRequests = genericfilters.BasicLongRunningRequestCheck(
+	sets.NewString("watch", "proxy"),
+	sets.NewString("attach", "exec", "proxy", "log", "portforward"))
+
 type Audit struct {
 	opts         *options.AuditOptions
 	serverConfig *server.CompletedConfig
@@ -30,11 +43,20 @@ func New(opts *options.AuditOptions, externalAddress string, secureServingInfo *
 		ExternalAddress: externalAddress,
 		SecureServing:   secureServingInfo,
 
-		// Default to treating watch as a long-running operation.
-		// Generic API servers have no inherent long-running subresources.
-		// This is so watch requests are handled correctly in the audit log.
-		LongRunningFunc: genericfilters.BasicLongRunningRequestCheck(
-			sets.NewString("watch"), sets.NewString()),
+		LongRunningFunc: longRunningRequests,
+
+		// Complete() derives the RequestInfo resolver from this, and
+		// server.NewRequestInfoResolver seeds the resolver with the group
+		// prefix (/apis) plus these legacy, groupless prefixes. Left empty, a
+		// request under /api — the whole core group — parses as a non-resource
+		// request: no resource, no subresource, and a verb that is only the
+		// lowercased HTTP method. The audit event then carries "post" rather
+		// than "create" and no objectRef, and longRunningRequests never sees
+		// the verb or subresource it matches on, so exec, attach, portforward,
+		// log and proxy are never treated as long running however the set above
+		// is written — nor is a core group watch, which the generic default
+		// already covered. All of them live under /api.
+		LegacyAPIGroupPrefixes: sets.NewString(server.DefaultLegacyAPIPrefix),
 	}
 
 	// We do not support dynamic auditing, so leave nil
