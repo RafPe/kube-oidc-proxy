@@ -74,6 +74,17 @@ func TestLongRunningRequests(t *testing.T) {
 			},
 			want: true,
 		},
+		// The proxy verb allows no subresource, so the verb alone has to carry
+		// the decision. See the legacy path case in TestRequestInfoLongRunning
+		// for the URL form that produces it.
+		"proxy verb": {
+			info: &request.RequestInfo{
+				IsResourceRequest: true,
+				Verb:              "proxy",
+				Resource:          "services",
+			},
+			want: true,
+		},
 		"get pods": {
 			info: &request.RequestInfo{
 				IsResourceRequest: true,
@@ -134,6 +145,7 @@ func TestRequestInfoLongRunning(t *testing.T) {
 		url             string
 		wantVerb        string
 		wantResource    string
+		wantName        string
 		wantSubresource string
 		wantLongRunning bool
 	}{
@@ -142,6 +154,7 @@ func TestRequestInfoLongRunning(t *testing.T) {
 			url:             "/api/v1/namespaces/ns-1/pods/pod-1/exec?command=sh&container=c-1&stdout=true",
 			wantVerb:        "create",
 			wantResource:    "pods",
+			wantName:        "pod-1",
 			wantSubresource: "exec",
 			wantLongRunning: true,
 		},
@@ -150,6 +163,7 @@ func TestRequestInfoLongRunning(t *testing.T) {
 			url:             "/api/v1/namespaces/ns-1/pods/pod-1/attach?container=c-1",
 			wantVerb:        "create",
 			wantResource:    "pods",
+			wantName:        "pod-1",
 			wantSubresource: "attach",
 			wantLongRunning: true,
 		},
@@ -158,6 +172,7 @@ func TestRequestInfoLongRunning(t *testing.T) {
 			url:             "/api/v1/namespaces/ns-1/pods/pod-1/portforward",
 			wantVerb:        "create",
 			wantResource:    "pods",
+			wantName:        "pod-1",
 			wantSubresource: "portforward",
 			wantLongRunning: true,
 		},
@@ -166,7 +181,52 @@ func TestRequestInfoLongRunning(t *testing.T) {
 			url:             "/api/v1/namespaces/ns-1/pods/pod-1/log?follow=true",
 			wantVerb:        "get",
 			wantResource:    "pods",
+			wantName:        "pod-1",
 			wantSubresource: "log",
+			wantLongRunning: true,
+		},
+		"proxy to a service": {
+			method:          http.MethodGet,
+			url:             "/api/v1/namespaces/ns-1/services/svc-1/proxy",
+			wantVerb:        "get",
+			wantResource:    "services",
+			wantName:        "svc-1",
+			wantSubresource: "proxy",
+			wantLongRunning: true,
+		},
+		// A service proxy usually names a port and a path to reach inside the
+		// service. The port travels in the object name and the path is a
+		// trailing part the resolver does not interpret, so neither disturbs
+		// the subresource the long-running check matches on.
+		"proxy to a service port and path": {
+			method:          http.MethodGet,
+			url:             "/api/v1/namespaces/ns-1/services/svc-1:8080/proxy/healthz",
+			wantVerb:        "get",
+			wantResource:    "services",
+			wantName:        "svc-1:8080",
+			wantSubresource: "proxy",
+			wantLongRunning: true,
+		},
+		"proxy to a node": {
+			method:          http.MethodGet,
+			url:             "/api/v1/nodes/node-1/proxy/logs",
+			wantVerb:        "get",
+			wantResource:    "nodes",
+			wantName:        "node-1",
+			wantSubresource: "proxy",
+			wantLongRunning: true,
+		},
+		// The proxy verb, as opposed to the proxy subresource above, only ever
+		// arrives through the deprecated verb-via-path form the resolver still
+		// parses (specialVerbs). It allows no subresource, so it is the verb
+		// alone that has to make the request long running — which is why the
+		// verb set carries proxy as well as watch.
+		"proxy verb through the legacy path": {
+			method:          http.MethodGet,
+			url:             "/api/v1/proxy/namespaces/ns-1/services/svc-1",
+			wantVerb:        "proxy",
+			wantResource:    "services",
+			wantName:        "svc-1",
 			wantLongRunning: true,
 		},
 		"watch pods in the core group": {
@@ -194,6 +254,7 @@ func TestRequestInfoLongRunning(t *testing.T) {
 			url:          "/api/v1/namespaces/ns-1/pods/pod-1",
 			wantVerb:     "get",
 			wantResource: "pods",
+			wantName:     "pod-1",
 		},
 		"create a pod": {
 			method:       http.MethodPost,
@@ -222,6 +283,10 @@ func TestRequestInfoLongRunning(t *testing.T) {
 
 			if info.Resource != test.wantResource {
 				t.Errorf("resource for %s = %q, want %q", test.url, info.Resource, test.wantResource)
+			}
+
+			if info.Name != test.wantName {
+				t.Errorf("name for %s = %q, want %q", test.url, info.Name, test.wantName)
 			}
 
 			if info.Subresource != test.wantSubresource {

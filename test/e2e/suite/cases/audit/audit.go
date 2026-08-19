@@ -191,6 +191,110 @@ var _ = framework.CasesDescribe("Audit", Label("shard-b"), func() {
 		}), "unexpected audit stages for %s\naudit log:\n%s", execURI, logs)
 	})
 
+	// Watch is the one long running verb the generic apiserver default already
+	// covered, so this spec is not about the long-running set. It covers the
+	// classification underneath: a watch of a core group resource is only
+	// recognised as a watch — rather than a plain GET — once the audit config
+	// names the legacy API prefix. Until then no core group watch was ever
+	// audited as long running, whatever the set contained.
+	It("should write a ResponseStarted audit event when a watch starts", func() {
+		deployProxyWithAuditLogFile(f)
+
+		By("Creating Role")
+		_, err := f.Helper().KubeClient.RbacV1().Roles(f.Namespace.Name).Create(context.TODO(), &rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "e2e-test-audit-watch",
+			},
+			Rules: []rbacv1.PolicyRule{
+				{
+					APIGroups: []string{""},
+					Resources: []string{"pods"},
+					Verbs:     []string{"get", "list", "watch"},
+				},
+			},
+		}, metav1.CreateOptions{})
+		Expect(err).NotTo(HaveOccurred())
+
+		By("Creating RoleBinding")
+		_, err = f.Helper().KubeClient.RbacV1().RoleBindings(f.Namespace.Name).Create(context.TODO(),
+			&rbacv1.RoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "e2e-test-audit-watch",
+				},
+				Subjects: []rbacv1.Subject{
+					{
+						Name: "user@example.com",
+						Kind: "User",
+					},
+				},
+				RoleRef: rbacv1.RoleRef{
+					Name: "e2e-test-audit-watch",
+					Kind: "Role",
+				},
+			}, metav1.CreateOptions{})
+		Expect(err).NotTo(HaveOccurred())
+
+		By("Watching pods through the proxy")
+		token := f.Helper().NewTokenPayload(f.IssuerURL(), f.ClientID(), time.Now().Add(time.Minute*10))
+		signedToken, err := f.Helper().SignToken(f.IssuerKeyBundle(), token)
+		Expect(err).NotTo(HaveOccurred())
+
+		proxyConfig := f.NewProxyRestConfig()
+		requester := f.Helper().NewRequester(proxyConfig.Transport, signedToken)
+
+		// The watch is held open by the apiserver until timeoutSeconds elapses,
+		// so the request really does stream, and the read of the body below
+		// only returns once the stream has ended.
+		watchPath := fmt.Sprintf("/api/v1/namespaces/%s/pods", f.Namespace.Name)
+		watchURI := watchPath + "?timeoutSeconds=2&watch=true"
+
+		_, resp, err := requester.Get(proxyConfig.Host + watchURI)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resp.StatusCode).To(Equal(http.StatusOK),
+			"watch through the proxy was not served, so no stream was ever started")
+
+		By("Waiting for audit logs to be written")
+		// 5 seconds here is longer than the proxy flush interval.
+		time.Sleep(time.Second * 5)
+
+		By("Copying audit log from proxy locally")
+		logs := readAuditLog(f, "app=kube-oidc-proxy-e2e", auditReaderName, auditLogPath)
+
+		By("Testing for the expected audit stages of the watch request")
+		var stages []auditv1.Stage
+		scanner := bufio.NewScanner(bytes.NewReader(logs))
+		for scanner.Scan() {
+			var auditEvent auditv1.Event
+			err = json.Unmarshal(scanner.Bytes(), &auditEvent)
+			Expect(err).NotTo(HaveOccurred())
+
+			if auditEvent.RequestURI != watchURI {
+				continue
+			}
+
+			Expect(auditEvent.User.Username).To(Equal("user@example.com"))
+
+			// A GET carrying watch=true is the "watch" verb, not "get" — which
+			// is the classification the long running check reads.
+			Expect(auditEvent.Verb).To(Equal("watch"))
+			Expect(auditEvent.ObjectRef).NotTo(BeNil(), "audit event carries no objectRef, so the watch was not audited as a resource request")
+			Expect(auditEvent.ObjectRef.Resource).To(Equal("pods"))
+			Expect(auditEvent.ObjectRef.Namespace).To(Equal(f.Namespace.Name))
+
+			stages = append(stages, auditEvent.Stage)
+		}
+		Expect(scanner.Err()).NotTo(HaveOccurred())
+
+		Expect(stages).To(ContainElement(auditv1.StageResponseStarted),
+			"watch through the proxy emitted no ResponseStarted audit event, so it was not audited as a long running request\naudit log:\n%s", logs)
+
+		Expect(stages).To(Equal([]auditv1.Stage{
+			auditv1.StageRequestReceived,
+			auditv1.StageResponseStarted,
+			auditv1.StageResponseComplete,
+		}), "unexpected audit stages for %s\naudit log:\n%s", watchURI, logs)
+	})
+
 	It("should be able to write audit logs to webhook", func() {
 		By("Creating policy file ConfigMap")
 		cmPolicy, err := f.Helper().KubeClient.CoreV1().ConfigMaps(f.Namespace.Name).Create(context.TODO(), &corev1.ConfigMap{

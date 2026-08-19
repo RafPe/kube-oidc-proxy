@@ -52,9 +52,10 @@ func New(opts *options.AuditOptions, externalAddress string, secureServingInfo *
 		// request: no resource, no subresource, and a verb that is only the
 		// lowercased HTTP method. The audit event then carries "post" rather
 		// than "create" and no objectRef, and longRunningRequests never sees
-		// the subresource it matches on, so exec, attach, portforward and log
-		// (all of them core group pod subresources) are never treated as long
-		// running however the set above is written.
+		// the verb or subresource it matches on, so exec, attach, portforward,
+		// log and proxy are never treated as long running however the set above
+		// is written — nor is a core group watch, which the generic default
+		// already covered. All of them live under /api.
 		LegacyAPIGroupPrefixes: sets.NewString(server.DefaultLegacyAPIPrefix),
 	}
 
