@@ -21,6 +21,10 @@ import (
 )
 
 const (
+	// readHeaderTimeout bounds how long a client may take to send request
+	// headers to the readiness listener.
+	readHeaderTimeout = 5 * time.Second
+
 	timeout = time.Second * 10
 
 	// shutdownTimeout bounds the graceful shutdown of the readiness server so a
@@ -102,6 +106,12 @@ func NewServer(port string, issuers []IssuerReadiness, requireAll bool, oidcAuth
 		srv: &http.Server{
 			Addr:    net.JoinHostPort("0.0.0.0", port),
 			Handler: h.handler(),
+
+			// Bound how long a client may take to send its headers. The
+			// readiness endpoint is reachable by anything that can dial the
+			// probe port, so an unbounded header read lets idle connections
+			// accumulate (gosec G112, Slowloris).
+			ReadHeaderTimeout: readHeaderTimeout,
 		},
 		served: make(chan struct{}),
 	}
