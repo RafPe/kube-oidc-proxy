@@ -109,6 +109,16 @@ func readForbiddenAuditEvents(t *testing.T, a *Audit, path string) []forbiddenAu
 // successfully and was then refused by the proxy, so the audit record must name
 // the identity that was presented and must not read as an authentication
 // failure.
+//
+// The assertions are deliberately confined to what this handler decides: the
+// stage, the identity, the status code, and the absence of an
+// authentication-failure message. The event's verb and objectRef are not
+// asserted because they are decided by the RequestInfo resolver, so they move
+// with its configuration — a core-group path like the one below is classified
+// as a non-resource request (verb "get", no objectRef) unless the resolver is
+// given the legacy API group prefixes, which turns it into a resource request
+// (verb "list", objectRef present). Assert on those only against the resolver
+// this package actually builds.
 func TestNewForbiddenHandlerAuditsAuthenticatedIdentity(t *testing.T) {
 	a, logPath := newForbiddenTestAudit(t)
 
