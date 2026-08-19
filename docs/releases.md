@@ -56,5 +56,39 @@ The workflow verifies that tag belongs to `main`, reruns checks and E2E, and
 resumes publication. It refuses to move a tag or overwrite an already published
 release.
 
+## Repository setup
+
+Prepare Release depends on repository state that is not in this repository.
+Both of the following must be in place or the workflow pushes `release/next`
+and then fails without opening a PR.
+
+Create the four `release/*` labels and `autorelease: pending`:
+
+```sh
+for label in release/major release/minor release/patch release/skip; do
+  gh label create "$label" --force
+done
+gh label create 'autorelease: pending' --color ededed \
+  --description 'Generated release PR awaiting maintainer approval' --force
+```
+
+Prepare Release refuses to run without `autorelease: pending`, because a
+release PR that does not carry it can never be published by **Release**.
+
+Allow Actions to open the release pull request. Without this, `GITHUB_TOKEN`
+may push a branch but not open a PR, and `gh pr create` fails:
+
+```sh
+gh api --method PUT "repos/${OWNER}/${REPO}/actions/permissions/workflow" \
+  -f default_workflow_permissions=read -F can_approve_pull_request_reviews=true
+```
+
+Keep `default_workflow_permissions` at `read`: every workflow here declares its
+own `permissions:` block. The same flag also permits Actions to approve pull
+requests, so protecting `main` is what keeps a release PR from being approved
+by automation.
+
+## Maintainer checks
+
 Keep actions and Kind pinned, protect `main`, require **PR Release Metadata**,
 and run `sh scripts/release-contract-check.sh` for release automation changes.

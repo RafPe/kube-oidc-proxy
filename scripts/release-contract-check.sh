@@ -14,6 +14,7 @@ grep -q '^  workflow_dispatch:' .github/workflows/prepare-release.yml || fail "P
 grep -q 'group: prepare-release' .github/workflows/prepare-release.yml || fail "Prepare Release must be serialized"
 grep -q 'release/next' .github/workflows/prepare-release.yml || fail "Prepare Release must own release/next"
 grep -q 'autorelease: pending' .github/workflows/prepare-release.yml || fail "release PR must carry autorelease: pending"
+grep -q 'labels/autorelease%3A%20pending' .github/workflows/prepare-release.yml || fail "Prepare Release must confirm the automation label exists before it pushes"
 grep -q "head.ref == 'release/next'" .github/workflows/release.yaml || fail "Release must only accept release/next"
 grep -q "contains(github.event.pull_request.labels.*.name, 'autorelease: pending')" .github/workflows/release.yaml || fail "Release must require the automation label"
 grep -q '^  group: release' .github/workflows/release.yaml || fail "Release must be serialized"
