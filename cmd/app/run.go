@@ -52,7 +52,7 @@ const reservedIdentityPrefix = "system:"
 // --oidc-groups-prefix are ignored entirely when --authentication-config is set,
 // where prefixes come from the configuration document instead.
 func checkReservedIdentityPrefixes(opts *options.Options) error {
-	if opts.App.AllowReservedIdentityClaims || opts.AuthenticationConfig.ConfigFile != "" {
+	if opts.AuthenticationConfig.ConfigFile != "" {
 		return nil
 	}
 
@@ -65,7 +65,7 @@ func checkReservedIdentityPrefixes(opts *options.Options) error {
 	} {
 		if strings.HasPrefix(prefix.value, reservedIdentityPrefix) {
 			return fmt.Errorf("%s=%q would prefix every authenticated identity with the "+
-				"Kubernetes-reserved %q; refusing to start (set --allow-reserved-identity-claims to override)",
+				"Kubernetes-reserved %q; refusing to start",
 				prefix.flag, prefix.value, reservedIdentityPrefix)
 		}
 	}
@@ -154,7 +154,7 @@ func buildRunCommand(stopCh <-chan struct{}, opts *options.Options) *cobra.Comma
 
 				TrustedProxies: opts.App.TrustedProxies,
 
-				AllowReservedIdentityClaims: opts.App.AllowReservedIdentityClaims,
+				AllowedReservedGroups: opts.App.AllowedReservedGroups,
 			}
 
 			// Setup Subject Access Review

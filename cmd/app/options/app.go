@@ -26,7 +26,7 @@ type KubeOIDCProxyOptions struct {
 
 	TrustedProxies []string
 
-	AllowReservedIdentityClaims bool
+	AllowedReservedGroups []string
 }
 
 type TokenPassthroughOptions struct {
@@ -81,15 +81,17 @@ func (k *KubeOIDCProxyOptions) AddFlags(fs *pflag.FlagSet) *KubeOIDCProxyOptions
 			"headers. Set this only to the addresses of proxies you operate in front of "+
 			"kube-oidc-proxy.")
 
-	fs.BoolVar(&k.AllowReservedIdentityClaims, "allow-reserved-identity-claims", false,
-		"If true, an authentication token may mint identities carrying the "+
-			"Kubernetes-reserved 'system:' prefix — including the cluster-admin group "+
-			"'system:masters' and any service account "+
-			"('system:serviceaccount:<namespace>:<name>') as a username. The proxy is "+
-			"granted blanket impersonation rights, so enabling this makes the OIDC "+
-			"issuer's claims a path to those privileges. By default (false) such an "+
-			"identity is refused with 403; 'system:authenticated' remains permitted as "+
-			"a group because the proxy adds it to every request itself.")
+	fs.StringSliceVar(&k.AllowedReservedGroups, "allow-reserved-groups", k.AllowedReservedGroups,
+		"Comma-separated list of Kubernetes-reserved ('system:'-prefixed) groups that "+
+			"an authentication token is permitted to carry, e.g. "+
+			"'system:monitoring'. Every other reserved group is refused with 403, as "+
+			"is any reserved username — the proxy holds blanket impersonation rights, "+
+			"so a claim naming 'system:masters' or "+
+			"'system:serviceaccount:<namespace>:<name>' would otherwise reach those "+
+			"privileges. Empty (the default) refuses every reserved group. Each entry "+
+			"must itself start with 'system:'. 'system:authenticated' is always "+
+			"permitted because the proxy adds it to every request itself, and there is "+
+			"no way to permit a reserved username.")
 
 	k.TokenPassthrough.AddFlags(fs)
 	k.ExtraHeaderOptions.AddFlags(fs)

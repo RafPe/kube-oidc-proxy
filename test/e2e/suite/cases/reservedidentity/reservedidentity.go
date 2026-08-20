@@ -117,16 +117,16 @@ var _ = framework.CasesDescribe("Reserved identity", Label("shard-c"), func() {
 	})
 
 	// The falsifier. Same token, same request, same cluster state as the first
-	// spec above; the only difference is the opt-out flag. The request has to
+	// spec above; the only difference is that the group is allowlisted. The request has to
 	// reach the API server and succeed here, which is what makes the 403 and
 	// the absent SubjectAccessReview above attributable to the guard rather
 	// than to anything else about the request.
-	Describe("allowed by --allow-reserved-identity-claims", func() {
-		f := framework.NewDefaultFramework("reserved-identity-optout")
+	Describe("allowed by --allow-reserved-groups", func() {
+		f := framework.NewDefaultFramework("reserved-identity-allowlist")
 
 		It("should let a system:masters group claim authorize an impersonation it otherwise could not", func() {
-			By("Redeploying the proxy with --allow-reserved-identity-claims")
-			f.DeployProxyWith(nil, "--allow-reserved-identity-claims")
+			By("Redeploying the proxy with the group allowlisted")
+			f.DeployProxyWith(nil, "--allow-reserved-groups="+reservedGroup)
 
 			By("Granting pod list to the impersonation target")
 			grantPodList(f, impersonationTarget)
@@ -142,7 +142,7 @@ var _ = framework.CasesDescribe("Reserved identity", Label("shard-c"), func() {
 			By("Checking the SubjectAccessReview did reach the API server")
 			Eventually(func() string { return proxyLogs(f) }, time.Second*15, time.Second).
 				Should(ContainSubstring(sarRequestPath),
-					"no SubjectAccessReview was logged even with the guard opted out, so the zero-SAR assertion "+
+					"no SubjectAccessReview was logged even with the group allowlisted, so the zero-SAR assertion "+
 						"in the refused specs cannot be trusted to fail")
 		})
 	})

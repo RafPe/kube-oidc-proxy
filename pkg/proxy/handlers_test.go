@@ -17,6 +17,7 @@ import (
 	"go.uber.org/mock/gomock"
 	azv1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	authuser "k8s.io/apiserver/pkg/authentication/user"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
@@ -150,6 +151,7 @@ func captureKlogAtV2(t *testing.T) *bytes.Buffer {
 func TestCheckReservedIdentity(t *testing.T) {
 	tests := map[string]struct {
 		info    authuser.Info
+		allowed sets.Set[string]
 		wantErr bool
 	}{
 		"system:masters group": {
@@ -186,11 +188,26 @@ func TestCheckReservedIdentity(t *testing.T) {
 			info:    &authuser.DefaultInfo{Name: "system-admin", Groups: []string{"systemd:ops"}},
 			wantErr: false,
 		},
+		"allowlisted group is permitted": {
+			info:    &authuser.DefaultInfo{Name: "alice", Groups: []string{"system:monitoring"}},
+			allowed: sets.New("system:monitoring"),
+			wantErr: false,
+		},
+		"allowlist does not permit other reserved groups": {
+			info:    &authuser.DefaultInfo{Name: "alice", Groups: []string{"system:masters"}},
+			allowed: sets.New("system:monitoring"),
+			wantErr: true,
+		},
+		"allowlist does not permit a reserved username": {
+			info:    &authuser.DefaultInfo{Name: "system:monitoring", Groups: []string{"dev"}},
+			allowed: sets.New("system:monitoring"),
+			wantErr: true,
+		},
 	}
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			err := checkReservedIdentity(test.info)
+			err := checkReservedIdentity(test.info, test.allowed)
 
 			if test.wantErr {
 				if err == nil {
@@ -252,9 +269,9 @@ func TestWithAuthenticateRequestRejectsReservedIdentity(t *testing.T) {
 	p.ctrl.Finish()
 }
 
-func TestWithAuthenticateRequestAllowsReservedIdentityWhenOptedIn(t *testing.T) {
+func TestWithAuthenticateRequestAllowsAllowlistedReservedGroup(t *testing.T) {
 	p := newTestProxy(t)
-	p.config.AllowReservedIdentityClaims = true
+	p.allowedReservedGroups = sets.New("system:masters")
 
 	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(
 		&authenticator.Response{
@@ -279,7 +296,7 @@ func TestWithAuthenticateRequestAllowsReservedIdentityWhenOptedIn(t *testing.T) 
 	handler.ServeHTTP(rw, reservedIdentityRequest(t, nil))
 
 	if !served {
-		t.Error("inner handler was not reached with --allow-reserved-identity-claims set")
+		t.Error("inner handler was not reached with the reserved group allowlisted")
 	}
 	if got, want := rw.Result().StatusCode, http.StatusOK; got != want {
 		t.Errorf("unexpected response code, exp=%d got=%d", want, got)

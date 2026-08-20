@@ -1068,3 +1068,37 @@ func TestHeadersConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestParseAllowedReservedGroups(t *testing.T) {
+	tests := map[string]struct {
+		groups  []string
+		wantErr bool
+	}{
+		"empty is allowed":        {groups: nil},
+		"reserved group":          {groups: []string{"system:monitoring"}},
+		"several reserved groups": {groups: []string{"system:monitoring", "system:logging"}},
+		// Listing a group that was never going to be refused is a no-op, so it
+		// is almost certainly a typo in a security-relevant setting.
+		"unreserved group is rejected": {groups: []string{"monitoring"}, wantErr: true},
+		"empty entry is rejected":      {groups: []string{"system:monitoring", " "}, wantErr: true},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, err := parseAllowedReservedGroups(test.groups)
+
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("parseAllowedReservedGroups(%q) = nil error, want an error", test.groups)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseAllowedReservedGroups(%q) error = %v, want nil", test.groups, err)
+			}
+			if got.Len() != len(test.groups) {
+				t.Errorf("parseAllowedReservedGroups(%q) has %d entries, want %d", test.groups, got.Len(), len(test.groups))
+			}
+		})
+	}
+}

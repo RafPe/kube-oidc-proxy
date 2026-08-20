@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/request/bearertoken"
 	"k8s.io/apiserver/pkg/server"
@@ -50,11 +51,11 @@ type Config struct {
 	DisableImpersonation bool
 	TokenReview          bool
 
-	// AllowReservedIdentityClaims opts out of the reserved-identity guard,
-	// permitting a token claim to mint "system:"-prefixed usernames and groups —
-	// including system:masters and any service account. Off by default; see
+	// AllowedReservedGroups names "system:"-prefixed groups the operator has
+	// explicitly permitted from a token claim. Empty (the default) refuses every
+	// reserved group. Reserved usernames are always refused; see
 	// checkReservedIdentity for why the guard exists.
-	AllowReservedIdentityClaims bool
+	AllowedReservedGroups []string
 
 	FlushInterval   time.Duration
 	ExternalAddress string
@@ -88,6 +89,10 @@ type Proxy struct {
 	// trustedProxies is the parsed form of config.TrustedProxies, resolved once
 	// at construction and applied to the client-IP resolvers when Run starts.
 	trustedProxies []*net.IPNet
+
+	// allowedReservedGroups is the set form of config.AllowedReservedGroups,
+	// resolved once at construction so the request path does no allocation.
+	allowedReservedGroups sets.Set[string]
 
 	hooks       *hooks.Hooks
 	handleError errorHandlerFn
@@ -142,10 +147,18 @@ func New(deps Dependencies) (*Proxy, error) {
 	cfg := *deps.Config
 	cfg.ExtraUserHeaders = cloneHeaderMap(deps.Config.ExtraUserHeaders)
 	cfg.TrustedProxies = append([]string(nil), deps.Config.TrustedProxies...)
+	cfg.AllowedReservedGroups = append([]string(nil), deps.Config.AllowedReservedGroups...)
 
 	// Validate trusted-proxy CIDRs up front so a bad configuration fails at
 	// construction rather than silently trusting nothing at request time.
 	trustedProxies, err := parseTrustedProxies(cfg.TrustedProxies)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate the reserved-group allowlist up front: an entry that is not
+	// reserved is a no-op the operator almost certainly did not intend.
+	allowedReservedGroups, err := parseAllowedReservedGroups(cfg.AllowedReservedGroups)
 	if err != nil {
 		return nil, err
 	}
@@ -163,10 +176,36 @@ func New(deps Dependencies) (*Proxy, error) {
 		secureServingInfo:     deps.SecureServingInfo,
 		config:                &cfg,
 		trustedProxies:        trustedProxies,
+		allowedReservedGroups: allowedReservedGroups,
 		oidcRequestAuther:     bearertoken.New(deps.TokenAuthenticator),
 		tokenAuthenticator:    deps.TokenAuthenticator,
 		auditor:               auditor,
 	}, nil
+}
+
+// parseAllowedReservedGroups turns the configured allowlist into a set. Every
+// entry must itself carry the reserved prefix: allowing a group that was never
+// going to be refused is a no-op, and silently accepting it would hide a typo
+// in a security-relevant setting. system:authenticated is rejected as an entry
+// because the guard always permits it.
+func parseAllowedReservedGroups(groups []string) (sets.Set[string], error) {
+	if len(groups) == 0 {
+		return nil, nil
+	}
+
+	allowed := sets.New[string]()
+	for _, group := range groups {
+		switch {
+		case strings.TrimSpace(group) == "":
+			return nil, fmt.Errorf("allowed reserved group must not be empty")
+		case !strings.HasPrefix(group, reservedIdentityPrefix):
+			return nil, fmt.Errorf("allowed reserved group %q does not carry the reserved %q prefix, so listing it has no effect",
+				group, reservedIdentityPrefix)
+		}
+		allowed.Insert(group)
+	}
+
+	return allowed, nil
 }
 
 // parseTrustedProxies parses a list of CIDR strings (IPv4 or IPv6) into

@@ -63,7 +63,7 @@ not require a pod restart.
 | `--extra-user-headers` | — | (Alpha) Extra `key=value` user headers to add to the impersonated request. |
 | `--trusted-proxies` | — | Comma-separated trusted proxy CIDRs (IPv4/IPv6). `X-Forwarded-For` is honoured for client-IP resolution only when the immediate peer is within one of these networks. Empty (default) trusts no proxy. See [Trusted proxies and client IP](#trusted-proxies-and-client-ip). |
 | `--subject-access-review-timeout` | `5s` | Timeout for authorizing inbound impersonation via `SubjectAccessReview` — a single shared budget across all SAR calls for one request (not per-call). Must be greater than 0. |
-| `--allow-reserved-identity-claims` | `false` | Allow an authentication token to mint `system:`-prefixed identities. See [Reserved `system:` identities](#reserved-system-identities). |
+| `--allow-reserved-groups` | _(empty)_ | Comma-separated `system:`-prefixed groups a token may carry. See [Reserved `system:` identities](#reserved-system-identities). |
 
 ### Serving / TLS & misc
 
@@ -135,9 +135,19 @@ refuses to start when either prefix flag itself begins with `system:`.
 alone: an operator who bound RBAC permitting impersonation of `system:masters`
 made that call on purpose, and blocking it would break break-glass access.
 
-Set `--allow-reserved-identity-claims` to opt out and restore the previous
-behaviour. It permits a token claim to mint `system:masters` and any service
-account identity; only enable it if you fully control the issuer's claims.
+If a directory legitimately holds a `system:`-prefixed group, name it in
+`--allow-reserved-groups`:
+
+```
+--allow-reserved-groups=system:monitoring,system:logging
+```
+
+Only the groups listed are permitted; every other reserved group is still
+refused, and there is no way to permit a reserved **username** — a reserved
+username has no legitimate use, and `system:serviceaccount:<namespace>:<name>`
+is the most direct path to another identity's privileges. Each entry must itself
+start with `system:`; the proxy refuses to start otherwise, because listing an
+unreserved group has no effect and is almost certainly a typo.
 
 ### Original-user audit headers
 

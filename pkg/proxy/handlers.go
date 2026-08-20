@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/util/sets"
 	authuser "k8s.io/apiserver/pkg/authentication/user"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/client-go/transport"
@@ -75,11 +76,9 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 		// that was presented.
 		req = req.WithContext(genericapirequest.WithUser(req.Context(), info.User))
 
-		if !p.config.AllowReservedIdentityClaims {
-			if err := checkReservedIdentity(info.User); err != nil {
-				p.handleError(rw, req, err)
-				return
-			}
+		if err := checkReservedIdentity(info.User, p.allowedReservedGroups); err != nil {
+			p.handleError(rw, req, err)
+			return
 		}
 
 		handler.ServeHTTP(rw, req)
@@ -106,13 +105,17 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 // authentication error and withAuthenticateRequest routes err != nil into the
 // token-review path: with --token-passthrough on, the rejection would be
 // swallowed and the request silently retried against TokenReview.
-func checkReservedIdentity(info authuser.Info) error {
+//
+// allowedGroups names reserved groups the operator has explicitly permitted.
+// It applies to groups only: a reserved username has no legitimate use, so
+// there is deliberately no way to allow one short of disabling the guard.
+func checkReservedIdentity(info authuser.Info, allowedGroups sets.Set[string]) error {
 	if strings.HasPrefix(info.GetName(), reservedIdentityPrefix) {
 		return fmt.Errorf("%w: username %q", errReservedIdentity, info.GetName())
 	}
 
 	for _, group := range info.GetGroups() {
-		if group == authuser.AllAuthenticated {
+		if group == authuser.AllAuthenticated || allowedGroups.Has(group) {
 			continue
 		}
 		if strings.HasPrefix(group, reservedIdentityPrefix) {
