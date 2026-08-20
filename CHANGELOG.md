@@ -1,6 +1,10 @@
 # Unreleased
 <!-- next-release -->
 
+## [1.4.0] - 2026-08-20
+
+- Replace --allow-reserved-identity-claims with --allow-reserved-groups, which permits named system:-prefixed groups instead of disabling the reserved-identity guard wholesale. Reserved usernames can no longer be permitted at all. The flag it replaces was added after v1.2.0 and has not appeared in a release.
+
 ## [1.3.0] - 2026-08-19
 
 - Update go.opentelemetry.io/otel to v1.44.0 and golang.org/x/mod to v0.40.0, clearing three advisories reported against the dependency tree.
