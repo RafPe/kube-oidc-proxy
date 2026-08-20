@@ -304,7 +304,6 @@ func TestCheckReservedIdentityPrefixes(t *testing.T) {
 		usernamePrefix string
 		groupsPrefix   string
 		configFile     string
-		allowReserved  bool
 		wantErr        bool
 	}{
 		"no prefixes": {},
@@ -319,11 +318,6 @@ func TestCheckReservedIdentityPrefixes(t *testing.T) {
 		"reserved groups prefix": {
 			groupsPrefix: "system:serviceaccount:",
 			wantErr:      true,
-		},
-		"reserved prefix with the opt-out set": {
-			usernamePrefix: "system:",
-			groupsPrefix:   "system:",
-			allowReserved:  true,
 		},
 		// --oidc-* prefixes are ignored entirely when an authentication
 		// configuration file is in use, so they must not fail startup.
@@ -341,7 +335,7 @@ func TestCheckReservedIdentityPrefixes(t *testing.T) {
 					GroupsPrefix:   test.groupsPrefix,
 				},
 				AuthenticationConfig: &options.AuthenticationConfigOptions{ConfigFile: test.configFile},
-				App:                  &options.KubeOIDCProxyOptions{AllowReservedIdentityClaims: test.allowReserved},
+				App:                  &options.KubeOIDCProxyOptions{},
 			}
 
 			err := checkReservedIdentityPrefixes(opts)
