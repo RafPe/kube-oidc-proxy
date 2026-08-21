@@ -19,6 +19,7 @@ concurrency:
 
 jobs:
   release-label:
+    name: "meta:release-label"
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

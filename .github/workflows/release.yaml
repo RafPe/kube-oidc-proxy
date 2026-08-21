@@ -17,6 +17,7 @@ concurrency:
 
 jobs:
   verify:
+    name: "release:verify"
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.pull_request.merged == true &&
@@ -53,6 +54,7 @@ jobs:
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"; echo "sha=${sha}" >> "${GITHUB_OUTPUT}"
 
   check:
+    name: "release:check"
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -67,6 +69,7 @@ jobs:
       - run: sh scripts/release-contract-check.sh
 
   e2e:
+    name: "release:e2e"
     needs: verify
     permissions:
       contents: read
@@ -75,6 +78,7 @@ jobs:
       target_ref: ${{ needs.verify.outputs.sha }}
 
   tag:
+    name: "release:tag"
     needs: [verify, check, e2e]
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -93,12 +97,14 @@ jobs:
           fi
 
   publish-artifacts:
+    name: "release:artifact"
     needs: [verify, tag]
     permissions: { contents: read, packages: write, id-token: write }
     uses: ./.github/workflows/release-image.yaml
     with: { tag: "${{ needs.verify.outputs.tag }}" }
 
   publish-release:
+    name: "release:publish"
     needs: [verify, publish-artifacts]
     runs-on: ubuntu-latest
     timeout-minutes: 10

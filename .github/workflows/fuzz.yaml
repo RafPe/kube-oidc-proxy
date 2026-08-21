@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   fuzz:
-    name: fuzz (${{ matrix.target }})
+    name: "test:fuzz (${{ matrix.target }})"
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:

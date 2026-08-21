@@ -4,6 +4,7 @@ permissions:
   contents: read
 jobs:
   mint:
+    name: "ops:oidc-mint"
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

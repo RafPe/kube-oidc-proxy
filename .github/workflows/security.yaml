@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   govulncheck:
-    name: govulncheck
+    name: "scan:vuln"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

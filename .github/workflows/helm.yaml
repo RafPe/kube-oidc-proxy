@@ -23,6 +23,7 @@ concurrency:
 
 jobs:
   lint-and-template:
+    name: "test:chart"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
