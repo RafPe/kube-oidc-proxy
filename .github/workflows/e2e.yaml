@@ -6,9 +6,26 @@ name: e2e
 # installed only for the failure/interrupt cleanup net (`make e2e-clean`).
 on:
   pull_request:
-  push:
-    branches:
-      - main
+  # Deliberately NOT `push: {branches: [main]}`. A pull_request run already
+  # tests the merge commit, and release.yaml re-runs this suite at the
+  # resolved release SHA before tagging -- so a post-merge run was a third
+  # execution of the same code. For a release it ran on the release/next
+  # pull request, again on the merge to main, and again inside Release.
+  # Across the last 200 workflow runs those post-merge runs caught nothing:
+  # 10 runs, 0 failures. The twice-daily schedule below keeps drift
+  # detection, since nothing else exercises main on a cadence -- and unlike
+  # the per-merge run its cost is fixed rather than scaling with merges.
+  # The three shards together ARE the whole suite (shard-a/b/c partition
+  # it; an empty GINKGO_LABEL_FILTER selects everything), so this schedule
+  # runs full e2e coverage, not a subset.
+  #
+  # e2e-oidc-gha.yaml keeps its push trigger on purpose: it mints a real
+  # GitHub Actions OIDC token, whose sub/ref/workflow_ref claims genuinely
+  # differ between push and pull_request, and it has diverged in practice
+  # (run 32383082551 failed on main having passed on the pull request).
+  schedule:
+    - cron: "0 6 * * *" # 06:00 UTC
+    - cron: "0 18 * * *" # 18:00 UTC
   workflow_call:
     inputs:
       target_ref:
@@ -30,9 +47,9 @@ jobs:
   # cases. hack/verify-e2e-shards.sh (run in test.yaml) keeps a new case from
   # landing without a label and silently running in no shard at all.
   e2e-shard:
-    # The display name lists the cases in each shard so the check is readable in
-    # the UI (e.g. "e2e (impersonation, headers, probe)") instead of a bare
-    # letter. Keep `cases` in sync with the Ginkgo shard-<x> labels on the
+    # The display name lists the cases in each shard so the check is readable
+    # in the UI (e.g. "test:e2e (impersonation, headers, probe)") instead of a
+    # bare letter. Keep `cases` in sync with the Ginkgo shard-<x> labels on the
     # matching framework.CasesDescribe containers.
     name: "test:e2e (${{ matrix.cases }})"
     runs-on: ubuntu-latest
@@ -91,10 +108,13 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # Branch protection requires a check literally named "e2e-kind". The job id
-  # is the check name (no `name:` key here on purpose), so this aggregator keeps
-  # that single required check stable while the work happens in the matrix above.
-  # It is green only when every shard succeeded.
+  # Branch protection requires a check literally named "test:e2e", which is
+  # this job's display `name:` below -- NOT its job id, which GitHub ignores
+  # for status checks. This aggregator exists to keep that single required
+  # check stable while the work happens in the matrix above, whose own checks
+  # carry the shard suffix ("test:e2e (impersonation, headers, probe)") and so
+  # can never satisfy the requirement. It is green only when every shard
+  # succeeded.
   e2e-kind:
     name: "test:e2e"
     runs-on: ubuntu-latest
