@@ -5,6 +5,7 @@ permissions:
 jobs:
   mint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       id-token: write # request an OIDC token from GitHub
     steps:
