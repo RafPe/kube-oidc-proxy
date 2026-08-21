@@ -11,6 +11,7 @@ concurrency:
 jobs:
   prepare:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: write # push release/next and let release-drafter stage a draft
       issues: read # read-only: confirm the autorelease label exists, never create it

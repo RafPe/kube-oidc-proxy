@@ -97,6 +97,7 @@ jobs:
   # It is green only when every shard succeeded.
   e2e-kind:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [e2e-shard]
     if: always()
     steps:

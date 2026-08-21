@@ -28,6 +28,7 @@ permissions:
 jobs:
   image:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       id-token: write # cosign keyless signing
@@ -109,6 +110,7 @@ jobs:
     name: chart
     needs: image
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       id-token: write # cosign keyless signing
