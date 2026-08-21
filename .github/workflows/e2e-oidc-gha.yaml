@@ -28,6 +28,7 @@ env:
 
 jobs:
   gha-multi-issuer:
+    name: "test:e2e-oidc"
     # OIDC tokens (id-token: write) are not issued to pull requests from forks,
     # so skip fork PRs; runs on push to main, workflow_dispatch, and same-repo PRs.
     if: >-

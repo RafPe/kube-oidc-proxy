@@ -19,6 +19,7 @@ concurrency:
 
 jobs:
   test:
+    name: "test:unit"
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -58,6 +59,7 @@ jobs:
         run: make verify-e2e-shards
 
   lint:
+    name: "lint:go"
     # golangci-lint carries pre-existing findings across the repo that are being
     # retired incrementally, so gate on issues introduced by the PR. This makes
     # the linter enforce cleanliness going forward without blocking on legacy
