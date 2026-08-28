@@ -574,17 +574,26 @@ func testAuditLogs(f *framework.Framework, podLabelSelector, containerName, logP
 			},
 		},
 
-		// From what I could tell, this could never had succeeded - even pre-fork
-		// auditv1.Event{
-		// 	Level:      auditv1.LevelRequestResponse,
-		// 	Stage:      auditv1.StageResponseStarted,
-		// 	RequestURI: "/api/v1/namespaces/kube-system/pods",
-		// 	Verb:       "get",
-		// 	ResponseStatus: &metav1.Status{
-		// 		Code:    401,
-		// 		Message: "Authentication failed, attempted: bearer",
-		// 	},
-		// },
+		// The unauthenticated request. The failed-authentication filter
+		// records a single ResponseStarted event: no identity (the request
+		// was rejected before a user reached the context), the 401, and the
+		// attempted authentication method. The verb and objectRef are
+		// resolved because the audit chain classifies core group requests as
+		// resource requests. Restored by the WithAuditInit fix
+		// (TremoloSecurity/kube-oidc-proxy#92) — the previous expectation
+		// here was commented out because, without an initialised audit
+		// context, it could never have passed.
+		{
+			Level:      auditv1.LevelRequestResponse,
+			Stage:      auditv1.StageResponseStarted,
+			RequestURI: "/api/v1/namespaces/kube-system/pods",
+			Verb:       "list",
+			ObjectRef:  expObjectRef,
+			ResponseStatus: &metav1.Status{
+				Code:    401,
+				Message: "Authentication failed, attempted: bearer",
+			},
+		},
 	}
 
 	By("Testing for expected audit logs")
