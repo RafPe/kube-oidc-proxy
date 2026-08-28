@@ -256,6 +256,7 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 		conf := &context.ImpersonationRequest{
 			ImpersonationConfig: &transport.ImpersonationConfig{
 				UserName: user.GetName(),
+				UID:      user.GetUID(),
 				Groups:   groups,
 				Extra:    extra,
 			},
