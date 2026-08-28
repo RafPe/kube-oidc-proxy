@@ -32,6 +32,9 @@ on:
         description: Commit to test; defaults to the triggering commit.
         required: false
         type: string
+  # Manual runs exercise the full version matrix (same as the schedule), so a
+  # matrix change can be verified without waiting for 06:00/18:00 UTC.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -51,12 +54,23 @@ jobs:
     # in the UI (e.g. "test:e2e (impersonation, headers, probe)") instead of a
     # bare letter. Keep `cases` in sync with the Ginkgo shard-<x> labels on the
     # matching framework.CasesDescribe containers.
-    name: "test:e2e (${{ matrix.cases }})"
+    name: "test:e2e (${{ matrix.cases }}) @ ${{ matrix.k8s }}"
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
+        shard: [a, b, c]
+        # Full matrix only on the twice-daily schedule and manual dispatch.
+        # pull_request AND the workflow_call from release.yaml stay
+        # latest-only, so PR and release cost is identical to the pre-matrix
+        # workflow. Real clusters (EKS/GKE/on-prem) trail the newest minor,
+        # which is why the scheduled run covers the current minor plus the two
+        # before it (the project's support window -- anything older is out of
+        # scope). Images come from the kind release pinned below (v0.33.0:
+        # 1.37.0, 1.36.4, 1.35.8). Keep this list in lockstep with
+        # KIND_VERSION and roll the window forward on each new minor.
+        k8s: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["1.37.0","1.36.4","1.35.8"]' || '["1.37.0"]') }}
         include:
           - shard: a
             cases: "impersonation, headers, probe"
@@ -85,6 +99,20 @@ jobs:
           rm -f ./kind
           kind version
 
+      # The Makefile links the system kubectl when one is on PATH, and the
+      # runner's kubectl tracks the newest Kubernetes -- outside the supported
+      # +/-1 minor client skew against the older matrix legs. Overwrite it with
+      # the release matching this leg's cluster so every leg tests with an
+      # in-skew client.
+      - name: Install kubectl matching the cluster version
+        env:
+          K8S_VERSION: ${{ matrix.k8s }}
+        run: |
+          curl -fsSLo ./kubectl "https://dl.k8s.io/release/v${K8S_VERSION}/bin/linux/amd64/kubectl"
+          sudo install -m 0755 ./kubectl /usr/local/bin/kubectl
+          rm -f ./kubectl
+          kubectl version --client
+
       - name: Tool versions
         run: |
           go version
@@ -95,6 +123,7 @@ jobs:
       - name: Run e2e suite
         env:
           SHARD: ${{ matrix.shard }}
+          KUBE_OIDC_PROXY_K8S_VERSION: ${{ matrix.k8s }}
         run: make e2e "GINKGO_LABEL_FILTER=shard-$SHARD"
 
       - name: Upload e2e artifacts
@@ -102,7 +131,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           # Artifact names must be unique within a run; v7 rejects duplicates.
-          name: e2e-artifacts-${{ matrix.shard }}
+          name: e2e-artifacts-${{ matrix.shard }}-${{ matrix.k8s }}
           path: |
             artifacts/**
           if-no-files-found: ignore
