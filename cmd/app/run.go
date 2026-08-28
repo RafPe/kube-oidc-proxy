@@ -130,7 +130,7 @@ func buildRunCommand(stopCh <-chan struct{}, opts *options.Options) *cobra.Comma
 			// Initialise token reviewer if enabled
 			var tokenReviewer *tokenreview.TokenReview
 			if opts.App.TokenPassthrough.Enabled {
-				tokenReviewer, err = tokenreview.New(restConfig, opts.App.TokenPassthrough.Audiences)
+				tokenReviewer, err = tokenreview.New(restConfig, opts.App.TokenPassthrough.Audiences, opts.App.TokenPassthrough.RequestTimeout)
 				if err != nil {
 					return err
 				}

@@ -27,6 +27,8 @@ import (
 	"unicode"
 
 	"k8s.io/apiserver/pkg/authentication/user"
+
+	proxycontext "github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
 )
 
 const (
@@ -97,7 +99,14 @@ func requestAttrs(event string, req *http.Request) []slog.Attr {
 		slog.String("src_ip", resolveClientIP(req.RemoteAddr, forwardedFor(req.Header), trustedProxies)),
 		slog.String("path", sanitizePath(req)),
 	}
-	if fwd := sanitize(forwardedFor(req.Header)); fwd != "" {
+	// forwarded_for_untrusted is forensic: it must log the chain the client
+	// actually sent, which SanitizeForwardHeaders preserved on the context
+	// before rewriting the header.
+	rawFwd := proxycontext.OriginalForwardedFor(req)
+	if rawFwd == "" {
+		rawFwd = forwardedFor(req.Header)
+	}
+	if fwd := sanitize(rawFwd); fwd != "" {
 		attrs = append(attrs, slog.String("forwarded_for_untrusted", fwd))
 	}
 	return attrs

@@ -31,11 +31,24 @@ func (p *Proxy) withHandlers(handler http.Handler) http.Handler {
 	handler = p.auditor.WithRequest(handler)
 	handler = p.withImpersonateRequest(handler)
 	handler = p.withAuthenticateRequest(handler)
+	handler = p.withSanitizedForwardHeaders(handler)
 
 	// Add the auditor backend as a shutdown hook
 	p.hooks.AddPreShutdownHook("AuditBackend", p.auditor.Shutdown)
 
 	return handler
+}
+
+// withSanitizedForwardHeaders enforces the trusted-proxy contract on the
+// forwarding headers before anything downstream reads them: the audit filters
+// fill sourceIPs from these headers, the access log resolves the client IP
+// from them, and the reverse proxy forwards them to the API server. It is the
+// outermost handler so every path — including the unauthenticated audit
+// chain, which runs inside withAuthenticateRequest — sees sanitized headers.
+func (p *Proxy) withSanitizedForwardHeaders(handler http.Handler) http.Handler {
+	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		handler.ServeHTTP(rw, context.SanitizeForwardHeaders(req))
+	})
 }
 
 // withAuthenticateRequest adds the proxy authentication handler to a chain.

@@ -30,8 +30,9 @@ type KubeOIDCProxyOptions struct {
 }
 
 type TokenPassthroughOptions struct {
-	Audiences []string
-	Enabled   bool
+	Audiences      []string
+	RequestTimeout time.Duration
+	Enabled        bool
 }
 
 type ExtraHeaderOptions struct {
@@ -79,7 +80,9 @@ func (k *KubeOIDCProxyOptions) AddFlags(fs *pflag.FlagSet) *KubeOIDCProxyOptions
 			"networks. When empty (the default) no proxy is trusted and the direct peer "+
 			"address is always used, so clients cannot spoof their IP via forwarded "+
 			"headers. Set this only to the addresses of proxies you operate in front of "+
-			"kube-oidc-proxy.")
+			"kube-oidc-proxy. Forwarded headers are sanitized to this contract before "+
+			"auditing and before the request is forwarded, so audit sourceIPs and the "+
+			"upstream API server only see validated values.")
 
 	fs.StringSliceVar(&k.AllowedReservedGroups, "allow-reserved-groups", k.AllowedReservedGroups,
 		"Comma-separated list of Kubernetes-reserved ('system:'-prefixed) groups that "+
@@ -106,6 +109,11 @@ func (t *TokenPassthroughOptions) AddFlags(fs *pflag.FlagSet) {
 		"for at least one of the audiences in this list. If no audiences are "+
 		"provided, the audience will default to the audience of the Kubernetes "+
 		"apiserver. Only used when --token-passthrough is also enabled.")
+
+	fs.DurationVar(&t.RequestTimeout, "token-passthrough-request-timeout", 10*time.Second, ""+
+		"Timeout for each TokenReview request the proxy sends to the target API server "+
+		"when validating a passthrough token. Only used when --token-passthrough is "+
+		"also enabled.")
 
 	fs.BoolVar(&t.Enabled, "token-passthrough", t.Enabled, ""+
 		"(Alpha) Requests with Bearer tokens that fail OIDC validation are tried against "+

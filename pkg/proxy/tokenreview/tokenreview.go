@@ -20,16 +20,17 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/util/token"
 )
 
-var (
-	timeout = time.Second * 10
-)
+// defaultTimeout bounds a TokenReview call when no explicit timeout is
+// configured. It also backstops zero-valued construction.
+const defaultTimeout = 10 * time.Second
 
 type TokenReview struct {
 	reviewRequester clientauthv1.TokenReviewInterface
 	audiences       []string
+	timeout         time.Duration
 }
 
-func New(restConfig *rest.Config, audiences []string) (*TokenReview, error) {
+func New(restConfig *rest.Config, audiences []string, timeout time.Duration) (*TokenReview, error) {
 	kubeclient, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
 		return nil, err
@@ -38,7 +39,17 @@ func New(restConfig *rest.Config, audiences []string) (*TokenReview, error) {
 	return &TokenReview{
 		reviewRequester: kubeclient.AuthenticationV1().TokenReviews(),
 		audiences:       audiences,
+		timeout:         timeout,
 	}, nil
+}
+
+// reviewTimeout returns the configured TokenReview budget, defaulting when
+// unset so zero-value construction keeps the historical 10s behaviour.
+func (t *TokenReview) reviewTimeout() time.Duration {
+	if t.timeout > 0 {
+		return t.timeout
+	}
+	return defaultTimeout
 }
 
 func (t *TokenReview) Review(req *http.Request) (bool, error) {
@@ -49,7 +60,7 @@ func (t *TokenReview) Review(req *http.Request) (bool, error) {
 
 	review := t.buildReview(bearer)
 
-	ctx, cancel := context.WithTimeout(req.Context(), timeout)
+	ctx, cancel := context.WithTimeout(req.Context(), t.reviewTimeout())
 	defer cancel()
 
 	resp, err := t.reviewRequester.Create(ctx, review, metav1.CreateOptions{})

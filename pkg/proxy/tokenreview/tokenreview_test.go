@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"reflect"
 	"testing"
+	"time"
 
 	authv1 "k8s.io/api/authentication/v1"
 
@@ -93,5 +94,28 @@ func runTest(t *testing.T, test testT) {
 	if test.expAuth != authed {
 		t.Errorf("got unexpected authed, exp=%t got=%t",
 			test.expAuth, authed)
+	}
+}
+
+// TestReviewTimeout pins the timeout plumbing: New stores what it is given,
+// and the zero value falls back to the default so struct-literal construction
+// (as the tests above do) keeps the old behaviour.
+func TestReviewTimeout(t *testing.T) {
+	tests := map[string]struct {
+		timeout time.Duration
+		exp     time.Duration
+	}{
+		"configured timeout is used":     {timeout: 3 * time.Second, exp: 3 * time.Second},
+		"zero falls back to default":     {timeout: 0, exp: defaultTimeout},
+		"negative falls back to default": {timeout: -time.Second, exp: defaultTimeout},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			tr := &TokenReview{timeout: test.timeout}
+			if got := tr.reviewTimeout(); got != test.exp {
+				t.Errorf("unexpected review timeout, exp=%s got=%s", test.exp, got)
+			}
+		})
 	}
 }
