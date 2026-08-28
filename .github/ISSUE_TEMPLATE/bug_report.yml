@@ -38,7 +38,7 @@ body:
     id: k8s
     attributes:
       label: Kubernetes version & provider
-      placeholder: "EKS 1.30 / kind 0.23 / ..."
+      placeholder: "EKS 1.33 / kind 0.33 / ..."
     validations:
       required: true
   - type: dropdown
