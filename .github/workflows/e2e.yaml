@@ -66,17 +66,20 @@ jobs:
       - name: Read supported Kubernetes versions
         id: read
         env:
-          # Full window only on the twice-daily schedule and manual dispatch.
-          # Under workflow_call from release.yaml, github.event_name is the
-          # CALLER's event (never 'workflow_call'), so a release stays
-          # latest-only -- identical cost to a PR run.
-          FULL_MATRIX: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+          # Full window on pull requests, the twice-daily schedule and manual
+          # dispatch: the proxy runs on clusters across the whole supported
+          # window (1.36/1.35 in production today), so a PR must prove all of
+          # it, not just the newest minor. Under workflow_call from
+          # release.yaml, github.event_name is the CALLER's event (never
+          # 'workflow_call'), so a release stays newest-only -- the same code
+          # already passed the full window on its pull request.
+          FULL_MATRIX: ${{ github.event_name == 'pull_request' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
         run: |
           set -euo pipefail
           manifest=test/e2e/versions/kubernetes-versions.json
           # Load-bearing guards, not niceties: an empty list would not
           # reliably skip a matrix that carries include: entries, and the
-          # pull_request path runs supported[0], so newest-first is an
+          # release path runs supported[0], so newest-first is an
           # invariant. The Go unit tests enforce the same rules; this catches
           # a manifest broken in ways that dodge them.
           jq -e '.supported | length > 0' "$manifest" >/dev/null
