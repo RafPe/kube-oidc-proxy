@@ -20,7 +20,7 @@ help:  ## display this help
 GOLANGCILINT_VERSION := v2.12.2
 # kubectl version used only as a download fallback when no system kubectl is on
 # PATH (the e2e suite prefers the host's kubectl, see the $(BINDIR)/kubectl rule).
-KUBECTL_VERSION ?= v1.31.4
+KUBECTL_VERSION ?= v1.37.0
 KUBECTL_OS   := $(shell go env GOOS)
 KUBECTL_ARCH := $(shell go env GOARCH)
 
