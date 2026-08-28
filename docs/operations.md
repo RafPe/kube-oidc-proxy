@@ -109,7 +109,11 @@ make e2e-clean    # delete a leftover e2e kind cluster (safe if none exists)
 ```
 
 Useful overrides: `E2E_TIMEOUT` (Go test timeout, default `30m`) and
-`KUBE_OIDC_PROXY_K8S_VERSION` (kind node image version).
+`KUBE_OIDC_PROXY_K8S_VERSION`, which selects among the versions declared in
+`test/e2e/versions/kubernetes-versions.json` (default: the newest). Versions
+outside the manifest are refused — the manifest is the definition of what
+this commit supports. CI tests the newest declared version on every pull
+request and the full declared window on the twice-daily scheduled run.
 
 The suite runs in CI on every pull request and on pushes to `main`
 (`.github/workflows/e2e.yaml`). A companion workflow

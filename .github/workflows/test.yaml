@@ -51,7 +51,7 @@ jobs:
       # the maintained cmd/ and pkg/ packages here, plus the standalone test
       # tools, which need no cluster.
       - name: go test
-        run: go test ./cmd/... ./pkg/... ./test/tools/...
+        run: go test ./cmd/... ./pkg/... ./test/tools/... ./test/e2e/versions/...
 
       # e2e.yaml runs the suite as three label-filtered shards; an unlabelled
       # case would run in none of them. Cheap text check, no cluster needed.

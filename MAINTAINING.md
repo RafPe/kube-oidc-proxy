@@ -88,3 +88,25 @@ that URL in the script before running it.
 Do not rewrite the runtime impersonation extra keys
 (`originaluser.jetstack.io-*`) — they are part of the impersonation API
 contract and must stay as-is.
+
+## Bumping the tested Kubernetes versions
+
+The single source of truth is `test/e2e/versions/kubernetes-versions.json`:
+the current Kubernetes minor plus the two before it, with node images copied
+from one kind release. Everything else (the CI matrix, the kind CLI version
+in CI, the default image of local `make e2e` runs) derives from it.
+
+Two independent triggers, in the order they usually happen:
+
+1. **A new Kubernetes minor goes GA.** Wait — do not edit anything yet. Node
+   images only exist once a kind release ships them (kind picks the patch
+   versions, we pick the minors).
+2. **A kind release ships images for that minor** (watch
+   https://github.com/kubernetes-sigs/kind/releases):
+   - Update `.kind` and all three `supported` entries — versions and full
+     `@sha256` digests copied verbatim from the release notes, newest first.
+   - Bump the `k8s.io/*` modules in `go.mod` to the matching `v0.<minor>`.
+     `go test ./test/e2e/versions/` fails until manifest and go.mod agree —
+     that is the point: compatibility is verified, not assumed, before either
+     lands alone.
+   - Run the full matrix before merging: `gh workflow run e2e.yaml --ref <branch>`.

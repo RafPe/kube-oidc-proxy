@@ -252,6 +252,22 @@ kubectl --context "${CTX}" create clusterrolebinding gha-e2e-local-view \
 GHA_SUB=""
 if [ -n "${GHA_TOKEN_FILE}" ]; then
   GHA_TOKEN="$(cat "${GHA_TOKEN_FILE}")"
+  # GitHub Actions OIDC tokens expire five minutes after minting, and the
+  # cluster setup above takes ~4m50s on a stock runner -- with the token
+  # minted before this script started, reaching this point unexpired was a
+  # race decided by seconds (observed: passes at 4m52s-4m57s, a 401 at
+  # 5m02s). When the runner exposes its OIDC endpoint (the job has
+  # id-token: write), swap in a token minted NOW so expiry can never win.
+  if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+    log "Re-minting the GitHub Actions token at point of use (5-minute expiry vs ~5-minute setup)"
+    FRESH_GHA_TOKEN="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+      "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${GHA_AUDIENCE}" | jq -r '.value // empty')" || FRESH_GHA_TOKEN=""
+    if [ -n "${FRESH_GHA_TOKEN}" ]; then
+      GHA_TOKEN="${FRESH_GHA_TOKEN}"
+    else
+      log "WARN: re-mint failed; falling back to the pre-minted token"
+    fi
+  fi
   GHA_SUB="$(jwt_claim "${GHA_TOKEN}" sub)"
   [ -n "${GHA_SUB}" ] || fail "could not decode 'sub' from the GitHub Actions token"
   log "GitHub Actions token sub=${GHA_SUB}"

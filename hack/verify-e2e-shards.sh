@@ -2,12 +2,12 @@
 # Copyright Jetstack Ltd. See LICENSE for details.
 #
 # The e2e suite is sharded across a GitHub Actions matrix by Ginkgo label (see
-# .github/workflows/e2e.yaml). A case container that carries no shard label
+# .github/workflows/e2e-shards.yaml). A case container that carries no shard label
 # runs in *zero* shards and silently stops gating PRs, so this check asserts
 # that every framework.CasesDescribe() container declares exactly one label
 # from the known shard set.
 #
-# Keep SHARDS in lockstep with the matrix values in .github/workflows/e2e.yaml.
+# Keep SHARDS in lockstep with the matrix values in .github/workflows/e2e-shards.yaml.
 set -euo pipefail
 
 CASES_DIR="${1:-test/e2e/suite/cases}"

@@ -9,12 +9,12 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/kind/pkg/cluster/nodes"
 
+	"github.com/rafpe/kube-oidc-proxy/test/e2e/versions"
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
 )
 
 const (
-	defaultNodeImage = "1.37.0"
-	defaultRootPath  = "../../."
+	defaultRootPath = "../../."
 )
 
 type Environment struct {
@@ -25,11 +25,16 @@ type Environment struct {
 }
 
 func New(masterNodesCount, workerNodesCount int) (*Environment, error) {
-	nodeImage := os.Getenv("KUBE_OIDC_PROXY_K8S_VERSION")
-	if nodeImage == "" {
-		nodeImage = defaultNodeImage
+	version := os.Getenv("KUBE_OIDC_PROXY_K8S_VERSION")
+	if version == "" {
+		version = versions.Latest()
 	}
-	nodeImage = fmt.Sprintf("kindest/node:v%s", nodeImage)
+	// Resolve through the committed manifest: digest-pinned image, loud
+	// failure on versions this commit does not declare support for.
+	nodeImage, err := versions.ImageFor(version)
+	if err != nil {
+		return nil, err
+	}
 
 	rootPath, err := RootPath()
 	if err != nil {

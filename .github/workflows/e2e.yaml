@@ -32,6 +32,9 @@ on:
         description: Commit to test; defaults to the triggering commit.
         required: false
         type: string
+  # Manual runs exercise the full version matrix (same as the schedule), so a
+  # matrix change can be verified without waiting for 06:00/18:00 UTC.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -41,95 +44,110 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # The suite is split across shards by Ginkgo label (Label("shard-a") etc. on
-  # each framework.CasesDescribe container). Every shard stands up its own kind
-  # cluster, so wall-clock is the slowest shard rather than the sum of all
-  # cases. hack/verify-e2e-shards.sh (run in test.yaml) keeps a new case from
-  # landing without a label and silently running in no shard at all.
-  e2e-shard:
-    # The display name lists the cases in each shard so the check is readable
-    # in the UI (e.g. "test:e2e (impersonation, headers, probe)") instead of a
-    # bare letter. Keep `cases` in sync with the Ginkgo shard-<x> labels on the
-    # matching framework.CasesDescribe containers.
-    name: "test:e2e (${{ matrix.cases }})"
+  # Reads the committed version manifest and decides how much of it this
+  # trigger runs. The manifest travels with the commit under test, so the
+  # matrix can never drift ahead of what the code declares it supports.
+  e2e-versions:
+    name: "test:e2e:versions"
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - shard: a
-            cases: "impersonation, headers, probe"
-          - shard: b
-            cases: "authconfig, upgrade, audit"
-          - shard: c
-            cases: "passthrough, token, rbac, reserved identity"
+    timeout-minutes: 5
+    outputs:
+      k8s: ${{ steps.read.outputs.k8s }}
+      kind: ${{ steps.read.outputs.kind }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # MUST stay identical to the shard job's ref: on the release.yaml
+          # workflow_call path the manifest describes the code at target_ref,
+          # not the caller's commit.
           ref: ${{ inputs.target_ref || github.sha }}
 
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Install kind CLI
+      - name: Read supported Kubernetes versions
+        id: read
         env:
-          KIND_VERSION: v0.33.0
+          # Full window on pull requests, the twice-daily schedule and manual
+          # dispatch: the proxy runs on clusters across the whole supported
+          # window (1.36/1.35 in production today), so a PR must prove all of
+          # it, not just the newest minor. Under workflow_call from
+          # release.yaml, github.event_name is the CALLER's event (never
+          # 'workflow_call'), so a release stays newest-only -- the same code
+          # already passed the full window on its pull request.
+          FULL_MATRIX: ${{ github.event_name == 'pull_request' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
         run: |
-          curl -fsSLo ./kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
-          sudo install -m 0755 ./kind /usr/local/bin/kind
-          rm -f ./kind
-          kind version
+          set -euo pipefail
+          manifest=test/e2e/versions/kubernetes-versions.json
+          # Load-bearing guards, not niceties: an empty list would not
+          # reliably skip a matrix that carries include: entries, and the
+          # release path runs supported[0], so newest-first is an
+          # invariant. The Go unit tests enforce the same rules; this catches
+          # a manifest broken in ways that dodge them.
+          jq -e '.supported | length > 0' "$manifest" >/dev/null
+          jq -r '.supported[].version' "$manifest" | sort -rV -c
+          if [ "$FULL_MATRIX" = "true" ]; then
+            k8s=$(jq -c '[.supported[].version]' "$manifest")
+          else
+            k8s=$(jq -c '[.supported[0].version]' "$manifest")
+          fi
+          echo "k8s=$k8s" >> "$GITHUB_OUTPUT"
+          echo "kind=$(jq -r '.kind' "$manifest")" >> "$GITHUB_OUTPUT"
+          echo "Kubernetes matrix: \`$k8s\`" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Tool versions
-        run: |
-          go version
-          docker version
-          kubectl version --client
-          kind version
-
-      - name: Run e2e suite
-        env:
-          SHARD: ${{ matrix.shard }}
-        run: make e2e "GINKGO_LABEL_FILTER=shard-$SHARD"
-
-      - name: Upload e2e artifacts
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          # Artifact names must be unique within a run; v7 rejects duplicates.
-          name: e2e-artifacts-${{ matrix.shard }}
-          path: |
-            artifacts/**
-          if-no-files-found: ignore
-          retention-days: 7
+  # One caller leg per Kubernetes version from the manifest; each leg invokes
+  # the shard workflow, so the Actions UI shows a collapsible group per
+  # version ("test:e2e @ 1.37.0 / test:e2e (<cases>)") instead of one flat
+  # shard-times-version job list. The caller legs run no runner of their own;
+  # all execution (and the 45-minute bound per shard) lives in
+  # e2e-shards.yaml. A `uses:` job cannot carry timeout-minutes -- the called
+  # workflow's jobs bound themselves.
+  e2e-version:
+    name: "test:e2e @ ${{ matrix.k8s }}"
+    needs: [e2e-versions]
+    strategy:
+      fail-fast: false
+      matrix:
+        # Generated from test/e2e/versions/kubernetes-versions.json by the
+        # e2e-versions job: pull_request and release runs get the newest
+        # declared version, schedule and workflow_dispatch the full window.
+        # The suite resolves each version to its digest-pinned node image
+        # through the same manifest (test/e2e/versions).
+        k8s: ${{ fromJSON(needs.e2e-versions.outputs.k8s) }}
+    uses: ./.github/workflows/e2e-shards.yaml
+    with:
+      # Same resolved ref as the e2e-versions checkout: manifest and code must
+      # come from the same commit on every path, including release.yaml's
+      # workflow_call.
+      ref: ${{ inputs.target_ref || github.sha }}
+      k8s: ${{ matrix.k8s }}
+      kind: ${{ needs.e2e-versions.outputs.kind }}
 
   # Branch protection requires a check literally named "test:e2e", which is
   # this job's display `name:` below -- NOT its job id, which GitHub ignores
   # for status checks. This aggregator exists to keep that single required
-  # check stable while the work happens in the matrix above, whose own checks
-  # carry the shard suffix ("test:e2e (impersonation, headers, probe)") and so
-  # can never satisfy the requirement. It is green only when every shard
+  # check stable while the work happens in the per-version groups above,
+  # whose own checks carry version and shard suffixes ("test:e2e @ 1.37.0 /
+  # test:e2e (impersonation, headers, probe)") and so can never satisfy the
+  # requirement. It is green only when every shard of every version
   # succeeded.
   e2e-kind:
     name: "test:e2e"
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [e2e-shard]
+    needs: [e2e-versions, e2e-version]
     if: always()
     steps:
       - name: Check shard results
         env:
           # For a matrix job this is the aggregate result across all legs, so a
-          # single failed/cancelled/skipped shard fails the required check.
-          SHARDS_RESULT: ${{ needs.e2e-shard.result }}
+          # single failed/cancelled/skipped shard fails the required check. The
+          # versions job is checked explicitly rather than trusting that its
+          # failure skips the shards.
+          SHARDS_RESULT: ${{ needs.e2e-version.result }}
+          VERSIONS_RESULT: ${{ needs.e2e-versions.result }}
         run: |
-          echo "e2e-shard result: $SHARDS_RESULT"
-          if [ "$SHARDS_RESULT" != "success" ]; then
-            echo "::error::e2e shards did not all succeed (result: $SHARDS_RESULT)"
+          echo "e2e-versions result: $VERSIONS_RESULT"
+          echo "e2e-version result: $SHARDS_RESULT"
+          if [ "$VERSIONS_RESULT" != "success" ] || [ "$SHARDS_RESULT" != "success" ]; then
+            echo "::error::e2e jobs did not all succeed (versions: $VERSIONS_RESULT, shards: $SHARDS_RESULT)"
             exit 1
           fi
