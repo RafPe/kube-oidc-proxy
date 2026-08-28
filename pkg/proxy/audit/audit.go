@@ -104,8 +104,12 @@ func (a *Audit) WithRequest(handler http.Handler) http.Handler {
 
 // WithUnauthorized will wrap the given handler to inject the request
 // information into the context which is then used by the wrapped audit
-// handler.
+// handler. WithAuditInit mirrors WithRequest above: without it there is no
+// AuditContext on the request, the failed-authentication filter finds
+// auditing disabled, and a 401 leaves no audit event at all
+// (TremoloSecurity/kube-oidc-proxy#92).
 func (a *Audit) WithUnauthorized(handler http.Handler) http.Handler {
 	handler = genericapifilters.WithFailedAuthenticationAudit(handler, a.serverConfig.AuditBackend, a.serverConfig.AuditPolicyRuleEvaluator)
+	handler = genericapifilters.WithAuditInit(handler)
 	return genericapifilters.WithRequestInfo(handler, a.serverConfig.RequestInfoResolver)
 }

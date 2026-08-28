@@ -193,3 +193,54 @@ func TestNewForbiddenHandlerWithoutAuditor(t *testing.T) {
 		t.Errorf("unexpected response body, exp=forbidden got=%q", got)
 	}
 }
+
+// TestNewUnauthenticatedHandlerAuditsFailedAuthentication is the regression
+// guard for the missing WithAuditInit in the WithUnauthorized chain
+// (TremoloSecurity/kube-oidc-proxy#92). Without an initialised audit context
+// the failed-authentication filter finds auditing disabled and a rejected
+// request leaves no trace in the audit log at all — the exact case an audit
+// log exists for.
+//
+// Assertions are confined to what this chain decides: that exactly one event
+// is written, at ResponseStarted (the stage the failed-auth filter's decorated
+// response writer records on WriteHeader), carrying the 401 and the
+// authentication-failure message, with no authenticated identity. Verb and
+// objectRef are the RequestInfo resolver's decision and are covered elsewhere.
+func TestNewUnauthenticatedHandlerAuditsFailedAuthentication(t *testing.T) {
+	a, logPath := newForbiddenTestAudit(t)
+
+	handler := NewUnauthenticatedHandler(a, func(rw http.ResponseWriter, r *http.Request) {
+		rw.WriteHeader(http.StatusUnauthorized)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/kube-system/pods", nil)
+	req.Header.Set("Authorization", "bearer some-invalid-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d", http.StatusUnauthorized, rec.Code)
+	}
+
+	events := readForbiddenAuditEvents(t, a, logPath)
+	if len(events) != 1 {
+		t.Fatalf("expected exactly one audit event for a failed authentication, got %d: %+v", len(events), events)
+	}
+
+	event := events[0]
+	if event.Stage != "ResponseStarted" {
+		t.Errorf("expected stage ResponseStarted, got %q", event.Stage)
+	}
+	if event.User.Username != "" {
+		t.Errorf("failed authentication must not record an identity, got %q", event.User.Username)
+	}
+	if event.ResponseStatus == nil {
+		t.Fatalf("expected a responseStatus on the event, got none")
+	}
+	if event.ResponseStatus.Code != http.StatusUnauthorized {
+		t.Errorf("expected responseStatus code 401, got %d", event.ResponseStatus.Code)
+	}
+	if !strings.Contains(event.ResponseStatus.Message, "Authentication failed, attempted: bearer") {
+		t.Errorf("expected the authentication-failure message naming the attempted method, got %q", event.ResponseStatus.Message)
+	}
+}
