@@ -19,10 +19,14 @@ rules:
   - "userextras/scopes"
   - "userextras/remote-client-ip"
   - "tokenreviews"
+  # UID impersonation lives in authentication.k8s.io, unlike users/groups
+  # which are core
+  - "uids"
   # to support end user impersonation
   - "userextras/authentication.kubernetes.io/credential-id"
   - "userextras/originaluser.jetstack.io-user"
   - "userextras/originaluser.jetstack.io-groups"
+  - "userextras/originaluser.jetstack.io-uid"
   - "userextras/originaluser.jetstack.io-extra"
   verbs:
   - "create"
