@@ -30,8 +30,9 @@ type KubeOIDCProxyOptions struct {
 }
 
 type TokenPassthroughOptions struct {
-	Audiences []string
-	Enabled   bool
+	Audiences      []string
+	RequestTimeout time.Duration
+	Enabled        bool
 }
 
 type ExtraHeaderOptions struct {
@@ -106,6 +107,11 @@ func (t *TokenPassthroughOptions) AddFlags(fs *pflag.FlagSet) {
 		"for at least one of the audiences in this list. If no audiences are "+
 		"provided, the audience will default to the audience of the Kubernetes "+
 		"apiserver. Only used when --token-passthrough is also enabled.")
+
+	fs.DurationVar(&t.RequestTimeout, "token-passthrough-request-timeout", 10*time.Second, ""+
+		"Timeout for each TokenReview request the proxy sends to the target API server "+
+		"when validating a passthrough token. Only used when --token-passthrough is "+
+		"also enabled.")
 
 	fs.BoolVar(&t.Enabled, "token-passthrough", t.Enabled, ""+
 		"(Alpha) Requests with Bearer tokens that fail OIDC validation are tried against "+
