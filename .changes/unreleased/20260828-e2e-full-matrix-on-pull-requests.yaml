@@ -1,2 +1,0 @@
-kind: Changed
-body: Pull request e2e runs now exercise the full supported Kubernetes window (currently 1.37.0, 1.36.4, 1.35.8) instead of only the newest minor; the release path stays newest-only since the same code already passed the full window on its pull request.

@@ -1,2 +1,0 @@
-kind: Added
-body: New --token-passthrough-request-timeout flag bounds each TokenReview call the proxy makes when validating a passthrough token (default 10s, previously hardcoded).

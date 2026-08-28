@@ -1,2 +1,0 @@
-kind: Added
-body: UID impersonation works end to end — an authorized Impersonate-Uid header is forwarded to the API server, the impersonation check reviews uids in the authentication.k8s.io group, and the chart grants the proxy impersonate on uids and on the originaluser.jetstack.io-uid extra. Deployments that map a uid claim now emit Impersonate-Uid and need the new RBAC.
