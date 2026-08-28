@@ -12,7 +12,9 @@
 // address is taken as the client. When no trusted proxies are configured (the
 // default), forwarded headers are never trusted and the direct peer is used, so
 // an untrusted client cannot spoof its resolved IP. Configure trusted networks
-// with SetTrustedProxies.
+// with SetTrustedProxies. SanitizeForwardHeaders applies this contract to the
+// headers themselves, so audit sourceIPs and the upstream API server see only
+// validated forwarding information.
 //
 // Only X-Forwarded-For is parsed; the RFC 7239 Forwarded header is not honoured.
 // On a malformed forwarded hop, or when the entire chain is itself trusted, the
@@ -45,6 +47,10 @@ const (
 
 	// bearerTokenKey is the context key for the client address.
 	clientAddressKey
+
+	// originalForwardedForKey is the context key preserving the raw inbound
+	// X-Forwarded-For chain before sanitization, for forensic logging.
+	originalForwardedForKey
 )
 
 // trustedProxies holds the networks whose forwarded headers are honoured when
@@ -58,6 +64,50 @@ var trustedProxies []*net.IPNet
 // requests are served.
 func SetTrustedProxies(nets []*net.IPNet) {
 	trustedProxies = nets
+}
+
+// SanitizeForwardHeaders enforces the trusted-proxy contract on the inbound
+// forwarding headers before anything downstream reads them: the audit filters
+// (which fill the event's sourceIPs from these headers via utilnet.SourceIPs),
+// the access log, and the upstream API server the request is forwarded to.
+//
+// X-Real-Ip is always removed — the proxy never honours it. X-Forwarded-For is
+// removed when the resolver would ignore it (untrusted peer, fully trusted
+// chain, or malformed hop) and collapsed to the single resolved client IP when
+// the peer is a trusted proxy. The raw inbound chain is preserved on the
+// request context and available via OriginalForwardedFor so forensic logging
+// keeps seeing what the client actually sent.
+func SanitizeForwardHeaders(req *http.Request) *http.Request {
+	xff := forwardedFor(req.Header)
+	if xff == "" && req.Header.Get("X-Real-Ip") == "" {
+		return req
+	}
+
+	if xff != "" {
+		req = req.WithContext(request.WithValue(req.Context(), originalForwardedForKey, xff))
+	}
+	req.Header.Del("X-Real-Ip")
+	if xff == "" {
+		return req
+	}
+
+	resolved := ResolveClientIP(req.RemoteAddr, xff, trustedProxies)
+	if resolved == peerHost(req.RemoteAddr) {
+		// The resolver fell back to the direct peer: nothing in the
+		// forwarded chain is trustworthy.
+		req.Header.Del("X-Forwarded-For")
+		return req
+	}
+
+	req.Header.Set("X-Forwarded-For", resolved)
+	return req
+}
+
+// OriginalForwardedFor returns the raw inbound X-Forwarded-For chain as it was
+// before SanitizeForwardHeaders rewrote it, or "" when there was none.
+func OriginalForwardedFor(req *http.Request) string {
+	xff, _ := req.Context().Value(originalForwardedForKey).(string)
+	return xff
 }
 
 type ImpersonationRequest struct {
