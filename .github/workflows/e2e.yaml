@@ -44,6 +44,52 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Reads the committed version manifest and decides how much of it this
+  # trigger runs. The manifest travels with the commit under test, so the
+  # matrix can never drift ahead of what the code declares it supports.
+  e2e-versions:
+    name: "test:e2e:versions"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      k8s: ${{ steps.read.outputs.k8s }}
+      kind: ${{ steps.read.outputs.kind }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # MUST stay identical to the shard job's ref: on the release.yaml
+          # workflow_call path the manifest describes the code at target_ref,
+          # not the caller's commit.
+          ref: ${{ inputs.target_ref || github.sha }}
+
+      - name: Read supported Kubernetes versions
+        id: read
+        env:
+          # Full window only on the twice-daily schedule and manual dispatch.
+          # Under workflow_call from release.yaml, github.event_name is the
+          # CALLER's event (never 'workflow_call'), so a release stays
+          # latest-only -- identical cost to a PR run.
+          FULL_MATRIX: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+        run: |
+          set -euo pipefail
+          manifest=test/e2e/versions/kubernetes-versions.json
+          # Load-bearing guards, not niceties: an empty list would not
+          # reliably skip a matrix that carries include: entries, and the
+          # pull_request path runs supported[0], so newest-first is an
+          # invariant. The Go unit tests enforce the same rules; this catches
+          # a manifest broken in ways that dodge them.
+          jq -e '.supported | length > 0' "$manifest" >/dev/null
+          jq -r '.supported[].version' "$manifest" | sort -rV -c
+          if [ "$FULL_MATRIX" = "true" ]; then
+            k8s=$(jq -c '[.supported[].version]' "$manifest")
+          else
+            k8s=$(jq -c '[.supported[0].version]' "$manifest")
+          fi
+          echo "k8s=$k8s" >> "$GITHUB_OUTPUT"
+          echo "kind=$(jq -r '.kind' "$manifest")" >> "$GITHUB_OUTPUT"
+          echo "Kubernetes matrix: \`$k8s\`" >> "$GITHUB_STEP_SUMMARY"
+
   # The suite is split across shards by Ginkgo label (Label("shard-a") etc. on
   # each framework.CasesDescribe container). Every shard stands up its own kind
   # cluster, so wall-clock is the slowest shard rather than the sum of all
@@ -57,20 +103,17 @@ jobs:
     name: "test:e2e (${{ matrix.cases }}) @ ${{ matrix.k8s }}"
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    needs: [e2e-versions]
     strategy:
       fail-fast: false
       matrix:
         shard: [a, b, c]
-        # Full matrix only on the twice-daily schedule and manual dispatch.
-        # pull_request AND the workflow_call from release.yaml stay
-        # latest-only, so PR and release cost is identical to the pre-matrix
-        # workflow. Real clusters (EKS/GKE/on-prem) trail the newest minor,
-        # which is why the scheduled run covers the current minor plus the two
-        # before it (the project's support window -- anything older is out of
-        # scope). Images come from the kind release pinned below (v0.33.0:
-        # 1.37.0, 1.36.4, 1.35.8). Keep this list in lockstep with
-        # KIND_VERSION and roll the window forward on each new minor.
-        k8s: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["1.37.0","1.36.4","1.35.8"]' || '["1.37.0"]') }}
+        # Generated from test/e2e/versions/kubernetes-versions.json by the
+        # e2e-versions job: pull_request and release runs get the newest
+        # declared version, schedule and workflow_dispatch the full window.
+        # The suite resolves each version to its digest-pinned node image
+        # through the same manifest (test/e2e/versions).
+        k8s: ${{ fromJSON(needs.e2e-versions.outputs.k8s) }}
         include:
           - shard: a
             cases: "impersonation, headers, probe"
@@ -92,7 +135,9 @@ jobs:
 
       - name: Install kind CLI
         env:
-          KIND_VERSION: v0.33.0
+          # From the manifest: the node images are only guaranteed against
+          # the kind release that built them.
+          KIND_VERSION: ${{ needs.e2e-versions.outputs.kind }}
         run: |
           curl -fsSLo ./kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
           sudo install -m 0755 ./kind /usr/local/bin/kind
@@ -148,17 +193,21 @@ jobs:
     name: "test:e2e"
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [e2e-shard]
+    needs: [e2e-versions, e2e-shard]
     if: always()
     steps:
       - name: Check shard results
         env:
           # For a matrix job this is the aggregate result across all legs, so a
-          # single failed/cancelled/skipped shard fails the required check.
+          # single failed/cancelled/skipped shard fails the required check. The
+          # versions job is checked explicitly rather than trusting that its
+          # failure skips the shards.
           SHARDS_RESULT: ${{ needs.e2e-shard.result }}
+          VERSIONS_RESULT: ${{ needs.e2e-versions.result }}
         run: |
+          echo "e2e-versions result: $VERSIONS_RESULT"
           echo "e2e-shard result: $SHARDS_RESULT"
-          if [ "$SHARDS_RESULT" != "success" ]; then
-            echo "::error::e2e shards did not all succeed (result: $SHARDS_RESULT)"
+          if [ "$VERSIONS_RESULT" != "success" ] || [ "$SHARDS_RESULT" != "success" ]; then
+            echo "::error::e2e jobs did not all succeed (versions: $VERSIONS_RESULT, shards: $SHARDS_RESULT)"
             exit 1
           fi
