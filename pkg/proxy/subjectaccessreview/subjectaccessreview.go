@@ -246,6 +246,13 @@ func (s *SubjectAccessReview) checkRbacImpersonationAuthorization(ctx context.Co
 		group = "authentication.k8s.io"
 	}
 
+	// UID impersonation lives in authentication.k8s.io, unlike
+	// users/groups/serviceaccounts which are core. Without the group the
+	// review checks a core-group "uids" resource no RBAC rule grants.
+	if resource == "uids" {
+		group = "authentication.k8s.io"
+	}
+
 	clusterSubjectAccessReview := v1.SubjectAccessReview{
 		Spec: v1.SubjectAccessReviewSpec{
 			User:   requester.GetName(),

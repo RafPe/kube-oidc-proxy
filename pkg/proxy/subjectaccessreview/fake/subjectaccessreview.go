@@ -44,7 +44,12 @@ func (f *FakeReviewer) Create(ctx context.Context, req *azv1.SubjectAccessReview
 		return req, nil
 	}
 
-	if req.Spec.ResourceAttributes.Resource == "uids" && req.Spec.ResourceAttributes.Name == "1-2-3-4" {
+	// UID impersonation is authorized in the authentication.k8s.io group,
+	// unlike users/groups which are core. Refusing a group-less review here
+	// pins the group the production SAR must send.
+	if req.Spec.ResourceAttributes.Group == "authentication.k8s.io" &&
+		req.Spec.ResourceAttributes.Resource == "uids" &&
+		req.Spec.ResourceAttributes.Name == "1-2-3-4" {
 		req.Status = azv1.SubjectAccessReviewStatus{
 			Allowed: true,
 		}

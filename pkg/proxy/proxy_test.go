@@ -601,7 +601,6 @@ func TestHandlers(t *testing.T) {
 			expBody: "",
 		},
 
-		/* Commenting due to https://github.com/TremoloSecurity/kube-oidc-proxy/issues/7
 		"an authed request with authorized impersonation uid should succeed": {
 			req: &http.Request{
 				Header: http.Header{
@@ -631,7 +630,7 @@ func TestHandlers(t *testing.T) {
 				"Impersonate-Extra-Originaluser.jetstack.io-Groups": {"group1"},
 			},
 			expBody: "",
-		},*/
+		},
 
 		"an authed request with unauthorized impersonation user should error unauthorized": {
 			req: &http.Request{

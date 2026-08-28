@@ -180,7 +180,7 @@ func (h *Helper) DeployProxyWithExtras(ns *corev1.Namespace, issuerURL *url.URL,
 			},
 			{
 				APIGroups: []string{"authentication.k8s.io"},
-				Resources: []string{"userextras/scopes", "tokenreviews", "userextras/originaluser.jetstack.io-user", "userextras/originaluser.jetstack.io-groups", "userextras/originaluser.jetstack.io-extra", "userextras/oktoimpersonateextra"},
+				Resources: []string{"userextras/scopes", "tokenreviews", "uids", "userextras/originaluser.jetstack.io-user", "userextras/originaluser.jetstack.io-groups", "userextras/originaluser.jetstack.io-uid", "userextras/originaluser.jetstack.io-extra", "userextras/oktoimpersonateextra"},
 				Verbs:     []string{"impersonate", "create"},
 			},
 			{
