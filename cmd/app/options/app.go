@@ -80,7 +80,9 @@ func (k *KubeOIDCProxyOptions) AddFlags(fs *pflag.FlagSet) *KubeOIDCProxyOptions
 			"networks. When empty (the default) no proxy is trusted and the direct peer "+
 			"address is always used, so clients cannot spoof their IP via forwarded "+
 			"headers. Set this only to the addresses of proxies you operate in front of "+
-			"kube-oidc-proxy.")
+			"kube-oidc-proxy. Forwarded headers are sanitized to this contract before "+
+			"auditing and before the request is forwarded, so audit sourceIPs and the "+
+			"upstream API server only see validated values.")
 
 	fs.StringSliceVar(&k.AllowedReservedGroups, "allow-reserved-groups", k.AllowedReservedGroups,
 		"Comma-separated list of Kubernetes-reserved ('system:'-prefixed) groups that "+
