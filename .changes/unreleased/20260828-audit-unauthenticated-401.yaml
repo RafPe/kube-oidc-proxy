@@ -1,0 +1,2 @@
+kind: Fixed
+body: Unauthenticated (401) requests now produce audit events — the unauthorized audit chain initialises the audit context, so failed authentication attempts are recorded with a ResponseStarted event instead of leaving no trace in the audit log.
