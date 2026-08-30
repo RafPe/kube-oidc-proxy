@@ -1,6 +1,16 @@
 # Unreleased
 <!-- next-release -->
 
+## [1.5.0] - 2026-08-28
+
+- Audit event sourceIPs now follow the trusted-proxy contract — forwarded headers from untrusted peers are stripped before auditing and before the request is forwarded upstream, so clients can no longer spoof the audit trail via X-Forwarded-For. Operators with a load balancer in front of the proxy must set --trusted-proxies to resolve the real client IP.
+- Unauthenticated (401) requests now produce audit events — the unauthorized audit chain initialises the audit context, so failed authentication attempts are recorded with a ResponseStarted event instead of leaving no trace in the audit log.
+- Update k8s.io modules to v0.37.0, sigs.k8s.io/kind to v0.33.0, and test dependencies; refresh the distroless base image digest and move test tool images to alpine 3.24; bump all pinned GitHub Actions to current releases.
+- Pull request e2e runs now exercise the full supported Kubernetes window (currently 1.37.0, 1.36.4, 1.35.8) instead of only the newest minor; the release path stays newest-only since the same code already passed the full window on its pull request.
+- Test and CI tooling now targets Kubernetes 1.37 — the e2e suite boots kindest/node v1.37.0 by default, the kind CLI in the e2e workflows moves to v0.33.0 (kubeadm v1beta4 support, required since 1.37 dropped v1beta3), and the Makefile kubectl download fallback moves to v1.37.0.
+- UID impersonation works end to end — an authorized Impersonate-Uid header is forwarded to the API server, the impersonation check reviews uids in the authentication.k8s.io group, and the chart grants the proxy impersonate on uids and on the originaluser.jetstack.io-uid extra. Deployments that map a uid claim now emit Impersonate-Uid and need the new RBAC.
+- New --token-passthrough-request-timeout flag bounds each TokenReview call the proxy makes when validating a passthrough token (default 10s, previously hardcoded).
+
 ## [1.4.0] - 2026-08-20
 
 - Replace --allow-reserved-identity-claims with --allow-reserved-groups, which permits named system:-prefixed groups instead of disabling the reserved-identity guard wholesale. Reserved usernames can no longer be permitted at all. The flag it replaces was added after v1.2.0 and has not appeared in a release.

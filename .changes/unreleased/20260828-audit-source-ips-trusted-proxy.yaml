@@ -1,2 +1,0 @@
-kind: Security
-body: Audit event sourceIPs now follow the trusted-proxy contract — forwarded headers from untrusted peers are stripped before auditing and before the request is forwarded upstream, so clients can no longer spoof the audit trail via X-Forwarded-For. Operators with a load balancer in front of the proxy must set --trusted-proxies to resolve the real client IP.

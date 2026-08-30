@@ -1,2 +1,0 @@
-kind: Changed
-body: Test and CI tooling now targets Kubernetes 1.37 — the e2e suite boots kindest/node v1.37.0 by default, the kind CLI in the e2e workflows moves to v0.33.0 (kubeadm v1beta4 support, required since 1.37 dropped v1beta3), and the Makefile kubectl download fallback moves to v1.37.0.

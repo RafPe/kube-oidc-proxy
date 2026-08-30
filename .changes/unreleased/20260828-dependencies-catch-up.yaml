@@ -1,2 +1,0 @@
-kind: Dependencies
-body: Update k8s.io modules to v0.37.0, sigs.k8s.io/kind to v0.33.0, and test dependencies; refresh the distroless base image digest and move test tool images to alpine 3.24; bump all pinned GitHub Actions to current releases.
