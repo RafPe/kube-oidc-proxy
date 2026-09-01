@@ -15,7 +15,7 @@ workspace "kube-oidc-proxy" "OIDC authentication and impersonation proxy for man
             app = container "kube-oidc-proxy" "Reverse proxy that validates OIDC tokens against the union of issuers and impersonates the mapped user to the API server." "Go" {
                 serving = component "Secure serving layer" "Terminates TLS and drives the handler chain." "Go, SecureServingInfo"
                 authn = component "Authenticator" "Validates the bearer token against the union of N OIDC issuers." "Go, bearertoken + OIDC union"
-                tokenPassthrough = component "Token passthrough" "Fallback for tokens OIDC does not accept; validated via TokenReview." "Go, TokenReview"
+                tokenPassthrough = component "Token passthrough" "Fallback for tokens OIDC does not accept; validated via TokenReview, with results held in a bounded in-memory cache (separate success/failure TTLs)." "Go, TokenReview"
                 impersonate = component "Impersonation handler" "Builds the impersonation config and forwards the request." "Go"
                 sar = component "SubjectAccessReview client" "Authorizes inbound impersonation (kubectl --as); caps the impersonation header values per request (431 over cap) before any review, and serves decisions from a bounded in-memory cache with split allow/deny TTLs before issuing a live SubjectAccessReview." "Go, SubjectAccessReview"
                 audit = component "Audit backend" "Records authenticated and unauthenticated requests." "Go, k8s audit"

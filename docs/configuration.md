@@ -58,6 +58,9 @@ not require a pod restart.
 | --- | --- | --- |
 | `--token-passthrough` | `false` | (Alpha) Bearer tokens that fail OIDC validation are tried via TokenReview and, if valid, forwarded as-is with no impersonation. |
 | `--token-passthrough-audiences` | — | (Alpha) Allowed audiences for passthrough tokens. |
+| `--token-passthrough-request-timeout` | `10s` | Timeout for each TokenReview request sent to the target API server when validating a passthrough token. |
+| `--token-passthrough-cache-success-ttl` | `10s` | How long a successful TokenReview result is cached and reused without a new API server request. A cached success outlives token revocation for up to this duration, so keep it low (the default matches the kube-apiserver's own delegated-authentication cache). `0` disables caching successes. |
+| `--token-passthrough-cache-failure-ttl` | `10s` | How long an unauthenticated TokenReview result is cached, shielding the API server from repeated reviews of the same invalid token (e.g. request storms during an OIDC issuer outage). Review errors are never cached. `0` disables caching failures. |
 | `--disable-impersonation` | `false` | (Alpha) Forward authenticated requests as-is, without impersonation. |
 | `--extra-user-header-client-ip` | `false` | (Alpha) Add `Impersonate-Extra-Remote-Client-IP` with the request's resolved client IP. |
 | `--extra-user-headers` | — | (Alpha) Extra `key=value` user headers to add to the impersonated request. |
@@ -219,6 +222,24 @@ instead, supply them — at least one must be present in the token:
 ```
 --token-passthrough-audiences=aud1.foo.bar,aud2.foo.bar
 ```
+
+### TokenReview caching
+
+Review results are cached per the `--token-passthrough-cache-success-ttl` and
+`--token-passthrough-cache-failure-ttl` flags. The cache holds at most 8192
+entries and evicts the least recently used one when full, so a flood of unique
+invalid tokens cannot grow the proxy's memory without bound.
+
+Concurrent requests that miss the cache for the same token each run their own
+TokenReview — misses are deliberately not collapsed into a single in-flight
+review. This matches the behaviour before caching existed (the cache only ever
+subtracts API server load) and is what preserves the full configured
+`--token-passthrough-request-timeout` (including values above 30s) and
+per-request cancellation on every review. The trade-off is a few duplicate
+reviews when many requests present the same not-yet-cached token at the same
+instant: each of those in-flight requests completes its own review, the first
+to finish populates the cache, and every request arriving after that is served
+from it.
 
 ## No impersonation
 

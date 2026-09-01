@@ -112,6 +112,17 @@ func (o *Options) Validate(cmd *cobra.Command) error {
 		errs = append(errs, errors.New("--token-passthrough-request-timeout must be greater than zero"))
 	}
 
+	// Zero is meaningful for the cache TTLs (it disables that class of
+	// caching); only negatives are configuration mistakes. Checked regardless
+	// of --token-passthrough — like --subject-access-review-timeout — so a
+	// broken value never lies dormant until the feature is switched on.
+	if o.App.TokenPassthrough.CacheSuccessTTL < 0 {
+		errs = append(errs, errors.New("--token-passthrough-cache-success-ttl must not be negative"))
+	}
+	if o.App.TokenPassthrough.CacheFailureTTL < 0 {
+		errs = append(errs, errors.New("--token-passthrough-cache-failure-ttl must not be negative"))
+	}
+
 	if o.App.SubjectAccessReviewTimeout <= 0 {
 		errs = append(errs, fmt.Errorf("--subject-access-review-timeout must be greater than 0, got %s", o.App.SubjectAccessReviewTimeout))
 	}

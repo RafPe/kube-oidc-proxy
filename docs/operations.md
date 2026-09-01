@@ -22,6 +22,11 @@ Security, troubleshooting, and testing the proxy locally.
 - **Use token passthrough deliberately.** `--token-passthrough` forwards
   non-OIDC tokens after a TokenReview; only enable it (and constrain
   `--token-passthrough-audiences`) when you understand the tokens involved.
+  TokenReview results are cached, so a **revoked token keeps working for up to
+  `--token-passthrough-cache-success-ttl`** (default 10s, matching the
+  kube-apiserver's own delegated-authentication cache), and a newly valid token
+  can keep being rejected for up to `--token-passthrough-cache-failure-ttl`
+  (default 10s). Set either to `0` to disable that side of the cache.
 - **Configure trusted proxies before trusting forwarded IPs.** By default the
   proxy ignores `X-Forwarded-For` and uses the direct peer as the client IP, so
   clients cannot forge the logged or impersonated client IP. Set
@@ -41,6 +46,7 @@ Security, troubleshooting, and testing the proxy locally.
 | RBAC impersonation grant/revoke takes up to 10s to take effect through the proxy | Expected: impersonation `SubjectAccessReview` decisions are cached. A revoked grant keeps working for up to `--subject-access-review-cache-allow-ttl` (default `10s`) while the cached allow expires; a new grant keeps failing for up to `--subject-access-review-cache-deny-ttl` (default `10s`) while the cached deny expires. Set either TTL to `0` to disable caching for that decision class and re-check every request. |
 | TLS errors connecting to the proxy | The client's kubeconfig `certificate-authority` must trust the proxy's **serving** certificate (self-signed by the chart, your own Secret, or cert-manager). |
 | Confirm which issuers loaded | `kubectl -n kube-oidc-proxy logs deploy/kube-oidc-proxy \| grep "configured OIDC issuers"`. |
+| A revoked passthrough token still works / a newly valid one is rejected | The TokenReview result cache. A revoked token passes for up to `--token-passthrough-cache-success-ttl` (default 10s) after revocation; a token that just became valid can be rejected for up to `--token-passthrough-cache-failure-ttl` (default 10s). Set either flag to `0` to disable that cache. |
 
 ### Reading the request log
 

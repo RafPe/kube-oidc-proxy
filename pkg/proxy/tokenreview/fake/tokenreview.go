@@ -15,6 +15,11 @@ var _ clientauthv1.TokenReviewInterface = &FakeReviewer{}
 
 type FakeReviewer struct {
 	CreateFn func(*authv1.TokenReview) (*authv1.TokenReview, error)
+
+	// CreateCtxFn, when set, takes precedence over CreateFn and additionally
+	// receives the request context, so tests can observe the deadline and
+	// cancellation the reviewer applies.
+	CreateCtxFn func(context.Context, *authv1.TokenReview) (*authv1.TokenReview, error)
 }
 
 func New() *FakeReviewer {
@@ -26,6 +31,9 @@ func New() *FakeReviewer {
 }
 
 func (f *FakeReviewer) Create(ctx context.Context, req *authv1.TokenReview, co metav1.CreateOptions) (*authv1.TokenReview, error) {
+	if f.CreateCtxFn != nil {
+		return f.CreateCtxFn(ctx, req)
+	}
 	return f.CreateFn(req)
 }
 

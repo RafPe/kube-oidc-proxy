@@ -37,6 +37,12 @@ type TokenPassthroughOptions struct {
 	Audiences      []string
 	RequestTimeout time.Duration
 	Enabled        bool
+
+	// CacheSuccessTTL and CacheFailureTTL bound how long TokenReview results
+	// are reused without a fresh API server round trip. Zero disables caching
+	// for that result class. Review errors are never cached.
+	CacheSuccessTTL time.Duration
+	CacheFailureTTL time.Duration
 }
 
 type ExtraHeaderOptions struct {
@@ -147,6 +153,22 @@ func (t *TokenPassthroughOptions) AddFlags(fs *pflag.FlagSet) {
 		"Timeout for each TokenReview request the proxy sends to the target API server "+
 		"when validating a passthrough token. Only used when --token-passthrough is "+
 		"also enabled.")
+
+	fs.DurationVar(&t.CacheSuccessTTL, "token-passthrough-cache-success-ttl", 10*time.Second, ""+
+		"How long a successful TokenReview result is cached and reused without a new "+
+		"request to the target API server. A cached success outlives token revocation "+
+		"for up to this duration, so keep it low; the default matches the "+
+		"kube-apiserver's own delegated-authentication cache (10s). Set to 0 to "+
+		"disable caching successful results. Only used when --token-passthrough is "+
+		"also enabled.")
+
+	fs.DurationVar(&t.CacheFailureTTL, "token-passthrough-cache-failure-ttl", 10*time.Second, ""+
+		"How long an unauthenticated TokenReview result is cached, shielding the "+
+		"target API server from repeated reviews of the same invalid token (for "+
+		"example during an OIDC issuer outage with --token-passthrough enabled). "+
+		"Errors reaching the API server are never cached and are retried on the next "+
+		"request. Set to 0 to disable caching unauthenticated results. Only used when "+
+		"--token-passthrough is also enabled.")
 
 	fs.BoolVar(&t.Enabled, "token-passthrough", t.Enabled, ""+
 		"(Alpha) Requests with Bearer tokens that fail OIDC validation are tried against "+

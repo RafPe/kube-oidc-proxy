@@ -120,6 +120,72 @@ func TestValidate_MutualExclusivity(t *testing.T) {
 	}
 }
 
+// TestValidate_TokenPassthroughCacheTTLs pins that the cache TTL flags reject
+// negative values regardless of whether --token-passthrough is enabled, so a
+// broken value cannot lie dormant until the feature is switched on. Zero stays
+// valid: it disables that class of caching.
+func TestValidate_TokenPassthroughCacheTTLs(t *testing.T) {
+	tests := map[string]struct {
+		successTTL         time.Duration
+		failureTTL         time.Duration
+		passthroughEnabled bool
+		wantErrSubstr      string
+	}{
+		"defaults are valid": {
+			successTTL: 10 * time.Second,
+			failureTTL: 10 * time.Second,
+		},
+		"zero TTLs are valid (caching disabled)": {
+			successTTL:         0,
+			failureTTL:         0,
+			passthroughEnabled: true,
+		},
+		"negative success TTL is rejected": {
+			successTTL:         -1 * time.Second,
+			failureTTL:         10 * time.Second,
+			passthroughEnabled: true,
+			wantErrSubstr:      "--token-passthrough-cache-success-ttl must not be negative",
+		},
+		"negative failure TTL is rejected": {
+			successTTL:         10 * time.Second,
+			failureTTL:         -1 * time.Second,
+			passthroughEnabled: true,
+			wantErrSubstr:      "--token-passthrough-cache-failure-ttl must not be negative",
+		},
+		"negative success TTL is rejected even with passthrough disabled": {
+			successTTL:    -1 * time.Second,
+			failureTTL:    10 * time.Second,
+			wantErrSubstr: "--token-passthrough-cache-success-ttl must not be negative",
+		},
+		"negative failure TTL is rejected even with passthrough disabled": {
+			successTTL:    10 * time.Second,
+			failureTTL:    -1 * time.Second,
+			wantErrSubstr: "--token-passthrough-cache-failure-ttl must not be negative",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			o := New()
+			cmd := &cobra.Command{}
+			o.AddFlags(cmd)
+
+			o.App.TokenPassthrough.Enabled = tc.passthroughEnabled
+			o.App.TokenPassthrough.CacheSuccessTTL = tc.successTTL
+			o.App.TokenPassthrough.CacheFailureTTL = tc.failureTTL
+
+			err := o.Validate(cmd)
+			if tc.wantErrSubstr == "" {
+				if err != nil && strings.Contains(err.Error(), "cache") {
+					t.Errorf("Validate() unexpected cache TTL error: %v", err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.wantErrSubstr) {
+				t.Errorf("Validate() error = %v, want error containing %q", err, tc.wantErrSubstr)
+			}
+		})
+	}
+}
+
 func TestValidate_SubjectAccessReviewTimeout(t *testing.T) {
 	const wantErrSubstr = "--subject-access-review-timeout must be greater than 0"
 
