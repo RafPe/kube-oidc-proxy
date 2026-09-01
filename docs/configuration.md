@@ -96,6 +96,35 @@ the proxy first checks — via `SubjectAccessReview` against the API server — 
 the authenticated user may assume that identity, then forwards the impersonated
 identity instead of the caller's own.
 
+### SubjectAccessReview caching
+
+Impersonation authorization decisions are served from a bounded in-memory cache
+per the `--subject-access-review-cache-allow-ttl` and
+`--subject-access-review-cache-deny-ttl` flags, so a client that repeatedly
+impersonates the same identities does not send a `SubjectAccessReview` to the
+API server on every request. The cache holds at most 8192 entries and evicts the
+least recently used one when full, so client-influenced impersonation values
+cannot grow the proxy's memory without bound.
+
+Allowed and denied decisions have **separate** TTLs so the two failure modes can
+be tuned independently:
+
+- A cached **allow** outlives an RBAC change: revoking a requester's
+  impersonation grant is not enforced until the cached allow expires (up to
+  `--subject-access-review-cache-allow-ttl`). Lower it, or set it to `0`, where
+  per-request revocation matters more than API-server load.
+- A cached **deny** delays a newly granted permission from taking effect for up
+  to `--subject-access-review-cache-deny-ttl`. Set it to `0` to have grants
+  honoured immediately.
+
+Only definitive allow/deny decisions are cached — a `SubjectAccessReview` that
+errors is never cached, so a transient API-server failure cannot latch into a
+denial. The cache key is the full authorization question, including the
+requester's username, groups, extras **and UID**, so two distinct principals can
+never share a cached decision. Both TTLs default to `10s`, matching the
+delegating-authorization cache in `k8s.io/apiserver`; setting both to `0`
+disables SAR caching entirely.
+
 ### Reserved `system:` identities
 
 Kubernetes reserves the `system:` prefix for its own identities: `system:masters`
