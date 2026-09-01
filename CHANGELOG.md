@@ -1,6 +1,13 @@
 # Unreleased
 <!-- next-release -->
 
+## [1.6.0] - 2026-09-01
+
+- Bump github.com/google/cel-go to v0.30.0 and go.etcd.io/etcd/{api,client/pkg,client}/v3 to v3.7.1 to remediate GO-2026-6094 and GO-2026-6107.
+- Impersonation requests are now capped at a configurable number of Impersonate-* header values (--max-impersonation-header-values, default 64). Requests exceeding the cap are rejected with HTTP 431 before any SubjectAccessReview is sent, bounding the per-request authorization load a client can generate.
+- Impersonation SubjectAccessReview decisions are now served from a bounded in-memory cache with separately configurable TTLs (--subject-access-review-cache-allow-ttl and --subject-access-review-cache-deny-ttl, default 10s, 0 disables). Revoking or granting an RBAC impersonation permission can take up to the corresponding TTL to be enforced through the proxy.
+- Token passthrough now caches TokenReview results in a bounded in-memory cache with separately configurable TTLs (--token-passthrough-cache-success-ttl and --token-passthrough-cache-failure-ttl, default 10s, 0 disables). A revoked token can continue to pass for up to the success TTL and a newly valid token can be rejected for up to the failure TTL.
+
 ## [1.5.0] - 2026-08-28
 
 - Audit event sourceIPs now follow the trusted-proxy contract — forwarded headers from untrusted peers are stripped before auditing and before the request is forwarded upstream, so clients can no longer spoof the audit trail via X-Forwarded-For. Operators with a load balancer in front of the proxy must set --trusted-proxies to resolve the real client IP.

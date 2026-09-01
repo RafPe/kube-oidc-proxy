@@ -1,2 +1,0 @@
-kind: Added
-body: Impersonation requests are now capped at a configurable number of Impersonate-* header values (--max-impersonation-header-values, default 64). Requests exceeding the cap are rejected with HTTP 431 before any SubjectAccessReview is sent, bounding the per-request authorization load a client can generate.
