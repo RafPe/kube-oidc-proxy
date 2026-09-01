@@ -111,6 +111,15 @@ spec:
           - "--token-passthrough-cache-failure-ttl={{ .Values.tokenPassthrough.cacheFailureTTL }}"
           {{ end }}
           {{ end }}
+          {{- if ne (toString .Values.subjectAccessReview.cacheAllowTTL) "" }}
+          - "--subject-access-review-cache-allow-ttl={{ .Values.subjectAccessReview.cacheAllowTTL }}"
+          {{ end }}
+          {{- if ne (toString .Values.subjectAccessReview.cacheDenyTTL) "" }}
+          - "--subject-access-review-cache-deny-ttl={{ .Values.subjectAccessReview.cacheDenyTTL }}"
+          {{ end }}
+          {{- if .Values.maxImpersonationHeaderValues }}
+          - "--max-impersonation-header-values={{ .Values.maxImpersonationHeaderValues }}"
+          {{ end }}
           {{- if .Values.extraImpersonationHeaders.clientIP }}
           - "--extra-user-header-client-ip"
           {{ end }}

@@ -286,7 +286,7 @@ func runTest(t *testing.T, name string, test testT) {
 		extras[key] = value
 	}
 
-	testReviewer, _ := New(fake.New(test.expErrorRbac), DefaultTimeout)
+	testReviewer, _ := New(fake.New(test.expErrorRbac), DefaultTimeout, 0, 0, DefaultMaxHeaderValues)
 
 	headers := map[string][]string{}
 
@@ -413,6 +413,143 @@ func TestImpersonationAuthErrorClassification(t *testing.T) {
 	}
 }
 
+// countingFakeReviewer counts submitted reviews while delegating the decision
+// itself to the shared fake, so the cap tests can prove that a refused request
+// never submits a SubjectAccessReview at all.
+type countingFakeReviewer struct {
+	*fake.FakeReviewer
+
+	calls atomic.Int32
+}
+
+func (c *countingFakeReviewer) Create(ctx context.Context, req *v1.SubjectAccessReview, co metav1.CreateOptions) (*v1.SubjectAccessReview, error) {
+	c.calls.Add(1)
+	return c.FakeReviewer.Create(ctx, req, co)
+}
+
+// TestCheckAuthorizedForImpersonationHeaderValueCap pins the SAR fan-out cap:
+// impersonation header values are counted exactly as the consumption loop
+// matches them (case-insensitive Impersonate- prefix, every value of every
+// key), and an over-cap request is refused with
+// ErrTooManyImpersonationHeaderValues before any SubjectAccessReview is sent.
+func TestCheckAuthorizedForImpersonationHeaderValueCap(t *testing.T) {
+	requester := &user.DefaultInfo{Name: "mmosley", Groups: []string{"group1"}}
+
+	fullHeaders := http.Header{
+		"Impersonate-User":             {"jjackson"},
+		"Impersonate-Group":            {"group3"},
+		"Impersonate-Uid":              {"1-2-3-4"},
+		"Impersonate-Extra-Remoteaddr": {"1.2.3.4"},
+	}
+
+	tests := map[string]struct {
+		max      int
+		headers  http.Header
+		expOver  bool
+		expCalls int32
+	}{
+		"at the cap the full sequence still runs": {
+			max:      4,
+			headers:  fullHeaders,
+			expOver:  false,
+			expCalls: 4,
+		},
+
+		"one value over the cap is refused before any review": {
+			max:      3,
+			headers:  fullHeaders,
+			expOver:  true,
+			expCalls: 0,
+		},
+
+		"every value of a repeated header counts": {
+			max: 3,
+			headers: http.Header{
+				"Impersonate-User":  {"jjackson"},
+				"Impersonate-Group": {"group3", "group3", "group3"},
+			},
+			expOver:  true,
+			expCalls: 0,
+		},
+
+		"case-variant duplicate keys cannot smuggle values past the cap": {
+			max: 2,
+			headers: http.Header{
+				"Impersonate-User":  {"jjackson"},
+				"Impersonate-Group": {"group3"},
+				// Non-canonical duplicate of Impersonate-Group: the consumption
+				// loop would consume it, so the count must include it too.
+				"impersonate-group": {"group3"},
+			},
+			expOver:  true,
+			expCalls: 0,
+		},
+
+		"unknown impersonation headers count toward the cap": {
+			max: 2,
+			headers: http.Header{
+				"Impersonate-User":         {"jjackson"},
+				"Impersonate-Doesnotexist": {"a", "b"},
+			},
+			expOver:  true,
+			expCalls: 0,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			reviewer := &countingFakeReviewer{FakeReviewer: fake.New(nil)}
+			sar, err := New(reviewer, DefaultTimeout, 0, 0, tc.max)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+
+			target, err := sar.CheckAuthorizedForImpersonation(
+				&http.Request{Header: tc.headers}, requester)
+
+			if tc.expOver {
+				if !errors.Is(err, ErrTooManyImpersonationHeaderValues) {
+					t.Errorf("error = %v, want errors.Is(ErrTooManyImpersonationHeaderValues)", err)
+				}
+				// A cap refusal is a request-shape rejection, not an
+				// authorization denial or a backend failure: it must not select
+				// the 403 or 500 handler paths.
+				if errors.Is(err, ErrImpersonationNotAllowed) {
+					t.Errorf("cap refusal must not classify as ErrImpersonationNotAllowed: %v", err)
+				}
+				if errors.Is(err, ErrCreateSubjectAccessReview) {
+					t.Errorf("cap refusal must not classify as ErrCreateSubjectAccessReview: %v", err)
+				}
+				if target != nil {
+					t.Errorf("target = %+v, want nil", target)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("CheckAuthorizedForImpersonation() error = %v, want nil", err)
+				}
+				if target == nil {
+					t.Fatal("target = nil, want the impersonated user")
+				}
+			}
+
+			if got := reviewer.calls.Load(); got != tc.expCalls {
+				t.Errorf("SAR Create ran %d times, want %d", got, tc.expCalls)
+			}
+		})
+	}
+}
+
+// TestNewRejectsNonPositiveMaxHeaderValues pins that the cap cannot be
+// disabled by construction: every SAR costs a round trip, so an unbounded
+// reviewer must not be constructible.
+func TestNewRejectsNonPositiveMaxHeaderValues(t *testing.T) {
+	for _, max := range []int{0, -1} {
+		if _, err := New(fake.New(nil), DefaultTimeout, 0, 0, max); err == nil {
+			t.Errorf("New(maxHeaderValues=%d) error = nil, want error", max)
+		}
+	}
+}
+
 // blockingReviewer is a local test double implementing
 // clientazv1.SubjectAccessReviewInterface. Only Create is exercised: it counts
 // calls, signals entry once, then blocks until its context is done and returns
@@ -461,7 +598,7 @@ type sarResult struct {
 // sequence with context.Canceled and does not run further checks.
 func TestCheckAuthorizedForImpersonationCanceled(t *testing.T) {
 	reviewer := &blockingReviewer{entered: make(chan struct{}, 1)}
-	sar, err := New(reviewer, DefaultTimeout)
+	sar, err := New(reviewer, DefaultTimeout, 0, 0, DefaultMaxHeaderValues)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -509,7 +646,7 @@ func TestCheckAuthorizedForImpersonationCanceled(t *testing.T) {
 // context.DeadlineExceeded and runs at most the first check.
 func TestCheckAuthorizedForImpersonationDeadlineExceeded(t *testing.T) {
 	reviewer := &blockingReviewer{entered: make(chan struct{}, 1)}
-	sar, err := New(reviewer, DefaultTimeout)
+	sar, err := New(reviewer, DefaultTimeout, 0, 0, DefaultMaxHeaderValues)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -550,7 +687,7 @@ func TestCheckAuthorizedForImpersonationDeadlineExceeded(t *testing.T) {
 // budget distinguishable from a longer one that would only expire much later.
 func TestCheckAuthorizedForImpersonationConfiguredTimeout(t *testing.T) {
 	reviewer := &blockingReviewer{entered: make(chan struct{}, 1)}
-	sar, err := New(reviewer, 50*time.Millisecond)
+	sar, err := New(reviewer, 50*time.Millisecond, 0, 0, DefaultMaxHeaderValues)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

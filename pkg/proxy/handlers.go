@@ -342,6 +342,14 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			http.Error(rw, subjectaccessreview.ErrorNoImpersonationUserFound.Error(), http.StatusInternalServerError)
 			return
 
+			// Request carries more impersonation header values than the
+			// configured cap. Refused before any SubjectAccessReview was sent;
+			// this is a request-shape rejection, not an authorization denial.
+		case errors.Is(err, subjectaccessreview.ErrTooManyImpersonationHeaderValues):
+			klog.V(2).Infof("too many impersonation header values (%s): %s", r.RemoteAddr, err)
+			http.Error(rw, err.Error(), http.StatusRequestHeaderFieldsTooLarge)
+			return
+
 			// Requester is not authorized to impersonate the requested identity.
 			// Classified by typed error (errors.Is), not by message text.
 		case errors.Is(err, subjectaccessreview.ErrImpersonationNotAllowed):

@@ -19,7 +19,11 @@ type KubeOIDCProxyOptions struct {
 
 	FlushInterval time.Duration
 
-	SubjectAccessReviewTimeout time.Duration
+	SubjectAccessReviewTimeout       time.Duration
+	SubjectAccessReviewAllowCacheTTL time.Duration
+	SubjectAccessReviewDenyCacheTTL  time.Duration
+
+	MaxImpersonationHeaderValues int
 
 	ExtraHeaderOptions ExtraHeaderOptions
 	TokenPassthrough   TokenPassthroughOptions
@@ -77,6 +81,35 @@ func (k *KubeOIDCProxyOptions) AddFlags(fs *pflag.FlagSet) *KubeOIDCProxyOptions
 			"SubjectAccessReviews. This is a single shared budget across all SAR "+
 			"calls for one request (not per-call), derived from the inbound request "+
 			"context so client cancellation still propagates. Must be greater than 0.")
+
+	fs.DurationVar(&k.SubjectAccessReviewAllowCacheTTL, "subject-access-review-cache-allow-ttl",
+		subjectaccessreview.DefaultAllowCacheTTL,
+		"How long an allowed impersonation SubjectAccessReview decision is served "+
+			"from an in-memory cache before being re-checked against the API server. "+
+			"The tradeoff is revocation lag: revoking a requester's RBAC "+
+			"impersonation grant can take up to this long to be enforced while an "+
+			"allow decision is cached. The default matches the delegating-"+
+			"authorization default in k8s.io/apiserver. Set to 0 to disable caching "+
+			"of allowed decisions and re-check every request. Must not be negative. "+
+			"Only definitive decisions are cached; API-server errors never are.")
+
+	fs.DurationVar(&k.SubjectAccessReviewDenyCacheTTL, "subject-access-review-cache-deny-ttl",
+		subjectaccessreview.DefaultDenyCacheTTL,
+		"How long a denied impersonation SubjectAccessReview decision is served "+
+			"from an in-memory cache before being re-checked against the API server. "+
+			"A newly granted RBAC impersonation permission can take up to this long "+
+			"to be honoured. The default matches the delegating-authorization "+
+			"default in k8s.io/apiserver. Set to 0 to disable caching of denied "+
+			"decisions. Must not be negative. Only definitive decisions are cached; "+
+			"API-server errors never are.")
+
+	fs.IntVar(&k.MaxImpersonationHeaderValues, "max-impersonation-header-values", subjectaccessreview.DefaultMaxHeaderValues,
+		"Maximum total number of impersonation header values accepted per request "+
+			"(the Impersonate-User value plus every Impersonate-Group, Impersonate-Uid "+
+			"and Impersonate-Extra-* value). Each value costs one SubjectAccessReview "+
+			"round trip to the target API server, so this caps the per-request load a "+
+			"client can drive. Requests over the cap are rejected with HTTP 431 before "+
+			"any SubjectAccessReview is sent. Must be greater than 0.")
 
 	fs.StringSliceVar(&k.TrustedProxies, "trusted-proxies", k.TrustedProxies,
 		"Comma-separated list of trusted proxy CIDRs (IPv4 or IPv6, e.g. "+

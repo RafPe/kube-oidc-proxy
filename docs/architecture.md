@@ -63,7 +63,16 @@ Every request passes through the same pipeline:
 2. **Resolve the impersonation target.** If the inbound request also carries
    `Impersonate-*` headers (`kubectl --as`), the proxy runs a
    `SubjectAccessReview` to confirm the authenticated user may assume that
-   identity before honouring it. See [the impersonation model](./configuration.md#impersonation-model).
+   identity before honouring it. Because the review fan-out scales with the
+   number of header values, the values are counted first and capped
+   (`--max-impersonation-header-values`, default 64); over-cap requests are
+   rejected with HTTP 431 before any `SubjectAccessReview` is sent. Decisions
+   are served from a bounded in-memory cache before a live
+   `SubjectAccessReview` is issued: allowed and denied decisions are cached
+   under separate TTLs (`--subject-access-review-cache-allow-ttl` /
+   `--subject-access-review-cache-deny-ttl`, both `10s` by default, `0`
+   disables that class), while API-server errors are never cached. See
+   [the impersonation model](./configuration.md#impersonation-model).
 3. **Impersonate.** The proxy rewrites the request to authenticate as its own
    ServiceAccount, attaches the impersonation headers for the resolved identity,
    and records the original caller in `originaluser.jetstack.io-*` extra headers
