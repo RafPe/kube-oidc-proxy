@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - master
   pull_request:
   schedule:
     # Weekly, Monday 06:00 UTC, so new advisories are caught even without

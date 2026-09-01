@@ -1,10 +1,13 @@
 name: release-image
 
 # Builds and publishes the versioned image and Helm chart for a release tag.
-# Tags/releases published by the release workflow are created with GITHUB_TOKEN,
-# which never triggers other workflows — so release.yaml calls this via
-# workflow_call. The tag-push trigger covers manually pushed tags, and
-# workflow_dispatch backfills artifacts for an existing tag.
+# release.yaml runs this via workflow_call after pushing the tag. The tag-push
+# trigger covers manually pushed tags, and workflow_dispatch backfills
+# artifacts for an existing tag. A tag pushed by github-actions[bot] is
+# release.yaml's own push, already covered by its workflow_call — the job
+# guard below skips it so a release cannot publish twice. (GitHub used to
+# suppress workflow triggers from GITHUB_TOKEN events entirely, but the
+# release PR on 2026-09-01 showed such events do fire now.)
 on:
   push:
     tags:
@@ -27,6 +30,8 @@ permissions:
 
 jobs:
   image:
+    # Skip release.yaml's own tag push (chart needs this job, so it skips too).
+    if: github.event_name != 'push' || github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

@@ -6,8 +6,11 @@ name: Claude Review
 #   - Commenting "@claude review" on any other PR runs a Claude code review
 #     and approves only when the review finds no blocking issues.
 on:
-  # Prepare Release opens the release PR with GITHUB_TOKEN, whose events never
-  # trigger workflows, so hook the end of that run instead of the PR itself.
+  # Prepare Release opens the release PR with GITHUB_TOKEN. In practice the
+  # resulting pull_request events DO reach workflows (observed on PR #125),
+  # but hooking the end of that run as well costs one no-op job and keeps the
+  # approval working if GitHub ever suppresses those events again. The
+  # approve step is idempotent, so overlapping triggers add no extra reviews.
   workflow_run:
     workflows: ["Prepare Release"]
     types: [completed]
@@ -28,6 +31,12 @@ jobs:
        contains(join(github.event.pull_request.labels.*.name, ','), 'autorelease'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # Serialize overlapping triggers (pull_request + workflow_run fire within
+    # seconds of each other) so the already-approved check below can see the
+    # earlier run's review.
+    concurrency:
+      group: release-approve
+      cancel-in-progress: false
     steps:
       - name: Approve release PR
         env:
@@ -46,6 +55,12 @@ jobs:
               --jq '[.[] | select([.labels[].name | startswith("autorelease")] | any)][0].number // ""')
             [ -n "${pr}" ] || { echo "::notice::no open autorelease PR to approve"; exit 0; }
           fi
+          # latestReviews holds each reviewer's current review, so a standing
+          # approval means nothing to do; a push dismisses it (DISMISSED) and
+          # the next trigger re-approves.
+          approved=$(gh pr view "${pr}" -R "${GITHUB_REPOSITORY}" --json latestReviews \
+            --jq '[.latestReviews[] | select(.state == "APPROVED")] | length')
+          [ "${approved}" -eq 0 ] || { echo "::notice::PR #${pr} already has a current approval"; exit 0; }
           gh pr review "${pr}" -R "${GITHUB_REPOSITORY}" --approve \
             --body "Auto-approved release PR (autorelease label)."
 
