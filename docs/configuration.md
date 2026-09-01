@@ -205,8 +205,9 @@ subtracts API server load) and is what preserves the full configured
 `--token-passthrough-request-timeout` (including values above 30s) and
 per-request cancellation on every review. The trade-off is a few duplicate
 reviews when many requests present the same not-yet-cached token at the same
-instant; the first review to complete populates the cache and the remainder of
-the storm is served from it.
+instant: each of those in-flight requests completes its own review, the first
+to finish populates the cache, and every request arriving after that is served
+from it.
 
 ## No impersonation
 
