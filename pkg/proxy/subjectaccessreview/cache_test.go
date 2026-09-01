@@ -173,6 +173,66 @@ func TestDecisionCacheKeyCollisionResistance(t *testing.T) {
 			resource: "userextras/teambob", name: "",
 			requester: &user.DefaultInfo{Name: "alice"},
 		},
+		"colon-joined concatenation, colon in requester": {
+			// Colon-delimited requester:resource:name concatenation renders
+			// this and the case below as "alice:users:bob".
+			resource: "users", name: "bob",
+			requester: &user.DefaultInfo{Name: "alice:users"},
+		},
+		"colon-joined concatenation, colon in target": {
+			resource: "users", name: "users:bob",
+			requester: &user.DefaultInfo{Name: "alice"},
+		},
+		"space-joined concatenation, space in requester": {
+			// Space-delimited concatenation renders this and the case below
+			// as "alice users bob".
+			resource: "users", name: "bob",
+			requester: &user.DefaultInfo{Name: "alice users"},
+		},
+		"space-joined concatenation, space in target": {
+			resource: "users", name: "users bob",
+			requester: &user.DefaultInfo{Name: "alice"},
+		},
+		"unicode requester": {
+			resource: "users", name: "bob",
+			requester: &user.DefaultInfo{Name: "ålice"},
+		},
+		"unicode target, precomposed form": {
+			// U+00F6 LATIN SMALL LETTER O WITH DIAERESIS.
+			resource: "users", name: "böb",
+			requester: &user.DefaultInfo{Name: "alice"},
+		},
+		"unicode target, decomposed form": {
+			// "o" followed by U+0308 COMBINING DIAERESIS: canonically equivalent
+			// to the precomposed case yet a distinct byte sequence, so it must
+			// remain a distinct authorization question and key.
+			resource: "users", name: "bo\u0308b",
+			requester: &user.DefaultInfo{Name: "alice"},
+		},
+		"empty requester name": {
+			resource: "users", name: "bob",
+			requester: &user.DefaultInfo{Name: ""},
+		},
+		"empty group name": {
+			resource: "users", name: "bob",
+			requester: &user.DefaultInfo{Name: "alice", Groups: []string{""}},
+		},
+		"empty extra value": {
+			resource: "users", name: "bob",
+			requester: &user.DefaultInfo{Name: "alice", Extra: map[string][]string{"k": {""}}},
+		},
+		"extra key with no values": {
+			resource: "users", name: "bob",
+			requester: &user.DefaultInfo{Name: "alice", Extra: map[string][]string{"k": {}}},
+		},
+		"requester uid": {
+			resource: "users", name: "bob",
+			requester: &user.DefaultInfo{Name: "alice", UID: "uid-1"},
+		},
+		"same identity differing only in uid": {
+			resource: "users", name: "bob",
+			requester: &user.DefaultInfo{Name: "alice", UID: "uid-2"},
+		},
 	}
 
 	cache := newDecisionCache(time.Minute, time.Minute, decisionCacheSize, &fakeClock{})
@@ -475,6 +535,38 @@ func TestCachedAllowNotLeakedAcrossNaiveCollision(t *testing.T) {
 	}
 	if got := reviewer.calls.Load(); got != 2 {
 		t.Errorf("SAR Create ran %d times, want 2 (colliding identity must be checked live)", got)
+	}
+}
+
+// TestCachedAllowNotInheritedAcrossUID verifies that two principals identical
+// in name, groups, and extras but differing in UID never share a cached
+// decision: the requester's UID is part of the submitted SAR spec and
+// therefore of the cache key, so the second principal must be checked live
+// and denied rather than inheriting the first principal's cached allow.
+func TestCachedAllowNotInheritedAcrossUID(t *testing.T) {
+	clk := &fakeClock{now: time.Unix(1000, 0)}
+	reviewer := &fnReviewer{}
+	// Only the principal with UID "uid-allowed" holds the impersonation grant.
+	reviewer.set(func(req *azv1.SubjectAccessReview) (*azv1.SubjectAccessReview, error) {
+		req.Status = azv1.SubjectAccessReviewStatus{Allowed: req.Spec.UID == "uid-allowed"}
+		return req, nil
+	})
+	sar := newCachedSAR(reviewer, 10*time.Second, 30*time.Second, clk)
+
+	privileged := &user.DefaultInfo{Name: "mmosley", UID: "uid-allowed", Groups: []string{"group1"}}
+	target, err := sar.CheckAuthorizedForImpersonation(impersonateUserRequest("bob"), privileged)
+	if err != nil || target == nil || target.GetName() != "bob" {
+		t.Fatalf("privileged principal: target = %+v, err = %v, want allow", target, err)
+	}
+
+	// Same name, groups, and extras — only the UID differs.
+	imposter := &user.DefaultInfo{Name: "mmosley", UID: "uid-other", Groups: []string{"group1"}}
+	target, err = sar.CheckAuthorizedForImpersonation(impersonateUserRequest("bob"), imposter)
+	if target != nil || !errors.Is(err, ErrImpersonationNotAllowed) {
+		t.Fatalf("differing-UID principal: target = %+v, err = %v, want denial (must not inherit cached allow)", target, err)
+	}
+	if got := reviewer.calls.Load(); got != 2 {
+		t.Errorf("SAR Create ran %d times, want 2 (differing-UID principal must be checked live)", got)
 	}
 }
 

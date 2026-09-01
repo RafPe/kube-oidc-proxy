@@ -322,8 +322,8 @@ func (s *SubjectAccessReview) liveCheck(ctx context.Context, spec *v1.SubjectAcc
 // impersonationReviewSpec builds the SubjectAccessReviewSpec asking whether
 // requester may impersonate the named resource. The same spec is both
 // submitted to the API server and serialized as the cache key, so every field
-// that can influence the decision — including the requester's Extra fields —
-// is part of the key by construction.
+// that can influence the decision — including the requester's UID and Extra
+// fields — is part of the key by construction.
 func impersonationReviewSpec(resource string, name string, requester user.Info) v1.SubjectAccessReviewSpec {
 	extras := map[string]v1.ExtraValue{}
 	var group string
@@ -351,6 +351,7 @@ func impersonationReviewSpec(resource string, name string, requester user.Info) 
 
 	return v1.SubjectAccessReviewSpec{
 		User:   requester.GetName(),
+		UID:    requester.GetUID(),
 		Groups: requester.GetGroups(),
 		Extra:  extras,
 
