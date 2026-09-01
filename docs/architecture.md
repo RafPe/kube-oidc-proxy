@@ -55,24 +55,17 @@ Every request passes through the same pipeline:
 1. **Authenticate.** The bearer token is validated. If it fails OIDC validation
    and token passthrough is enabled, the proxy falls back to a `TokenReview`
    against the API server (see [token passthrough](./configuration.md#token-passthrough)).
-   TokenReview results are cached in a bounded in-memory cache (successful and
-   unauthenticated verdicts have separate TTLs, both 10s by default; errors are
-   never cached), so repeated requests with the same token don't trigger a
-   review each time. Concurrent first requests for the same token each run
-   their own review on their caller's context.
+   Review results are served from a bounded in-memory cache — see
+   [Caching and API-server protection](./caching.md#tokenreview-result-cache).
 2. **Resolve the impersonation target.** If the inbound request also carries
    `Impersonate-*` headers (`kubectl --as`), the proxy runs a
    `SubjectAccessReview` to confirm the authenticated user may assume that
-   identity before honouring it. Because the review fan-out scales with the
-   number of header values, the values are counted first and capped
-   (`--max-impersonation-header-values`, default 64); over-cap requests are
-   rejected with HTTP 431 before any `SubjectAccessReview` is sent. Decisions
-   are served from a bounded in-memory cache before a live
-   `SubjectAccessReview` is issued: allowed and denied decisions are cached
-   under separate TTLs (`--subject-access-review-cache-allow-ttl` /
-   `--subject-access-review-cache-deny-ttl`, both `10s` by default, `0`
-   disables that class), while API-server errors are never cached. See
-   [the impersonation model](./configuration.md#impersonation-model).
+   identity before honouring it (see
+   [the impersonation model](./configuration.md#impersonation-model)). The
+   header value count is capped up front (over-cap requests are rejected with
+   HTTP 431 before any review is sent), and decisions are served from a
+   bounded in-memory cache — see
+   [Caching and API-server protection](./caching.md#subjectaccessreview-decision-cache).
 3. **Impersonate.** The proxy rewrites the request to authenticate as its own
    ServiceAccount, attaches the impersonation headers for the resolved identity,
    and records the original caller in `originaluser.jetstack.io-*` extra headers
@@ -154,4 +147,5 @@ maps to a handler in `pkg/proxy`.
 - [Multi-issuer authentication](./multi-issuer.md)
 - [Getting started](./getting-started.md)
 - [Configuration reference](./configuration.md)
+- [Caching and API-server protection](./caching.md)
 - [Operations: security](./operations.md#security)

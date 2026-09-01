@@ -103,6 +103,7 @@ See [docs/architecture.md](./docs/architecture.md) for the full C4 model (system
 | **Multi-issuer authentication** (headline feature) | [docs/multi-issuer.md](./docs/multi-issuer.md) |
 | Install, TLS, kubeconfig, auth modes | [docs/getting-started.md](./docs/getting-started.md) |
 | All flags, impersonation, task recipes | [docs/configuration.md](./docs/configuration.md) |
+| Caching and API-server protection: TokenReview/SAR caches, header cap | [docs/caching.md](./docs/caching.md) |
 | How it works: request flow, union authenticator, readiness | [docs/architecture.md](./docs/architecture.md) |
 | Security, troubleshooting, request logs, local testing | [docs/operations.md](./docs/operations.md) |
 | All chart values | [chart/kube-oidc-proxy/README.md](./chart/kube-oidc-proxy/README.md) |

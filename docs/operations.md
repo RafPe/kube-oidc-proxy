@@ -23,10 +23,13 @@ Security, troubleshooting, and testing the proxy locally.
   non-OIDC tokens after a TokenReview; only enable it (and constrain
   `--token-passthrough-audiences`) when you understand the tokens involved.
   TokenReview results are cached, so a **revoked token keeps working for up to
-  `--token-passthrough-cache-success-ttl`** (default 10s, matching the
-  kube-apiserver's own delegated-authentication cache), and a newly valid token
-  can keep being rejected for up to `--token-passthrough-cache-failure-ttl`
-  (default 10s). Set either to `0` to disable that side of the cache.
+  `--token-passthrough-cache-success-ttl`** (default 10s). Set it to `0` to
+  disable — see [Caching and API-server protection](./caching.md#tokenreview-result-cache).
+- **Know the caching tradeoffs.** TokenReview results and impersonation
+  `SubjectAccessReview` decisions are both cached with 10s TTLs by default, so
+  token revocation and RBAC grant/revoke changes lag by up to one TTL. The
+  tradeoffs and the per-request-revocation settings are documented in
+  [Caching and API-server protection](./caching.md).
 - **Configure trusted proxies before trusting forwarded IPs.** By default the
   proxy ignores `X-Forwarded-For` and uses the direct peer as the client IP, so
   clients cannot forge the logged or impersonated client IP. Set
@@ -42,11 +45,11 @@ Security, troubleshooting, and testing the proxy locally.
 | `401 Unauthorized` from the proxy | The token failed OIDC validation — wrong `issuerUrl`/`clientId` (audience), expired token, unmet `requiredClaims`, or a signing algorithm not in `--oidc-signing-algs`. Look for an `AuFail` line in the proxy logs. |
 | `403 Forbidden` after a successful login | Authentication worked but RBAC denied the impersonated identity. Grant the mapped username/groups the appropriate roles. Watch for username **prefixes** (e.g. `google:alice@example.com`). |
 | `kubectl --as` fails through the proxy | The authenticated user isn't authorized to impersonate that identity (`SubjectAccessReview` denied), or the proxy's ServiceAccount lacks impersonation RBAC for a named `Impersonate-Extra-` key. |
-| `431 Request Header Fields Too Large` on `kubectl --as` | The request carried more impersonation header values (user + every group, uid and extra value) than the proxy accepts per request — each value counts toward the per-request `SubjectAccessReview` fan-out, so the count is capped (default 64) and over-cap requests are rejected before any review is sent. Raise `--max-impersonation-header-values` (`maxImpersonationHeaderValues` in the chart) if the identity legitimately needs more. |
-| RBAC impersonation grant/revoke takes up to 10s to take effect through the proxy | Expected: impersonation `SubjectAccessReview` decisions are cached. A revoked grant keeps working for up to `--subject-access-review-cache-allow-ttl` (default `10s`) while the cached allow expires; a new grant keeps failing for up to `--subject-access-review-cache-deny-ttl` (default `10s`) while the cached deny expires. Set either TTL to `0` to disable caching for that decision class and re-check every request. |
+| `431 Request Header Fields Too Large` on `kubectl --as` | The request carried more impersonation header values (user + every group, uid and extra value) than the proxy accepts per request (default 64). Raise `--max-impersonation-header-values` (`maxImpersonationHeaderValues` in the chart) if the identity legitimately needs more — see [the header value cap](./caching.md#impersonation-header-value-cap). |
+| RBAC impersonation grant/revoke takes up to 10s to take effect through the proxy | Expected: impersonation `SubjectAccessReview` decisions are cached. A revoked grant keeps working for up to `--subject-access-review-cache-allow-ttl`; a new grant keeps failing for up to `--subject-access-review-cache-deny-ttl` (both default `10s`). Set either TTL to `0` to re-check that class on every request — see [the SAR decision cache](./caching.md#subjectaccessreview-decision-cache). |
 | TLS errors connecting to the proxy | The client's kubeconfig `certificate-authority` must trust the proxy's **serving** certificate (self-signed by the chart, your own Secret, or cert-manager). |
 | Confirm which issuers loaded | `kubectl -n kube-oidc-proxy logs deploy/kube-oidc-proxy \| grep "configured OIDC issuers"`. |
-| A revoked passthrough token still works / a newly valid one is rejected | The TokenReview result cache. A revoked token passes for up to `--token-passthrough-cache-success-ttl` (default 10s) after revocation; a token that just became valid can be rejected for up to `--token-passthrough-cache-failure-ttl` (default 10s). Set either flag to `0` to disable that cache. |
+| A revoked passthrough token still works / a newly valid one is rejected | The TokenReview result cache. A revoked token passes for up to `--token-passthrough-cache-success-ttl`; a token that just became valid can be rejected for up to `--token-passthrough-cache-failure-ttl` (both default 10s). Set either flag to `0` to disable that side — see [the TokenReview cache](./caching.md#tokenreview-result-cache). |
 
 ### Reading the request log
 
