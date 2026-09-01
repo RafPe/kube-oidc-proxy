@@ -105,6 +105,9 @@ spec:
           - "--token-passthrough-audiences={{ join "," .Values.tokenPassthrough.audiences }}"
           {{ end }}
           {{ end }}
+          {{- if .Values.maxImpersonationHeaderValues }}
+          - "--max-impersonation-header-values={{ .Values.maxImpersonationHeaderValues }}"
+          {{ end }}
           {{- if .Values.extraImpersonationHeaders.clientIP }}
           - "--extra-user-header-client-ip"
           {{ end }}

@@ -123,6 +123,7 @@ Ignored when `authenticationConfig.content` is set.
 | --- | --- | --- | --- |
 | `tokenPassthrough.enabled` | bool | `false` | Forward non-OIDC bearer tokens to the API server (validated via TokenReview). |
 | `tokenPassthrough.audiences` | list | `[]` | Allowed audiences for passthrough tokens. |
+| `maxImpersonationHeaderValues` | int | `nil` (binary default 64) | Cap on inbound impersonation header values per request (`kubectl --as`: user + every group, uid and extra value); over-cap requests get HTTP 431 before any `SubjectAccessReview`. Sets `--max-impersonation-header-values` when non-empty. |
 | `extraImpersonationHeaders.clientIP` | bool | `false` | Send the client source IP as an extra user header. |
 | `extraImpersonationHeaders.headers` | string | `nil` | Extra `key=value` user headers (`--extra-user-headers`), comma-separated. |
 
