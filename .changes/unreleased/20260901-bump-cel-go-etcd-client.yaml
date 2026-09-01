@@ -1,0 +1,2 @@
+kind: Dependencies
+body: Bump github.com/google/cel-go to v0.30.0 and go.etcd.io/etcd/{api,client/pkg,client}/v3 to v3.7.1 to remediate GO-2026-6094 and GO-2026-6107.
