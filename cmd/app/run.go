@@ -128,9 +128,9 @@ func buildRunCommand(stopCh <-chan struct{}, opts *options.Options) *cobra.Comma
 			}
 
 			// Initialise token reviewer if enabled. The reviewer is wrapped in
-			// the upstream token result cache so repeated reviews of the same
-			// token (e.g. request storms during an OIDC issuer outage) do not
-			// each cost an API server round trip; NewCached returns the bare
+			// a token result cache so repeated reviews of the same token
+			// (e.g. request storms during an OIDC issuer outage) do not each
+			// cost an API server round trip; NewCached returns the bare
 			// reviewer when both TTLs are zero.
 			var tokenReviewer authenticator.Token
 			if opts.App.TokenPassthrough.Enabled {

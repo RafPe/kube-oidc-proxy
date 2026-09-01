@@ -6,13 +6,19 @@ package tokenreview
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
+	"hash"
+	"sync"
 	"time"
 
 	authv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilcache "k8s.io/apimachinery/pkg/util/cache"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
-	"k8s.io/apiserver/pkg/authentication/token/cache"
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/client-go/kubernetes"
 	clientauthv1 "k8s.io/client-go/kubernetes/typed/authentication/v1"
@@ -47,57 +53,129 @@ func New(restConfig *rest.Config, audiences []string, timeout time.Duration) (*T
 	}, nil
 }
 
-// NewCached wraps reviewer in the upstream token result cache
-// (k8s.io/apiserver/pkg/authentication/token/cache), the same cache the
-// kube-apiserver's delegating authenticator uses. Successful reviews are
-// cached for successTTL and unauthenticated results for failureTTL, and
-// concurrent calls for one token collapse into a single TokenReview via
-// singleflight. Errors (API server unreachable, timeout, status.Error) are
-// never cached, so a transient failure is retried on the next request and the
-// path stays fail-closed. When both TTLs are zero (or negative) the reviewer
-// is returned unwrapped and behaves exactly as before caching existed.
+// NewCached wraps reviewer in a TokenReview result cache. Successful reviews
+// are cached for successTTL and unauthenticated results for failureTTL.
+// Errors (API server unreachable, timeout, status.Error) are never cached, so
+// a transient failure is retried on the next request and the path stays
+// fail-closed. When both TTLs are zero (or negative) the reviewer is returned
+// unwrapped and behaves exactly as before caching existed.
+//
+// A cache miss runs the TokenReview on the caller's own context, so caching
+// preserves the uncached request contract exactly: the configured review
+// timeout applies in full (including values above 30s) and cancelling the
+// inbound request cancels its in-flight review. The deliberate trade-off is
+// that concurrent misses for one token are not collapsed into a single
+// review — each runs its own, exactly as every request did before caching
+// existed — so the cache only ever subtracts load. (The upstream
+// kube-apiserver token cache deduplicates via singleflight instead, but pays
+// for it by running lookups on a detached context with a hardcoded 30s cap,
+// which would silently truncate longer configured timeouts and detach client
+// cancellation.)
 //
 // Security: a cached success outlives token revocation for up to successTTL,
 // so a token deleted or invalidated at the API server may still pass through
 // this proxy until its cache entry expires. Keep successTTL small; the
 // kube-apiserver's own precedent is 10s.
 //
-// Cache keys are an HMAC of the token plus any audiences carried in the
-// context (see keyFunc in the upstream package). The reviewer's configured
-// audiences are fixed at construction and each NewCached call owns a private
-// cache with a per-instance random HMAC key, so two audience sets can never
-// collide; the audiences are still injected into the context on every call so
-// the key covers them explicitly.
-//
-// Note: when caching is enabled the shared lookup runs on a detached context
-// capped at 30s by the upstream cache, so a configured review timeout above
-// 30s is effectively truncated, and client disconnects no longer cancel an
-// in-flight review (waiters return immediately; the shared lookup completes
-// and populates the cache).
+// Cache keys are an HMAC-SHA256, keyed with a per-instance random key, over
+// the length-prefixed token and configured audiences (mirroring the upstream
+// cache's keyFunc): tokens are never stored in memory as map keys, keys
+// cannot be precomputed or length-extended, and two audience sets can never
+// collide — each NewCached call also owns a private cache.
 func NewCached(reviewer *TokenReview, successTTL, failureTTL time.Duration) authenticator.Token {
 	if successTTL <= 0 && failureTTL <= 0 {
 		return reviewer
 	}
 
-	return &audienceKeyedCache{
-		delegate:  cache.New(reviewer, false, successTTL, failureTTL),
-		audiences: authenticator.Audiences(reviewer.audiences),
+	randomKey := make([]byte, 32)
+	if _, err := rand.Read(randomKey); err != nil {
+		panic(err) // rand.Read never fails
+	}
+
+	return &cachedTokenReview{
+		reviewer:   reviewer,
+		successTTL: successTTL,
+		failureTTL: failureTTL,
+		cache:      utilcache.NewExpiring(),
+		hashPool: &sync.Pool{
+			New: func() any {
+				return hmac.New(sha256.New, randomKey)
+			},
+		},
 	}
 }
 
-// audienceKeyedCache injects the reviewer's configured audiences into the
-// context before delegating to the cached authenticator, so the cache key is
-// derived from token+audiences rather than the token alone.
-type audienceKeyedCache struct {
-	delegate  authenticator.Token
-	audiences authenticator.Audiences
+// cachedTokenReview caches the delegate reviewer's results, bounded by the
+// success/failure TTLs. Entries past their TTL are dropped by the Expiring
+// store on lookup and garbage-collected on insertion, so memory is bounded by
+// the tokens seen within one TTL window.
+type cachedTokenReview struct {
+	reviewer   *TokenReview
+	successTTL time.Duration
+	failureTTL time.Duration
+
+	cache    *utilcache.Expiring
+	hashPool *sync.Pool
 }
 
-func (a *audienceKeyedCache) AuthenticateToken(ctx context.Context, token string) (*authenticator.Response, bool, error) {
-	if len(a.audiences) > 0 {
-		ctx = authenticator.WithAudiences(ctx, a.audiences)
+var _ authenticator.Token = (*cachedTokenReview)(nil)
+
+// cachedReview is the cacheable subset of an AuthenticateToken result. Errors
+// are deliberately unrepresentable: only definitive answers are cached.
+type cachedReview struct {
+	resp *authenticator.Response
+	ok   bool
+}
+
+func (c *cachedTokenReview) AuthenticateToken(ctx context.Context, token string) (*authenticator.Response, bool, error) {
+	key := cacheKey(c.hashPool, token, c.reviewer.audiences)
+
+	if v, hit := c.cache.Get(key); hit {
+		record := v.(cachedReview)
+		return record.resp, record.ok, nil
 	}
-	return a.delegate.AuthenticateToken(ctx, token)
+
+	resp, ok, err := c.reviewer.AuthenticateToken(ctx, token)
+	if err != nil {
+		return nil, false, err
+	}
+
+	switch {
+	case ok && c.successTTL > 0:
+		c.cache.Set(key, cachedReview{resp: resp, ok: true}, c.successTTL)
+	case !ok && c.failureTTL > 0:
+		c.cache.Set(key, cachedReview{}, c.failureTTL)
+	}
+
+	return resp, ok, nil
+}
+
+// cacheKey hashes the token and audiences into a cache key. Every component
+// is length-prefixed so distinct (token, audiences) inputs can never encode
+// to the same byte stream (e.g. token "x" with audience "yz" versus token
+// "xy" with audience "z").
+func cacheKey(hashPool *sync.Pool, token string, audiences []string) string {
+	h := hashPool.Get().(hash.Hash)
+	defer hashPool.Put(h)
+	h.Reset()
+
+	var b [4]byte
+	writeLengthPrefixed(h, b[:], token)
+	binary.BigEndian.PutUint32(b[:], uint32(len(audiences)))
+	h.Write(b[:])
+	for _, aud := range audiences {
+		writeLengthPrefixed(h, b[:], aud)
+	}
+
+	return string(h.Sum(nil))
+}
+
+// writeLengthPrefixed writes s preceded by its length. b is a scratch buffer
+// of at least 4 bytes.
+func writeLengthPrefixed(h hash.Hash, b []byte, s string) {
+	binary.BigEndian.PutUint32(b, uint32(len(s)))
+	h.Write(b[:4])
+	h.Write([]byte(s))
 }
 
 // reviewTimeout returns the configured TokenReview budget, defaulting when

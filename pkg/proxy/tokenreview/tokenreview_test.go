@@ -3,8 +3,11 @@ package tokenreview
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"errors"
 	"reflect"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -300,12 +303,153 @@ func TestNewCached(t *testing.T) {
 }
 
 // TestNewCachedZeroTTLsReturnsBareReviewer pins that disabling both TTLs keeps
-// the exact pre-cache behaviour: no cache layer, no singleflight, no detached
-// context.
+// the exact pre-cache behaviour: no cache layer at all.
 func TestNewCachedZeroTTLsReturnsBareReviewer(t *testing.T) {
 	reviewer := &TokenReview{reviewRequester: fake.New()}
 	if got := NewCached(reviewer, 0, 0); got != reviewer {
 		t.Errorf("expected the bare reviewer back for zero TTLs, got %T", got)
+	}
+}
+
+// TestCachedReviewHonoursCallerCancellation pins that enabling the cache does
+// not detach reviews from the inbound request: cancelling the caller's context
+// must cancel the in-flight TokenReview and surface the cancellation error.
+func TestCachedReviewHonoursCallerCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	reviewer := &TokenReview{
+		reviewRequester: &fake.FakeReviewer{
+			CreateCtxFn: func(reviewCtx context.Context, _ *authv1.TokenReview) (*authv1.TokenReview, error) {
+				// Cancel the inbound request while its review is in flight;
+				// the review's context must observe the cancellation.
+				cancel()
+				select {
+				case <-reviewCtx.Done():
+					return nil, reviewCtx.Err()
+				case <-time.After(5 * time.Second):
+					return authenticatedReview(), nil
+				}
+			},
+		},
+	}
+
+	cached := NewCached(reviewer, 10*time.Second, 10*time.Second)
+
+	start := time.Now()
+	resp, ok, err := cached.AuthenticateToken(ctx, "token-a")
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected the caller's cancellation to reach the review, got err=%v", err)
+	}
+	if ok || resp != nil {
+		t.Errorf("expected a failed review on cancellation, got ok=%t resp=%#v", ok, resp)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("cancellation did not propagate promptly, review returned after %s", elapsed)
+	}
+}
+
+// TestCachedReviewHonoursTimeoutAboveThirtySeconds pins that the configured
+// review timeout is applied in full when the cache is enabled. The upstream
+// kube-apiserver token cache would cap it at a hardcoded 30s; this cache must
+// not.
+func TestCachedReviewHonoursTimeoutAboveThirtySeconds(t *testing.T) {
+	const configured = 45 * time.Second
+
+	var gotDeadline time.Time
+	var hadDeadline bool
+	reviewer := &TokenReview{
+		timeout: configured,
+		reviewRequester: &fake.FakeReviewer{
+			CreateCtxFn: func(reviewCtx context.Context, _ *authv1.TokenReview) (*authv1.TokenReview, error) {
+				gotDeadline, hadDeadline = reviewCtx.Deadline()
+				return authenticatedReview(), nil
+			},
+		},
+	}
+
+	cached := NewCached(reviewer, 10*time.Second, 10*time.Second)
+
+	before := time.Now()
+	if _, ok, err := cached.AuthenticateToken(context.Background(), "token-a"); err != nil || !ok {
+		t.Fatalf("unexpected review result, ok=%t err=%v", ok, err)
+	}
+
+	if !hadDeadline {
+		t.Fatal("expected the review context to carry the configured deadline")
+	}
+	if remaining := gotDeadline.Sub(before); remaining <= 30*time.Second {
+		t.Errorf("configured timeout was capped: review deadline only %s away, want ~%s", remaining, configured)
+	}
+}
+
+// TestCachedReviewSeparatesAudienceSets pins the security invariant that the
+// same token reviewed under different configured audience sets can never share
+// a cache entry.
+func TestCachedReviewSeparatesAudienceSets(t *testing.T) {
+	// One counting fake serves both reviewers and keys its answer off the
+	// audiences in the review spec: aud-1 authenticates, anything else does
+	// not. A cross-audience cache collision would surface as a wrong result
+	// or a missing apiserver call.
+	var calls atomic.Int64
+	requester := &fake.FakeReviewer{
+		CreateFn: func(review *authv1.TokenReview) (*authv1.TokenReview, error) {
+			calls.Add(1)
+			if reflect.DeepEqual(review.Spec.Audiences, []string{"aud-1"}) {
+				return authenticatedReview(), nil
+			}
+			return unauthenticatedReview(), nil
+		},
+	}
+
+	cachedAud1 := NewCached(&TokenReview{audiences: []string{"aud-1"}, reviewRequester: requester},
+		10*time.Second, 10*time.Second)
+	cachedAud2 := NewCached(&TokenReview{audiences: []string{"aud-2"}, reviewRequester: requester},
+		10*time.Second, 10*time.Second)
+
+	for i := range 2 {
+		if _, ok, err := cachedAud1.AuthenticateToken(context.Background(), "token-a"); err != nil || !ok {
+			t.Fatalf("round %d: unexpected aud-1 result, ok=%t err=%v", i, ok, err)
+		}
+		if _, ok, err := cachedAud2.AuthenticateToken(context.Background(), "token-a"); err != nil || ok {
+			t.Fatalf("round %d: aud-2 review must not reuse the aud-1 cached success, ok=%t err=%v", i, ok, err)
+		}
+	}
+
+	// One review per audience set; the second round of each was a cache hit
+	// on its own entry.
+	if got := calls.Load(); got != 2 {
+		t.Errorf("unexpected number of apiserver calls, exp=2 got=%d", got)
+	}
+}
+
+// TestCacheKey pins the collision resistance of the key derivation: distinct
+// (token, audiences) inputs must map to distinct keys, including the
+// length-prefix ambiguities a naive concatenation would collapse.
+func TestCacheKey(t *testing.T) {
+	pool := &sync.Pool{
+		New: func() any {
+			return hmac.New(sha256.New, []byte("fixed-test-key"))
+		},
+	}
+
+	base := cacheKey(pool, "token", []string{"aud-1"})
+
+	if got := cacheKey(pool, "token", []string{"aud-1"}); got != base {
+		t.Error("equal inputs must produce equal keys")
+	}
+
+	distinct := map[string]string{
+		"different token":                 cacheKey(pool, "token-b", []string{"aud-1"}),
+		"different audience":              cacheKey(pool, "token", []string{"aud-2"}),
+		"no audiences":                    cacheKey(pool, "token", nil),
+		"split audience list":             cacheKey(pool, "token", []string{"aud", "-1"}),
+		"token/audience boundary shifted": cacheKey(pool, "tokenaud-1", nil),
+	}
+	for name, key := range distinct {
+		if key == base {
+			t.Errorf("%s must not collide with the base key", name)
+		}
 	}
 }
 
