@@ -58,8 +58,8 @@ Every request passes through the same pipeline:
 2. **Resolve the impersonation target.** If the inbound request also carries
    `Impersonate-*` headers (`kubectl --as`), the proxy runs a
    `SubjectAccessReview` to confirm the authenticated user may assume that
-   identity before honouring it. Because every header value costs one review
-   round trip, the values are counted first and capped
+   identity before honouring it. Because the review fan-out scales with the
+   number of header values, the values are counted first and capped
    (`--max-impersonation-header-values`, default 64); over-cap requests are
    rejected with HTTP 431 before any `SubjectAccessReview` is sent. See
    [the impersonation model](./configuration.md#impersonation-model).
