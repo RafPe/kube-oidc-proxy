@@ -286,7 +286,7 @@ func runTest(t *testing.T, name string, test testT) {
 		extras[key] = value
 	}
 
-	testReviewer, _ := New(fake.New(test.expErrorRbac), DefaultTimeout)
+	testReviewer, _ := New(fake.New(test.expErrorRbac), DefaultTimeout, 0, 0)
 
 	headers := map[string][]string{}
 
@@ -461,7 +461,7 @@ type sarResult struct {
 // sequence with context.Canceled and does not run further checks.
 func TestCheckAuthorizedForImpersonationCanceled(t *testing.T) {
 	reviewer := &blockingReviewer{entered: make(chan struct{}, 1)}
-	sar, err := New(reviewer, DefaultTimeout)
+	sar, err := New(reviewer, DefaultTimeout, 0, 0)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -509,7 +509,7 @@ func TestCheckAuthorizedForImpersonationCanceled(t *testing.T) {
 // context.DeadlineExceeded and runs at most the first check.
 func TestCheckAuthorizedForImpersonationDeadlineExceeded(t *testing.T) {
 	reviewer := &blockingReviewer{entered: make(chan struct{}, 1)}
-	sar, err := New(reviewer, DefaultTimeout)
+	sar, err := New(reviewer, DefaultTimeout, 0, 0)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -550,7 +550,7 @@ func TestCheckAuthorizedForImpersonationDeadlineExceeded(t *testing.T) {
 // budget distinguishable from a longer one that would only expire much later.
 func TestCheckAuthorizedForImpersonationConfiguredTimeout(t *testing.T) {
 	reviewer := &blockingReviewer{entered: make(chan struct{}, 1)}
-	sar, err := New(reviewer, 50*time.Millisecond)
+	sar, err := New(reviewer, 50*time.Millisecond, 0, 0)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

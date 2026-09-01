@@ -327,7 +327,7 @@ func TestReservedIdentityRejectedBeforeSubjectAccessReview(t *testing.T) {
 	p := newTestProxy(t)
 
 	reviewer := &countingReviewer{FakeReviewer: fakesubjectaccessreview.New(nil)}
-	sar, err := subjectaccessreview.New(reviewer, subjectaccessreview.DefaultTimeout)
+	sar, err := subjectaccessreview.New(reviewer, subjectaccessreview.DefaultTimeout, 0, 0)
 	if err != nil {
 		t.Fatalf("creating subject access reviewer: %s", err)
 	}

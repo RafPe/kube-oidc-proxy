@@ -116,6 +116,14 @@ func (o *Options) Validate(cmd *cobra.Command) error {
 		errs = append(errs, fmt.Errorf("--subject-access-review-timeout must be greater than 0, got %s", o.App.SubjectAccessReviewTimeout))
 	}
 
+	if o.App.SubjectAccessReviewAllowCacheTTL < 0 {
+		errs = append(errs, fmt.Errorf("--subject-access-review-allow-cache-ttl must not be negative (0 disables caching of allowed decisions), got %s", o.App.SubjectAccessReviewAllowCacheTTL))
+	}
+
+	if o.App.SubjectAccessReviewDenyCacheTTL < 0 {
+		errs = append(errs, fmt.Errorf("--subject-access-review-deny-cache-ttl must not be negative (0 disables caching of denied decisions), got %s", o.App.SubjectAccessReviewDenyCacheTTL))
+	}
+
 	if len(errs) > 0 {
 		return k8sErrors.NewAggregate(errs)
 	}
