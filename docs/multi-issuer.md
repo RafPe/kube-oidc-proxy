@@ -60,6 +60,58 @@ Workflow side: `permissions: id-token: write`, then
 `core.getIDToken('kube-oidc-proxy.example.com')` (actions/github-script) —
 the audience argument must match `audiences` above.
 
+#### Synthesizing several groups from one token
+
+A groups `expression` may return a **list**, so one token can carry several
+groups cut along different axes — the owning org, the exact workflow, and the
+triggering actor. Bindings can then target whichever granularity they need
+(broad org-wide access, or a single workflow) without issuing more tokens.
+
+```yaml
+- issuer:
+    url: https://token.actions.githubusercontent.com
+    audiences: ["kube-oidc-proxy.example.com"]
+  claimMappings:
+    username:
+      claim: sub
+      prefix: "gha:"
+    groups:
+      # A list expression returns multiple groups from one token. Prefixes must
+      # live inside the expression (the `prefix:` field is only for `claim:`),
+      # so a shared `gha:` root keeps the three axes in one namespace.
+      expression: >-
+        [
+          "gha:org:" + claims.repository_owner,
+          "gha:workflow:" + claims.job_workflow_ref,
+          "gha:actor:" + claims.actor
+        ]
+  claimValidationRules:
+  - expression: 'claims.repository_owner == "my-org"'
+    message: "only my-org tokens are accepted"
+```
+
+For the example claims `repository_owner: my-org`, `actor: octocat`, and
+`job_workflow_ref: my-org/deploy/.github/workflows/release.yml@refs/heads/main`,
+that token authenticates with the groups:
+
+- `gha:org:my-org`
+- `gha:workflow:my-org/deploy/.github/workflows/release.yml@refs/heads/main`
+- `gha:actor:octocat`
+
+Notes:
+
+- Every claim referenced must be present or the expression errors and
+  authentication fails. `repository_owner`, `actor`, and `job_workflow_ref`
+  are always set on Actions tokens; guard optional claims (e.g. `environment`)
+  with `has(claims.environment) ? ["gha:env:" + claims.environment] : []` and
+  concatenate lists with `+`.
+- Each group is bound in RBAC by its **exact** string, colons included; the
+  whole value is one opaque group name, not a hierarchy Kubernetes interprets.
+- `job_workflow_ref` is high-cardinality — prefer it for narrow,
+  per-workflow bindings and use `gha:org:` for broad access. Use
+  `workflow_ref` instead if you want the top-level workflow rather than the
+  called/reusable one.
+
 ### TeamCity ([teamcity-oidc-jwt](https://github.com/JetBrains/teamcity-oidc-jwt) plugin)
 
 The plugin serves unauthenticated discovery/JWKS under
