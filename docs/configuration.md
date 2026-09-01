@@ -191,6 +191,23 @@ instead, supply them — at least one must be present in the token:
 --token-passthrough-audiences=aud1.foo.bar,aud2.foo.bar
 ```
 
+### TokenReview caching
+
+Review results are cached per the `--token-passthrough-cache-success-ttl` and
+`--token-passthrough-cache-failure-ttl` flags. The cache holds at most 8192
+entries and evicts the least recently used one when full, so a flood of unique
+invalid tokens cannot grow the proxy's memory without bound.
+
+Concurrent requests that miss the cache for the same token each run their own
+TokenReview — misses are deliberately not collapsed into a single in-flight
+review. This matches the behaviour before caching existed (the cache only ever
+subtracts API server load) and is what preserves the full configured
+`--token-passthrough-request-timeout` (including values above 30s) and
+per-request cancellation on every review. The trade-off is a few duplicate
+reviews when many requests present the same not-yet-cached token at the same
+instant; the first review to complete populates the cache and the remainder of
+the storm is served from it.
+
 ## No impersonation
 
 Disable impersonation entirely: after a request authenticates, it is forwarded

@@ -29,6 +29,14 @@ import (
 // configured. It also backstops zero-valued construction.
 const defaultTimeout = 10 * time.Second
 
+// tokenCacheSize bounds the number of cached review results. Cache keys are
+// derived from attacker-supplied bearer tokens, so the cache must evict (LRU)
+// rather than grow without bound: without a cap, a flood of unique invalid
+// tokens would each pin an entry for the full failure TTL. The size mirrors
+// the SubjectAccessReview decision cache and the response cache of the
+// upstream webhook authorizer.
+const tokenCacheSize = 8192
+
 // TokenReview submits a live TokenReview to the API server for every call. It
 // implements authenticator.Token; wrap it with NewCached to avoid repeating
 // the round trip for tokens seen recently.
@@ -86,7 +94,12 @@ func NewCached(reviewer *TokenReview, successTTL, failureTTL time.Duration) auth
 	if successTTL <= 0 && failureTTL <= 0 {
 		return reviewer
 	}
+	return newCachedTokenReview(reviewer, successTTL, failureTTL, tokenCacheSize)
+}
 
+// newCachedTokenReview builds the cache layer with an explicit entry cap; the
+// cap is a parameter only so tests can exercise eviction cheaply.
+func newCachedTokenReview(reviewer *TokenReview, successTTL, failureTTL time.Duration, size int) *cachedTokenReview {
 	randomKey := make([]byte, 32)
 	if _, err := rand.Read(randomKey); err != nil {
 		panic(err) // rand.Read never fails
@@ -96,7 +109,7 @@ func NewCached(reviewer *TokenReview, successTTL, failureTTL time.Duration) auth
 		reviewer:   reviewer,
 		successTTL: successTTL,
 		failureTTL: failureTTL,
-		cache:      utilcache.NewExpiring(),
+		cache:      utilcache.NewLRUExpireCache(size),
 		hashPool: &sync.Pool{
 			New: func() any {
 				return hmac.New(sha256.New, randomKey)
@@ -105,16 +118,17 @@ func NewCached(reviewer *TokenReview, successTTL, failureTTL time.Duration) auth
 	}
 }
 
-// cachedTokenReview caches the delegate reviewer's results, bounded by the
-// success/failure TTLs. Entries past their TTL are dropped by the Expiring
-// store on lookup and garbage-collected on insertion, so memory is bounded by
-// the tokens seen within one TTL window.
+// cachedTokenReview caches the delegate reviewer's results in a
+// fixed-capacity LRU store. Entries past their TTL are dropped on lookup, and
+// once the store holds tokenCacheSize entries every insertion evicts the
+// least recently used one, so a flood of unique (attacker-controlled) tokens
+// recycles the same fixed slots instead of growing memory.
 type cachedTokenReview struct {
 	reviewer   *TokenReview
 	successTTL time.Duration
 	failureTTL time.Duration
 
-	cache    *utilcache.Expiring
+	cache    *utilcache.LRUExpireCache
 	hashPool *sync.Pool
 }
 
@@ -142,9 +156,9 @@ func (c *cachedTokenReview) AuthenticateToken(ctx context.Context, token string)
 
 	switch {
 	case ok && c.successTTL > 0:
-		c.cache.Set(key, cachedReview{resp: resp, ok: true}, c.successTTL)
+		c.cache.Add(key, cachedReview{resp: resp, ok: true}, c.successTTL)
 	case !ok && c.failureTTL > 0:
-		c.cache.Set(key, cachedReview{}, c.failureTTL)
+		c.cache.Add(key, cachedReview{}, c.failureTTL)
 	}
 
 	return resp, ok, nil

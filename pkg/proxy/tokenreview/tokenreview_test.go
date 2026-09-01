@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"reflect"
 	"sync"
 	"sync/atomic"
@@ -450,6 +451,105 @@ func TestCacheKey(t *testing.T) {
 		if key == base {
 			t.Errorf("%s must not collide with the base key", name)
 		}
+	}
+}
+
+// TestCachedReviewBoundsEntryCount pins that the cache enforces a hard entry
+// cap with LRU eviction: a flood of unique (attacker-controlled) tokens must
+// recycle the fixed slots rather than each pin memory for the full TTL.
+func TestCachedReviewBoundsEntryCount(t *testing.T) {
+	const extra = 8
+
+	var calls atomic.Int64
+	reviewer := &TokenReview{
+		reviewRequester: &fake.FakeReviewer{
+			CreateFn: func(*authv1.TokenReview) (*authv1.TokenReview, error) {
+				calls.Add(1)
+				return unauthenticatedReview(), nil
+			},
+		},
+	}
+
+	cached := NewCached(reviewer, time.Hour, time.Hour).(*cachedTokenReview)
+
+	for i := range tokenCacheSize + extra {
+		token := fmt.Sprintf("unique-token-%d", i)
+		if _, ok, err := cached.AuthenticateToken(context.Background(), token); err != nil || ok {
+			t.Fatalf("token %d: unexpected result, ok=%t err=%v", i, ok, err)
+		}
+	}
+
+	if got := len(cached.cache.Keys()); got != tokenCacheSize {
+		t.Errorf("cache size must stay at the cap after cap+%d inserts, exp=%d got=%d",
+			extra, tokenCacheSize, got)
+	}
+
+	// The oldest tokens must have been evicted: reviewing the first one again
+	// reaches the apiserver instead of the cache, despite its unexpired TTL...
+	before := calls.Load()
+	if _, _, err := cached.AuthenticateToken(context.Background(), "unique-token-0"); err != nil {
+		t.Fatalf("unexpected error re-reviewing the evicted token: %v", err)
+	}
+	if got := calls.Load(); got != before+1 {
+		t.Errorf("expected the oldest token to have been evicted and re-reviewed live, calls exp=%d got=%d",
+			before+1, got)
+	}
+
+	// ...while the most recently inserted token is still served from cache.
+	last := fmt.Sprintf("unique-token-%d", tokenCacheSize+extra-1)
+	before = calls.Load()
+	if _, _, err := cached.AuthenticateToken(context.Background(), last); err != nil {
+		t.Fatalf("unexpected error re-reviewing the cached token: %v", err)
+	}
+	if got := calls.Load(); got != before {
+		t.Errorf("expected the most recent token to still be cached, calls exp=%d got=%d", before, got)
+	}
+}
+
+// TestCachedReviewConcurrentMissesRunIndependently pins the documented
+// no-singleflight contract: concurrent misses for the same token each run
+// their own live review, exactly as every request did before caching existed.
+// The fake only answers once both reviews are in flight, so any collapsing of
+// the two misses into one review fails the test.
+func TestCachedReviewConcurrentMissesRunIndependently(t *testing.T) {
+	bothInFlight := make(chan struct{})
+
+	var calls atomic.Int64
+	reviewer := &TokenReview{
+		reviewRequester: &fake.FakeReviewer{
+			CreateCtxFn: func(context.Context, *authv1.TokenReview) (*authv1.TokenReview, error) {
+				if calls.Add(1) == 2 {
+					close(bothInFlight)
+				}
+				select {
+				case <-bothInFlight:
+					return authenticatedReview(), nil
+				case <-time.After(5 * time.Second):
+					return nil, errors.New("second review never started: concurrent misses were collapsed")
+				}
+			},
+		},
+	}
+
+	cached := NewCached(reviewer, 10*time.Second, 10*time.Second)
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	oks := make([]bool, 2)
+	for i := range 2 {
+		wg.Go(func() {
+			_, oks[i], errs[i] = cached.AuthenticateToken(context.Background(), "token-a")
+		})
+	}
+	wg.Wait()
+
+	for i := range 2 {
+		if errs[i] != nil || !oks[i] {
+			t.Errorf("request %d: unexpected result, ok=%t err=%v", i, oks[i], errs[i])
+		}
+	}
+	if got := calls.Load(); got != 2 {
+		t.Errorf("expected two live reviews for two concurrent misses, got=%d", got)
 	}
 }
 
