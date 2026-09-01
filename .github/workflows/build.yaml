@@ -13,10 +13,10 @@ permissions:
   contents: read
 
 concurrency:
-  # Cancel superseded pull request runs; never cancel a run on main or a
-  # scheduled run, whose results are recorded against the default branch.
+  # Serialize main builds; never cancel one mid-publish, so a pushed :edge
+  # image is always fully signed and carries its SBOM.
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 jobs:
   image:
