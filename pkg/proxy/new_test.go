@@ -20,7 +20,7 @@ func validDeps(t *testing.T) Dependencies {
 	t.Helper()
 
 	ctrl := gomock.NewController(t)
-	sar, err := subjectaccessreview.New(fakesubjectaccessreview.New(nil), subjectaccessreview.DefaultTimeout)
+	sar, err := subjectaccessreview.New(fakesubjectaccessreview.New(nil), subjectaccessreview.DefaultTimeout, subjectaccessreview.DefaultMaxHeaderValues)
 	if err != nil {
 		t.Fatalf("building SubjectAccessReview: %v", err)
 	}

@@ -63,6 +63,7 @@ not require a pod restart.
 | `--extra-user-headers` | — | (Alpha) Extra `key=value` user headers to add to the impersonated request. |
 | `--trusted-proxies` | — | Comma-separated trusted proxy CIDRs (IPv4/IPv6). `X-Forwarded-For` is honoured for client-IP resolution only when the immediate peer is within one of these networks. Empty (default) trusts no proxy. See [Trusted proxies and client IP](#trusted-proxies-and-client-ip). |
 | `--subject-access-review-timeout` | `5s` | Timeout for authorizing inbound impersonation via `SubjectAccessReview` — a single shared budget across all SAR calls for one request (not per-call). Must be greater than 0. |
+| `--max-impersonation-header-values` | `64` | Maximum total number of impersonation header values accepted per request (the `Impersonate-User` value plus every `Impersonate-Group`, `Impersonate-Uid` and `Impersonate-Extra-*` value). Each value costs one `SubjectAccessReview` round trip, so this caps the per-request API-server load a client can drive; over-cap requests are rejected with HTTP 431 before any review is sent. Must be greater than 0. |
 | `--allow-reserved-groups` | _(empty)_ | Comma-separated `system:`-prefixed groups a token may carry. See [Reserved `system:` identities](#reserved-system-identities). |
 
 ### Serving / TLS & misc

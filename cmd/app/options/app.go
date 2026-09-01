@@ -21,6 +21,8 @@ type KubeOIDCProxyOptions struct {
 
 	SubjectAccessReviewTimeout time.Duration
 
+	MaxImpersonationHeaderValues int
+
 	ExtraHeaderOptions ExtraHeaderOptions
 	TokenPassthrough   TokenPassthroughOptions
 
@@ -71,6 +73,14 @@ func (k *KubeOIDCProxyOptions) AddFlags(fs *pflag.FlagSet) *KubeOIDCProxyOptions
 			"SubjectAccessReviews. This is a single shared budget across all SAR "+
 			"calls for one request (not per-call), derived from the inbound request "+
 			"context so client cancellation still propagates. Must be greater than 0.")
+
+	fs.IntVar(&k.MaxImpersonationHeaderValues, "max-impersonation-header-values", subjectaccessreview.DefaultMaxHeaderValues,
+		"Maximum total number of impersonation header values accepted per request "+
+			"(the Impersonate-User value plus every Impersonate-Group, Impersonate-Uid "+
+			"and Impersonate-Extra-* value). Each value costs one SubjectAccessReview "+
+			"round trip to the target API server, so this caps the per-request load a "+
+			"client can drive. Requests over the cap are rejected with HTTP 431 before "+
+			"any SubjectAccessReview is sent. Must be greater than 0.")
 
 	fs.StringSliceVar(&k.TrustedProxies, "trusted-proxies", k.TrustedProxies,
 		"Comma-separated list of trusted proxy CIDRs (IPv4 or IPv6, e.g. "+

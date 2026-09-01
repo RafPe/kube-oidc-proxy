@@ -318,6 +318,56 @@ func (c *countingReviewer) Create(ctx context.Context, req *azv1.SubjectAccessRe
 	return c.FakeReviewer.Create(ctx, req, co)
 }
 
+// TestOverCapImpersonationRejectedBeforeSubjectAccessReview pins the SAR
+// fan-out cap end to end: a request carrying more impersonation header values
+// than the configured cap is answered with 431 before any SubjectAccessReview
+// is submitted, and never reaches the inner handler.
+func TestOverCapImpersonationRejectedBeforeSubjectAccessReview(t *testing.T) {
+	p := newTestProxy(t)
+
+	reviewer := &countingReviewer{FakeReviewer: fakesubjectaccessreview.New(nil)}
+	sar, err := subjectaccessreview.New(reviewer, subjectaccessreview.DefaultTimeout, 2)
+	if err != nil {
+		t.Fatalf("creating subject access reviewer: %s", err)
+	}
+	p.subjectAccessReviewer = sar
+
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(
+		&authenticator.Response{
+			User: &authuser.DefaultInfo{Name: "alice", Groups: []string{"devs"}},
+		}, true, nil)
+
+	var served bool
+	handler := p.withHandlers(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		served = true
+	}))
+
+	// Three impersonation header values against a cap of two.
+	req := reservedIdentityRequest(t, map[string]string{
+		"Impersonate-User": "jjackson",
+	})
+	req.Header.Add("Impersonate-Group", "group3")
+	req.Header.Add("Impersonate-Group", "group4")
+
+	rw := httptest.NewRecorder()
+	handler.ServeHTTP(rw, req)
+
+	if served {
+		t.Error("inner handler was reached for an over-cap impersonation request")
+	}
+	if got, want := rw.Result().StatusCode, http.StatusRequestHeaderFieldsTooLarge; got != want {
+		t.Errorf("unexpected response code, exp=%d got=%d", want, got)
+	}
+	if got := rw.Body.String(); !strings.Contains(got, "too many impersonation header values") {
+		t.Errorf("response body does not explain the rejection: %q", got)
+	}
+	if got := reviewer.reviews.Load(); got != 0 {
+		t.Errorf("SubjectAccessReviews were submitted for an over-cap request, exp=0 got=%d", got)
+	}
+
+	p.ctrl.Finish()
+}
+
 // TestReservedIdentityRejectedBeforeSubjectAccessReview is the ordering
 // property that makes the guard meaningful. CheckAuthorizedForImpersonation
 // builds its SubjectAccessReview with the requester's own groups, so a forged
@@ -327,7 +377,7 @@ func TestReservedIdentityRejectedBeforeSubjectAccessReview(t *testing.T) {
 	p := newTestProxy(t)
 
 	reviewer := &countingReviewer{FakeReviewer: fakesubjectaccessreview.New(nil)}
-	sar, err := subjectaccessreview.New(reviewer, subjectaccessreview.DefaultTimeout)
+	sar, err := subjectaccessreview.New(reviewer, subjectaccessreview.DefaultTimeout, subjectaccessreview.DefaultMaxHeaderValues)
 	if err != nil {
 		t.Fatalf("creating subject access reviewer: %s", err)
 	}
