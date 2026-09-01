@@ -173,9 +173,9 @@ func cacheKey(hashPool *sync.Pool, token string, audiences []string) string {
 	defer hashPool.Put(h)
 	h.Reset()
 
-	var b [4]byte
+	var b [8]byte
 	writeLengthPrefixed(h, b[:], token)
-	binary.BigEndian.PutUint32(b[:], uint32(len(audiences)))
+	binary.BigEndian.PutUint64(b[:], uint64(len(audiences)))
 	h.Write(b[:])
 	for _, aud := range audiences {
 		writeLengthPrefixed(h, b[:], aud)
@@ -185,10 +185,10 @@ func cacheKey(hashPool *sync.Pool, token string, audiences []string) string {
 }
 
 // writeLengthPrefixed writes s preceded by its length. b is a scratch buffer
-// of at least 4 bytes.
+// of at least 8 bytes.
 func writeLengthPrefixed(h hash.Hash, b []byte, s string) {
-	binary.BigEndian.PutUint32(b, uint32(len(s)))
-	h.Write(b[:4])
+	binary.BigEndian.PutUint64(b, uint64(len(s)))
+	h.Write(b[:8])
 	h.Write([]byte(s))
 }
 
