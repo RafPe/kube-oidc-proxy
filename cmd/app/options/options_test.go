@@ -155,12 +155,12 @@ func TestValidate_SubjectAccessReviewCacheTTLs(t *testing.T) {
 		wantErrSubstr string
 		set           func(o *Options, ttl time.Duration)
 	}{
-		"subject-access-review-allow-cache-ttl": {
-			wantErrSubstr: "--subject-access-review-allow-cache-ttl must not be negative",
+		"subject-access-review-cache-allow-ttl": {
+			wantErrSubstr: "--subject-access-review-cache-allow-ttl must not be negative",
 			set:           func(o *Options, ttl time.Duration) { o.App.SubjectAccessReviewAllowCacheTTL = ttl },
 		},
-		"subject-access-review-deny-cache-ttl": {
-			wantErrSubstr: "--subject-access-review-deny-cache-ttl must not be negative",
+		"subject-access-review-cache-deny-ttl": {
+			wantErrSubstr: "--subject-access-review-cache-deny-ttl must not be negative",
 			set:           func(o *Options, ttl time.Duration) { o.App.SubjectAccessReviewDenyCacheTTL = ttl },
 		},
 	}

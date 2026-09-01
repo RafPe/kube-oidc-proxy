@@ -74,7 +74,7 @@ func (k *KubeOIDCProxyOptions) AddFlags(fs *pflag.FlagSet) *KubeOIDCProxyOptions
 			"calls for one request (not per-call), derived from the inbound request "+
 			"context so client cancellation still propagates. Must be greater than 0.")
 
-	fs.DurationVar(&k.SubjectAccessReviewAllowCacheTTL, "subject-access-review-allow-cache-ttl",
+	fs.DurationVar(&k.SubjectAccessReviewAllowCacheTTL, "subject-access-review-cache-allow-ttl",
 		subjectaccessreview.DefaultAllowCacheTTL,
 		"How long an allowed impersonation SubjectAccessReview decision is served "+
 			"from an in-memory cache before being re-checked against the API server. "+
@@ -85,7 +85,7 @@ func (k *KubeOIDCProxyOptions) AddFlags(fs *pflag.FlagSet) *KubeOIDCProxyOptions
 			"of allowed decisions and re-check every request. Must not be negative. "+
 			"Only definitive decisions are cached; API-server errors never are.")
 
-	fs.DurationVar(&k.SubjectAccessReviewDenyCacheTTL, "subject-access-review-deny-cache-ttl",
+	fs.DurationVar(&k.SubjectAccessReviewDenyCacheTTL, "subject-access-review-cache-deny-ttl",
 		subjectaccessreview.DefaultDenyCacheTTL,
 		"How long a denied impersonation SubjectAccessReview decision is served "+
 			"from an in-memory cache before being re-checked against the API server. "+

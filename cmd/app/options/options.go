@@ -117,11 +117,11 @@ func (o *Options) Validate(cmd *cobra.Command) error {
 	}
 
 	if o.App.SubjectAccessReviewAllowCacheTTL < 0 {
-		errs = append(errs, fmt.Errorf("--subject-access-review-allow-cache-ttl must not be negative (0 disables caching of allowed decisions), got %s", o.App.SubjectAccessReviewAllowCacheTTL))
+		errs = append(errs, fmt.Errorf("--subject-access-review-cache-allow-ttl must not be negative (0 disables caching of allowed decisions), got %s", o.App.SubjectAccessReviewAllowCacheTTL))
 	}
 
 	if o.App.SubjectAccessReviewDenyCacheTTL < 0 {
-		errs = append(errs, fmt.Errorf("--subject-access-review-deny-cache-ttl must not be negative (0 disables caching of denied decisions), got %s", o.App.SubjectAccessReviewDenyCacheTTL))
+		errs = append(errs, fmt.Errorf("--subject-access-review-cache-deny-ttl must not be negative (0 disables caching of denied decisions), got %s", o.App.SubjectAccessReviewDenyCacheTTL))
 	}
 
 	if len(errs) > 0 {
