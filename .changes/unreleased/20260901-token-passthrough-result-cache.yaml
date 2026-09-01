@@ -1,2 +1,0 @@
-kind: Added
-body: Token passthrough now caches TokenReview results in a bounded in-memory cache with separately configurable TTLs (--token-passthrough-cache-success-ttl and --token-passthrough-cache-failure-ttl, default 10s, 0 disables). A revoked token can continue to pass for up to the success TTL and a newly valid token can be rejected for up to the failure TTL.
