@@ -123,6 +123,8 @@ Ignored when `authenticationConfig.content` is set.
 | --- | --- | --- | --- |
 | `tokenPassthrough.enabled` | bool | `false` | Forward non-OIDC bearer tokens to the API server (validated via TokenReview). |
 | `tokenPassthrough.audiences` | list | `[]` | Allowed audiences for passthrough tokens. |
+| `tokenPassthrough.cacheSuccessTTL` | string | `""` | How long a successful TokenReview result is cached (`--token-passthrough-cache-success-ttl`). Empty uses the binary default (10s); `"0"` disables. A revoked token keeps passing for up to this long. |
+| `tokenPassthrough.cacheFailureTTL` | string | `""` | How long an unauthenticated TokenReview result is cached (`--token-passthrough-cache-failure-ttl`). Empty uses the binary default (10s); `"0"` disables. A newly valid token can be rejected for up to this long. |
 | `extraImpersonationHeaders.clientIP` | bool | `false` | Send the client source IP as an extra user header. |
 | `extraImpersonationHeaders.headers` | string | `nil` | Extra `key=value` user headers (`--extra-user-headers`), comma-separated. |
 

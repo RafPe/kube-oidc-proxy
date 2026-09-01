@@ -146,6 +146,18 @@ tokenPassthrough:
   enabled: false
   # Audiences that passthrough tokens are allowed to have.
   audiences: []
+  # How long a successful TokenReview result is cached and reused without a new
+  # review against the API server. Empty uses the binary's default (10s, the
+  # same as the kube-apiserver's delegated-authentication cache). Trade-off: a
+  # revoked token keeps passing for up to this long, so keep it short. Set to
+  # "0" to disable caching successful results entirely.
+  cacheSuccessTTL: ""
+  # How long an unauthenticated ("invalid token") TokenReview result is cached,
+  # shielding the API server from repeated reviews of the same bad token. Empty
+  # uses the binary's default (10s). Trade-off: a token that just became valid
+  # can keep being rejected for up to this long. Set to "0" to disable caching
+  # failures. Errors reaching the API server are never cached either way.
+  cacheFailureTTL: ""
 
 # Extra impersonation headers added to requests forwarded to the API server.
 # https://github.com/rafpe/kube-oidc-proxy/blob/main/docs/configuration.md#extra-impersonation-headers

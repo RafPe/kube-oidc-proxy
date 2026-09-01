@@ -55,6 +55,11 @@ Every request passes through the same pipeline:
 1. **Authenticate.** The bearer token is validated. If it fails OIDC validation
    and token passthrough is enabled, the proxy falls back to a `TokenReview`
    against the API server (see [token passthrough](./configuration.md#token-passthrough)).
+   TokenReview results are cached in a bounded in-memory cache (successful and
+   unauthenticated verdicts have separate TTLs, both 10s by default; errors are
+   never cached), so repeated requests with the same token don't trigger a
+   review each time. Concurrent first requests for the same token each run
+   their own review on their caller's context.
 2. **Resolve the impersonation target.** If the inbound request also carries
    `Impersonate-*` headers (`kubectl --as`), the proxy runs a
    `SubjectAccessReview` to confirm the authenticated user may assume that

@@ -104,6 +104,12 @@ spec:
           {{- if .Values.tokenPassthrough.audiences }}
           - "--token-passthrough-audiences={{ join "," .Values.tokenPassthrough.audiences }}"
           {{ end }}
+          {{- if and (not (kindIs "invalid" .Values.tokenPassthrough.cacheSuccessTTL)) (ne (toString .Values.tokenPassthrough.cacheSuccessTTL) "") }}
+          - "--token-passthrough-cache-success-ttl={{ .Values.tokenPassthrough.cacheSuccessTTL }}"
+          {{ end }}
+          {{- if and (not (kindIs "invalid" .Values.tokenPassthrough.cacheFailureTTL)) (ne (toString .Values.tokenPassthrough.cacheFailureTTL) "") }}
+          - "--token-passthrough-cache-failure-ttl={{ .Values.tokenPassthrough.cacheFailureTTL }}"
+          {{ end }}
           {{ end }}
           {{- if .Values.extraImpersonationHeaders.clientIP }}
           - "--extra-user-header-client-ip"

@@ -9,7 +9,7 @@ type: application
 # The chart and image share a single version. On a tagged release the
 # automation overrides both `version` and `appVersion` from the git tag
 # (vX.Y.Z); the values here are the development baseline.
-version: 1.2.0
+version: 1.3.0
 appVersion: "1.1.0"
 home: https://github.com/rafpe/kube-oidc-proxy
 sources:
