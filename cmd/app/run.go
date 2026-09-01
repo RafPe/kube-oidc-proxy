@@ -168,6 +168,7 @@ func buildRunCommand(stopCh <-chan struct{}, opts *options.Options) *cobra.Comma
 				opts.App.SubjectAccessReviewTimeout,
 				opts.App.SubjectAccessReviewAllowCacheTTL,
 				opts.App.SubjectAccessReviewDenyCacheTTL,
+				opts.App.MaxImpersonationHeaderValues,
 			)
 			if err != nil {
 				return err

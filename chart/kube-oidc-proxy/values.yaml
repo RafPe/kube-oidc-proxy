@@ -167,6 +167,17 @@ subjectAccessReview:
   # disable caching of denied decisions.
   cacheDenyTTL: ""
 
+# Maximum total number of inbound impersonation header values (kubectl --as)
+# the proxy accepts per request: the Impersonate-User value plus every
+# Impersonate-Group, Impersonate-Uid and Impersonate-Extra-* value. Each value
+# counts toward the SubjectAccessReview fan-out to the API server; requests over
+# the cap are rejected with HTTP 431 before any review is sent. Leave empty to use
+# the binary's default of 64; set an integer > 0 to pass
+# --max-impersonation-header-values explicitly. This caps INBOUND headers from
+# clients — unrelated to extraImpersonationHeaders below, which adds OUTBOUND
+# extra user headers to forwarded requests.
+maxImpersonationHeaderValues:
+
 # Extra impersonation headers added to requests forwarded to the API server.
 # https://github.com/rafpe/kube-oidc-proxy/blob/main/docs/configuration.md#extra-impersonation-headers
 extraImpersonationHeaders:

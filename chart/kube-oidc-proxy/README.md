@@ -125,6 +125,7 @@ Ignored when `authenticationConfig.content` is set.
 | `tokenPassthrough.audiences` | list | `[]` | Allowed audiences for passthrough tokens. |
 | `subjectAccessReview.cacheAllowTTL` | string | `""` (binary default `10s`) | How long an **allowed** impersonation SubjectAccessReview decision is cached (`--subject-access-review-cache-allow-ttl`), as a Go duration. Empty omits the flag. Revoking an impersonation grant can take up to this long to be enforced; `"0"` disables caching of allows. |
 | `subjectAccessReview.cacheDenyTTL` | string | `""` (binary default `10s`) | How long a **denied** impersonation SubjectAccessReview decision is cached (`--subject-access-review-cache-deny-ttl`), as a Go duration. Empty omits the flag. A new impersonation grant can take up to this long to be honoured; `"0"` disables caching of denies. |
+| `maxImpersonationHeaderValues` | int | `nil` (binary default 64) | Cap on inbound impersonation header values per request (`kubectl --as`: user + every group, uid and extra value); over-cap requests get HTTP 431 before any `SubjectAccessReview`. Sets `--max-impersonation-header-values` when non-empty. |
 | `extraImpersonationHeaders.clientIP` | bool | `false` | Send the client source IP as an extra user header. |
 | `extraImpersonationHeaders.headers` | string | `nil` | Extra `key=value` user headers (`--extra-user-headers`), comma-separated. |
 

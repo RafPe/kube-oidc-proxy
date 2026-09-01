@@ -111,6 +111,9 @@ spec:
           {{- if ne (toString .Values.subjectAccessReview.cacheDenyTTL) "" }}
           - "--subject-access-review-cache-deny-ttl={{ .Values.subjectAccessReview.cacheDenyTTL }}"
           {{ end }}
+          {{- if .Values.maxImpersonationHeaderValues }}
+          - "--max-impersonation-header-values={{ .Values.maxImpersonationHeaderValues }}"
+          {{ end }}
           {{- if .Values.extraImpersonationHeaders.clientIP }}
           - "--extra-user-header-client-ip"
           {{ end }}

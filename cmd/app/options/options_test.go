@@ -196,3 +196,33 @@ func TestValidate_SubjectAccessReviewCacheTTLs(t *testing.T) {
 		})
 	}
 }
+
+func TestValidate_MaxImpersonationHeaderValues(t *testing.T) {
+	const wantErrSubstr = "--max-impersonation-header-values must be greater than 0"
+
+	tests := map[string]struct {
+		max     int
+		wantErr bool
+	}{
+		"default is valid":         {max: subjectaccessreview.DefaultMaxHeaderValues, wantErr: false},
+		"custom positive is valid": {max: 1, wantErr: false},
+		"zero is rejected":         {max: 0, wantErr: true},
+		"negative is rejected":     {max: -1, wantErr: true},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			o := New()
+			cmd := &cobra.Command{}
+			o.AddFlags(cmd)
+
+			o.App.MaxImpersonationHeaderValues = tc.max
+
+			err := o.Validate(cmd)
+			gotErr := err != nil && strings.Contains(err.Error(), wantErrSubstr)
+			if gotErr != tc.wantErr {
+				t.Errorf("Validate() max header values error present = %v (err=%v), want %v", gotErr, err, tc.wantErr)
+			}
+		})
+	}
+}

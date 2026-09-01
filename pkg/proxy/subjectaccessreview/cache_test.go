@@ -81,9 +81,10 @@ func failWith(err error) func(*azv1.SubjectAccessReview) (*azv1.SubjectAccessRev
 // supplied clock, bypassing New only to inject deterministic time.
 func newCachedSAR(r clientazv1.SubjectAccessReviewInterface, allowTTL, denyTTL time.Duration, clk utilcache.Clock) *SubjectAccessReview {
 	return &SubjectAccessReview{
-		reviewer:   r,
-		sarTimeout: DefaultTimeout,
-		cache:      newDecisionCache(allowTTL, denyTTL, decisionCacheSize, clk),
+		reviewer:        r,
+		sarTimeout:      DefaultTimeout,
+		maxHeaderValues: DefaultMaxHeaderValues,
+		cache:           newDecisionCache(allowTTL, denyTTL, decisionCacheSize, clk),
 	}
 }
 
@@ -401,7 +402,7 @@ func TestErrorsNeverCached(t *testing.T) {
 func TestCacheDisabled(t *testing.T) {
 	reviewer := &fnReviewer{}
 	reviewer.set(allowAll)
-	sar, err := New(reviewer, DefaultTimeout, 0, 0)
+	sar, err := New(reviewer, DefaultTimeout, 0, 0, DefaultMaxHeaderValues)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

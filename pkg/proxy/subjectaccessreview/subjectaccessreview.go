@@ -38,6 +38,14 @@ var (
 	// handlers select a 403 with errors.Is(err, ErrImpersonationNotAllowed)
 	// instead of matching on message text.
 	ErrImpersonationNotAllowed = errors.New("not allowed to impersonate")
+
+	// ErrTooManyImpersonationHeaderValues is the sentinel that classifies a
+	// request carrying more impersonation header values than the configured cap.
+	// Each value costs one SubjectAccessReview round trip to the API server, so
+	// the count is capped before any review is sent. HTTP handlers select a 431
+	// with errors.Is; this is not an authorization decision, so it deliberately
+	// does not classify as ErrImpersonationNotAllowed.
+	ErrTooManyImpersonationHeaderValues = errors.New("too many impersonation header values")
 )
 
 // ImpersonationAuthError reports that a requester is not authorized to
@@ -75,6 +83,20 @@ func (e *ImpersonationAuthError) Is(target error) bool {
 // (the SAR client inherits rest.Config.Timeout, which defaults to zero).
 const DefaultTimeout = 5 * time.Second
 
+// DefaultMaxHeaderValues is the default cap on the total number of
+// impersonation header values accepted per request (one Impersonate-User plus
+// every Impersonate-Group, Impersonate-Uid and Impersonate-Extra-* value).
+// Each value costs one serial SubjectAccessReview round trip to the API
+// server, so the count bounds the per-request amplification a client can
+// drive. kube-apiserver itself places no count limit on impersonation values
+// (only its ~1MiB total header size limit applies, which admits thousands of
+// values), but its per-value authorization is an in-process check, not a
+// network call. 64 comfortably covers realistic clients — kubectl --as/
+// --as-group sends a handful of values, and programmatic identity forwarding
+// rarely exceeds a few dozen groups — while keeping the worst case at 64
+// round trips inside the shared timeout budget.
+const DefaultMaxHeaderValues = 64
+
 // SubjectAccessReview authorizes impersonation requests by submitting a
 // SubjectAccessReview to the API server for each impersonated resource. A
 // single shared timeout budget bounds the whole sequence of checks performed
@@ -85,6 +107,11 @@ type SubjectAccessReview struct {
 	// sarTimeout is the single shared budget applied across the whole sequence
 	// of SAR checks for one request.
 	sarTimeout time.Duration
+
+	// maxHeaderValues caps the total number of impersonation header values a
+	// single request may carry. Requests over the cap are rejected before any
+	// SAR is sent.
+	maxHeaderValues int
 
 	// cache holds definitive allow/deny decisions keyed by the serialized
 	// review spec. nil disables caching entirely (every check goes to the API
@@ -98,7 +125,10 @@ type SubjectAccessReview struct {
 }
 
 // New returns a SubjectAccessReview that authorizes impersonation via reviewer,
-// bounding the whole sequence of checks for a single request by sarTimeout.
+// bounding the whole sequence of checks for a single request by sarTimeout and
+// refusing requests that carry more than maxHeaderValues impersonation header
+// values. maxHeaderValues must be greater than zero: every SAR costs a round
+// trip, so an unbounded value count must not be constructible.
 //
 // allowCacheTTL and denyCacheTTL bound how long a definitive allowed or denied
 // decision is served from an in-memory cache before being re-checked against
@@ -106,11 +136,15 @@ type SubjectAccessReview struct {
 // load: an RBAC revoke can take up to allowCacheTTL to be enforced for a
 // cached allow, and a newly granted permission up to denyCacheTTL to be
 // honoured. Set both to 0 to disable the cache and re-check on every request.
-func New(reviewer clientazv1.SubjectAccessReviewInterface, sarTimeout, allowCacheTTL, denyCacheTTL time.Duration) (*SubjectAccessReview, error) {
+func New(reviewer clientazv1.SubjectAccessReviewInterface, sarTimeout, allowCacheTTL, denyCacheTTL time.Duration, maxHeaderValues int) (*SubjectAccessReview, error) {
+	if maxHeaderValues <= 0 {
+		return nil, fmt.Errorf("maxHeaderValues must be greater than 0, got %d", maxHeaderValues)
+	}
 	return &SubjectAccessReview{
-		reviewer:   reviewer,
-		sarTimeout: sarTimeout,
-		cache:      newDecisionCache(allowCacheTTL, denyCacheTTL, decisionCacheSize, realClock{}),
+		reviewer:        reviewer,
+		sarTimeout:      sarTimeout,
+		maxHeaderValues: maxHeaderValues,
+		cache:           newDecisionCache(allowCacheTTL, denyCacheTTL, decisionCacheSize, realClock{}),
 	}, nil
 }
 
@@ -129,6 +163,17 @@ var _ utilcache.Clock = realClock{}
 // authorization denial is returned as an *ImpersonationAuthError, which matches
 // ErrImpersonationNotAllowed via errors.Is.
 func (s *SubjectAccessReview) CheckAuthorizedForImpersonation(req *http.Request, requester user.Info) (user.Info, error) {
+	// Refuse over-wide requests before spending anything: every impersonation
+	// header value below costs one serial SAR round trip, and the value count
+	// is entirely client-controlled. Counting mirrors the consumption loop
+	// (case-insensitive Impersonate- prefix over every key's values), so no
+	// header-case variant or duplicate key can be consumed without having been
+	// counted.
+	if count := countImpersonationHeaderValues(req.Header); count > s.maxHeaderValues {
+		return nil, fmt.Errorf("%w: request carries %d impersonation header values, the limit is %d",
+			ErrTooManyImpersonationHeaderValues, count, s.maxHeaderValues)
+	}
+
 	// Derive one shared budget for the whole SAR sequence from the inbound
 	// request context, so client cancellation propagates and a stalled API
 	// server cannot stall the request indefinitely.
@@ -251,6 +296,20 @@ func (s *SubjectAccessReview) CheckAuthorizedForImpersonation(req *http.Request,
 	// Authorized: forward the request with the impersonation target.
 	req.Header = newHeaders
 	return targetUser, nil
+}
+
+// countImpersonationHeaderValues returns the total number of impersonation
+// header values the request carries: every value of every header whose key
+// matches the Impersonate- prefix case-insensitively, exactly as the
+// consumption loop in CheckAuthorizedForImpersonation matches them.
+func countImpersonationHeaderValues(headers http.Header) int {
+	count := 0
+	for key, values := range headers {
+		if strings.HasPrefix(strings.ToLower(key), "impersonate-") {
+			count += len(values)
+		}
+	}
+	return count
 }
 
 // checkRbacImpersonationAuthorization validates that requester may impersonate
