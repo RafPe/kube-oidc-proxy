@@ -1,0 +1,120 @@
+name: Claude Review
+
+# On-demand PR review and approval. Two paths:
+#   - Release PRs (any label starting with "autorelease") are approved without
+#     review; they carry only generated changelog/fragment changes.
+#   - Commenting "@claude review" on any other PR runs a Claude code review
+#     and approves only when the review finds no blocking issues.
+on:
+  # Prepare Release opens the release PR with GITHUB_TOKEN, whose events never
+  # trigger workflows, so hook the end of that run instead of the PR itself.
+  workflow_run:
+    workflows: ["Prepare Release"]
+    types: [completed]
+  pull_request:
+    types: [opened, reopened, labeled]
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  release-approve:
+    name: "review:release-approve"
+    if: |
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       contains(join(github.event.pull_request.labels.*.name, ','), 'autorelease'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Approve release PR
+        env:
+          # github-actions[bot] authors the release PR and cannot approve its
+          # own PR, so approval needs a PAT-backed identity.
+          GH_TOKEN: ${{ secrets.RELEASE_APPROVE_PAT }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT_NAME}" = "pull_request" ]; then
+            pr="${EVENT_PR}"
+          else
+            pr=$(gh pr list -R "${GITHUB_REPOSITORY}" --head release/next --base main --state open \
+              --json number,labels \
+              --jq '[.[] | select([.labels[].name | startswith("autorelease")] | any)][0].number // ""')
+            [ -n "${pr}" ] || { echo "::notice::no open autorelease PR to approve"; exit 0; }
+          fi
+          gh pr review "${pr}" -R "${GITHUB_REPOSITORY}" --approve \
+            --body "Auto-approved release PR (autorelease label)."
+
+  claude-review:
+    name: "review:claude"
+    if: |
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '@claude review') &&
+      github.event.comment.author_association == 'OWNER'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      actions: read # let Claude read CI results on the PR
+      id-token: write
+    steps:
+      - name: Approve release PR without review
+        if: contains(join(github.event.issue.labels.*.name, ','), 'autorelease')
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_APPROVE_PAT }}
+          PR: ${{ github.event.issue.number }}
+        run: |
+          gh pr review "${PR}" -R "${GITHUB_REPOSITORY}" --approve \
+            --body "Auto-approved release PR (autorelease label)."
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ !contains(join(github.event.issue.labels.*.name, ','), 'autorelease') }}
+        with: { fetch-depth: 1 }
+
+      - name: Run Claude review
+        id: review
+        if: ${{ !contains(join(github.event.issue.labels.*.name, ','), 'autorelease') }}
+        uses: anthropics/claude-code-action@781d62e9d5fbd78b24dcdfd42858332d485fe462 # v1.0.212
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.issue.number }}
+
+            kube-oidc-proxy is a Kubernetes authenticating proxy: it terminates
+            OIDC bearer tokens and impersonates the verified identity towards
+            the API server. Review this pull request with that threat model in
+            mind, focusing on:
+
+            1. Correctness of the change and its edge cases.
+            2. Security regressions: authentication bypass, impersonation or
+               header smuggling, token handling, TokenReview/SubjectAccessReview
+               caching, audit coverage.
+            3. Error handling: silent failures, swallowed errors, fail-open
+               paths.
+            4. Test coverage for the changed behaviour.
+
+            Post inline comments for specific findings and one summary comment.
+            Set approve=true only if there are no blocking issues; style nits
+            alone must not block approval.
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*)"
+            --json-schema '{"type":"object","properties":{"approve":{"type":"boolean"},"summary":{"type":"string"}},"required":["approve","summary"]}'
+
+      - name: Approve on clean review
+        if: |
+          !contains(join(github.event.issue.labels.*.name, ','), 'autorelease') &&
+          steps.review.outputs.structured_output != '' &&
+          fromJSON(steps.review.outputs.structured_output).approve == true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.issue.number }}
+          SUMMARY: ${{ fromJSON(steps.review.outputs.structured_output).summary }}
+        run: gh pr review "${PR}" -R "${GITHUB_REPOSITORY}" --approve --body "${SUMMARY}"
