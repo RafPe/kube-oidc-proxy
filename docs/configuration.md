@@ -58,6 +58,9 @@ not require a pod restart.
 | --- | --- | --- |
 | `--token-passthrough` | `false` | (Alpha) Bearer tokens that fail OIDC validation are tried via TokenReview and, if valid, forwarded as-is with no impersonation. |
 | `--token-passthrough-audiences` | — | (Alpha) Allowed audiences for passthrough tokens. |
+| `--token-passthrough-request-timeout` | `10s` | Timeout for each TokenReview request sent to the target API server when validating a passthrough token. |
+| `--token-passthrough-cache-success-ttl` | `10s` | How long a successful TokenReview result is cached and reused without a new API server request. A cached success outlives token revocation for up to this duration, so keep it low (the default matches the kube-apiserver's own delegated-authentication cache). `0` disables caching successes. |
+| `--token-passthrough-cache-failure-ttl` | `10s` | How long an unauthenticated TokenReview result is cached, shielding the API server from repeated reviews of the same invalid token (e.g. request storms during an OIDC issuer outage). Review errors are never cached. `0` disables caching failures. |
 | `--disable-impersonation` | `false` | (Alpha) Forward authenticated requests as-is, without impersonation. |
 | `--extra-user-header-client-ip` | `false` | (Alpha) Add `Impersonate-Extra-Remote-Client-IP` with the request's resolved client IP. |
 | `--extra-user-headers` | — | (Alpha) Extra `key=value` user headers to add to the impersonated request. |

@@ -28,7 +28,7 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/hooks"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/tokenreview"
+	utiltoken "github.com/rafpe/kube-oidc-proxy/pkg/util/token"
 )
 
 const (
@@ -75,7 +75,7 @@ type errorHandlerFn func(http.ResponseWriter, *http.Request, error)
 type Proxy struct {
 	oidcRequestAuther     *bearertoken.Authenticator
 	tokenAuthenticator    authenticator.Token
-	tokenReviewer         *tokenreview.TokenReview
+	tokenReviewer         authenticator.Token
 	subjectAccessReviewer *subjectaccessreview.SubjectAccessReview
 	secureServingInfo     *server.SecureServingInfo
 	auditor               *audit.Audit
@@ -108,10 +108,13 @@ type Proxy struct {
 // borrows for its lifetime; it does not close or mutate them. The Proxy creates
 // and owns its auditor and shutdown hooks internally.
 type Dependencies struct {
-	RestConfig            *rest.Config
-	TokenAuthenticator    authenticator.Token
-	AuditOptions          *options.AuditOptions
-	TokenReviewer         *tokenreview.TokenReview
+	RestConfig         *rest.Config
+	TokenAuthenticator authenticator.Token
+	AuditOptions       *options.AuditOptions
+
+	// TokenReviewer authenticates passthrough bearer tokens, typically a
+	// tokenreview.TokenReview optionally wrapped by tokenreview.NewCached.
+	TokenReviewer         authenticator.Token
 	SubjectAccessReviewer *subjectaccessreview.SubjectAccessReview
 	SecureServingInfo     *server.SecureServingInfo
 	Config                *Config
@@ -356,7 +359,14 @@ func (p *Proxy) reviewToken(rw http.ResponseWriter, req *http.Request) bool {
 	klog.V(4).Infof("attempting to validate a token in request using TokenReview endpoint(%s)",
 		remoteAddr)
 
-	ok, err := p.tokenReviewer.Review(req)
+	bearer, found := utiltoken.ParseFromRequest(req)
+	if !found {
+		klog.Errorf("unable to authenticate the request via TokenReview due to an error (%s): bearer token not found in request",
+			remoteAddr)
+		return false
+	}
+
+	_, ok, err := p.tokenReviewer.AuthenticateToken(req.Context(), bearer)
 	if err != nil {
 		klog.Errorf("unable to authenticate the request via TokenReview due to an error (%s): %s",
 			remoteAddr, err)

@@ -127,13 +127,20 @@ func buildRunCommand(stopCh <-chan struct{}, opts *options.Options) *cobra.Comma
 				restConfig.QPS = opts.Client.KubeClientQPS
 			}
 
-			// Initialise token reviewer if enabled
-			var tokenReviewer *tokenreview.TokenReview
+			// Initialise token reviewer if enabled. The reviewer is wrapped in
+			// the upstream token result cache so repeated reviews of the same
+			// token (e.g. request storms during an OIDC issuer outage) do not
+			// each cost an API server round trip; NewCached returns the bare
+			// reviewer when both TTLs are zero.
+			var tokenReviewer authenticator.Token
 			if opts.App.TokenPassthrough.Enabled {
-				tokenReviewer, err = tokenreview.New(restConfig, opts.App.TokenPassthrough.Audiences, opts.App.TokenPassthrough.RequestTimeout)
+				reviewer, err := tokenreview.New(restConfig, opts.App.TokenPassthrough.Audiences, opts.App.TokenPassthrough.RequestTimeout)
 				if err != nil {
 					return err
 				}
+				tokenReviewer = tokenreview.NewCached(reviewer,
+					opts.App.TokenPassthrough.CacheSuccessTTL,
+					opts.App.TokenPassthrough.CacheFailureTTL)
 			}
 
 			// Initialise Secure Serving Config
