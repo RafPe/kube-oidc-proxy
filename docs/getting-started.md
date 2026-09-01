@@ -130,8 +130,14 @@ tls:
 ## Point kubectl at the proxy
 
 Once the proxy Service has an address, hand users a kubeconfig that talks to
-`kube-oidc-proxy` instead of the API server directly, using the `oidc` auth
-provider:
+`kube-oidc-proxy` instead of the API server directly. For interactive logins,
+use [kubelogin](https://github.com/int128/kubelogin) (`kubectl oidc-login`) —
+a credential exec plugin that runs the OIDC flow in the browser, then caches
+and refreshes the ID token automatically:
+
+```sh
+kubectl krew install oidc-login   # or: brew install kubelogin
+```
 
 ```yaml
 apiVersion: v1
@@ -150,20 +156,26 @@ kind: Config
 users:
   - name: my-oidc-user
     user:
-      auth-provider:
-        name: oidc
-        config:
-          client-id: <client-id>
-          client-secret: <client-secret>
-          idp-issuer-url: https://<issuer-url>
-          id-token: <id-token>
-          refresh-token: <refresh-token>
+      exec:
+        apiVersion: client.authentication.k8s.io/v1
+        command: kubectl
+        args:
+          - oidc-login
+          - get-token
+          - --oidc-issuer-url=https://<issuer-url>
+          - --oidc-client-id=<client-id>
+          - --oidc-client-secret=<client-secret>  # omit for public clients
+        interactiveMode: IfAvailable
 ```
 
+Already minting ID tokens another way (CI, a script, a non-interactive flow)?
+Pass one directly instead: `kubectl --token=<id-token> get pods`.
+
 > [!TIP]
-> [OpenUnison](https://openunison.github.io/) integrates `kube-oidc-proxy`
-> directly and bundles an identity provider and access portal — a fast way to
-> get an end-to-end login flow if you don't already have an OIDC IdP.
+> No OIDC identity provider yet? The [multi-issuer demo](../demo/README.md)
+> stands up a complete end-to-end setup — two Dex issuers and the proxy in a
+> local [kind](https://kind.sigs.k8s.io/) cluster — with one command. No cloud
+> accounts, DNS, or browser required.
 
 ## Next steps
 
