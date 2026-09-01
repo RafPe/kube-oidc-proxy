@@ -59,16 +59,16 @@ not require a pod restart.
 | `--token-passthrough` | `false` | (Alpha) Bearer tokens that fail OIDC validation are tried via TokenReview and, if valid, forwarded as-is with no impersonation. |
 | `--token-passthrough-audiences` | — | (Alpha) Allowed audiences for passthrough tokens. |
 | `--token-passthrough-request-timeout` | `10s` | Timeout for each TokenReview request sent to the target API server when validating a passthrough token. |
-| `--token-passthrough-cache-success-ttl` | `10s` | How long a successful TokenReview result is cached and reused without a new API server request. A cached success outlives token revocation for up to this duration, so keep it low (the default matches the kube-apiserver's own delegated-authentication cache). `0` disables caching successes. |
-| `--token-passthrough-cache-failure-ttl` | `10s` | How long an unauthenticated TokenReview result is cached, shielding the API server from repeated reviews of the same invalid token (e.g. request storms during an OIDC issuer outage). Review errors are never cached. `0` disables caching failures. |
+| `--token-passthrough-cache-success-ttl` | `10s` | How long a successful TokenReview result is reused without a new API-server request. A cached success outlives token revocation for up to this duration, so keep it low. `0` disables caching successes. See [caching](./caching.md#tokenreview-result-cache). |
+| `--token-passthrough-cache-failure-ttl` | `10s` | How long an unauthenticated TokenReview result is cached, shielding the API server from repeated reviews of the same invalid token. Review errors are never cached. `0` disables caching failures. |
 | `--disable-impersonation` | `false` | (Alpha) Forward authenticated requests as-is, without impersonation. |
 | `--extra-user-header-client-ip` | `false` | (Alpha) Add `Impersonate-Extra-Remote-Client-IP` with the request's resolved client IP. |
 | `--extra-user-headers` | — | (Alpha) Extra `key=value` user headers to add to the impersonated request. |
 | `--trusted-proxies` | — | Comma-separated trusted proxy CIDRs (IPv4/IPv6). `X-Forwarded-For` is honoured for client-IP resolution only when the immediate peer is within one of these networks. Empty (default) trusts no proxy. See [Trusted proxies and client IP](#trusted-proxies-and-client-ip). |
 | `--subject-access-review-timeout` | `5s` | Timeout for authorizing inbound impersonation via `SubjectAccessReview` — a single shared budget across all SAR calls for one request (not per-call). Must be greater than 0. |
-| `--subject-access-review-cache-allow-ttl` | `10s` | How long an **allowed** impersonation SAR decision is served from a bounded in-memory cache before being re-checked. The tradeoff is revocation lag: revoking a requester's RBAC impersonation grant can take up to this long to be enforced while an allow is cached. Default matches the delegating-authorization default in `k8s.io/apiserver`. `0` disables caching of allows (per-request revocation). Only definitive decisions are cached — API-server errors never are. |
+| `--subject-access-review-cache-allow-ttl` | `10s` | How long an **allowed** impersonation SAR decision is served from a bounded in-memory cache before being re-checked. Revoking an RBAC impersonation grant can take up to this long to be enforced. `0` disables caching of allows. See [caching](./caching.md#subjectaccessreview-decision-cache). |
 | `--subject-access-review-cache-deny-ttl` | `10s` | How long a **denied** impersonation SAR decision is served from the cache. A newly granted RBAC impersonation permission can take up to this long to be honoured. `0` disables caching of denies. |
-| `--max-impersonation-header-values` | `64` | Maximum total number of impersonation header values accepted per request (the `Impersonate-User` value plus every `Impersonate-Group`, `Impersonate-Uid` and `Impersonate-Extra-*` value). Each value costs one `SubjectAccessReview` round trip, so this caps the per-request API-server load a client can drive; over-cap requests are rejected with HTTP 431 before any review is sent. Must be greater than 0. |
+| `--max-impersonation-header-values` | `64` | Maximum total number of impersonation header values accepted per request. Each value costs one `SubjectAccessReview` round trip; over-cap requests are rejected with HTTP 431 before any review is sent. Must be greater than 0. See [caching](./caching.md#impersonation-header-value-cap). |
 | `--allow-reserved-groups` | _(empty)_ | Comma-separated `system:`-prefixed groups a token may carry. See [Reserved `system:` identities](#reserved-system-identities). |
 
 ### Serving / TLS & misc
@@ -100,34 +100,16 @@ the proxy first checks — via `SubjectAccessReview` against the API server — 
 the authenticated user may assume that identity, then forwards the impersonated
 identity instead of the caller's own.
 
-### SubjectAccessReview caching
+### SubjectAccessReview caching and the header value cap
 
 Impersonation authorization decisions are served from a bounded in-memory cache
-per the `--subject-access-review-cache-allow-ttl` and
-`--subject-access-review-cache-deny-ttl` flags, so a client that repeatedly
-impersonates the same identities does not send a `SubjectAccessReview` to the
-API server on every request. The cache holds at most 8192 entries and evicts the
-least recently used one when full, so client-influenced impersonation values
-cannot grow the proxy's memory without bound.
-
-Allowed and denied decisions have **separate** TTLs so the two failure modes can
-be tuned independently:
-
-- A cached **allow** outlives an RBAC change: revoking a requester's
-  impersonation grant is not enforced until the cached allow expires (up to
-  `--subject-access-review-cache-allow-ttl`). Lower it, or set it to `0`, where
-  per-request revocation matters more than API-server load.
-- A cached **deny** delays a newly granted permission from taking effect for up
-  to `--subject-access-review-cache-deny-ttl`. Set it to `0` to have grants
-  honoured immediately.
-
-Only definitive allow/deny decisions are cached — a `SubjectAccessReview` that
-errors is never cached, so a transient API-server failure cannot latch into a
-denial. The cache key is the full authorization question, including the
-requester's username, groups, extras **and UID**, so two distinct principals can
-never share a cached decision. Both TTLs default to `10s`, matching the
-delegating-authorization cache in `k8s.io/apiserver`; setting both to `0`
-disables SAR caching entirely.
+(`--subject-access-review-cache-allow-ttl` /
+`--subject-access-review-cache-deny-ttl`, both `10s` by default), and the
+number of impersonation header values accepted per request is capped
+(`--max-impersonation-header-values`, default `64`; over-cap requests are
+rejected with HTTP 431 before any review is sent). The flows, cache semantics,
+and tuning tradeoffs — revocation and grant lag in particular — are documented
+in [Caching and API-server protection](./caching.md).
 
 ### Reserved `system:` identities
 
@@ -226,20 +208,10 @@ instead, supply them — at least one must be present in the token:
 ### TokenReview caching
 
 Review results are cached per the `--token-passthrough-cache-success-ttl` and
-`--token-passthrough-cache-failure-ttl` flags. The cache holds at most 8192
-entries and evicts the least recently used one when full, so a flood of unique
-invalid tokens cannot grow the proxy's memory without bound.
-
-Concurrent requests that miss the cache for the same token each run their own
-TokenReview — misses are deliberately not collapsed into a single in-flight
-review. This matches the behaviour before caching existed (the cache only ever
-subtracts API server load) and is what preserves the full configured
-`--token-passthrough-request-timeout` (including values above 30s) and
-per-request cancellation on every review. The trade-off is a few duplicate
-reviews when many requests present the same not-yet-cached token at the same
-instant: each of those in-flight requests completes its own review, the first
-to finish populates the cache, and every request arriving after that is served
-from it.
+`--token-passthrough-cache-failure-ttl` flags (both `10s` by default; errors
+are never cached). Note that a cached success outlives token revocation for up
+to the success TTL. The flow, key derivation, and tuning tradeoffs are
+documented in [Caching and API-server protection](./caching.md#tokenreview-result-cache).
 
 ## No impersonation
 
@@ -341,6 +313,7 @@ to configure it. For the proxy's own per-request stdout log, see
 
 - [Multi-issuer authentication](./multi-issuer.md)
 - [Getting started](./getting-started.md)
+- [Caching and API-server protection](./caching.md)
 - [Architecture](./architecture.md)
 - [Operations](./operations.md)
 - [Chart values reference](../chart/kube-oidc-proxy/README.md)
