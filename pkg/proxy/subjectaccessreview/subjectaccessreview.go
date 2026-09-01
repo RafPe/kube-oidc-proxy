@@ -14,8 +14,10 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sync/singleflight"
 	v1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilcache "k8s.io/apimachinery/pkg/util/cache"
 	"k8s.io/apiserver/pkg/authentication/user"
 	clientazv1 "k8s.io/client-go/kubernetes/typed/authorization/v1"
 )
@@ -110,6 +112,16 @@ type SubjectAccessReview struct {
 	// single request may carry. Requests over the cap are rejected before any
 	// SAR is sent.
 	maxHeaderValues int
+
+	// cache holds definitive allow/deny decisions keyed by the serialized
+	// review spec. nil disables caching entirely (every check goes to the API
+	// server).
+	cache *decisionCache
+
+	// flight deduplicates concurrent live checks for the same review spec so a
+	// burst of identical requests results in a single SubjectAccessReview call.
+	// Only used when the cache is enabled.
+	flight singleflight.Group
 }
 
 // New returns a SubjectAccessReview that authorizes impersonation via reviewer,
@@ -117,7 +129,14 @@ type SubjectAccessReview struct {
 // refusing requests that carry more than maxHeaderValues impersonation header
 // values. maxHeaderValues must be greater than zero: every SAR costs a round
 // trip, so an unbounded value count must not be constructible.
-func New(reviewer clientazv1.SubjectAccessReviewInterface, sarTimeout time.Duration, maxHeaderValues int) (*SubjectAccessReview, error) {
+//
+// allowCacheTTL and denyCacheTTL bound how long a definitive allowed or denied
+// decision is served from an in-memory cache before being re-checked against
+// the API server; errors are never cached. Caching trades revocation lag for
+// load: an RBAC revoke can take up to allowCacheTTL to be enforced for a
+// cached allow, and a newly granted permission up to denyCacheTTL to be
+// honoured. Set both to 0 to disable the cache and re-check on every request.
+func New(reviewer clientazv1.SubjectAccessReviewInterface, sarTimeout, allowCacheTTL, denyCacheTTL time.Duration, maxHeaderValues int) (*SubjectAccessReview, error) {
 	if maxHeaderValues <= 0 {
 		return nil, fmt.Errorf("maxHeaderValues must be greater than 0, got %d", maxHeaderValues)
 	}
@@ -125,8 +144,17 @@ func New(reviewer clientazv1.SubjectAccessReviewInterface, sarTimeout time.Durat
 		reviewer:        reviewer,
 		sarTimeout:      sarTimeout,
 		maxHeaderValues: maxHeaderValues,
+		cache:           newDecisionCache(allowCacheTTL, denyCacheTTL, decisionCacheSize, realClock{}),
 	}, nil
 }
+
+// realClock supplies wall-clock time to the decision cache; tests substitute a
+// fake to exercise TTL expiry deterministically.
+type realClock struct{}
+
+func (realClock) Now() time.Time { return time.Now() }
+
+var _ utilcache.Clock = realClock{}
 
 // CheckAuthorizedForImpersonation inspects the request's impersonation headers,
 // verifies via SubjectAccessReview that requester is allowed to impersonate
@@ -284,10 +312,78 @@ func countImpersonationHeaderValues(headers http.Header) int {
 	return count
 }
 
-// checkRbacImpersonationAuthorization submits a SubjectAccessReview to the API
-// server to validate that requester may impersonate the named resource. It
-// reports whether the review allowed the request.
+// checkRbacImpersonationAuthorization validates that requester may impersonate
+// the named resource and reports whether the check allowed the request. The
+// decision comes from the cache when a definitive, unexpired one is present;
+// otherwise a live SubjectAccessReview is submitted to the API server. A cache
+// hit returns the same (allowed, nil) pair the live check produced, so callers
+// build byte-identical *ImpersonationAuthError denials either way. Errors are
+// never cached: a transient API-server failure fails only the requests that
+// observed it.
 func (s *SubjectAccessReview) checkRbacImpersonationAuthorization(ctx context.Context, resource string, name string, requester user.Info) (bool, error) {
+	spec := impersonationReviewSpec(resource, name, requester)
+
+	key, cacheable := s.cache.key(&spec)
+	if !cacheable {
+		return s.liveCheck(ctx, &spec)
+	}
+
+	if allowed, ok := s.cache.get(key); ok {
+		return allowed, nil
+	}
+
+	return s.sharedLiveCheck(ctx, key, &spec)
+}
+
+// sharedLiveCheck performs a live check deduplicated across concurrent callers
+// asking the identical authorization question, caching the resulting decision.
+// The winning caller's context governs the shared call, so a waiter whose
+// flight fails with a context error not its own retries with a direct check
+// rather than inheriting another request's cancellation.
+func (s *SubjectAccessReview) sharedLiveCheck(ctx context.Context, key string, spec *v1.SubjectAccessReviewSpec) (bool, error) {
+	ch := s.flight.DoChan(key, func() (interface{}, error) {
+		allowed, err := s.liveCheck(ctx, spec)
+		if err != nil {
+			return false, err
+		}
+		s.cache.put(key, allowed)
+		return allowed, nil
+	})
+
+	select {
+	case <-ctx.Done():
+		// Our own request is done; do not wait on the shared flight.
+		return false, fmt.Errorf("%w: %w", ErrCreateSubjectAccessReview, ctx.Err())
+	case res := <-ch:
+		if res.Err != nil {
+			if res.Shared && ctx.Err() == nil &&
+				(errors.Is(res.Err, context.Canceled) || errors.Is(res.Err, context.DeadlineExceeded)) {
+				return s.liveCheck(ctx, spec)
+			}
+			return false, res.Err
+		}
+		return res.Val.(bool), nil
+	}
+}
+
+// liveCheck submits spec to the API server as a SubjectAccessReview and
+// reports whether it allowed the request.
+func (s *SubjectAccessReview) liveCheck(ctx context.Context, spec *v1.SubjectAccessReviewSpec) (bool, error) {
+	clusterSubjectAccessReview := v1.SubjectAccessReview{Spec: *spec}
+
+	reviewResult, err := s.reviewer.Create(ctx, &clusterSubjectAccessReview, metav1.CreateOptions{})
+	if err != nil {
+		return false, fmt.Errorf("%w: %w", ErrCreateSubjectAccessReview, err)
+	}
+	return reviewResult.Status.Allowed, nil
+}
+
+// impersonationReviewSpec builds the SubjectAccessReviewSpec asking whether
+// requester may impersonate the named resource. The same spec is both
+// submitted to the API server and serialized as the cache key, so every field
+// that can influence the decision — including the requester's UID and Extra
+// fields — is part of the key by construction.
+func impersonationReviewSpec(resource string, name string, requester user.Info) v1.SubjectAccessReviewSpec {
 	extras := map[string]v1.ExtraValue{}
 	var group string
 	var subresource string
@@ -312,25 +408,18 @@ func (s *SubjectAccessReview) checkRbacImpersonationAuthorization(ctx context.Co
 		group = "authentication.k8s.io"
 	}
 
-	clusterSubjectAccessReview := v1.SubjectAccessReview{
-		Spec: v1.SubjectAccessReviewSpec{
-			User:   requester.GetName(),
-			Groups: requester.GetGroups(),
-			Extra:  extras,
+	return v1.SubjectAccessReviewSpec{
+		User:   requester.GetName(),
+		UID:    requester.GetUID(),
+		Groups: requester.GetGroups(),
+		Extra:  extras,
 
-			ResourceAttributes: &v1.ResourceAttributes{
-				Verb:        "impersonate",
-				Group:       group,
-				Resource:    resource,
-				Subresource: subresource,
-				Name:        name,
-			},
+		ResourceAttributes: &v1.ResourceAttributes{
+			Verb:        "impersonate",
+			Group:       group,
+			Resource:    resource,
+			Subresource: subresource,
+			Name:        name,
 		},
 	}
-
-	reviewResult, err := s.reviewer.Create(ctx, &clusterSubjectAccessReview, metav1.CreateOptions{})
-	if err != nil {
-		return false, fmt.Errorf("%w: %w", ErrCreateSubjectAccessReview, err)
-	}
-	return reviewResult.Status.Allowed, nil
 }

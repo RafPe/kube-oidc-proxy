@@ -1,0 +1,2 @@
+kind: Added
+body: Impersonation SubjectAccessReview decisions are now served from a bounded in-memory cache with separately configurable TTLs (--subject-access-review-cache-allow-ttl and --subject-access-review-cache-deny-ttl, default 10s, 0 disables). Revoking or granting an RBAC impersonation permission can take up to the corresponding TTL to be enforced through the proxy.

@@ -17,7 +17,7 @@ workspace "kube-oidc-proxy" "OIDC authentication and impersonation proxy for man
                 authn = component "Authenticator" "Validates the bearer token against the union of N OIDC issuers." "Go, bearertoken + OIDC union"
                 tokenPassthrough = component "Token passthrough" "Fallback for tokens OIDC does not accept; validated via TokenReview." "Go, TokenReview"
                 impersonate = component "Impersonation handler" "Builds the impersonation config and forwards the request." "Go"
-                sar = component "SubjectAccessReview client" "Authorizes inbound impersonation (kubectl --as); caps the impersonation header values per request (431 over cap) before any review is sent." "Go, SubjectAccessReview"
+                sar = component "SubjectAccessReview client" "Authorizes inbound impersonation (kubectl --as); caps the impersonation header values per request (431 over cap) before any review, and serves decisions from a bounded in-memory cache with split allow/deny TTLs before issuing a live SubjectAccessReview." "Go, SubjectAccessReview"
                 audit = component "Audit backend" "Records authenticated and unauthenticated requests." "Go, k8s audit"
                 probe = component "Readiness probe" "Reports Ready once each issuer's JWKS is initialized." "Go, healthcheck"
             }
