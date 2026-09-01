@@ -149,3 +149,50 @@ func TestValidate_SubjectAccessReviewTimeout(t *testing.T) {
 		})
 	}
 }
+
+func TestValidate_SubjectAccessReviewCacheTTLs(t *testing.T) {
+	flags := map[string]struct {
+		wantErrSubstr string
+		set           func(o *Options, ttl time.Duration)
+	}{
+		"subject-access-review-cache-allow-ttl": {
+			wantErrSubstr: "--subject-access-review-cache-allow-ttl must not be negative",
+			set:           func(o *Options, ttl time.Duration) { o.App.SubjectAccessReviewAllowCacheTTL = ttl },
+		},
+		"subject-access-review-cache-deny-ttl": {
+			wantErrSubstr: "--subject-access-review-cache-deny-ttl must not be negative",
+			set:           func(o *Options, ttl time.Duration) { o.App.SubjectAccessReviewDenyCacheTTL = ttl },
+		},
+	}
+
+	tests := map[string]struct {
+		ttl     time.Duration
+		wantErr bool
+	}{
+		"default is valid":           {ttl: subjectaccessreview.DefaultAllowCacheTTL, wantErr: false},
+		"custom positive is valid":   {ttl: time.Minute, wantErr: false},
+		"zero (disabling) is valid":  {ttl: 0, wantErr: false},
+		"negative is rejected":       {ttl: -1 * time.Second, wantErr: true},
+		"large negative is rejected": {ttl: -time.Hour, wantErr: true},
+	}
+
+	for flagName, flag := range flags {
+		t.Run(flagName, func(t *testing.T) {
+			for name, tc := range tests {
+				t.Run(name, func(t *testing.T) {
+					o := New()
+					cmd := &cobra.Command{}
+					o.AddFlags(cmd)
+
+					flag.set(o, tc.ttl)
+
+					err := o.Validate(cmd)
+					gotErr := err != nil && strings.Contains(err.Error(), flag.wantErrSubstr)
+					if gotErr != tc.wantErr {
+						t.Errorf("Validate() TTL error present = %v (err=%v), want %v", gotErr, err, tc.wantErr)
+					}
+				})
+			}
+		})
+	}
+}

@@ -147,6 +147,26 @@ tokenPassthrough:
   # Audiences that passthrough tokens are allowed to have.
   audiences: []
 
+# Impersonation SubjectAccessReview decision cache. When a request carries
+# Impersonate-* headers (kubectl --as), the proxy authorizes the impersonation
+# via a SubjectAccessReview; definitive decisions are served from a bounded
+# in-memory cache (API-server errors are never cached).
+subjectAccessReview:
+  # How long an ALLOWED impersonation decision is served from the cache before
+  # being re-checked (--subject-access-review-cache-allow-ttl). Go duration,
+  # e.g. "10s". Empty means the flag is omitted and the binary default of 10s
+  # applies. Trade-off: revoking a requester's RBAC impersonation grant can
+  # take up to this long to be enforced while an allow is cached. Set to "0"
+  # to disable caching of allowed decisions and re-check every request.
+  cacheAllowTTL: ""
+  # How long a DENIED impersonation decision is served from the cache before
+  # being re-checked (--subject-access-review-cache-deny-ttl). Go duration,
+  # e.g. "10s". Empty means the flag is omitted and the binary default of 10s
+  # applies. Trade-off: a newly granted RBAC impersonation permission can take
+  # up to this long to be honoured while a deny is cached. Set to "0" to
+  # disable caching of denied decisions.
+  cacheDenyTTL: ""
+
 # Extra impersonation headers added to requests forwarded to the API server.
 # https://github.com/rafpe/kube-oidc-proxy/blob/main/docs/configuration.md#extra-impersonation-headers
 extraImpersonationHeaders:

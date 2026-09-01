@@ -123,6 +123,8 @@ Ignored when `authenticationConfig.content` is set.
 | --- | --- | --- | --- |
 | `tokenPassthrough.enabled` | bool | `false` | Forward non-OIDC bearer tokens to the API server (validated via TokenReview). |
 | `tokenPassthrough.audiences` | list | `[]` | Allowed audiences for passthrough tokens. |
+| `subjectAccessReview.cacheAllowTTL` | string | `""` (binary default `10s`) | How long an **allowed** impersonation SubjectAccessReview decision is cached (`--subject-access-review-cache-allow-ttl`), as a Go duration. Empty omits the flag. Revoking an impersonation grant can take up to this long to be enforced; `"0"` disables caching of allows. |
+| `subjectAccessReview.cacheDenyTTL` | string | `""` (binary default `10s`) | How long a **denied** impersonation SubjectAccessReview decision is cached (`--subject-access-review-cache-deny-ttl`), as a Go duration. Empty omits the flag. A new impersonation grant can take up to this long to be honoured; `"0"` disables caching of denies. |
 | `extraImpersonationHeaders.clientIP` | bool | `false` | Send the client source IP as an extra user header. |
 | `extraImpersonationHeaders.headers` | string | `nil` | Extra `key=value` user headers (`--extra-user-headers`), comma-separated. |
 

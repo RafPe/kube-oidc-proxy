@@ -63,6 +63,8 @@ not require a pod restart.
 | `--extra-user-headers` | — | (Alpha) Extra `key=value` user headers to add to the impersonated request. |
 | `--trusted-proxies` | — | Comma-separated trusted proxy CIDRs (IPv4/IPv6). `X-Forwarded-For` is honoured for client-IP resolution only when the immediate peer is within one of these networks. Empty (default) trusts no proxy. See [Trusted proxies and client IP](#trusted-proxies-and-client-ip). |
 | `--subject-access-review-timeout` | `5s` | Timeout for authorizing inbound impersonation via `SubjectAccessReview` — a single shared budget across all SAR calls for one request (not per-call). Must be greater than 0. |
+| `--subject-access-review-cache-allow-ttl` | `10s` | How long an **allowed** impersonation SAR decision is served from a bounded in-memory cache before being re-checked. The tradeoff is revocation lag: revoking a requester's RBAC impersonation grant can take up to this long to be enforced while an allow is cached. Default matches the delegating-authorization default in `k8s.io/apiserver`. `0` disables caching of allows (per-request revocation). Only definitive decisions are cached — API-server errors never are. |
+| `--subject-access-review-cache-deny-ttl` | `10s` | How long a **denied** impersonation SAR decision is served from the cache. A newly granted RBAC impersonation permission can take up to this long to be honoured. `0` disables caching of denies. |
 | `--allow-reserved-groups` | _(empty)_ | Comma-separated `system:`-prefixed groups a token may carry. See [Reserved `system:` identities](#reserved-system-identities). |
 
 ### Serving / TLS & misc
@@ -93,6 +95,35 @@ The proxy also honours impersonation headers on **inbound** requests, so
 the proxy first checks — via `SubjectAccessReview` against the API server — that
 the authenticated user may assume that identity, then forwards the impersonated
 identity instead of the caller's own.
+
+### SubjectAccessReview caching
+
+Impersonation authorization decisions are served from a bounded in-memory cache
+per the `--subject-access-review-cache-allow-ttl` and
+`--subject-access-review-cache-deny-ttl` flags, so a client that repeatedly
+impersonates the same identities does not send a `SubjectAccessReview` to the
+API server on every request. The cache holds at most 8192 entries and evicts the
+least recently used one when full, so client-influenced impersonation values
+cannot grow the proxy's memory without bound.
+
+Allowed and denied decisions have **separate** TTLs so the two failure modes can
+be tuned independently:
+
+- A cached **allow** outlives an RBAC change: revoking a requester's
+  impersonation grant is not enforced until the cached allow expires (up to
+  `--subject-access-review-cache-allow-ttl`). Lower it, or set it to `0`, where
+  per-request revocation matters more than API-server load.
+- A cached **deny** delays a newly granted permission from taking effect for up
+  to `--subject-access-review-cache-deny-ttl`. Set it to `0` to have grants
+  honoured immediately.
+
+Only definitive allow/deny decisions are cached — a `SubjectAccessReview` that
+errors is never cached, so a transient API-server failure cannot latch into a
+denial. The cache key is the full authorization question, including the
+requester's username, groups, extras **and UID**, so two distinct principals can
+never share a cached decision. Both TTLs default to `10s`, matching the
+delegating-authorization cache in `k8s.io/apiserver`; setting both to `0`
+disables SAR caching entirely.
 
 ### Reserved `system:` identities
 
