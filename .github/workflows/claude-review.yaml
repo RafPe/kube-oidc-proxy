@@ -2,7 +2,8 @@ name: Claude Review
 
 # On-demand PR review and approval. Two paths:
 #   - Release PRs (any label starting with "autorelease") are approved without
-#     review; they carry only generated changelog/fragment changes.
+#     review after verifying the diff carries only generated changelog and
+#     fragment changes (.github/scripts/approve-release-pr.sh).
 #   - Commenting "@claude review" on any other PR runs a Claude code review
 #     and approves only when the review finds no blocking issues.
 on:
@@ -31,6 +32,8 @@ jobs:
        contains(join(github.event.pull_request.labels.*.name, ','), 'autorelease'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read # checkout of the shared approve script
     # Serialize overlapping triggers (pull_request + workflow_run fire within
     # seconds of each other) so the already-approved check below can see the
     # earlier run's review.
@@ -38,6 +41,13 @@ jobs:
       group: release-approve
       cancel-in-progress: false
     steps:
+      # Pin the script to main rather than the pull_request merge ref: the
+      # approval guards must not be rewritable from release/next itself.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          sparse-checkout: .github/scripts
+          fetch-depth: 1
       - name: Approve release PR
         env:
           # github-actions[bot] authors the release PR and cannot approve its
@@ -55,14 +65,7 @@ jobs:
               --jq '[.[] | select([.labels[].name | startswith("autorelease")] | any)][0].number // ""')
             [ -n "${pr}" ] || { echo "::notice::no open autorelease PR to approve"; exit 0; }
           fi
-          # latestReviews holds each reviewer's current review, so a standing
-          # approval means nothing to do; a push dismisses it (DISMISSED) and
-          # the next trigger re-approves.
-          approved=$(gh pr view "${pr}" -R "${GITHUB_REPOSITORY}" --json latestReviews \
-            --jq '[.latestReviews[] | select(.state == "APPROVED")] | length')
-          [ "${approved}" -eq 0 ] || { echo "::notice::PR #${pr} already has a current approval"; exit 0; }
-          gh pr review "${pr}" -R "${GITHUB_REPOSITORY}" --approve \
-            --body "Auto-approved release PR (autorelease label)."
+          .github/scripts/approve-release-pr.sh "${pr}"
 
   claude-review:
     name: "review:claude"
@@ -80,18 +83,18 @@ jobs:
       actions: read # let Claude read CI results on the PR
       id-token: write
     steps:
+      # issue_comment events check out the default branch, so both paths get
+      # trusted repo content: the approve script for release PRs, the source
+      # tree for Claude reviews.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { fetch-depth: 1 }
+
       - name: Approve release PR without review
         if: contains(join(github.event.issue.labels.*.name, ','), 'autorelease')
         env:
           GH_TOKEN: ${{ secrets.RELEASE_APPROVE_PAT }}
           PR: ${{ github.event.issue.number }}
-        run: |
-          gh pr review "${PR}" -R "${GITHUB_REPOSITORY}" --approve \
-            --body "Auto-approved release PR (autorelease label)."
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: ${{ !contains(join(github.event.issue.labels.*.name, ','), 'autorelease') }}
-        with: { fetch-depth: 1 }
+        run: .github/scripts/approve-release-pr.sh "${PR}"
 
       # The issue_comment payload lacks head-repo data, so resolve whether the
       # PR comes from a fork; fork PRs get a review but never an auto-approval
@@ -152,4 +155,29 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.issue.number }}
           SUMMARY: ${{ fromJSON(steps.review.outputs.structured_output).summary }}
-        run: gh pr review "${PR}" -R "${GITHUB_REPOSITORY}" --approve --body "${SUMMARY}"
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # Plain assignments so a failed gh call aborts via set -e instead of
+          # leaving blank fields in the card.
+          meta=$(gh pr view "${PR}" -R "${GITHUB_REPOSITORY}" --json headRefName,headRefOid)
+          head_ref=$(jq -r '.headRefName' <<<"${meta}")
+          head_sha=$(jq -r '.headRefOid[0:7]' <<<"${meta}")
+          {
+            cat <<EOF
+          ## ✅ Approved — Claude review clean
+
+          |             |   |
+          | ----------- | - |
+          | **Verdict** | Approved — review found no blocking issues |
+          | **Head**    | \`${head_ref}\` @ \`${head_sha}\` |
+          | **Review**  | [Claude review run](${RUN_URL}) — inline findings, if any, are non-blocking |
+
+          EOF
+            printf '%s\n' "${SUMMARY}" | sed 's/^/> /'
+            cat <<'EOF'
+
+          <sub>🤖 Approval submitted automatically because the review verdict was approve=true and the PR is not from a fork — <code>.github/workflows/claude-review.yaml</code></sub>
+          EOF
+          } > approve-body.md
+          gh pr review "${PR}" -R "${GITHUB_REPOSITORY}" --approve --body-file approve-body.md
