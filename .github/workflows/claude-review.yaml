@@ -158,8 +158,11 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          IFS=$'\t' read -r head_ref head_sha < <(gh pr view "${PR}" -R "${GITHUB_REPOSITORY}" \
-            --json headRefName,headRefOid --jq '[.headRefName, .headRefOid[0:7]] | @tsv')
+          # Plain assignments so a failed gh call aborts via set -e instead of
+          # leaving blank fields in the card.
+          meta=$(gh pr view "${PR}" -R "${GITHUB_REPOSITORY}" --json headRefName,headRefOid)
+          head_ref=$(jq -r '.headRefName' <<<"${meta}")
+          head_sha=$(jq -r '.headRefOid[0:7]' <<<"${meta}")
           {
             cat <<EOF
           ## ✅ Approved — Claude review clean
