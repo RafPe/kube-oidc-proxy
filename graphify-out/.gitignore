@@ -10,3 +10,6 @@ cache/last_query_stamp
 cache/stat-index.json
 # Structural (AST) cache is version-pinned and rebuilds in seconds; keep only the semantic cache.
 cache/ast/
+# Regenerate locally with `graphify export html` / `graphify export wiki`.
+graph.html
+wiki/
