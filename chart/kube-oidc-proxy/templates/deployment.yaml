@@ -126,8 +126,12 @@ spec:
           {{- if .Values.extraImpersonationHeaders.headers }}
           - "--extra-user-headers={{ .Values.extraImpersonationHeaders.headers }}"
           {{ end }}
+          {{- if .Values.logging.format }}
           - "--logging-format={{ .Values.logging.format }}"
+          {{ end }}
+          {{- if and (not (kindIs "invalid" .Values.logging.verbosity)) (ne (toString .Values.logging.verbosity) "") }}
           - "--v={{ .Values.logging.verbosity }}"
+          {{ end }}
           {{- range $key, $value := .Values.extraArgs }}
           - "--{{ $key }}={{ $value }}"
           {{- end }}
