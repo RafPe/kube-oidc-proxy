@@ -27,6 +27,7 @@ type Options struct {
 	SecureServing        *SecureServingOptions
 	Audit                *AuditOptions
 	Client               *ClientOptions
+	Logging              *LoggingOptions
 	Misc                 *MiscOptions
 
 	nfs *cliflag.NamedFlagSets
@@ -43,6 +44,7 @@ func New() *Options {
 		SecureServing:        NewSecureServingOptions(nfs),
 		Audit:                NewAuditOptions(nfs),
 		Client:               NewClientOptions(nfs),
+		Logging:              NewLoggingOptions(nfs),
 		Misc:                 NewMiscOptions(nfs),
 
 		nfs: nfs,
@@ -101,6 +103,10 @@ func (o *Options) Validate(cmd *cobra.Command) error {
 
 	if err := o.Audit.Validate(); len(err) > 0 {
 		errs = append(errs, err...)
+	}
+
+	if err := o.Logging.Validate(); err != nil {
+		errs = append(errs, err)
 	}
 
 	if o.App.DisableImpersonation &&

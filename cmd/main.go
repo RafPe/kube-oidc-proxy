@@ -6,12 +6,12 @@ import (
 	"os"
 
 	"github.com/rafpe/kube-oidc-proxy/cmd/app"
-	"github.com/rafpe/kube-oidc-proxy/pkg/util/signals"
 )
 
 func main() {
-	stopCh := signals.Handler()
-	cmd := app.NewRunCommand(stopCh)
+	// The signal handler is installed by the command itself, once the root
+	// logger it reports through has been built from the parsed flags.
+	cmd := app.NewRunCommand()
 
 	if err := cmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)

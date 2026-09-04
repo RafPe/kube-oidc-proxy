@@ -3,6 +3,7 @@ package hooks
 
 import (
 	"errors"
+	"log/slog"
 	"reflect"
 	"testing"
 	"time"
@@ -15,7 +16,7 @@ import (
 // that AddPreShutdownHook (which needs the lock) still returns promptly while
 // the hook is mid-flight.
 func TestRunPreShutdownHooksDoesNotHoldLock(t *testing.T) {
-	h := New()
+	h := New(slog.New(slog.DiscardHandler))
 
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -64,7 +65,7 @@ func TestRunPreShutdownHooksDoesNotHoldLock(t *testing.T) {
 // TestRunPreShutdownHooksOrderAndContinuation verifies hooks run in registration
 // order and that one hook's failure does not prevent later hooks from running.
 func TestRunPreShutdownHooksOrderAndContinuation(t *testing.T) {
-	h := New()
+	h := New(slog.New(slog.DiscardHandler))
 
 	var order []string
 	errBoom := errors.New("boom")
@@ -99,7 +100,7 @@ func TestRunPreShutdownHooksOrderAndContinuation(t *testing.T) {
 // TestAddPreShutdownHookOverwritesInPlace verifies that re-registering a name
 // replaces the hook while preserving its original position (last write wins).
 func TestAddPreShutdownHookOverwritesInPlace(t *testing.T) {
-	h := New()
+	h := New(slog.New(slog.DiscardHandler))
 
 	var order []string
 	h.AddPreShutdownHook("a", func() error { order = append(order, "a-old"); return nil })
@@ -119,7 +120,7 @@ func TestAddPreShutdownHookOverwritesInPlace(t *testing.T) {
 
 // TestRunPreShutdownHooksNoHooks verifies the empty registry runs cleanly.
 func TestRunPreShutdownHooksNoHooks(t *testing.T) {
-	if err := New().RunPreShutdownHooks(); err != nil {
+	if err := New(slog.New(slog.DiscardHandler)).RunPreShutdownHooks(); err != nil {
 		t.Fatalf("expected nil error with no hooks, got %v", err)
 	}
 }

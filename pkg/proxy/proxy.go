@@ -7,6 +7,7 @@ package proxy
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -87,6 +88,11 @@ type Proxy struct {
 
 	config *Config
 
+	// logger is the request-component logger every request-path record is
+	// emitted through, and the logger the request filter puts on the request
+	// context. Never nil: New requires a root logger.
+	logger *slog.Logger
+
 	// trustedProxies is the parsed form of config.TrustedProxies, resolved once
 	// at construction and applied to the client-IP resolvers when Run starts.
 	trustedProxies []*net.IPNet
@@ -114,6 +120,11 @@ type Proxy struct {
 // borrows for its lifetime; it does not close or mutate them. The Proxy creates
 // and owns its auditor and shutdown hooks internally.
 type Dependencies struct {
+	// Logger is the process root logger. New derives one component logger per
+	// collaborator from it; there is no package-level fallback, so it is
+	// required.
+	Logger *slog.Logger
+
 	RestConfig         *rest.Config
 	TokenAuthenticator authenticator.Token
 	AuditOptions       *options.AuditOptions
@@ -129,6 +140,9 @@ type Dependencies struct {
 // New validates deps and constructs a Proxy. Invalid configurations fail here,
 // at construction, rather than on the first request.
 func New(deps Dependencies) (*Proxy, error) {
+	if deps.Logger == nil {
+		return nil, errors.New("proxy: Logger is required")
+	}
 	if deps.RestConfig == nil {
 		return nil, errors.New("proxy: RestConfig is required")
 	}
@@ -172,22 +186,21 @@ func New(deps Dependencies) (*Proxy, error) {
 		return nil, err
 	}
 
-	auditor, err := audit.New(deps.AuditOptions, cfg.ExternalAddress, deps.SecureServingInfo)
+	auditor, err := audit.New(deps.AuditOptions, cfg.ExternalAddress, deps.SecureServingInfo,
+		logging.ForComponent(deps.Logger, logging.ComponentAudit))
 	if err != nil {
 		return nil, err
 	}
 
-	// The access record goes to the JSON stream on stdout, as it always has.
-	// The root logger becomes an injected dependency in a later change; the
-	// destination and the record shape do not change with it.
-	root, err := logging.New(logging.Options{})
-	if err != nil {
-		return nil, err
-	}
+	// One request-component logger serves both the access record and every
+	// other record the request path emits, so they share a destination and a
+	// component without a package global.
+	requestLogger := logging.ForComponent(deps.Logger, logging.ComponentRequest)
 
 	return &Proxy{
 		restConfig:            deps.RestConfig,
-		hooks:                 hooks.New(),
+		logger:                requestLogger,
+		hooks:                 hooks.New(logging.ForComponent(deps.Logger, logging.ComponentShutdown)),
 		tokenReviewer:         deps.TokenReviewer,
 		subjectAccessReviewer: deps.SubjectAccessReviewer,
 		secureServingInfo:     deps.SecureServingInfo,
@@ -197,7 +210,7 @@ func New(deps Dependencies) (*Proxy, error) {
 		oidcRequestAuther:     bearertoken.New(deps.TokenAuthenticator),
 		tokenAuthenticator:    deps.TokenAuthenticator,
 		auditor:               auditor,
-		access:                accesslogging.NewAccessLogger(logging.ForComponent(root, logging.ComponentRequest), trustedProxies),
+		access:                accesslogging.NewAccessLogger(requestLogger, trustedProxies),
 	}, nil
 }
 

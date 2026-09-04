@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -389,7 +390,7 @@ func TestServerStartReturnsBindError(t *testing.T) {
 		t.Fatalf("splitting host/port: %v", err)
 	}
 
-	s := NewServer(port, nil, false, &fakeAuther{})
+	s := NewServer(port, nil, false, &fakeAuther{}, slog.New(slog.DiscardHandler))
 	if err := s.Start(context.Background()); err == nil {
 		t.Fatal("expected Start to return an error binding an occupied port, got nil")
 	}
@@ -404,7 +405,7 @@ func TestServerStartServesAndShutsDown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	s := NewServer(port, nil, false, &fakeAuther{})
+	s := NewServer(port, nil, false, &fakeAuther{}, slog.New(slog.DiscardHandler))
 	if err := s.Start(ctx); err != nil {
 		t.Fatalf("Start returned unexpected error: %v", err)
 	}
@@ -444,7 +445,7 @@ func TestServerNoGoroutineLeak(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		port := freePort(t)
 		ctx, cancel := context.WithCancel(context.Background())
-		s := NewServer(port, nil, false, &fakeAuther{})
+		s := NewServer(port, nil, false, &fakeAuther{}, slog.New(slog.DiscardHandler))
 		if err := s.Start(ctx); err != nil {
 			cancel()
 			t.Fatalf("Start returned unexpected error: %v", err)

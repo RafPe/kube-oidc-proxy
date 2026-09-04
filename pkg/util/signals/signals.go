@@ -6,6 +6,7 @@
 package signals
 
 import (
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -18,7 +19,10 @@ import (
 // subsequent signal (up to three) re-logs that shutdown is in progress; the
 // next one after that forces an immediate os.Exit(1). Handler is intended to be
 // called once during process startup.
-func Handler() chan struct{} {
+//
+// logger is the shutdown-component logger the handler will report through; the
+// klog call sites below are converted onto it in a later change.
+func Handler(logger *slog.Logger) chan struct{} {
 	stopCh := make(chan struct{})
 	ch := make(chan os.Signal, 2)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)

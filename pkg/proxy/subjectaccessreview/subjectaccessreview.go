@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -102,6 +103,11 @@ const DefaultMaxHeaderValues = 64
 // single shared timeout budget bounds the whole sequence of checks performed
 // for one request.
 type SubjectAccessReview struct {
+	// logger is the sar-component logger this reviewer reports through. It is
+	// the fallback for a call that carries no request-scoped logger on its
+	// context. Never nil: New substitutes a discarding logger.
+	logger *slog.Logger
+
 	reviewer clientazv1.SubjectAccessReviewInterface
 
 	// sarTimeout is the single shared budget applied across the whole sequence
@@ -136,11 +142,15 @@ type SubjectAccessReview struct {
 // load: an RBAC revoke can take up to allowCacheTTL to be enforced for a
 // cached allow, and a newly granted permission up to denyCacheTTL to be
 // honoured. Set both to 0 to disable the cache and re-check on every request.
-func New(reviewer clientazv1.SubjectAccessReviewInterface, sarTimeout, allowCacheTTL, denyCacheTTL time.Duration, maxHeaderValues int) (*SubjectAccessReview, error) {
+func New(reviewer clientazv1.SubjectAccessReviewInterface, sarTimeout, allowCacheTTL, denyCacheTTL time.Duration, maxHeaderValues int, logger *slog.Logger) (*SubjectAccessReview, error) {
 	if maxHeaderValues <= 0 {
 		return nil, fmt.Errorf("maxHeaderValues must be greater than 0, got %d", maxHeaderValues)
 	}
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
 	return &SubjectAccessReview{
+		logger:          logger,
 		reviewer:        reviewer,
 		sarTimeout:      sarTimeout,
 		maxHeaderValues: maxHeaderValues,

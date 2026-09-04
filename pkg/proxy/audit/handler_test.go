@@ -3,6 +3,7 @@ package audit
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -60,7 +61,7 @@ func newForbiddenTestAudit(t *testing.T) (*Audit, string) {
 	opts.PolicyFile = policyPath
 	opts.LogOptions.Path = logPath
 
-	a, err := New(opts, "0.0.0.0:1234", new(server.SecureServingInfo))
+	a, err := New(opts, "0.0.0.0:1234", new(server.SecureServingInfo), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("creating auditor: %s", err)
 	}

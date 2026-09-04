@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -59,6 +60,9 @@ type IssuerReadiness struct {
 // before the potentially slow AuthenticateToken calls (#53), and the serving
 // flag must stay readable without re-entangling it with that lock.
 type HealthCheck struct {
+	// logger is the readiness-component logger this check reports through.
+	logger *slog.Logger
+
 	oidcAuther authenticator.Token
 	issuers    []IssuerReadiness
 	requireAll bool
@@ -100,8 +104,16 @@ type Server struct {
 // NewServer builds a readiness Server that probes the given issuers via
 // oidcAuther and serves the readiness endpoint on the given port. It does not
 // bind or serve until Start is called.
-func NewServer(port string, issuers []IssuerReadiness, requireAll bool, oidcAuther authenticator.Token) *Server {
+//
+// logger is the readiness-component logger; a nil logger yields one that
+// discards every record, so a partially wired caller cannot panic on a probe.
+func NewServer(port string, issuers []IssuerReadiness, requireAll bool, oidcAuther authenticator.Token, logger *slog.Logger) *Server {
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+
 	h := &HealthCheck{
+		logger:      logger,
 		oidcAuther:  oidcAuther,
 		issuers:     issuers,
 		requireAll:  requireAll,

@@ -2,6 +2,7 @@
 package audit
 
 import (
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -133,7 +134,7 @@ func TestLongRunningRequests(t *testing.T) {
 func TestRequestInfoLongRunning(t *testing.T) {
 	// An external address with a port, since without one Complete() insists on
 	// deriving the port from a secure serving info this test has no use for.
-	auditor, err := New(&options.AuditOptions{AuditOptions: apiserveroptions.NewAuditOptions()}, "127.0.0.1:6443", nil)
+	auditor, err := New(&options.AuditOptions{AuditOptions: apiserveroptions.NewAuditOptions()}, "127.0.0.1:6443", nil, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("failed to create auditor: %s", err)
 	}

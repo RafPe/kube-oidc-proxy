@@ -6,6 +6,7 @@ package hooks
 
 import (
 	"fmt"
+	"log/slog"
 	"sync"
 
 	k8sErrors "k8s.io/apimachinery/pkg/util/errors"
@@ -31,13 +32,25 @@ type hookEntry struct {
 //   - Hooks registered while RunPreShutdownHooks is executing are not run by
 //     that in-flight pass (the run operates on a snapshot).
 type Hooks struct {
+	// logger is the shutdown-component logger the registry reports through.
+	// Never nil: New substitutes a discarding logger.
+	logger *slog.Logger
+
 	mu      sync.Mutex
 	entries []hookEntry
 	indexOf map[string]int
 }
 
-func New() *Hooks {
+// New returns an empty registry reporting through logger, which the caller has
+// already bound to the shutdown component. A nil logger yields one that
+// discards every record, so a partially wired caller cannot panic during
+// teardown.
+func New(logger *slog.Logger) *Hooks {
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
 	return &Hooks{
+		logger:  logger,
 		indexOf: make(map[string]int),
 	}
 }

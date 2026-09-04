@@ -9,6 +9,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/util/uuid"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
 )
 
@@ -23,6 +24,10 @@ const (
 // identity in the Audit-ID request header: the vendored withAuditInit reads only
 // the header and overwrites any context value, so the header is the one channel
 // both audit chains and the upstream API server honour.
+//
+// It is also where the request-scoped logger is installed. The id goes on the
+// context (never bound onto a logger with With), so Emit can supply request_id
+// to any event that requires it however deep in the chain the call site sits.
 func (p *Proxy) withRequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		inbound := validRequestID(r.Header.Get(headerAuditID))
@@ -41,6 +46,10 @@ func (p *Proxy) withRequestID(next http.Handler) http.Handler {
 		r.Header.Set(headerAuditID, id)
 		r.Header.Del(headerRequestID)
 		w.Header().Set(headerAuditID, id)
+
+		ctx := logging.WithRequestID(r.Context(), id)
+		r = r.WithContext(logging.NewContext(ctx, p.logger))
+
 		next.ServeHTTP(w, context.WithRequestID(r, id))
 	})
 }

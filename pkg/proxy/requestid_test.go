@@ -2,6 +2,7 @@
 package proxy
 
 import (
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,8 @@ import (
 	"k8s.io/apiserver/pkg/audit"
 	genericapifilters "k8s.io/apiserver/pkg/endpoints/filters"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
 )
 
@@ -116,5 +119,35 @@ func TestBothAuditChainsAdoptTheSameID(t *testing.T) {
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
 	if fromAudit != minted {
 		t.Fatalf("audit chain minted %q, filter minted %q; the header must be the channel", fromAudit, minted)
+	}
+}
+
+// TestWithRequestIDInstallsTheRequestScopedLogger pins the other half of the
+// filter's job: the request carries the proxy's request-component logger and
+// the correlation id on its context, so a call site anywhere downstream reaches
+// both without threading either through its signature. The id lives on the
+// context rather than bound onto the logger, so Emit supplies request_id only
+// to the events whose registry entry requires it.
+func TestWithRequestIDInstallsTheRequestScopedLogger(t *testing.T) {
+	root, records := logtest.New(t, 2)
+	p := &Proxy{logger: logging.ForComponent(root, logging.ComponentRequest)}
+
+	var minted string
+	h := p.withRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		minted = context.RequestID(r)
+		if got := logging.RequestIDFrom(r.Context()); got != minted {
+			t.Errorf("logging.RequestIDFrom = %q, want the minted id %q", got, minted)
+		}
+		logging.Emit(r.Context(), logging.FromContext(r.Context()),
+			logging.EventRequestImpersonationSkipped, slog.String("skip_reason", "test"))
+	}))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil))
+
+	rec := records.Only(t, logging.EventRequestImpersonationSkipped)
+	if got := rec.String("request_id"); got != minted {
+		t.Errorf("request_id = %q, want the minted id %q", got, minted)
+	}
+	if got := rec.String("component"); got != string(logging.ComponentRequest) {
+		t.Errorf("component = %q, want %q", got, logging.ComponentRequest)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -41,6 +42,11 @@ const tokenCacheSize = 8192
 // implements authenticator.Token; wrap it with NewCached to avoid repeating
 // the round trip for tokens seen recently.
 type TokenReview struct {
+	// logger is the tokenreview-component logger this reviewer reports
+	// through. It is the fallback for a call that carries no request-scoped
+	// logger on its context. Never nil: New substitutes a discarding logger.
+	logger *slog.Logger
+
 	reviewRequester clientauthv1.TokenReviewInterface
 	audiences       []string
 	timeout         time.Duration
@@ -48,13 +54,22 @@ type TokenReview struct {
 
 var _ authenticator.Token = (*TokenReview)(nil)
 
-func New(restConfig *rest.Config, audiences []string, timeout time.Duration) (*TokenReview, error) {
+// New builds a reviewer submitting live TokenReviews through restConfig.
+//
+// logger is the tokenreview-component logger; a nil logger yields one that
+// discards every record, so a partially wired caller cannot panic on the
+// request path.
+func New(restConfig *rest.Config, audiences []string, timeout time.Duration, logger *slog.Logger) (*TokenReview, error) {
 	kubeclient, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
 		return nil, err
 	}
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
 
 	return &TokenReview{
+		logger:          logger,
 		reviewRequester: kubeclient.AuthenticationV1().TokenReviews(),
 		audiences:       audiences,
 		timeout:         timeout,

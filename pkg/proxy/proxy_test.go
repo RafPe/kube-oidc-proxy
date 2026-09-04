@@ -49,7 +49,9 @@ type fakeProxy struct {
 	fakeToken    *mocks.MockToken
 	fakeReviewer *mocks.MockToken
 	fakeRT       *fakeRT
-	records      *logtest.Capture
+
+	// logs is the capture every component of this proxy writes into.
+	logs *logtest.Capture
 	*Proxy
 }
 
@@ -491,30 +493,38 @@ func newTestProxy(t *testing.T) *fakeProxy {
 	fakeToken := mocks.NewMockToken(ctrl)
 	fakeReviewer := mocks.NewMockToken(ctrl)
 	fakeRT := &fakeRT{t: t}
-	fakeSubjectAccessReviewer := fakesubjectaccessreview.New(nil)
-	subjectAccessReview, _ := subjectaccessreview.New(fakeSubjectAccessReviewer, subjectaccessreview.DefaultTimeout, 0, 0, subjectaccessreview.DefaultMaxHeaderValues)
 
-	access, records := newAccessLogger(t)
+	// One root, one capture: every component the fake proxy owns writes into
+	// the same stream, so a test can assert on any record the request produced
+	// through fakeProxy.logs.
+	root, logs := logtest.New(t, 2)
+	requestLogger := logging.ForComponent(root, logging.ComponentRequest)
+
+	fakeSubjectAccessReviewer := fakesubjectaccessreview.New(nil)
+	subjectAccessReview, _ := subjectaccessreview.New(fakeSubjectAccessReviewer, subjectaccessreview.DefaultTimeout, 0, 0,
+		subjectaccessreview.DefaultMaxHeaderValues, logging.ForComponent(root, logging.ComponentSAR))
 
 	p := &fakeProxy{
 		ctrl:         ctrl,
 		fakeToken:    fakeToken,
 		fakeReviewer: fakeReviewer,
 		fakeRT:       fakeRT,
-		records:      records,
+		logs:         logs,
 		Proxy: &Proxy{
-			access:                access,
+			logger:                requestLogger,
+			access:                accesslogging.NewAccessLogger(requestLogger, nil),
 			oidcRequestAuther:     bearertoken.New(fakeToken),
 			tokenReviewer:         fakeReviewer,
 			subjectAccessReviewer: subjectAccessReview,
 			clientTransport:       fakeRT,
 			noAuthClientTransport: fakeRT,
 			config:                new(Config),
-			hooks:                 hooks.New(),
+			hooks:                 hooks.New(logging.ForComponent(root, logging.ComponentShutdown)),
 		},
 	}
 
-	auditor, err := audit.New(new(options.AuditOptions), "0.0.0.0:1234", new(server.SecureServingInfo))
+	auditor, err := audit.New(new(options.AuditOptions), "0.0.0.0:1234", new(server.SecureServingInfo),
+		logging.ForComponent(root, logging.ComponentAudit))
 	if err != nil {
 		t.Fatalf("failed to create auditor: %s", err)
 	}
@@ -1154,9 +1164,9 @@ func TestHandlers(t *testing.T) {
 				}
 			})
 
-			// The request-id filter is not in this chain yet, so stamp the
-			// correlation id every access record is required to carry, plus the
-			// method, path and peer a served request always has.
+			// Fill in the method, path, peer and header map a served request
+			// always has; the request-id filter is the outermost handler in
+			// this chain, so it mints the correlation id itself.
 			test.req.URL = &url.URL{Path: "/api/v1/pods"}
 			if test.req.Method == "" {
 				test.req.Method = http.MethodGet
@@ -1164,10 +1174,12 @@ func TestHandlers(t *testing.T) {
 			if test.req.RemoteAddr == "" {
 				test.req.RemoteAddr = "1.2.3.4:5555"
 			}
-			req := withTestRequestID(test.req)
+			if test.req.Header == nil {
+				test.req.Header = make(http.Header)
+			}
 
 			handler = p.withHandlers(handler)
-			handler.ServeHTTP(w, req)
+			handler.ServeHTTP(w, test.req)
 
 			resp := w.Result()
 
@@ -1189,7 +1201,7 @@ func TestHandlers(t *testing.T) {
 
 			// Exactly one access record per request, carrying the outcome, the
 			// classified reason and how the request authenticated.
-			rec := p.records.Only(t, logging.EventRequestAccessDecided)
+			rec := p.logs.Only(t, logging.EventRequestAccessDecided)
 			if got := rec.String("event"); got != test.expEvent {
 				t.Errorf("event = %q, want %q", got, test.expEvent)
 			}
@@ -1199,8 +1211,10 @@ func TestHandlers(t *testing.T) {
 			if got := rec.String("auth_method"); got != test.expAuthMethod {
 				t.Errorf("auth_method = %q, want %q", got, test.expAuthMethod)
 			}
-			if got := rec.String("request_id"); got != "test-request-id" {
-				t.Errorf("request_id = %q, want %q", got, "test-request-id")
+			// The id is the one the filter minted, not one the test stamped:
+			// the whole chain now runs behind withRequestID.
+			if got := rec.String("request_id"); !uuidRE.MatchString(got) {
+				t.Errorf("request_id = %q, want a minted UUID", got)
 			}
 
 			p.ctrl.Finish()
@@ -1228,7 +1242,7 @@ func TestRoundTripLogsTokenReviewPassthrough(t *testing.T) {
 	req := withTestRequestID(reservedIdentityRequest(t, nil))
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
-	rec := p.records.Only(t, logging.EventRequestAccessDecided)
+	rec := p.logs.Only(t, logging.EventRequestAccessDecided)
 	if got := rec.String("event"); got != "AuSuccess" {
 		t.Errorf("event = %q, want AuSuccess", got)
 	}
