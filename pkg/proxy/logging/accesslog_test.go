@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"k8s.io/apiserver/pkg/authentication/user"
+
+	proxycontext "github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
 )
 
 func mustCIDR(t *testing.T, cidr string) *net.IPNet {
@@ -118,8 +120,8 @@ func TestPeerHost(t *testing.T) {
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			if got := peerHost(tc.in); got != tc.exp {
-				t.Errorf("peerHost(%q) = %q, want %q", tc.in, got, tc.exp)
+			if got := proxycontext.PeerHost(tc.in); got != tc.exp {
+				t.Errorf("PeerHost(%q) = %q, want %q", tc.in, got, tc.exp)
 			}
 		})
 	}

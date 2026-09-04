@@ -51,6 +51,18 @@ const (
 	// originalForwardedForKey is the context key preserving the raw inbound
 	// X-Forwarded-For chain before sanitization, for forensic logging.
 	originalForwardedForKey
+
+	// requestIDKey is the context key for the request's authoritative
+	// correlation id, minted or adopted by the request-id filter.
+	requestIDKey
+
+	// clientRequestIDKey is the context key for a well-formed request id the
+	// client supplied that was NOT adopted as the authoritative id.
+	clientRequestIDKey
+
+	// issuerNameKey is the context key for the configured name of the OIDC
+	// issuer that authenticated the request.
+	issuerNameKey
 )
 
 // trustedProxies holds the networks whose forwarded headers are honoured when
@@ -92,7 +104,7 @@ func SanitizeForwardHeaders(req *http.Request) *http.Request {
 	}
 
 	resolved := ResolveClientIP(req.RemoteAddr, xff, trustedProxies)
-	if resolved == peerHost(req.RemoteAddr) {
+	if resolved == PeerHost(req.RemoteAddr) {
 		// The resolver fell back to the direct peer: nothing in the
 		// forwarded chain is trustworthy.
 		req.Header.Del("X-Forwarded-For")
@@ -125,6 +137,46 @@ func WithNoImpersonation(req *http.Request) *http.Request {
 func NoImpersonation(req *http.Request) bool {
 	noImp, _ := req.Context().Value(noImpersonationKey).(bool)
 	return noImp
+}
+
+// WithRequestID returns a copy of the request carrying id as the request's
+// authoritative correlation id.
+func WithRequestID(req *http.Request, id string) *http.Request {
+	return req.WithContext(request.WithValue(req.Context(), requestIDKey, id))
+}
+
+// RequestID returns the request's authoritative correlation id, or "" when the
+// request-id filter has not run.
+func RequestID(req *http.Request) string {
+	id, _ := req.Context().Value(requestIDKey).(string)
+	return id
+}
+
+// WithClientRequestID returns a copy of the request carrying the request id the
+// client supplied. It is recorded for correlation only and is never the
+// authoritative id unless the peer is a trusted proxy.
+func WithClientRequestID(req *http.Request, id string) *http.Request {
+	return req.WithContext(request.WithValue(req.Context(), clientRequestIDKey, id))
+}
+
+// ClientRequestID returns the client-supplied request id, or "" when the client
+// sent none that was well-formed.
+func ClientRequestID(req *http.Request) string {
+	id, _ := req.Context().Value(clientRequestIDKey).(string)
+	return id
+}
+
+// WithIssuerName returns a copy of the request carrying the configured name of
+// the OIDC issuer that authenticated it.
+func WithIssuerName(req *http.Request, name string) *http.Request {
+	return req.WithContext(request.WithValue(req.Context(), issuerNameKey, name))
+}
+
+// IssuerName returns the configured name of the OIDC issuer that authenticated
+// the request, or "" when it is not known.
+func IssuerName(req *http.Request) string {
+	name, _ := req.Context().Value(issuerNameKey).(string)
+	return name
 }
 
 // WithImpersonationConfig returns a copy of parent in which contains the impersonation configuration.
@@ -185,11 +237,11 @@ func forwardedFor(headers http.Header) string {
 // only because of package/lane boundaries and MUST be kept in sync until they
 // are unified into one shared resolver.
 func ResolveClientIP(remoteAddr, xff string, trusted []*net.IPNet) string {
-	peer := peerHost(remoteAddr)
+	peer := PeerHost(remoteAddr)
 
 	// Without trust, or when the peer itself is not a trusted proxy, forwarded
 	// headers are ignored entirely: the direct peer is the client.
-	if xff == "" || !ipInNetworks(peer, trusted) {
+	if xff == "" || !IPInNetworks(peer, trusted) {
 		return peer
 	}
 
@@ -203,7 +255,7 @@ func ResolveClientIP(remoteAddr, xff string, trusted []*net.IPNet) string {
 			// Malformed hop: cannot trust anything further left through it.
 			return peer
 		}
-		if ipInNetworks(ip, trusted) {
+		if IPInNetworks(ip, trusted) {
 			continue
 		}
 		return ip
@@ -212,10 +264,10 @@ func ResolveClientIP(remoteAddr, xff string, trusted []*net.IPNet) string {
 	return peer
 }
 
-// peerHost extracts the host portion of a host:port peer address, IPv6-safe. It
+// PeerHost extracts the host portion of a host:port peer address, IPv6-safe. It
 // falls back to the raw value when the address has no port (some call sites
 // build requests without a RemoteAddr).
-func peerHost(remoteAddr string) string {
+func PeerHost(remoteAddr string) string {
 	if remoteAddr == "" {
 		return ""
 	}
@@ -225,8 +277,8 @@ func peerHost(remoteAddr string) string {
 	return remoteAddr
 }
 
-// ipInNetworks reports whether ip parses and falls within any of the networks.
-func ipInNetworks(ip string, networks []*net.IPNet) bool {
+// IPInNetworks reports whether ip parses and falls within any of the networks.
+func IPInNetworks(ip string, networks []*net.IPNet) bool {
 	if len(networks) == 0 {
 		return false
 	}

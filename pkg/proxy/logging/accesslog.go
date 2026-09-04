@@ -200,11 +200,11 @@ func forwardedFor(headers http.Header) string {
 // networks. See the package documentation for the full contract. It is
 // IPv4/IPv6 aware and ignores malformed forwarded entries.
 func resolveClientIP(remoteAddr, xff string, trusted []*net.IPNet) string {
-	peer := peerHost(remoteAddr)
+	peer := proxycontext.PeerHost(remoteAddr)
 
 	// Without trust, or when the peer itself is not a trusted proxy, forwarded
 	// headers are ignored entirely: the direct peer is the client.
-	if xff == "" || !ipInNetworks(peer, trusted) {
+	if xff == "" || !proxycontext.IPInNetworks(peer, trusted) {
 		return peer
 	}
 
@@ -218,41 +218,11 @@ func resolveClientIP(remoteAddr, xff string, trusted []*net.IPNet) string {
 			// Malformed hop: cannot trust anything further left through it.
 			return peer
 		}
-		if ipInNetworks(ip, trusted) {
+		if proxycontext.IPInNetworks(ip, trusted) {
 			continue
 		}
 		return ip
 	}
 
 	return peer
-}
-
-// peerHost extracts the host portion of a host:port peer address, IPv6-safe. It
-// falls back to the raw value when the address has no port (some call sites
-// build requests without a RemoteAddr).
-func peerHost(remoteAddr string) string {
-	if remoteAddr == "" {
-		return ""
-	}
-	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
-		return host
-	}
-	return remoteAddr
-}
-
-// ipInNetworks reports whether ip parses and falls within any of the networks.
-func ipInNetworks(ip string, networks []*net.IPNet) bool {
-	if len(networks) == 0 {
-		return false
-	}
-	parsed := net.ParseIP(ip)
-	if parsed == nil {
-		return false
-	}
-	for _, n := range networks {
-		if n != nil && n.Contains(parsed) {
-			return true
-		}
-	}
-	return false
 }
