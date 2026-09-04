@@ -5,11 +5,14 @@
 package audit
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"k8s.io/apimachinery/pkg/util/sets"
 	genericapifilters "k8s.io/apiserver/pkg/endpoints/filters"
 	"k8s.io/apiserver/pkg/server"
@@ -87,23 +90,69 @@ func New(opts *options.AuditOptions, externalAddress string, secureServingInfo *
 	}, nil
 }
 
-// Run will run the audit backend if configured.
+// errorReporter is implemented by an audit backend that can say whether its
+// Shutdown flushed successfully. The upstream audit.Backend interface declares
+// Shutdown with no return value, so a backend that knows it dropped events has
+// no way to report that through the interface; one that implements this is
+// asked, and the answer decides between audit.flush.completed and
+// audit.flush.failed.
+type errorReporter interface {
+	ShutdownErr() error
+}
+
+// Run will run the audit backend if configured. A backend that fails to start
+// is an error the process cannot serve correctly through: without it, proxied
+// requests leave no audit trail.
 func (a *Audit) Run(stopCh <-chan struct{}) error {
-	if a.serverConfig.AuditBackend != nil {
-		if err := a.serverConfig.AuditBackend.Run(stopCh); err != nil {
-			return fmt.Errorf("failed to run the audit backend: %s", err)
-		}
+	if a.serverConfig.AuditBackend == nil {
+		return nil
 	}
 
+	ctx := context.Background()
+	if err := a.serverConfig.AuditBackend.Run(stopCh); err != nil {
+		logging.Emit(ctx, a.logger, logging.EventAuditBackendFailed, logging.ErrAttr(err))
+		return fmt.Errorf("failed to run the audit backend: %s", err)
+	}
+
+	logging.Emit(ctx, a.logger, logging.EventAuditBackendStarted,
+		slog.String("backend_kind", a.backendKind()))
 	return nil
 }
 
-// Shutdown will shutdown the audit backend if configured.
+// backendKind names the configured backend for the lifecycle records. The
+// upstream backends describe themselves as their type ("log", "buffered<...>"),
+// which is what an operator needs to correlate the record with the flags.
+func (a *Audit) backendKind() string {
+	if a.serverConfig.AuditBackend == nil {
+		return "none"
+	}
+	return logging.Bound(a.serverConfig.AuditBackend.String(), logging.MaxIdentity)
+}
+
+// Shutdown flushes the audit backend if configured and reports the outcome,
+// both as a record and to the caller. A failed flush means audit events for
+// requests this process already served were dropped, so it must not be
+// swallowed.
 func (a *Audit) Shutdown() error {
-	if a.serverConfig.AuditBackend != nil {
-		a.serverConfig.AuditBackend.Shutdown()
+	backend := a.serverConfig.AuditBackend
+	if backend == nil {
+		return nil
 	}
 
+	ctx := context.Background()
+	start := time.Now()
+	backend.Shutdown()
+	elapsed := time.Since(start)
+
+	if reporter, ok := backend.(errorReporter); ok {
+		if err := reporter.ShutdownErr(); err != nil {
+			logging.Emit(ctx, a.logger, logging.EventAuditFlushFailed, logging.ErrAttr(err))
+			return fmt.Errorf("audit backend failed to flush: %w", err)
+		}
+	}
+
+	logging.Emit(ctx, a.logger, logging.EventAuditFlushCompleted,
+		slog.Int64("duration_ms", elapsed.Milliseconds()))
 	return nil
 }
 

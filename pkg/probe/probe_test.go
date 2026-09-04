@@ -2,15 +2,12 @@
 package probe
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"flag"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -18,7 +15,9 @@ import (
 	"time"
 
 	"k8s.io/apiserver/pkg/authentication/authenticator"
-	"k8s.io/klog/v2"
+
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 )
 
 // fakeAuther simulates the union authenticator: tokens listed in notInit
@@ -57,16 +56,40 @@ func (f *fakeAuther) callCount(token string) int {
 }
 
 func newTestHealthCheckWithAuther(requireAll bool, auther authenticator.Token, issuers ...IssuerReadiness) *HealthCheck {
+	// Discarding loggers by default: NewServer never leaves either nil, and a
+	// test that asserts on records replaces them via newTestHealthCheckWithLogger.
 	return &HealthCheck{
-		oidcAuther:  auther,
-		issuers:     issuers,
-		requireAll:  requireAll,
-		initialized: make(map[string]bool),
+		readinessLogger: slog.New(slog.DiscardHandler),
+		oidcLogger:      slog.New(slog.DiscardHandler),
+		oidcAuther:      auther,
+		issuers:         issuers,
+		requireAll:      requireAll,
+		initialized:     make(map[string]bool),
 	}
 }
 
 func newTestHealthCheck(requireAll bool, notInit map[string]bool, issuers ...IssuerReadiness) *HealthCheck {
 	return newTestHealthCheckWithAuther(requireAll, &fakeAuther{notInit: notInit}, issuers...)
+}
+
+// newTestHealthCheckWithLogger builds a HealthCheck reporting through root.
+// notInit is keyed by issuer URL rather than by fake JWT, which is what a test
+// asserting on records cares about; the translation to the token keying
+// fakeAuther uses happens here.
+func newTestHealthCheckWithLogger(t testing.TB, root *slog.Logger, requireAll bool, notInit map[string]bool, issuers ...IssuerReadiness) *HealthCheck {
+	t.Helper()
+
+	notInitByToken := make(map[string]bool, len(notInit))
+	for _, issuer := range issuers {
+		if notInit[issuer.IssuerURL] {
+			notInitByToken[issuer.FakeJWT] = true
+		}
+	}
+
+	h := newTestHealthCheckWithAuther(requireAll, &fakeAuther{notInit: notInitByToken}, issuers...)
+	h.readinessLogger = logging.ForComponent(root, logging.ComponentReadiness)
+	h.oidcLogger = logging.ForComponent(root, logging.ComponentOIDC)
+	return h
 }
 
 func TestCheckReadiness(t *testing.T) {
@@ -556,53 +579,39 @@ func TestCheckDoesNotHoldLockDuringAuth(t *testing.T) {
 	}
 }
 
-// captureKlog redirects klog to a buffer at the given verbosity for the
-// duration of the test. klog's verbosity and output are process-global, so the
-// cleanup restores both — including the output writer, which would otherwise
-// leave later klog calls in this package writing into a dead buffer.
-func captureKlog(t *testing.T, level string) *bytes.Buffer {
-	t.Helper()
-
-	var fs flag.FlagSet
-	klog.InitFlags(&fs)
-	previousVerbosity := fs.Lookup("v").Value.String()
-	if err := fs.Set("v", level); err != nil {
-		t.Fatalf("setting klog verbosity: %s", err)
+// TestIssuerPendingEmittedOnStateChangeWithReason pins the pending record to
+// state changes: an unchanged pending set must not restate itself on every
+// kubelet probe, which would otherwise flood the log for the whole lifetime of
+// an unreachable issuer. The record carries the classification the probe
+// already computes.
+func TestIssuerPendingEmittedOnStateChangeWithReason(t *testing.T) {
+	root, cap := logtest.New(t, 0)
+	hc := newTestHealthCheckWithLogger(t, root, true, map[string]bool{"https://a": true},
+		IssuerReadiness{IssuerURL: "https://a", FakeJWT: "jwt-a"})
+	hc.SetServing()
+	_ = hc.Check()
+	_ = hc.Check()
+	recs := cap.ByEvent(logging.EventOIDCIssuerPending)
+	if len(recs) != 1 {
+		t.Fatalf("pending emitted %d times, want 1", len(recs))
 	}
-
-	buf := new(bytes.Buffer)
-	klog.LogToStderr(false)
-	klog.SetOutput(buf)
-
-	t.Cleanup(func() {
-		klog.Flush()
-		if err := fs.Set("v", previousVerbosity); err != nil {
-			t.Errorf("restoring klog verbosity: %s", err)
-		}
-		klog.SetOutput(os.Stderr)
-		klog.LogToStderr(true)
-	})
-
-	return buf
+	if recs[0].String("pending_reason") != "not_initialized" || recs[0].String("level") != "WARN" {
+		t.Fatalf("%v", recs[0])
+	}
 }
 
-// TestPendingLoggedOnlyOnChange pins the pending line to state changes: an
-// unchanged pending set must not restate itself on every kubelet probe, which
-// would otherwise flood the log for the whole lifetime of an unreachable
-// issuer.
-func TestPendingLoggedOnlyOnChange(t *testing.T) {
-	buf := captureKlog(t, "0")
-	hc := newTestHealthCheck(true, map[string]bool{"jwt-a": true, "jwt-b": true},
-		IssuerReadiness{IssuerURL: "https://a", FakeJWT: "jwt-a"},
-		IssuerReadiness{IssuerURL: "https://b", FakeJWT: "jwt-b"})
+// TestReadyTransitionIsInfo pins the ready latch to a single INFO record
+// naming the readiness mode, inverting the old policy where the transition was
+// V(4) while the pending line repeated on every scrape.
+func TestReadyTransitionIsInfo(t *testing.T) {
+	root, cap := logtest.New(t, 0)
+	hc := newTestHealthCheckWithLogger(t, root, false, nil, IssuerReadiness{IssuerURL: "https://a", FakeJWT: "jwt-a"})
 	hc.SetServing()
-
-	_ = hc.Check()
-	_ = hc.Check()
-	_ = hc.Check()
-	klog.Flush()
-
-	if got := strings.Count(buf.String(), "pending:"); got != 1 {
-		t.Fatalf("pending message logged %d times for an unchanged pending set, want 1:\n%s", got, buf.String())
+	if err := hc.Check(); err != nil {
+		t.Fatal(err)
+	}
+	rec := cap.Only(t, logging.EventReadinessProxyReady)
+	if rec.String("readiness_mode") != "any" {
+		t.Fatalf("%v", rec)
 	}
 }

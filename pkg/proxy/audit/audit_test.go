@@ -2,15 +2,20 @@
 package audit
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	auditinternal "k8s.io/apiserver/pkg/apis/audit"
+	"k8s.io/apiserver/pkg/audit"
 	"k8s.io/apiserver/pkg/endpoints/request"
 	apiserveroptions "k8s.io/apiserver/pkg/server/options"
 
 	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 )
 
 // TestLongRunningRequests pins the set of requests the audit filter treats as
@@ -298,5 +303,64 @@ func TestRequestInfoLongRunning(t *testing.T) {
 				t.Errorf("longRunningRequests(%s) = %t, want %t", test.url, got, test.wantLongRunning)
 			}
 		})
+	}
+}
+
+// fakeBackend is an audit.Backend that records whether it was shut down. It
+// implements errorReporter so a test can drive both Shutdown outcomes: the
+// upstream audit.Backend interface has a Shutdown that returns nothing, so a
+// backend that knows its flush failed can only say so through this extension.
+type fakeBackend struct {
+	shutdownErr error
+	shutdown    bool
+}
+
+func (f *fakeBackend) ProcessEvents(_ ...*auditinternal.Event) bool { return true }
+func (f *fakeBackend) Run(_ <-chan struct{}) error                  { return nil }
+func (f *fakeBackend) Shutdown()                                    { f.shutdown = true }
+func (f *fakeBackend) String() string                               { return "fake" }
+func (f *fakeBackend) ShutdownErr() error                           { return f.shutdownErr }
+
+// newTestAuditWithBackend builds an Audit reporting through root whose backend
+// is the supplied fake, so Shutdown can be exercised without a real audit sink.
+func newTestAuditWithBackend(t testing.TB, root *slog.Logger, backend audit.Backend) *Audit {
+	t.Helper()
+
+	a, err := New(&options.AuditOptions{AuditOptions: apiserveroptions.NewAuditOptions()}, "127.0.0.1:6443", nil,
+		logging.ForComponent(root, logging.ComponentAudit))
+	if err != nil {
+		t.Fatalf("failed to create auditor: %s", err)
+	}
+	a.serverConfig.AuditBackend = backend
+	return a
+}
+
+// TestShutdownReportsFlushResult covers the success case: the backend's
+// Shutdown returns without reporting an error, so the flush is recorded as
+// completed and Shutdown reports no failure to the caller.
+func TestShutdownReportsFlushResult(t *testing.T) {
+	root, cap := logtest.New(t, 0)
+	a := newTestAuditWithBackend(t, root, &fakeBackend{shutdownErr: nil})
+	if err := a.Shutdown(); err != nil {
+		t.Fatal(err)
+	}
+	cap.Only(t, logging.EventAuditFlushCompleted)
+}
+
+// TestShutdownReportsFlushFailure covers the failure case: a backend that
+// reports a shutdown error through errorReporter yields audit.flush.failed and
+// the error reaches the caller, so a lost audit flush is not silent.
+func TestShutdownReportsFlushFailure(t *testing.T) {
+	root, cap := logtest.New(t, 0)
+	a := newTestAuditWithBackend(t, root, &fakeBackend{shutdownErr: errors.New("flush timed out")})
+	err := a.Shutdown()
+	if err == nil {
+		t.Fatal("Shutdown reported success for a backend that failed to flush")
+	}
+	if got := cap.Only(t, logging.EventAuditFlushFailed).String("error_message"); got != "flush timed out" {
+		t.Fatalf("error_message = %q, want %q", got, "flush timed out")
+	}
+	if len(cap.ByEvent(logging.EventAuditFlushCompleted)) != 0 {
+		t.Fatal("a failed flush also reported completion")
 	}
 }

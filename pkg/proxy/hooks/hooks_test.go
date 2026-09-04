@@ -7,6 +7,9 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 )
 
 // TestRunPreShutdownHooksDoesNotHoldLock is the regression test for #54: a hook
@@ -122,5 +125,23 @@ func TestAddPreShutdownHookOverwritesInPlace(t *testing.T) {
 func TestRunPreShutdownHooksNoHooks(t *testing.T) {
 	if err := New(slog.New(slog.DiscardHandler)).RunPreShutdownHooks(); err != nil {
 		t.Fatalf("expected nil error with no hooks, got %v", err)
+	}
+}
+
+// TestHooksEmitPerHookResult pins one record per hook result: a completed hook
+// names itself, and a failing one reports the hook's own error rather than the
+// aggregate wrapping the caller sees.
+func TestHooksEmitPerHookResult(t *testing.T) {
+	root, cap := logtest.New(t, 0)
+	h := New(root)
+	h.AddPreShutdownHook("ok", func() error { return nil })
+	h.AddPreShutdownHook("bad", func() error { return errors.New("boom") })
+	_ = h.RunPreShutdownHooks()
+	if cap.Only(t, logging.EventProxyHookCompleted).String("hook") != "ok" {
+		t.Fatal("completed hook not named")
+	}
+	bad := cap.Only(t, logging.EventProxyHookFailed)
+	if bad.String("hook") != "bad" || bad.String("error_message") != "boom" {
+		t.Fatalf("%v", bad)
 	}
 }

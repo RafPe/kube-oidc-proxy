@@ -3,6 +3,7 @@ package app
 
 import (
 	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -173,7 +174,7 @@ func TestBuildTokenAuther_SingleIssuer(t *testing.T) {
 		AuthenticationConfig: &options.AuthenticationConfigOptions{},
 	}
 
-	auther, issuerURLs, err := buildTokenAuther(opts)
+	auther, issuerURLs, err := buildTokenAuther(opts, discardLogger(), discardLogger())
 	if err != nil {
 		t.Fatalf("buildTokenAuther() unexpected error: %v", err)
 	}
@@ -224,7 +225,7 @@ jwt:
 		},
 	}
 
-	auther, issuerURLs, err := buildTokenAuther(opts)
+	auther, issuerURLs, err := buildTokenAuther(opts, discardLogger(), discardLogger())
 	if err != nil {
 		t.Fatalf("buildTokenAuther() unexpected error: %v", err)
 	}
@@ -274,7 +275,7 @@ jwt:
 	opts := options.New()
 	opts.AuthenticationConfig.ConfigFile = path
 
-	auther, issuerURLs, err := buildTokenAuther(opts)
+	auther, issuerURLs, err := buildTokenAuther(opts, discardLogger(), discardLogger())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -293,7 +294,7 @@ func TestBuildTokenAuther_AuthConfig_InvalidFile(t *testing.T) {
 		AuthenticationConfig: &options.AuthenticationConfigOptions{ConfigFile: "/does/not/exist.yaml"},
 	}
 
-	_, _, err := buildTokenAuther(opts)
+	_, _, err := buildTokenAuther(opts, discardLogger(), discardLogger())
 	if err == nil {
 		t.Error("buildTokenAuther() expected error for missing config file, got nil")
 	}
@@ -348,4 +349,10 @@ func TestCheckReservedIdentityPrefixes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// discardLogger is the logger the buildTokenAuther cases pass: these tests
+// exercise authenticator construction, not the records it emits.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.DiscardHandler)
 }
