@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	authv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilcache "k8s.io/apimachinery/pkg/util/cache"
@@ -42,9 +43,12 @@ const tokenCacheSize = 8192
 // implements authenticator.Token; wrap it with NewCached to avoid repeating
 // the round trip for tokens seen recently.
 type TokenReview struct {
-	// logger is the tokenreview-component logger this reviewer reports
-	// through. It is the fallback for a call that carries no request-scoped
-	// logger on its context. Never nil: New substitutes a discarding logger.
+	// logger is the tokenreview-component logger every record this reviewer
+	// emits goes through, so each carries component=tokenreview. The
+	// per-request correlation id travels on the call's context instead, never
+	// bound onto a logger, and Emit reads it from there. Never nil: New
+	// substitutes a discarding logger and log() covers a reviewer built
+	// without one.
 	logger *slog.Logger
 
 	reviewRequester clientauthv1.TokenReviewInterface
@@ -161,8 +165,13 @@ func (c *cachedTokenReview) AuthenticateToken(ctx context.Context, token string)
 
 	if v, hit := c.cache.Get(key); hit {
 		record := v.(cachedReview)
+		logging.Emit(ctx, c.reviewer.log(), logging.EventCacheTokenReviewLookup,
+			slog.String("cache_result", "hit"),
+			slog.Bool("authenticated", record.ok))
 		return record.resp, record.ok, nil
 	}
+	logging.Emit(ctx, c.reviewer.log(), logging.EventCacheTokenReviewLookup,
+		slog.String("cache_result", "miss"))
 
 	resp, ok, err := c.reviewer.AuthenticateToken(ctx, token)
 	if err != nil {
@@ -207,6 +216,16 @@ func writeLengthPrefixed(h hash.Hash, b []byte, s string) {
 	h.Write([]byte(s))
 }
 
+// log returns the logger this reviewer emits through. It tolerates the
+// zero-valued reviewer tests build directly, which New would have given a
+// discarding logger.
+func (t *TokenReview) log() *slog.Logger {
+	if t.logger == nil {
+		return slog.New(slog.DiscardHandler)
+	}
+	return t.logger
+}
+
 // reviewTimeout returns the configured TokenReview budget, defaulting when
 // unset so zero-value construction keeps the historical 10s behaviour.
 func (t *TokenReview) reviewTimeout() time.Duration {
@@ -225,6 +244,8 @@ func (t *TokenReview) AuthenticateToken(ctx context.Context, token string) (*aut
 	ctx, cancel := context.WithTimeout(ctx, t.reviewTimeout())
 	defer cancel()
 
+	start := time.Now()
+
 	resp, err := t.reviewRequester.Create(ctx, t.buildReview(token), metav1.CreateOptions{})
 	if err != nil {
 		return nil, false, err
@@ -234,6 +255,10 @@ func (t *TokenReview) AuthenticateToken(ctx context.Context, token string) (*aut
 		return nil, false, fmt.Errorf("error authenticating using token review: %s",
 			resp.Status.Error)
 	}
+
+	logging.Emit(ctx, t.log(), logging.EventAuthnTokenReviewCompleted,
+		slog.Bool("authenticated", resp.Status.Authenticated),
+		slog.Int64("duration_ms", time.Since(start).Milliseconds()))
 
 	if !resp.Status.Authenticated {
 		return nil, false, nil
