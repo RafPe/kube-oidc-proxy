@@ -66,8 +66,10 @@ go_fmt:
 		exit 1; \
 	fi
 
+# -tags logcheck so the required-attribute check in pkg/logging and the tests
+# that drive it are vetted; every test run sets the same tag.
 go_vet:
-	go vet ./...
+	go vet -tags logcheck ./...
 
 go_lint: $(BINDIR)/golangci-lint ## lint golang code for problems
 	$(BINDIR)/golangci-lint run --timeout 5m ./...

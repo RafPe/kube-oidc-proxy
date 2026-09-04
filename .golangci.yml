@@ -4,6 +4,13 @@
 # category rather than globally disabled; any suppression must carry a reason.
 version: "2"
 
+# The logcheck build tag guards the required-attribute check in pkg/logging and
+# the tests that drive it. Every test run sets it, so lint the code behind it
+# too: without this the files are invisible to golangci-lint.
+run:
+  build-tags:
+    - logcheck
+
 linters:
   # Defaults already include errcheck, govet, ineffassign, staticcheck and
   # unused; the list below adds the extra checks called out in #60.
