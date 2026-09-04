@@ -152,10 +152,9 @@ Status: **frozen** means the name and value format exist today and must not
 change — SIEM rules key on them. **new** means added by the structured-logging
 work.
 
-The `source_ip` and `url_path` aliases proposed in the design are **not
-emitted**: `src_ip` and `path` are the only names for those values, and no
-deprecation window is open. If aliases are added later they go in this table
-with a status of `alias`.
+`src_ip` and `path` are the only emitted names for the client address and the
+request path. No alias of either is emitted and no deprecation window is open.
+If an alias is ever added it goes in this table with a status of `alias`.
 
 ### On request-scoped records
 
