@@ -94,7 +94,7 @@ verify_eventdoc:
 
 test: generate verify ## run all go tests
 	mkdir -p $(ARTIFACTS)
-	go test -tags logcheck -v -bench $$(go list ./pkg/... ./cmd/... ./test/tools/... ./test/e2e/versions/... | grep -v pkg/e2e) | tee $(ARTIFACTS)/go-test.stdout
+	go test -tags logcheck -v -bench $$(go list ./pkg/... ./cmd/... ./test/tools/... ./test/e2e/framework/... ./test/e2e/versions/... | grep -v pkg/e2e) | tee $(ARTIFACTS)/go-test.stdout
 
 # Name of the kind cluster the e2e suite creates (must match the const in
 # test/kind/kind.go). Used by e2e-clean for the failure/interrupt safety net.
