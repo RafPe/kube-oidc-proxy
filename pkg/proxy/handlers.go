@@ -671,6 +671,15 @@ func (p *Proxy) logAnomaly(r *http.Request, reason string) {
 // target, when the error names one, is taken from the typed error rather than
 // parsed back out of the client-facing message.
 func (p *Proxy) logDenied(r *http.Request, reason string, err error) {
+	// RoundTrip writes the access record for an admitted request before the
+	// upstream call, so a failure arriving after that -- a client that
+	// cancelled, an upstream that broke -- has no decision left to make. Every
+	// refusal below the error handler shares this guard, which keeps the
+	// promise of one request.access.decided per request.
+	if context.DecisionRecorded(r) {
+		return
+	}
+
 	d := accesslogging.Decision{
 		Allowed:    false,
 		Reason:     reason,

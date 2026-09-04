@@ -12,6 +12,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -782,3 +784,60 @@ type timeoutErr struct{}
 func (timeoutErr) Error() string   { return "i/o timeout" }
 func (timeoutErr) Timeout() bool   { return true }
 func (timeoutErr) Temporary() bool { return true }
+
+// cancelingRT stands in for the transport carrying an admitted request to the
+// API server when the client gives up while the call is still in flight. It
+// cancels the request the way a disconnecting client does, waits for the
+// cancellation to land, and returns the context error that
+// httputil.ReverseProxy hands to the error handler.
+type cancelingRT struct{ cancel context.CancelFunc }
+
+func (c *cancelingRT) RoundTrip(req *http.Request) (*http.Response, error) {
+	c.cancel()
+	<-req.Context().Done()
+	return nil, req.Context().Err()
+}
+
+// TestClientCancelAfterAdmissionRecordsOneAccessDecision drives an authorized
+// request through the whole chain into the reverse proxy and takes the client
+// away before the upstream answers. RoundTrip has already written the AuSuccess
+// access record, so the cancel that follows must not write a second, AuFail
+// one: a kubectl call abandoned during a slow apiserver patch would otherwise
+// manufacture an authorization failure for a user who was allowed through.
+func TestClientCancelAfterAdmissionRecordsOneAccessDecision(t *testing.T) {
+	p := newTestProxy(t)
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(
+		oidcAnswer(&authenticator.Response{User: &authuser.DefaultInfo{Name: "alice"}}, true, nil))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p.clientTransport = &cancelingRT{cancel: cancel}
+
+	target, err := url.Parse("https://127.0.0.1:6443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reverseProxy := httputil.NewSingleHostReverseProxy(target)
+	reverseProxy.Transport = p.Proxy
+	reverseProxy.ErrorHandler = p.handleError
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/default/pods", nil).WithContext(ctx)
+	req.RemoteAddr = "1.2.3.4:5555"
+	req.Header.Set("Authorization", "bearer fake-token")
+
+	serveChain(t, p, req, reverseProxy.ServeHTTP)
+
+	decided := p.logs.ByEvent(logging.EventRequestAccessDecided)
+	if len(decided) != 1 {
+		t.Fatalf("access decisions = %d, want 1: %s", len(decided), p.logs.Raw())
+	}
+	if got := decided[0].String("event"); got != "AuSuccess" {
+		t.Errorf("event = %q, want AuSuccess: %v", got, decided[0])
+	}
+	if n := len(p.logs.ByEvent(logging.EventUpstreamRequestCanceled)); n != 1 {
+		t.Errorf("upstream.request.canceled records = %d, want 1: %s", n, p.logs.Raw())
+	}
+	if got := p.logs.Only(t, logging.EventRequestResponseCompleted).String("termination"); got != terminationClientCancel {
+		t.Errorf("termination = %q, want %q", got, terminationClientCancel)
+	}
+}

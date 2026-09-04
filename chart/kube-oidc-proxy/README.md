@@ -135,8 +135,8 @@ Ignored when `authenticationConfig.content` is set.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `logging.format` | string | `json` | Log output format (`--logging-format`): `json` or `text`. |
-| `logging.verbosity` | int | `0` | Log verbosity (`--v`). `0` shows lifecycle, access records and warnings; `1` and above add request internals. Rendered before `extraArgs`, so an `extraArgs` entry of the same flag still wins. |
+| `logging.format` | string | `""` | Log output format (`--logging-format`): `json` or `text`. Empty renders no flag, leaving the binary default of `json`. |
+| `logging.verbosity` | int or `""` | `""` | Log verbosity (`--v`). `0` shows lifecycle, access records and warnings; `1` and above add request internals. Empty renders no flag, leaving the binary default of `0`, which also keeps the command line valid for an `image.tag` pinned to a release older than `--logging-format`. Rendered before `extraArgs`, so an `extraArgs` entry of the same flag still wins. |
 
 ### Extra args, volumes & ingress
 

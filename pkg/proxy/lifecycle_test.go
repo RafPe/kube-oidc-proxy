@@ -279,3 +279,60 @@ func TestFlushStartsALongRunningResponse(t *testing.T) {
 		t.Fatalf("completed http_status = %d, want 200", s)
 	}
 }
+
+// TestPanicClassification pins how the terminal record describes a handler that
+// panicked. http.ErrAbortHandler is how httputil.ReverseProxy reports a failed
+// response copy once the headers are out -- the ordinary way a streamed request
+// ends when its client goes away -- so it must not read as a proxy fault. Every
+// case still re-panics the value unchanged, because net/http's own recovery
+// keys on that sentinel to stay quiet.
+func TestPanicClassification(t *testing.T) {
+	tests := map[string]struct {
+		panicValue any
+		cancel     bool
+		want       string
+	}{
+		"abort after the client went away is a client cancel": {
+			panicValue: http.ErrAbortHandler, cancel: true, want: terminationClientCancel,
+		},
+		"abort with the client still there is an upstream reset": {
+			panicValue: http.ErrAbortHandler, cancel: false, want: terminationUpstreamReset,
+		},
+		"an unrelated panic is still a panic": {
+			panicValue: "boom", cancel: false, want: terminationPanic,
+		},
+	}
+
+	for name, test := range tests {
+		test := test
+		t.Run(name, func(t *testing.T) {
+			p := newTestProxy(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil).WithContext(ctx)
+
+			func() {
+				defer func() {
+					if got := recover(); got != test.panicValue {
+						t.Errorf("re-panicked %v, want %v", got, test.panicValue)
+					}
+				}()
+				serveWith(t, p, func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusOK)
+					if test.cancel {
+						cancel()
+					}
+					panic(test.panicValue)
+				}, req)
+			}()
+
+			rec := p.logs.Only(t, logging.EventRequestResponseCompleted)
+			if got := rec.String("termination"); got != test.want {
+				t.Errorf("termination = %q, want %q: %v", got, test.want, rec)
+			}
+			if s, _ := rec.Int("http_status"); s != http.StatusOK {
+				t.Errorf("http_status = %d, want 200", s)
+			}
+		})
+	}
+}

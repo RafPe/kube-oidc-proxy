@@ -3,6 +3,7 @@ package proxy
 
 import (
 	"bufio"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -116,6 +117,15 @@ func (r *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 // see through a wrapper.
 func (r *responseRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
+// isAbortHandler reports whether a recovered value is the http.ErrAbortHandler
+// sentinel, which a handler panics with to abandon a response deliberately.
+// httputil.ReverseProxy uses it for a copy error mid-stream, so it marks the
+// end of a request rather than a bug in one.
+func isAbortHandler(panicked any) bool {
+	err, ok := panicked.(error)
+	return ok && errors.Is(err, http.ErrAbortHandler)
+}
+
 // withRequestLifecycle writes the terminal record for every request: what the
 // client was answered, how long it took, and how the exchange ended. It runs
 // directly inside withRequestID so the record exists whatever the rest of the
@@ -129,6 +139,7 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		start := time.Now()
 		req = context.WithTerminationHolder(req)
+		req = context.WithDecisionHolder(req)
 		ctx := req.Context()
 		l := logging.FromContext(ctx)
 
@@ -147,12 +158,21 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 
 			term := terminationNormal
 			switch {
-			case panicked != nil:
+			// An http.ErrAbortHandler panic is not a fault: it is how
+			// httputil.ReverseProxy reports a response copy that failed after
+			// the headers went out. Whether the client went away or the
+			// upstream connection broke is then decided exactly as it is for a
+			// request that never panicked, so the two cases below classify it.
+			case panicked != nil && !isAbortHandler(panicked):
 				term = terminationPanic
 			case rec.hijacked:
 				term = terminationHijacked
 			case ctx.Err() != nil:
 				term = terminationClientCancel
+			case panicked != nil:
+				// Aborted with the client still attached: the stream broke on
+				// the upstream side.
+				term = terminationUpstreamReset
 			case classified.Termination != "":
 				// Set by the error handler for an upstream failure.
 				term = classified.Termination

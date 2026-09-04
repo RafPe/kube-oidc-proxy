@@ -80,8 +80,10 @@ not require a pod restart.
 
 There is no separate `--log-level`: `-v` drives the proxy's own records and the
 bridged Kubernetes library output together, so the two can never disagree. Both
-flags are rendered by the chart from `logging.format` and `logging.verbosity`,
-before `extraArgs`, so an `extraArgs` entry for the same flag still wins.
+flags are rendered by the chart from `logging.format` and `logging.verbosity`
+when those values are set, before `extraArgs`, so an `extraArgs` entry for the
+same flag still wins. Both chart values are empty by default, so a default
+install passes neither flag and the binary defaults above apply.
 
 See the [logging reference](./logging.md) for the record shape, the event
 registry, the level policy and worked queries.

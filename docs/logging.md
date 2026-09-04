@@ -152,10 +152,9 @@ Status: **frozen** means the name and value format exist today and must not
 change — SIEM rules key on them. **new** means added by the structured-logging
 work.
 
-The `source_ip` and `url_path` aliases proposed in the design are **not
-emitted**: `src_ip` and `path` are the only names for those values, and no
-deprecation window is open. If aliases are added later they go in this table
-with a status of `alias`.
+`src_ip` and `path` are the only emitted names for the client address and the
+request path. No alias of either is emitted and no deprecation window is open.
+If an alias is ever added it goes in this table with a status of `alias`.
 
 ### On request-scoped records
 
@@ -185,7 +184,7 @@ with a status of `alias`.
 | `inbound_extra` | object | allowlisted impersonation extras only | frozen | `request.access.decided` | `originaluser.jetstack.io-extra` is no longer on the allowlist |
 | `inbound_extra_omitted` | int | count of extras not logged | frozen | `request.access.decided` | |
 | `outbound_user`, `outbound_uid`, `outbound_groups`, `outbound_groups_omitted`, `outbound_extra`, `outbound_extra_omitted` | as the `inbound_*` fields | as the `inbound_*` fields | frozen (the caps are new) | `request.access.decided` when impersonating | compare with `inbound_*` to see who acted as whom |
-| `target_kind` | string | `user`, `group`, `uid`, `extra`, `serviceaccount` | new | `request.access.decided` on `impersonation_denied`, `authz.sar.completed`, `authz.impersonation.resolved` | replaces parsing the error text |
+| `target_kind` | string | `user`, `group`, `uid`, `extra`, `serviceaccount`, `unknown` | new | `request.access.decided` on `impersonation_denied`, `authz.sar.completed`, `authz.impersonation.resolved` | replaces parsing the error text |
 | `target_name` | string | impersonation target, sanitized, max 256 chars | new | same as `target_kind` | |
 | `http_status` | int | HTTP status written to the client | new | `request.response.started`, `request.response.completed` | a `200` implied by the first `Write` is recorded as `200` |
 | `time_to_headers_ms` | int | milliseconds from request start to `WriteHeader` | new | `request.response.started` | long-running requests only |

@@ -1,0 +1,2 @@
+kind: Changed
+body: Operational log messages changed value. The access record's `msg` was `proxied request` or `rejected request` and is now `access decision` for both, with the outcome in the frozen `event` field (`AuSuccess`/`AuFail`); other records carry new `msg` text as well. Queries and alerts must key on `event_type` (and `event` for the access record), not on `msg`, which is descriptive and not part of the contract.

@@ -1181,3 +1181,35 @@ func TestImpersonationResolvedEvent(t *testing.T) {
 		t.Errorf("completed target_kind = %q, want user", live.String("target_kind"))
 	}
 }
+
+// TestTargetKind pins the closed target_kind value set at its source. The four
+// caller forms are internal constants today, so nothing user-controlled reaches
+// this function -- but the mapping is what keeps target_kind a closed set, and
+// a resource nobody anticipated must report that it was not recognised rather
+// than borrow the label of the extras it is not.
+func TestTargetKind(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]string{
+		"users":             "user",
+		"groups":            "group",
+		"uids":              "uid",
+		"userextras/scopes": "extra",
+		"userextras/":       "extra",
+		"pods":              "unknown",
+		"":                  "unknown",
+		"userextra/scopes":  "unknown",
+		"serviceaccounts":   "unknown",
+		"USERS":             "unknown",
+	}
+
+	for resource, want := range tests {
+		resource, want := resource, want
+		t.Run(resource, func(t *testing.T) {
+			t.Parallel()
+			if got := targetKind(resource); got != want {
+				t.Errorf("targetKind(%q) = %q, want %q", resource, got, want)
+			}
+		})
+	}
+}
