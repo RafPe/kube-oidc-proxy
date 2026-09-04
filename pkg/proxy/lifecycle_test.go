@@ -183,3 +183,26 @@ func TestChainResolvesRequestInfoBeforeTheErrorHandler(t *testing.T) {
 		t.Fatalf("denial recorded without request info: %v", rec)
 	}
 }
+
+// TestUpstreamFailureReachesTheTerminalRecord pins the one piece of plumbing
+// neither the lifecycle tests nor the classification test can see on its own.
+// The error handler runs several filters below withRequestLifecycle, on a
+// request derived from the one the filter holds, so the termination it
+// classifies reaches the terminal record only through the shared holder on the
+// request context.
+func TestUpstreamFailureReachesTheTerminalRecord(t *testing.T) {
+	p := newTestProxy(t)
+	serveWith(t, p, func(w http.ResponseWriter, r *http.Request) {
+		// Derived exactly as the filters below the lifecycle one derive it.
+		p.handleError(w, r.WithContext(logging.NewContext(r.Context(), p.logger)),
+			&net.OpError{Op: "dial", Err: &timeoutErr{}})
+	}, httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil))
+
+	rec := p.logs.Only(t, logging.EventRequestResponseCompleted)
+	if rec.String("termination") != terminationUpstreamTimeout || rec.String("reason") != reasonUpstreamError {
+		t.Fatalf("%v", rec)
+	}
+	if s, _ := rec.Int("http_status"); s != http.StatusBadGateway {
+		t.Fatalf("http_status = %d", s)
+	}
+}
