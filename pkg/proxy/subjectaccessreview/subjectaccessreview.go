@@ -405,10 +405,19 @@ func (s *SubjectAccessReview) timedLiveCheck(ctx context.Context, kind string, c
 }
 
 // observeLiveCheck emits the terminal record for one live check begun at start.
+// A failure is classified before it is recorded: only the API server failing to
+// answer is a dependency error worth an always-visible ERROR. A requester that
+// abandoned its own request — a client disconnect, or its authorization budget
+// running out — is a per-request condition at DEBUG, so a client cannot drive
+// the ERROR stream simply by hanging up mid-request.
 func (s *SubjectAccessReview) observeLiveCheck(ctx context.Context, kind string, start time.Time, coalesced, allowed bool, err error) {
 	if err != nil {
-		logging.Emit(ctx, s.log(), logging.EventAuthzSARFailed,
-			slog.String("reason", "authorization_dependency_error"),
+		reason, level := "authorization_dependency_error", slog.LevelError
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			reason, level = "client_canceled", slog.LevelDebug
+		}
+		logging.EmitLevel(ctx, s.log(), logging.EventAuthzSARFailed, level,
+			slog.String("reason", reason),
 			logging.ErrAttr(err))
 		return
 	}
