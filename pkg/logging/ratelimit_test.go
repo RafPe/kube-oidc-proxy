@@ -29,6 +29,11 @@ func TestLimiterAllowsBurstThenSummarises(t *testing.T) {
 	if n, _ := rec.Int("suppressed_count"); n != 7 || rec.String("warning_reason") != "reserved_identity" {
 		t.Fatalf("%v", rec)
 	}
+	// The summary names the window it covers, so a count is readable without
+	// knowing how the proxy was configured.
+	if n, _ := rec.Int("interval_seconds"); n != 60 {
+		t.Fatalf("interval_seconds = %d, want 60", n)
+	}
 	l.Flush(context.Background(), root)
 	if len(cap.ByEvent(logging.EventLogWarningSuppressed)) != 1 {
 		t.Fatal("flush with nothing suppressed emitted a summary")
