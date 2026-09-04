@@ -17,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
+	"github.com/rafpe/kube-oidc-proxy/test/e2e/suite/cases/sharedtests"
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
 )
 
@@ -58,13 +59,13 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 
 	It("records startup configuration and every configured issuer", func() {
 		recs, _ := records(f)
-		Expect(byEvent(recs, "proxy.config.loaded")).To(HaveLen(1))
+		Expect(sharedtests.ByEvent(recs, "proxy.config.loaded")).To(HaveLen(1))
 
 		// One record per configured issuer, not merely one record: the
 		// expected set is derived from the issuer the framework configured the
 		// proxy with, so it follows a deploy that configures more than one.
 		want := configuredIssuerNames(f)
-		configured := byEvent(recs, "oidc.issuer.configured")
+		configured := sharedtests.ByEvent(recs, "oidc.issuer.configured")
 		Expect(configured).To(HaveLen(len(want)))
 
 		var got []string
@@ -75,7 +76,7 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 		}
 		Expect(got).To(ConsistOf(want))
 
-		Expect(byEvent(recs, "readiness.proxy.ready")).To(HaveLen(1))
+		Expect(sharedtests.ByEvent(recs, "readiness.proxy.ready")).To(HaveLen(1))
 	})
 
 	It("correlates a successful request across the access record, the terminal record and the response header", func() {
@@ -88,15 +89,15 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 
 		Eventually(func() []map[string]any {
 			recs, _ := records(f)
-			return withRequestID(byEvent(recs, "request.access.decided"), id)
+			return sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)
 		}, 20*time.Second, time.Second).Should(HaveLen(1))
 		recs, _ := records(f)
-		dec := withRequestID(byEvent(recs, "request.access.decided"), id)[0]
+		dec := sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)[0]
 		Expect(dec).To(HaveKeyWithValue("event", "AuSuccess"))
 		Expect(dec).To(HaveKeyWithValue("auth_method", "oidc"))
 		Expect(dec).To(HaveKeyWithValue("k8s_resource", "pods"))
 		Expect(dec).To(HaveKey("issuer_name"))
-		done := withRequestID(byEvent(recs, "request.response.completed"), id)
+		done := sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.response.completed"), id)
 		Expect(done).To(HaveLen(1))
 		Expect(done[0]).To(HaveKeyWithValue("http_status", float64(200)))
 		Expect(done[0]).To(HaveKeyWithValue("termination", "normal"))
@@ -106,7 +107,7 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 		resp := doRequest(f, validToken(f), map[string]string{"Audit-ID": "client-chosen"})
 		Expect(resp.Header.Get("Audit-ID")).NotTo(Equal("client-chosen"))
 		recs, _ := records(f)
-		Expect(withRequestID(byEvent(recs, "request.access.decided"), "client-chosen")).To(BeEmpty())
+		Expect(sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.access.decided"), "client-chosen")).To(BeEmpty())
 	})
 
 	It("records a rejected token with a reason and never the token itself", func() {
@@ -116,10 +117,10 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 		id := resp.Header.Get("Audit-ID")
 		Eventually(func() []map[string]any {
 			recs, _ := records(f)
-			return withRequestID(byEvent(recs, "request.access.decided"), id)
+			return sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)
 		}, 20*time.Second, time.Second).Should(HaveLen(1))
 		recs, raw := records(f)
-		Expect(withRequestID(byEvent(recs, "request.access.decided"), id)[0]).To(HaveKeyWithValue("reason", "unauthorized"))
+		Expect(sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)[0]).To(HaveKeyWithValue("reason", "unauthorized"))
 		Expect(raw).NotTo(ContainSubstring(tok))
 		// The stream is checked for an unmasked credential rather than for the
 		// header name: at -v=10 client-go's debug round tripper prints a curl
@@ -141,10 +142,10 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 		id := resp.Header.Get("Audit-ID")
 		Eventually(func() []map[string]any {
 			recs, _ := records(f)
-			return withRequestID(byEvent(recs, "request.access.decided"), id)
+			return sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)
 		}, 20*time.Second, time.Second).Should(HaveLen(1))
 		recs, _ := records(f)
-		dec := withRequestID(byEvent(recs, "request.access.decided"), id)[0]
+		dec := sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)[0]
 		Expect(dec).To(HaveKeyWithValue("event", "AuFail"))
 		Expect(dec).To(HaveKeyWithValue("reason", "impersonation_denied"))
 		Expect(dec).To(HaveKeyWithValue("target_kind", "group"))
@@ -155,15 +156,15 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 		id := resp.Header.Get("Audit-ID")
 		Eventually(func() []map[string]any {
 			recs, _ := records(f)
-			return withRequestID(byEvent(recs, "request.headers.dropped"), id)
+			return sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.headers.dropped"), id)
 		}, 20*time.Second, time.Second).Should(HaveLen(1))
 		recs, _ := records(f)
-		Expect(withRequestID(byEvent(recs, "request.access.decided"), id)[0]).NotTo(HaveKeyWithValue("src_ip", "9.9.9.9"))
+		Expect(sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)[0]).NotTo(HaveKeyWithValue("src_ip", "9.9.9.9"))
 	})
 
 	It("bridges client-go output as component=k8s without event_type", func() {
 		recs, _ := records(f) // suite runs at --v=10, so client-go transport debug lines exist
-		k8s := byComponent(recs, "k8s")
+		k8s := sharedtests.ByComponent(recs, "k8s")
 		Expect(k8s).NotTo(BeEmpty())
 		for _, r := range k8s {
 			Expect(r).NotTo(HaveKey("event_type"))
@@ -212,34 +213,6 @@ func fakeAPIServerLogs(f *framework.Framework) string {
 // names an issuer by its host: the full issuer URL is never logged.
 func configuredIssuerNames(f *framework.Framework) []string {
 	return []string{f.IssuerURL().Host}
-}
-
-// byEvent returns the records carrying the given event_type.
-func byEvent(recs []map[string]any, eventType string) []map[string]any {
-	return filter(recs, "event_type", eventType)
-}
-
-// byComponent returns the records carrying the given component.
-func byComponent(recs []map[string]any, component string) []map[string]any {
-	return filter(recs, "component", component)
-}
-
-// withRequestID returns the records carrying the given request_id.
-func withRequestID(recs []map[string]any, id string) []map[string]any {
-	return filter(recs, "request_id", id)
-}
-
-// filter returns the records whose key holds want. An empty want would match
-// every record that omits the key, so it never matches anything.
-func filter(recs []map[string]any, key, want string) []map[string]any {
-	var out []map[string]any
-	for _, r := range recs {
-		if got, ok := r[key].(string); ok && want != "" && got == want {
-			out = append(out, r)
-		}
-	}
-
-	return out
 }
 
 // nonEmptyLines splits raw log text into the lines that carry content.

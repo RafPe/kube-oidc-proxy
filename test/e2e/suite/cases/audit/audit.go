@@ -26,6 +26,7 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/helper"
+	"github.com/rafpe/kube-oidc-proxy/test/e2e/suite/cases/sharedtests"
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
 )
 
@@ -598,6 +599,7 @@ func testAuditLogs(f *framework.Framework, podLabelSelector, containerName, logP
 
 	By("Testing for expected audit logs")
 	var i int
+	var events []auditv1.Event
 	for scanner.Scan() {
 		if i > len(expAuditEvents) {
 			Expect(fmt.Errorf("more proxy audit logs than expected, exp=%d got=%s", len(expAuditEvents), logs)).NotTo(HaveOccurred())
@@ -640,10 +642,50 @@ func testAuditLogs(f *framework.Framework, podLabelSelector, containerName, logP
 			Expect(fmt.Errorf("unexpected audit event\nexp=%v\ngot=%v", expAuditEvents[i], gotAuditEvent)).NotTo(HaveOccurred())
 		}
 
+		events = append(events, auditEvent)
 		i++
 	}
 
 	if i != len(expAuditEvents) {
 		Expect(fmt.Errorf("less proxy audit logs then expected, exp=%d, got=%s", len(expAuditEvents), logs)).NotTo(HaveOccurred())
 	}
+
+	By("Joining each audit event to the access record the proxy wrote for the same request")
+	// The proxy mints the request id before anything else sees the request and
+	// puts it in the Audit-ID header, which is where WithAuditInit takes the
+	// event's auditID from. The two streams are therefore joinable on that one
+	// value, and an audit consumer can go from an audited request to what the
+	// proxy decided about it without matching on timestamps.
+	//
+	// Asserted against the events actually read, and only after their count has
+	// been checked above, so an empty set cannot turn the join into zero
+	// assertions.
+	Expect(events).To(HaveLen(len(expAuditEvents)))
+
+	// The audit log has already been read, so the proxy wrote these records
+	// well before this point; the poll only covers the container runtime
+	// catching up with the proxy's stdout, which is a different sink from the
+	// audit log read above.
+	Eventually(func() []string {
+		recs, _, err := f.Helper().ProxyLogRecords(f.Namespace.Name, "app="+kind.ProxyImageName)
+		Expect(err).NotTo(HaveOccurred())
+
+		return auditIDsWithoutAccessRecord(recs, events)
+	}, time.Second*20, time.Second).Should(BeEmpty(),
+		"audit events whose request id has no single request.access.decided record in the proxy log")
+}
+
+// auditIDsWithoutAccessRecord returns the auditID of every event that is not
+// joined to exactly one access record in recs. Exactly one, not at least one:
+// a request produces a single access decision, so two records carrying the
+// same request id would mean the id no longer identifies one request.
+func auditIDsWithoutAccessRecord(recs []map[string]any, events []auditv1.Event) []string {
+	var out []string
+	for _, ev := range events {
+		if len(sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.access.decided"), string(ev.AuditID))) != 1 {
+			out = append(out, string(ev.AuditID))
+		}
+	}
+
+	return out
 }
