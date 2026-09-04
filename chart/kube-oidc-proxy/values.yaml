@@ -199,6 +199,12 @@ extraImpersonationHeaders:
   clientIP: false
   #headers: key1=foo,key2=bar,key1=bar
 
+# Logging output. format is json or text; verbosity is the -v level: 0 shows
+# lifecycle, access records and warnings, 1 and above add request internals.
+logging:
+  format: json
+  verbosity: 0
+
 # Arbitrary extra CLI flags passed to the proxy as --<key>=<value>.
 extraArgs: {}
   #audit-log-path: /audit-log

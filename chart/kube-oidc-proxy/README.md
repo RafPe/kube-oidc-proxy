@@ -131,6 +131,13 @@ Ignored when `authenticationConfig.content` is set.
 | `extraImpersonationHeaders.clientIP` | bool | `false` | Send the client source IP as an extra user header. |
 | `extraImpersonationHeaders.headers` | string | `nil` | Extra `key=value` user headers (`--extra-user-headers`), comma-separated. |
 
+### Logging
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `logging.format` | string | `json` | Log output format (`--logging-format`): `json` or `text`. |
+| `logging.verbosity` | int | `0` | Log verbosity (`--v`). `0` shows lifecycle, access records and warnings; `1` and above add request internals. Rendered before `extraArgs`, so an `extraArgs` entry of the same flag still wins. |
+
 ### Extra args, volumes & ingress
 
 | Key | Type | Default | Description |

@@ -7,10 +7,12 @@ on:
     paths:
       - 'chart/kube-oidc-proxy/**'
       - '.github/workflows/helm.yaml'
+      - 'hack/verify-chart-logging.sh'
   pull_request:
     paths:
       - 'chart/kube-oidc-proxy/**'
       - '.github/workflows/helm.yaml'
+      - 'hack/verify-chart-logging.sh'
 
 permissions:
   contents: read
@@ -45,6 +47,9 @@ jobs:
 
       - name: helm template (multi-issuer fixture)
         run: helm template ci-multi "$CHART" -f "$CHART/ci/multi-issuer-values.yaml" > /dev/null
+
+      - name: logging values render as proxy flags
+        run: bash hack/verify-chart-logging.sh
 
       - name: default image tag follows appVersion
         # The release pipeline sets appVersion from the git tag; the chart must

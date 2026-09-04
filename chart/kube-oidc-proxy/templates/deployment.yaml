@@ -126,9 +126,11 @@ spec:
           {{- if .Values.extraImpersonationHeaders.headers }}
           - "--extra-user-headers={{ .Values.extraImpersonationHeaders.headers }}"
           {{ end }}
-          {{- range $key, $value := .Values.extraArgs -}}
-          - "--{{ $key }}={{ $value -}}"
-          {{ end }}
+          - "--logging-format={{ .Values.logging.format }}"
+          - "--v={{ .Values.logging.verbosity }}"
+          {{- range $key, $value := .Values.extraArgs }}
+          - "--{{ $key }}={{ $value }}"
+          {{- end }}
         resources:
           {{- toYaml .Values.resources | nindent 12 }}
         env:
