@@ -241,3 +241,31 @@ func TestLogFailedRequestNilURL(t *testing.T) {
 		t.Errorf("event = %v, want AuFail", rec["event"])
 	}
 }
+
+func TestOutboundExtraDoesNotLeakOriginalUserClaims(t *testing.T) {
+	buf, restore := captureLogger(t)
+	defer restore()
+
+	req := &http.Request{RemoteAddr: "1.2.3.4:5555", URL: &url.URL{Path: "/api/v1/pods"}, Header: http.Header{}}
+	inbound := &user.DefaultInfo{Name: "alice"}
+	outbound := &user.DefaultInfo{
+		Name: "alice",
+		Extra: map[string][]string{
+			"originaluser.jetstack.io-user":  {"alice"},
+			"originaluser.jetstack.io-extra": {`{"tenant":["acme-secret-tenant"]}`},
+		},
+	}
+
+	LogSuccessfulRequest(req, inbound, outbound)
+
+	if strings.Contains(buf.String(), "acme-secret-tenant") {
+		t.Fatalf("original user extras leaked into the access log:\n%s", buf.String())
+	}
+	var rec map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec["outbound_extra_omitted"] != float64(1) {
+		t.Fatalf("outbound_extra_omitted = %v, want 1", rec["outbound_extra_omitted"])
+	}
+}

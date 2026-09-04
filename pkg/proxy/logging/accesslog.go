@@ -44,7 +44,6 @@ var loggableExtraKeys = map[string]struct{}{
 	"originaluser.jetstack.io-user":   {},
 	"originaluser.jetstack.io-groups": {},
 	"originaluser.jetstack.io-uid":    {},
-	"originaluser.jetstack.io-extra":  {},
 }
 
 // logger is the structured logger used for access logs. It defaults to a JSON

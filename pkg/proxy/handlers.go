@@ -227,8 +227,8 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 		// If client IP user extra header option set then append the remote client
 		// address.
 		if p.config.ExtraUserHeadersClientIPEnabled {
-			klog.V(6).Infof("adding impersonate extra user header %s: %s (%s)",
-				UserHeaderClientIPKey, remoteAddr, remoteAddr)
+			klog.V(6).Infof("adding impersonate extra user header %s (%s)",
+				UserHeaderClientIPKey, remoteAddr)
 
 			extra[UserHeaderClientIPKey] = append(extra[UserHeaderClientIPKey], remoteAddr)
 		}
@@ -236,8 +236,8 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 		// Add custom extra user headers to impersonation request.
 		for k, vs := range p.config.ExtraUserHeaders {
 			for _, v := range vs {
-				klog.V(6).Infof("adding impersonate extra user header %s: %s (%s)",
-					k, v, remoteAddr)
+				klog.V(6).Infof("adding impersonate extra user header %s (%s)",
+					k, remoteAddr)
 
 				extra[k] = append(extra[k], v)
 			}
