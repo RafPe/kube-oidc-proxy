@@ -8,9 +8,11 @@ replicaCount: 1
 image:
   # Container image repository. Published by this fork's release pipeline.
   repository: ghcr.io/rafpe/kube-oidc-proxy
-  # Image tag. Always pin to an explicit version (never "latest") so rollouts
-  # are reproducible.
-  tag: "1.1.0"
+  # Image tag. Leave empty to use the chart's appVersion, which the release
+  # pipeline sets to the same version as the chart, so every chart release
+  # installs the image built from the same commit. Set it only to pin a
+  # different explicit version; never use "latest".
+  tag: ""
   # Image pull policy. IfNotPresent avoids re-pulling a pinned tag on every start.
   pullPolicy: IfNotPresent
 

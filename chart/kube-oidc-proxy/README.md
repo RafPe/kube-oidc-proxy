@@ -62,7 +62,7 @@ Every value in [`values.yaml`](./values.yaml).
 | --- | --- | --- | --- |
 | `replicaCount` | int | `1` | Number of proxy replicas. |
 | `image.repository` | string | `ghcr.io/rafpe/kube-oidc-proxy` | Container image repository. |
-| `image.tag` | string | `"1.1.0"` | Image tag (pin an explicit version; never `latest`). |
+| `image.tag` | string | `""` | Image tag. Empty uses the chart `appVersion`, which matches the chart version on every release. Set to pin a different explicit version; never `latest`. |
 | `image.pullPolicy` | string | `IfNotPresent` | Image pull policy. |
 | `imagePullSecrets` | list | `[]` | Secrets for pulling from a private registry. |
 | `nameOverride` | string | `""` | Override the chart-name portion of resource names. |
