@@ -39,13 +39,24 @@ func signalName(sig os.Signal) string {
 // next one after that forces an immediate os.Exit(1). Handler is intended to be
 // called once during process startup.
 //
-// logger is the shutdown-component logger the handler reports through. The
-// first signal is reported once rather than on every repeat: the shutdown has
-// already started, and restating it says nothing new.
+// logger is the shutdown-component logger the handler reports through.
 func Handler(logger *slog.Logger) chan struct{} {
-	stopCh := make(chan struct{})
 	ch := make(chan os.Signal, 2)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+
+	return handle(logger, ch, func() { os.Exit(1) })
+}
+
+// handle is Handler's behaviour with the two process-wide dependencies passed
+// in: the signal source and the forced exit. Handler supplies the real ones; a
+// test supplies a channel it writes to and an exit it can observe, so the whole
+// sequence is exercised without signalling the test process or killing it.
+//
+// The first signal is reported once rather than on every repeat: the shutdown
+// has already started, and restating it says nothing new. The forced exit is
+// the same event with forced=true.
+func handle(logger *slog.Logger, ch <-chan os.Signal, exit func()) chan struct{} {
+	stopCh := make(chan struct{})
 
 	go func() {
 		ctx := context.Background()
@@ -64,7 +75,7 @@ func Handler(logger *slog.Logger) chan struct{} {
 			slog.String("signal", signalName(sig)),
 			slog.Bool("forced", true))
 
-		os.Exit(1)
+		exit()
 	}()
 
 	return stopCh

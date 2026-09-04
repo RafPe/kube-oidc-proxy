@@ -106,6 +106,54 @@ func configHash(fs *pflag.FlagSet) string {
 // configHashLength is how much of the config digest is logged.
 const configHashLength = 16
 
+// configSummary is the effective non-secret configuration the startup record
+// reports. It exists so the record's fields are assembled and asserted in one
+// place rather than spelled out at the call site.
+type configSummary struct {
+	version       string
+	configHash    string
+	issuerCount   int
+	readinessMode string
+}
+
+// logConfigLoaded reports the effective configuration once it is fixed:
+// everything after this point reads it and nothing changes it. config_hash
+// lets two pods be compared without diffing their flags.
+func logConfigLoaded(l *slog.Logger, summary configSummary) {
+	logging.Emit(context.Background(), l, logging.EventProxyConfigLoaded,
+		slog.String("version", summary.version),
+		slog.String("config_hash", summary.configHash),
+		slog.Int("issuer_count", summary.issuerCount),
+		slog.String("readiness_mode", summary.readinessMode))
+}
+
+// logIssuersConfigured reports one record per configured issuer, so a query on
+// oidc.issuer.configured lists what this pod accepts without decomposing a
+// slice interpolated into a message. It takes issuer names, never URLs: see
+// issuerNames.
+func logIssuersConfigured(l *slog.Logger, names []string) {
+	ctx := context.Background()
+	for _, name := range names {
+		logging.Emit(ctx, l, logging.EventOIDCIssuerConfigured,
+			slog.String("issuer_name", name),
+			slog.Int("issuer_count", len(names)))
+	}
+}
+
+// issuerNames maps configured issuer URLs onto the names the records carry.
+// The full issuer URL is never logged, so a URL with no host becomes the
+// placeholder rather than the URL itself.
+func issuerNames(issuerURLs []string) []string {
+	if len(issuerURLs) == 0 {
+		return nil
+	}
+	names := make([]string, len(issuerURLs))
+	for i, issuerURL := range issuerURLs {
+		names[i] = probe.IssuerName(issuerURL)
+	}
+	return names
+}
+
 // NewRunCommand builds the root command. The signal handler is installed inside
 // RunE rather than by the caller, because the shutdown logger it reports
 // through is derived from the root logger, which cannot exist until the
@@ -257,14 +305,12 @@ func buildRunCommand(opts *options.Options) *cobra.Command {
 				return err
 			}
 
-			// The effective configuration is fixed: everything below reads it,
-			// nothing changes it. config_hash lets two pods be compared without
-			// diffing their flags.
-			logging.Emit(context.Background(), startupLogger, logging.EventProxyConfigLoaded,
-				slog.String("version", opts.Misc.Version()),
-				slog.String("config_hash", configHash(cmd.Flags())),
-				slog.Int("issuer_count", len(issuerURLs)),
-				slog.String("readiness_mode", probe.ReadinessMode(opts.App.ReadinessRequireAllIssuers)))
+			logConfigLoaded(startupLogger, configSummary{
+				version:       opts.Misc.Version(),
+				configHash:    configHash(cmd.Flags()),
+				issuerCount:   len(issuerURLs),
+				readinessMode: probe.ReadinessMode(opts.App.ReadinessRequireAllIssuers),
+			})
 
 			// Build a per-issuer readiness probe entry.
 			issuerProbes := make([]probe.IssuerReadiness, 0, len(issuerURLs))
@@ -447,22 +493,9 @@ func buildSingleAuther(o *options.OIDCAuthenticationOptions, oidcLogger, startup
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating OIDC authenticator for issuer %q: %w", o.IssuerURL, err)
 	}
-	emitIssuersConfigured(oidcLogger, []string{o.IssuerURL})
+	logIssuersConfigured(oidcLogger, issuerNames([]string{o.IssuerURL}))
 
 	return auther, []string{o.IssuerURL}, nil
-}
-
-// emitIssuersConfigured reports one record per configured issuer, so a query on
-// oidc.issuer.configured lists what this pod accepts without parsing a slice
-// out of a message. The issuer name is derived from the URL: the full URL is
-// never logged.
-func emitIssuersConfigured(logger *slog.Logger, issuerURLs []string) {
-	ctx := context.Background()
-	for _, issuerURL := range issuerURLs {
-		logging.Emit(ctx, logger, logging.EventOIDCIssuerConfigured,
-			slog.String("issuer_name", probe.IssuerName(issuerURL)),
-			slog.Int("issuer_count", len(issuerURLs)))
-	}
 }
 
 func buildUnionAuther(opts *options.Options, oidcLogger *slog.Logger) (authenticator.Token, []string, error) {
@@ -486,7 +519,7 @@ func buildUnionAuther(opts *options.Options, oidcLogger *slog.Logger) (authentic
 		issuerURLs = append(issuerURLs, jwtEntry.Issuer.URL)
 	}
 
-	emitIssuersConfigured(oidcLogger, issuerURLs)
+	logIssuersConfigured(oidcLogger, issuerNames(issuerURLs))
 
 	return tokenunion.NewFailOnError(authers...), issuerURLs, nil
 }

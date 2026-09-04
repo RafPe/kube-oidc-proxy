@@ -56,18 +56,26 @@ const (
 	pendingError          = "error"
 )
 
+// unknownIssuerName is what an issuer whose host cannot be determined is
+// called in the log stream. It is a fixed literal rather than anything derived
+// from the input: falling back to the raw value would put the full issuer URL
+// in the record, which is exactly what the logging contract forbids.
+const unknownIssuerName = "unknown"
+
 // IssuerName derives the name an issuer is known by in the log stream. The full
-// issuer URL is never logged, so the host identifies the issuer; a value that
-// does not parse, or carries no host, falls back to the bounded raw string, and
-// an empty one to a placeholder, so the field is never empty.
+// issuer URL is never logged, so the host alone identifies the issuer, and
+// anything that does not yield a host — an unparsable value, a schemeless path,
+// an opaque URI, the empty string — becomes unknownIssuerName. The raw input is
+// never returned.
 func IssuerName(issuerURL string) string {
-	if u, err := url.Parse(issuerURL); err == nil && u.Host != "" {
-		return logging.Bound(u.Host, logging.MaxIdentity)
+	u, err := url.Parse(issuerURL)
+	if err != nil || u.Host == "" {
+		return unknownIssuerName
 	}
-	if name := logging.Bound(issuerURL, logging.MaxIdentity); strings.TrimSpace(name) != "" {
-		return name
+	if host := strings.TrimSpace(logging.Bound(u.Host, logging.MaxIdentity)); host != "" {
+		return host
 	}
-	return "unknown"
+	return unknownIssuerName
 }
 
 // pendingIssuer is one issuer that failed its probe, with the classification
@@ -132,6 +140,11 @@ type Server struct {
 	hc  *HealthCheck
 	srv *http.Server
 
+	// shutdownTimeout bounds the graceful shutdown of this server. It is a
+	// field rather than the package constant so a test can exercise the
+	// shutdown failure path without waiting out the production budget.
+	shutdownTimeout time.Duration
+
 	// served is closed once Serve returns; err holds the terminal serve error
 	// (nil after a clean shutdown). Closing served happens-after the write to
 	// err, so Wait observes err safely without additional synchronization.
@@ -162,7 +175,8 @@ func NewServer(port string, issuers []IssuerReadiness, requireAll bool, oidcAuth
 	}
 
 	return &Server{
-		hc: h,
+		hc:              h,
+		shutdownTimeout: shutdownTimeout,
 		srv: &http.Server{
 			Addr:    net.JoinHostPort("0.0.0.0", port),
 			Handler: h.handler(),
@@ -262,7 +276,7 @@ func (s *Server) Start(ctx context.Context) error {
 // safe to call more than once and is invoked automatically when the context
 // passed to Start is cancelled.
 func (s *Server) Shutdown() error {
-	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
 	defer cancel()
 	return s.srv.Shutdown(ctx)
 }

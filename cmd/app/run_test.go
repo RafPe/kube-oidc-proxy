@@ -16,6 +16,8 @@ import (
 	"k8s.io/client-go/util/cert"
 
 	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 )
 
 func writeTempFile(t *testing.T, content string) string {
@@ -355,4 +357,91 @@ func TestCheckReservedIdentityPrefixes(t *testing.T) {
 // exercise authenticator construction, not the records it emits.
 func discardLogger() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
+}
+
+// TestLogConfigLoaded pins the startup record that fixes what this pod is
+// configured to do. It is the record an operator diffs between two pods, so
+// every field it promises must be present and carry the value it was given.
+func TestLogConfigLoaded(t *testing.T) {
+	root, cap := logtest.New(t, 0)
+
+	logConfigLoaded(logging.ForComponent(root, logging.ComponentStartup), configSummary{
+		version:       "v1.5.0",
+		configHash:    "0123456789abcdef",
+		issuerCount:   2,
+		readinessMode: "all",
+	})
+
+	rec := cap.Only(t, logging.EventProxyConfigLoaded)
+	if rec.String("version") != "v1.5.0" {
+		t.Errorf("version = %q", rec.String("version"))
+	}
+	if rec.String("config_hash") != "0123456789abcdef" {
+		t.Errorf("config_hash = %q", rec.String("config_hash"))
+	}
+	if got, ok := rec.Int("issuer_count"); !ok || got != 2 {
+		t.Errorf("issuer_count = %v", rec["issuer_count"])
+	}
+	if rec.String("readiness_mode") != "all" {
+		t.Errorf("readiness_mode = %q", rec.String("readiness_mode"))
+	}
+	if rec.String("component") != string(logging.ComponentStartup) {
+		t.Errorf("component = %q, want startup", rec.String("component"))
+	}
+}
+
+// TestLogIssuersConfigured pins one record per configured issuer, each naming
+// the issuer and the size of the set it belongs to. The previous behaviour was
+// a single line with an interpolated slice, which no query can decompose.
+func TestLogIssuersConfigured(t *testing.T) {
+	root, cap := logtest.New(t, 0)
+
+	logIssuersConfigured(logging.ForComponent(root, logging.ComponentOIDC),
+		[]string{"idp.example.com", "github.example.com"})
+
+	recs := cap.ByEvent(logging.EventOIDCIssuerConfigured)
+	if len(recs) != 2 {
+		t.Fatalf("got %d issuer records, want 2: %s", len(recs), cap.Raw())
+	}
+
+	var names []string
+	for _, rec := range recs {
+		names = append(names, rec.String("issuer_name"))
+		if got, ok := rec.Int("issuer_count"); !ok || got != 2 {
+			t.Errorf("issuer_count = %v, want 2", rec["issuer_count"])
+		}
+		if rec.String("msg") != "configured OIDC issuers" {
+			t.Errorf("msg = %q, want %q", rec.String("msg"), "configured OIDC issuers")
+		}
+		if rec.String("component") != string(logging.ComponentOIDC) {
+			t.Errorf("component = %q, want oidc", rec.String("component"))
+		}
+	}
+	if want := []string{"idp.example.com", "github.example.com"}; !reflect.DeepEqual(names, want) {
+		t.Fatalf("issuer names = %v, want %v", names, want)
+	}
+}
+
+// TestLogIssuersConfiguredNoIssuers pins the empty case: with no issuers
+// configured there is nothing to announce, and an empty stream is not the same
+// record with a zero count.
+func TestLogIssuersConfiguredNoIssuers(t *testing.T) {
+	root, cap := logtest.New(t, 0)
+
+	logIssuersConfigured(logging.ForComponent(root, logging.ComponentOIDC), nil)
+
+	if raw := cap.Raw(); raw != "" {
+		t.Fatalf("records emitted with no issuers configured: %s", raw)
+	}
+}
+
+// TestIssuerNamesDerivesFromURLs pins the run.go side of the never-log-a-full-
+// issuer-URL constraint: the names handed to the record are hosts, and a value
+// with no host degrades to the placeholder rather than to the URL itself.
+func TestIssuerNamesDerivesFromURLs(t *testing.T) {
+	got := issuerNames([]string{"https://idp.example.com/realms/corp", "not-a-url"})
+	want := []string{"idp.example.com", "unknown"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("issuerNames = %v, want %v", got, want)
+	}
 }

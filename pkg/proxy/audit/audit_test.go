@@ -311,12 +311,13 @@ func TestRequestInfoLongRunning(t *testing.T) {
 // upstream audit.Backend interface has a Shutdown that returns nothing, so a
 // backend that knows its flush failed can only say so through this extension.
 type fakeBackend struct {
+	runErr      error
 	shutdownErr error
 	shutdown    bool
 }
 
 func (f *fakeBackend) ProcessEvents(_ ...*auditinternal.Event) bool { return true }
-func (f *fakeBackend) Run(_ <-chan struct{}) error                  { return nil }
+func (f *fakeBackend) Run(_ <-chan struct{}) error                  { return f.runErr }
 func (f *fakeBackend) Shutdown()                                    { f.shutdown = true }
 func (f *fakeBackend) String() string                               { return "fake" }
 func (f *fakeBackend) ShutdownErr() error                           { return f.shutdownErr }
@@ -362,5 +363,67 @@ func TestShutdownReportsFlushFailure(t *testing.T) {
 	}
 	if len(cap.ByEvent(logging.EventAuditFlushCompleted)) != 0 {
 		t.Fatal("a failed flush also reported completion")
+	}
+}
+
+// TestRunReportsBackendStarted covers the success case: a backend that starts
+// announces itself, naming which backend is running so the record can be
+// correlated with the audit flags.
+func TestRunReportsBackendStarted(t *testing.T) {
+	root, cap := logtest.New(t, 0)
+	a := newTestAuditWithBackend(t, root, &fakeBackend{})
+
+	if err := a.Run(make(chan struct{})); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := cap.Only(t, logging.EventAuditBackendStarted)
+	if rec.String("backend_kind") != "fake" {
+		t.Fatalf("backend_kind = %q, want fake", rec.String("backend_kind"))
+	}
+	if rec.String("level") != "INFO" {
+		t.Fatalf("level = %q, want INFO", rec.String("level"))
+	}
+}
+
+// TestRunReportsBackendFailed covers the failure case: a backend that cannot
+// start is an error the process cannot serve correctly through, so it is
+// reported at ERROR and the cause reaches the caller.
+func TestRunReportsBackendFailed(t *testing.T) {
+	root, cap := logtest.New(t, 0)
+	a := newTestAuditWithBackend(t, root, &fakeBackend{runErr: errors.New("webhook unreachable")})
+
+	err := a.Run(make(chan struct{}))
+	if err == nil {
+		t.Fatal("Run reported success for a backend that failed to start")
+	}
+
+	rec := cap.Only(t, logging.EventAuditBackendFailed)
+	if rec.String("error_message") != "webhook unreachable" {
+		t.Fatalf("error_message = %q", rec.String("error_message"))
+	}
+	if rec.String("level") != "ERROR" {
+		t.Fatalf("level = %q, want ERROR", rec.String("level"))
+	}
+	if len(cap.ByEvent(logging.EventAuditBackendStarted)) != 0 {
+		t.Fatal("a backend that failed to start also reported starting")
+	}
+}
+
+// TestRunWithoutBackendIsSilent pins the no-audit-configured case: with no
+// backend there is no lifecycle to report, and an empty record stream is how a
+// consumer tells "auditing off" from "auditing broken".
+func TestRunWithoutBackendIsSilent(t *testing.T) {
+	root, cap := logtest.New(t, 0)
+	a := newTestAuditWithBackend(t, root, nil)
+
+	if err := a.Run(make(chan struct{})); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Shutdown(); err != nil {
+		t.Fatal(err)
+	}
+	if raw := cap.Raw(); raw != "" {
+		t.Fatalf("records emitted with no audit backend configured: %s", raw)
 	}
 }
