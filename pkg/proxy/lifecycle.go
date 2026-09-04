@@ -139,6 +139,7 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		start := time.Now()
 		req = context.WithTerminationHolder(req)
+		req = context.WithDecisionHolder(req)
 		ctx := req.Context()
 		l := logging.FromContext(ctx)
 

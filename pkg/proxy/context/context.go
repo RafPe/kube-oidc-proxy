@@ -66,6 +66,10 @@ const (
 	// issuer that authenticated the request.
 	issuerNameKey
 
+	// decisionKey is the context key for the holder that records whether the
+	// request's single access decision has already been written.
+	decisionKey
+
 	// terminationKey is the context key for the holder the request lifecycle
 	// filter installs so a handler further down the chain can classify how the
 	// request ended.
@@ -187,6 +191,37 @@ func WithIssuerName(req *http.Request, name string) *http.Request {
 func IssuerName(req *http.Request) string {
 	name, _ := req.Context().Value(issuerNameKey).(string)
 	return name
+}
+
+// decisionHolder records that the request's access decision has been written.
+// Like the termination holder it is shared by pointer, because the handler that
+// writes the decision and the handler that would write a second one see
+// different derived requests.
+type decisionHolder struct {
+	recorded bool
+}
+
+// WithDecisionHolder returns a copy of the request carrying the holder that
+// keeps the access decision to one record per request.
+func WithDecisionHolder(req *http.Request) *http.Request {
+	return req.WithContext(request.WithValue(req.Context(), decisionKey, new(decisionHolder)))
+}
+
+// MarkDecisionRecorded records that the request's access decision has been
+// written. It is a no-op when the request carries no holder, so a decision
+// logged outside the request chain needs no special case.
+func MarkDecisionRecorded(req *http.Request) {
+	if h, ok := req.Context().Value(decisionKey).(*decisionHolder); ok {
+		h.recorded = true
+	}
+}
+
+// DecisionRecorded reports whether the request's access decision has already
+// been written. A request with no holder reports false, so a caller that cannot
+// see the holder still records its decision rather than dropping it.
+func DecisionRecorded(req *http.Request) bool {
+	h, ok := req.Context().Value(decisionKey).(*decisionHolder)
+	return ok && h.recorded
 }
 
 // Termination is how a request ended, as classified by a handler deeper in the

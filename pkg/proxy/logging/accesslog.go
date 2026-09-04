@@ -151,6 +151,11 @@ func (a *AccessLogger) LogDecision(req *http.Request, d Decision) {
 	}
 
 	logging.Emit(req.Context(), a.logger, logging.EventRequestAccessDecided, attrs...)
+
+	// Marked after the record is out, so a handler further down the chain that
+	// would otherwise write a second decision for the same request -- a client
+	// that cancelled after admission, say -- can see that one already exists.
+	proxycontext.MarkDecisionRecorded(req)
 }
 
 // untrustedForwardedFor returns the raw forwarded chain the client actually
