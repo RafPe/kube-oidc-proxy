@@ -206,3 +206,20 @@ func TestUpstreamFailureReachesTheTerminalRecord(t *testing.T) {
 		t.Fatalf("http_status = %d", s)
 	}
 }
+
+// TestResponseStartedNotEmittedForAResolvedShortRequest closes the gap the
+// negative half of TestResponseStartedOnlyForLongRunning leaves open. That
+// request carries no RequestInfo at all, so it only shows that an unresolved
+// request is not treated as long running. This one is fully resolved and still
+// short, which is the rule actually being asserted: watch yes, get no.
+func TestResponseStartedNotEmittedForAResolvedShortRequest(t *testing.T) {
+	p := newTestProxy(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil)
+	req = req.WithContext(genericapirequest.WithRequestInfo(req.Context(),
+		&genericapirequest.RequestInfo{IsResourceRequest: true, Verb: "get", Resource: "pods"}))
+	serveWith(t, p, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }, req)
+
+	if n := len(p.logs.ByEvent(logging.EventRequestResponseStarted)); n != 0 {
+		t.Fatalf("response_started records = %d for a resolved short request: %s", n, p.logs.Raw())
+	}
+}
