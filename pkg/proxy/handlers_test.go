@@ -227,7 +227,9 @@ func TestCheckReservedIdentity(t *testing.T) {
 }
 
 // reservedIdentityRequest builds a bearer-token request that the fake
-// authenticator wired by newTestProxy is primed to answer.
+// authenticator wired by newTestProxy is primed to answer. It carries the
+// correlation id the request-id filter mints in production, which every access
+// record is required to report.
 func reservedIdentityRequest(t *testing.T, extraHeaders map[string]string) *http.Request {
 	t.Helper()
 
@@ -237,7 +239,7 @@ func reservedIdentityRequest(t *testing.T, extraHeaders map[string]string) *http
 		req.Header.Set(k, v)
 	}
 
-	return req
+	return withTestRequestID(req)
 }
 
 func TestWithAuthenticateRequestRejectsReservedIdentity(t *testing.T) {
