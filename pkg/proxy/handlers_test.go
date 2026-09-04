@@ -22,6 +22,7 @@ import (
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 	proxycontext "github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 	fakesubjectaccessreview "github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview/fake"
@@ -74,6 +75,160 @@ func TestWithImpersonateRequestDoesNotMutateAuthenticatorUser(t *testing.T) {
 	if !reflect.DeepEqual(usr.Extra, wantExtra) {
 		t.Errorf("authenticator extra map mutated: got %#v, want %#v", usr.Extra, wantExtra)
 	}
+}
+
+// assertRecord checks the three fields every first-party record is queried by:
+// the event type it claims, the component that owns it, and the correlation id
+// that ties it back to a request.
+func assertRecord(t *testing.T, rec logtest.Record, event logging.EventType, component logging.Component, requestID string) {
+	t.Helper()
+	if got := rec.String("event_type"); got != string(event) {
+		t.Errorf("event_type = %q, want %q", got, event)
+	}
+	if got := rec.String("component"); got != string(component) {
+		t.Errorf("component = %q, want %q", got, component)
+	}
+	if got := rec.String("request_id"); got != requestID {
+		t.Errorf("request_id = %q, want %q", got, requestID)
+	}
+}
+
+// TestOIDCSuccessEmitsAuthnOIDCSucceeded pins the record the OIDC path writes
+// when it accepts a token. issuer_name is absent until the issuer registry
+// names the issuer that authenticated the request, so the field must not
+// appear empty rather than absent.
+func TestOIDCSuccessEmitsAuthnOIDCSucceeded(t *testing.T) {
+	p := newTestProxy(t)
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(
+		&authenticator.Response{
+			User: &authuser.DefaultInfo{Name: "alice", Groups: []string{"devs"}},
+		}, true, nil)
+
+	var served bool
+	handler := p.withAuthenticateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		served = true
+	}))
+
+	req := reservedIdentityRequest(t, nil)
+	req = req.WithContext(logging.NewContext(req.Context(), p.logger))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if !served {
+		t.Fatal("inner handler was not reached for an accepted token")
+	}
+
+	rec := p.logs.Only(t, logging.EventAuthnOIDCSucceeded)
+	assertRecord(t, rec, logging.EventAuthnOIDCSucceeded, logging.ComponentOIDC, "test-request-id")
+	if got := rec.String("level"); got != "DEBUG" {
+		t.Errorf("level = %q, want DEBUG", got)
+	}
+	if v, ok := rec["issuer_name"]; ok {
+		t.Errorf("issuer_name = %v, want the field to be absent while no issuer is named", v)
+	}
+
+	p.ctrl.Finish()
+}
+
+// TestImpersonationSkippedWhenDisabled pins the record for the
+// --disable-impersonation path: the request is forwarded with the caller's own
+// token and no impersonation headers, which an operator has to be able to see.
+func TestImpersonationSkippedWhenDisabled(t *testing.T) {
+	p := newTestProxy(t)
+	p.config.DisableImpersonation = true
+
+	handler := p.withImpersonateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req = req.WithContext(logging.NewContext(logging.WithRequestID(req.Context(), "rid-disabled"), p.logger))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	rec := p.logs.Only(t, logging.EventRequestImpersonationSkipped)
+	assertRecord(t, rec, logging.EventRequestImpersonationSkipped, logging.ComponentRequest, "rid-disabled")
+	if got := rec.String("level"); got != "DEBUG" {
+		t.Errorf("level = %q, want DEBUG", got)
+	}
+	if got := rec.String("skip_reason"); got != skipReasonDisabled {
+		t.Errorf("skip_reason = %q, want %q", got, skipReasonDisabled)
+	}
+	if got := p.logs.ByEvent(logging.EventRequestImpersonationApplied); len(got) != 0 {
+		t.Errorf("impersonation was recorded as applied on the disabled path: %s", p.logs.Raw())
+	}
+}
+
+// TestImpersonationSkippedOnTokenReviewPassthrough pins the other skip path:
+// a request the TokenReview fallback admitted carries its own bearer token
+// upstream, so impersonation is deliberately never built for it.
+func TestImpersonationSkippedOnTokenReviewPassthrough(t *testing.T) {
+	p := newTestProxy(t)
+
+	handler := p.withImpersonateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req = req.WithContext(logging.NewContext(logging.WithRequestID(req.Context(), "rid-passthrough"), p.logger))
+	req = proxycontext.WithNoImpersonation(req)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	rec := p.logs.Only(t, logging.EventRequestImpersonationSkipped)
+	assertRecord(t, rec, logging.EventRequestImpersonationSkipped, logging.ComponentRequest, "rid-passthrough")
+	if got := rec.String("skip_reason"); got != skipReasonPassthrough {
+		t.Errorf("skip_reason = %q, want %q", got, skipReasonPassthrough)
+	}
+	if got := p.logs.ByEvent(logging.EventRequestImpersonationApplied); len(got) != 0 {
+		t.Errorf("impersonation was recorded as applied on the passthrough path: %s", p.logs.Raw())
+	}
+}
+
+// TestTokenReviewDependencyFailureIsError separates the two ways a TokenReview
+// can fail to admit a request. An API server that could not answer is an
+// operator-visible dependency failure carrying the error text; it is not a
+// verdict on the credential, so it must not be recorded as a completed review.
+func TestTokenReviewDependencyFailureIsError(t *testing.T) {
+	p := newTestProxy(t)
+	p.fakeReviewer.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(
+		nil, false, errors.New("apiserver unreachable"))
+
+	req := reservedIdentityRequest(t, nil)
+	req = req.WithContext(logging.NewContext(req.Context(), p.logger))
+
+	if ok := p.reviewToken(httptest.NewRecorder(), req); ok {
+		t.Fatal("a reviewer error passed the request through; the path must fail closed")
+	}
+
+	rec := p.logs.Only(t, logging.EventAuthnTokenReviewFailed)
+	assertRecord(t, rec, logging.EventAuthnTokenReviewFailed, logging.ComponentTokenReview, "test-request-id")
+	if got := rec.String("level"); got != "ERROR" {
+		t.Errorf("level = %q, want ERROR", got)
+	}
+	if got := rec.String("reason"); got != reasonAuthenticationDependencyError {
+		t.Errorf("reason = %q, want %q", got, reasonAuthenticationDependencyError)
+	}
+	if got := rec.String("error_message"); got != "apiserver unreachable" {
+		t.Errorf("error_message = %q, want %q", got, "apiserver unreachable")
+	}
+	if got := p.logs.ByEvent(logging.EventAuthnTokenReviewCompleted); len(got) != 0 {
+		t.Errorf("an unanswerable TokenReview was recorded as completed: %s", p.logs.Raw())
+	}
+
+	p.ctrl.Finish()
+}
+
+// TestClientCancellationEmitsUpstreamRequestCanceled pins the one refusal that
+// writes no response at all: the client is already gone. It is routine, so the
+// record is DEBUG, but the access decision is still written.
+func TestClientCancellationEmitsUpstreamRequestCanceled(t *testing.T) {
+	p := newTestProxy(t)
+
+	req := reservedIdentityRequest(t, nil)
+	rw := httptest.NewRecorder()
+	p.handleError(rw, req, context.Canceled)
+
+	rec := p.logs.Only(t, logging.EventUpstreamRequestCanceled)
+	assertRecord(t, rec, logging.EventUpstreamRequestCanceled, logging.ComponentUpstream, "test-request-id")
+	if got := rec.String("level"); got != "DEBUG" {
+		t.Errorf("level = %q, want DEBUG", got)
+	}
+	if got := rec.String("reason"); got != reasonClientCanceled {
+		t.Errorf("reason = %q, want %q", got, reasonClientCanceled)
+	}
+	assertDeniedReason(t, p.logs, reasonClientCanceled)
 }
 
 // TestOIDCFailureEmitsAuthnOIDCFailed asserts that a token that was present
