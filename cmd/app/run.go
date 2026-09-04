@@ -111,6 +111,11 @@ func buildRunCommand(opts *options.Options) *cobra.Command {
 			}
 			slog.SetDefault(root)
 
+			// Kubernetes libraries log through klog; route them into the same
+			// stream under component=k8s rather than leaving a second format
+			// on stderr.
+			logging.InstallKlogBridge(root, opts.Logging.Verbosity())
+
 			// Trap SIGINT/SIGTERM only once the root logger exists, so shutdown
 			// reports through the configured stream. Nothing is serving before
 			// this point, so a signal that arrives earlier ends the process
