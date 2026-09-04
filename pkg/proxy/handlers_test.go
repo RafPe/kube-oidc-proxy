@@ -591,3 +591,145 @@ func TestReservedIdentityRejectedBeforeSubjectAccessReview(t *testing.T) {
 
 	p.ctrl.Finish()
 }
+
+// reservedIdentityUser primes the fake authenticator to answer with an
+// identity carrying a reserved group, so a request built by
+// reservedIdentityRequest is refused by checkReservedIdentity.
+func reservedIdentityUser(p *fakeProxy, groups []string, times int) {
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(
+		&authenticator.Response{
+			User: &authuser.DefaultInfo{Name: "alice", Groups: groups},
+		}, true, nil).Times(times)
+}
+
+func TestUntrustedForwardedHeadersDroppedIsWarn(t *testing.T) {
+	p := newTestProxy(t)
+	h := p.withSanitizedForwardHeaders(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "203.0.113.9:1"
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+	req.Header.Set("X-Real-Ip", "1.2.3.4")
+	req = withTestRequestID(req)
+	req = req.WithContext(logging.NewContext(req.Context(), p.logger))
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	rec := p.logs.Only(t, logging.EventRequestHeadersDropped)
+	if rec.String("level") != "WARN" || !strings.Contains(fmt.Sprint(rec["dropped_headers"]), "x-forwarded-for") {
+		t.Fatalf("%v", rec)
+	}
+}
+
+// TestRealIPOnlyDroppedCarriesNoForwardedChain covers the one case in which
+// the dropped record has no forwarded chain to report: X-Real-Ip is always
+// removed, and the client sent no X-Forwarded-For at all.
+func TestRealIPOnlyDroppedCarriesNoForwardedChain(t *testing.T) {
+	p := newTestProxy(t)
+	h := p.withSanitizedForwardHeaders(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "203.0.113.9:1"
+	req.Header.Set("X-Real-Ip", "1.2.3.4")
+	req = withTestRequestID(req)
+	req = req.WithContext(logging.NewContext(req.Context(), p.logger))
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	rec := p.logs.Only(t, logging.EventRequestHeadersDropped)
+	if got := fmt.Sprint(rec["dropped_headers"]); got != "[x-real-ip]" {
+		t.Fatalf("dropped_headers = %s, want [x-real-ip]", got)
+	}
+	if _, ok := rec["forwarded_for_untrusted"]; ok {
+		t.Fatalf("record reports a forwarded chain the client never sent: %v", rec)
+	}
+}
+
+func TestTrustedForwardedHeadersRewritten(t *testing.T) {
+	p := newTestProxy(t)
+	p.trustedProxies = mustCIDRs(t, "10.0.0.0/8")
+	proxycontext.SetTrustedProxies(p.trustedProxies)
+	t.Cleanup(func() { proxycontext.SetTrustedProxies(nil) })
+	h := p.withSanitizedForwardHeaders(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.0.7:1"
+	req.Header.Set("X-Forwarded-For", "1.2.3.4, 10.0.0.9")
+	req = withTestRequestID(req)
+	req = req.WithContext(logging.NewContext(req.Context(), p.logger))
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	rec := p.logs.Only(t, logging.EventRequestHeadersRewritten)
+	if rec.String("src_ip") != "1.2.3.4" {
+		t.Fatal("rewritten record missing resolved src_ip")
+	}
+	// A rewrite is the trusted-proxy path working as designed, and it fires on
+	// every request behind a trusted ingress, so it is diagnostic rather than a
+	// warning.
+	if rec.String("level") != "DEBUG" {
+		t.Fatalf("rewritten record is %s, want DEBUG: %v", rec.String("level"), rec)
+	}
+
+	// The same request against a -v=0 logger produces nothing: at the default
+	// verbosity an operator sees only the records that need acting on.
+	quiet, quietLogs := logtest.New(t, 0)
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.0.7:1"
+	req.Header.Set("X-Forwarded-For", "1.2.3.4, 10.0.0.9")
+	req = withTestRequestID(req)
+	req = req.WithContext(logging.NewContext(req.Context(), logging.ForComponent(quiet, logging.ComponentRequest)))
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	if n := len(quietLogs.ByEvent(logging.EventRequestHeadersRewritten)); n != 0 {
+		t.Fatalf("rewritten records at -v=0 = %d, want 0: %s", n, quietLogs.Raw())
+	}
+}
+
+func TestReservedIdentityEmitsAnomalyAndDeniedAccess(t *testing.T) {
+	p := newTestProxy(t)
+	reservedIdentityUser(p, []string{"system:masters"}, 1)
+	rw := httptest.NewRecorder()
+	req := reservedIdentityRequest(t, nil)
+	req = req.WithContext(logging.NewContext(req.Context(), p.logger))
+	p.withAuthenticateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(rw, req)
+	if p.logs.Only(t, logging.EventRequestAnomalyDetected).String("reason") != "reserved_identity" {
+		t.Fatal("anomaly not recorded")
+	}
+	if p.logs.Only(t, logging.EventRequestAccessDecided).String("reason") != "reserved_identity" {
+		t.Fatal("access record missing reason")
+	}
+}
+
+func TestAnomalyIsRateLimitedButAccessRecordIsNot(t *testing.T) {
+	p := newTestProxy(t) // limiter burst 3 in tests
+	reservedIdentityUser(p, []string{"system:masters"}, 10)
+	for i := 0; i < 10; i++ {
+		req := reservedIdentityRequest(t, nil)
+		req = req.WithContext(logging.NewContext(req.Context(), p.logger))
+		p.withAuthenticateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(httptest.NewRecorder(), req)
+	}
+	if n := len(p.logs.ByEvent(logging.EventRequestAccessDecided)); n != 10 {
+		t.Fatalf("access records = %d, want 10 (never sampled)", n)
+	}
+	if n := len(p.logs.ByEvent(logging.EventRequestAnomalyDetected)); n != 3 {
+		t.Fatalf("anomaly records = %d, want burst 3", n)
+	}
+}
+
+// TestFlushWarnLimiterSummarisesOnShutdown covers the shutdown half of the
+// flush loop: a burst suppressed just before the proxy stops is still
+// accounted for, rather than lost with the goroutine.
+func TestFlushWarnLimiterSummarisesOnShutdown(t *testing.T) {
+	p := newTestProxy(t)
+	for i := 0; i < 10; i++ {
+		p.warnLimiter.Allow(reasonReservedIdentity)
+	}
+
+	stopCh := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.flushWarnLimiter(stopCh)
+	}()
+	close(stopCh)
+	<-done
+
+	rec := p.logs.Only(t, logging.EventLogWarningSuppressed)
+	if n, _ := rec.Int("suppressed_count"); n != 7 {
+		t.Fatalf("suppressed_count = %d, want 7 (10 offered, burst of 3 allowed)", n)
+	}
+	if rec.String("warning_reason") != reasonReservedIdentity {
+		t.Fatalf("%v", rec)
+	}
+}

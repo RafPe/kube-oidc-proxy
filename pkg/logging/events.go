@@ -91,17 +91,17 @@ var Registry = map[EventType]EventSpec{
 	},
 	EventRequestHeadersRewritten: {
 		Components: []Component{ComponentRequest},
-		Level:      slog.LevelWarn,
+		Level:      slog.LevelDebug,
 		Required:   []string{"request_id", "src_ip", "forwarded_for_untrusted"},
 		Message:    "forwarded headers rewritten",
-		Summary:    "X-Forwarded-For collapsed to the resolved client IP on the trusted-proxy path.",
+		Summary:    "X-Forwarded-For collapsed to the resolved client IP on the trusted-proxy path. Diagnostic, not a warning: it is the trusted-proxy contract working as configured and fires on every request behind a trusted ingress.",
 	},
 	EventRequestHeadersDropped: {
 		Components: []Component{ComponentRequest},
 		Level:      slog.LevelWarn,
-		Required:   []string{"request_id", "src_ip", "forwarded_for_untrusted", "dropped_headers"},
+		Required:   []string{"request_id", "src_ip", "dropped_headers"},
 		Message:    "forwarded headers dropped",
-		Summary:    "X-Forwarded-For or X-Real-Ip removed for an untrusted peer, a fully trusted chain or a malformed hop. Token-bucketed.",
+		Summary:    "X-Forwarded-For or X-Real-Ip removed for an untrusted peer, a fully trusted chain or a malformed hop. Carries forwarded_for_untrusted when the client sent an X-Forwarded-For; a client that sent only X-Real-Ip has no chain to report. Token-bucketed.",
 	},
 	EventRequestAnomalyDetected: {
 		Components: []Component{ComponentRequest},

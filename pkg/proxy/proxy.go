@@ -5,6 +5,7 @@
 package proxy
 
 import (
+	stdcontext "context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -35,6 +36,15 @@ import (
 const (
 	UserHeaderClientIPKey = "Remote-Client-IP"
 	timestampLayout       = "2006-01-02T15:04:05-0700"
+)
+
+// The token bucket the two client-driven warning records draw from: a steady
+// one record per second per reason, room for a burst of ten, and one
+// log.warning.suppressed summary a minute reporting what was dropped.
+const (
+	warnLimiterRate     float64 = 1
+	warnLimiterBurst            = 10
+	warnLimiterInterval         = time.Minute
 )
 
 var (
@@ -114,6 +124,14 @@ type Proxy struct {
 	// package global so the destination and the trusted-proxy networks are
 	// fixed at construction.
 	access *accesslogging.AccessLogger
+
+	// warnLimiter token-buckets the only two records a client can produce
+	// without bound, request.anomaly.detected and request.headers.dropped, and
+	// summarises what it dropped through log.warning.suppressed. The access
+	// record is deliberately not limited: a denial is always written. A nil
+	// limiter allows everything, so a partially wired Proxy never silences a
+	// warning.
+	warnLimiter *logging.Limiter
 
 	hooks       *hooks.Hooks
 	handleError errorHandlerFn
@@ -223,6 +241,7 @@ func New(deps Dependencies) (*Proxy, error) {
 		tokenAuthenticator:    deps.TokenAuthenticator,
 		auditor:               auditor,
 		access:                accesslogging.NewAccessLogger(requestLogger, trustedProxies),
+		warnLimiter:           logging.NewLimiter(warnLimiterRate, warnLimiterBurst, warnLimiterInterval, nil),
 	}, nil
 }
 
@@ -347,12 +366,32 @@ func (p *Proxy) Run(stopCh <-chan struct{}) (<-chan struct{}, <-chan struct{}, e
 	proxyHandler.ErrorHandler = p.handleError
 	proxyHandler.FlushInterval = p.config.FlushInterval
 
+	go p.flushWarnLimiter(stopCh)
+
 	waitCh, listenerStoppedCh, err := p.serve(proxyHandler, stopCh)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	return waitCh, listenerStoppedCh, nil
+}
+
+// flushWarnLimiter reports what the warning limiter dropped, once per interval
+// and once more as the proxy stops so a burst suppressed just before shutdown
+// is still accounted for.
+func (p *Proxy) flushWarnLimiter(stopCh <-chan struct{}) {
+	ticker := time.NewTicker(warnLimiterInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			p.warnLimiter.Flush(stdcontext.Background(), componentLogger(p.logger))
+		case <-stopCh:
+			p.warnLimiter.Flush(stdcontext.Background(), componentLogger(p.logger))
+			return
+		}
+	}
 }
 
 func (p *Proxy) serve(handler http.Handler, stopCh <-chan struct{}) (<-chan struct{}, <-chan struct{}, error) {

@@ -28,6 +28,17 @@ import (
 // its own identities.
 const reservedIdentityPrefix = "system:"
 
+// The inbound forwarding headers the trusted-proxy contract owns.
+const (
+	headerForwardedFor = "X-Forwarded-For"
+	headerRealIP       = "X-Real-Ip"
+)
+
+// warnReasonHeadersDropped is the limiter bucket the dropped-header warning
+// draws from. It is a bucket key rather than a record field, so it is not part
+// of the closed reason value set.
+const warnReasonHeadersDropped = "headers_dropped"
+
 // How a request authenticated, as reported by the access record's auth_method.
 const (
 	authMethodOIDC        = "oidc"
@@ -121,8 +132,62 @@ func (p *Proxy) withHandlers(handler http.Handler) http.Handler {
 // sees sanitized headers.
 func (p *Proxy) withSanitizedForwardHeaders(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-		handler.ServeHTTP(rw, context.SanitizeForwardHeaders(req))
+		// Snapshot the values, not the header map: SanitizeForwardHeaders
+		// rewrites the map in place even though it returns a new request.
+		inboundXFF := req.Header.Get(headerForwardedFor)
+		inboundRealIP := req.Header.Get(headerRealIP)
+
+		req = context.SanitizeForwardHeaders(req)
+
+		if inboundXFF != "" || inboundRealIP != "" {
+			req = p.logForwardHeaders(req, inboundXFF, inboundRealIP)
+		}
+
+		handler.ServeHTTP(rw, req)
 	})
+}
+
+// logForwardHeaders reports what the trusted-proxy contract did to the inbound
+// forwarding headers, so an operator can tell a misconfigured trusted-proxy
+// list from a client spoofing its address. It runs only when the client
+// actually sent one of the headers.
+//
+// A rewrite and a drop are not exclusive: X-Real-Ip is always removed, so a
+// request that also had its X-Forwarded-For collapsed produces both records.
+// Only the drop is token-bucketed; it is the one an untrusted client can
+// produce on every request.
+func (p *Proxy) logForwardHeaders(req *http.Request, inboundXFF, inboundRealIP string) *http.Request {
+	req, srcIP := context.RemoteAddr(req)
+	forwardedFor := slog.String("forwarded_for_untrusted", logging.Sanitize(inboundXFF))
+
+	if outboundXFF := req.Header.Get(headerForwardedFor); outboundXFF != "" && outboundXFF != inboundXFF {
+		logging.Emit(req.Context(), logging.FromContext(req.Context()), logging.EventRequestHeadersRewritten,
+			slog.String("src_ip", srcIP), forwardedFor)
+	}
+
+	// Sorted, and lower-cased as the wire format writes them, so the field is
+	// queryable by exact match rather than by however the client spelled it.
+	var dropped []string
+	if inboundXFF != "" && req.Header.Get(headerForwardedFor) == "" {
+		dropped = append(dropped, strings.ToLower(headerForwardedFor))
+	}
+	if inboundRealIP != "" {
+		dropped = append(dropped, strings.ToLower(headerRealIP))
+	}
+	if len(dropped) == 0 || !p.warnLimiter.Allow(warnReasonHeadersDropped) {
+		return req
+	}
+	slices.Sort(dropped)
+
+	attrs := []slog.Attr{slog.String("src_ip", srcIP), slog.Any("dropped_headers", dropped)}
+	// A client that sent only X-Real-Ip has no forwarded chain to report, and
+	// the field must never carry a value that did not come from one.
+	if inboundXFF != "" {
+		attrs = append(attrs, forwardedFor)
+	}
+	logging.Emit(req.Context(), logging.FromContext(req.Context()), logging.EventRequestHeadersDropped, attrs...)
+
+	return req
 }
 
 // withAuthenticateRequest adds the proxy authentication handler to a chain.
@@ -436,6 +501,9 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 
 			// Authenticated, but the identity is one a token must never mint.
 		case errors.Is(err, errReservedIdentity):
+			// A token minting a system: identity is an exploit attempt or a
+			// badly broken claim mapping, not an ordinary denial.
+			p.logAnomaly(r, reasonReservedIdentity)
 			p.logDenied(r, reasonReservedIdentity, err)
 			forbiddenHandler.ServeHTTP(rw, r)
 			return
@@ -463,6 +531,9 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			// configured cap. Refused before any SubjectAccessReview was sent;
 			// this is a request-shape rejection, not an authorization denial.
 		case errors.Is(err, subjectaccessreview.ErrTooManyImpersonationHeaderValues):
+			// Far more impersonation values than any client legitimately sends:
+			// a resource-exhaustion attempt against the SubjectAccessReview path.
+			p.logAnomaly(r, reasonTooManyImpersonationValues)
 			p.logDenied(r, reasonTooManyImpersonationValues, err)
 			http.Error(rw, err.Error(), http.StatusRequestHeaderFieldsTooLarge)
 			return
@@ -507,6 +578,20 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 func (p *Proxy) logHandlerFailed(r *http.Request, err error) {
 	logging.EmitLevel(r.Context(), componentLogger(p.logger), logging.EventRequestHandlerFailed, slog.LevelError,
 		slog.String("reason", reasonInternalError), logging.ErrAttr(err))
+}
+
+// logAnomaly reports a rejection that indicates an exploit attempt or gross
+// misconfiguration rather than an ordinary denial. It is token-bucketed per
+// reason, because a client can produce these without bound; the access record,
+// which is never sampled, still carries the outcome.
+func (p *Proxy) logAnomaly(r *http.Request, reason string) {
+	if !p.warnLimiter.Allow(reason) {
+		return
+	}
+
+	_, srcIP := context.RemoteAddr(r)
+	logging.Emit(r.Context(), componentLogger(p.logger), logging.EventRequestAnomalyDetected,
+		slog.String("src_ip", srcIP), slog.String("reason", reason))
 }
 
 // logDenied writes the access record for a refused request. The impersonation
