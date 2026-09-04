@@ -91,10 +91,10 @@ var Registry = map[EventType]EventSpec{
 	},
 	EventRequestHeadersRewritten: {
 		Components: []Component{ComponentRequest},
-		Level:      slog.LevelWarn,
+		Level:      slog.LevelDebug,
 		Required:   []string{"request_id", "src_ip", "forwarded_for_untrusted"},
 		Message:    "forwarded headers rewritten",
-		Summary:    "X-Forwarded-For collapsed to the resolved client IP on the trusted-proxy path.",
+		Summary:    "X-Forwarded-For collapsed to the resolved client IP on the trusted-proxy path. Diagnostic, not a warning: it is the trusted-proxy contract working as configured and fires on every request behind a trusted ingress.",
 	},
 	EventRequestHeadersDropped: {
 		Components: []Component{ComponentRequest},

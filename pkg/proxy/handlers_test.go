@@ -651,8 +651,28 @@ func TestTrustedForwardedHeadersRewritten(t *testing.T) {
 	req = withTestRequestID(req)
 	req = req.WithContext(logging.NewContext(req.Context(), p.logger))
 	h.ServeHTTP(httptest.NewRecorder(), req)
-	if p.logs.Only(t, logging.EventRequestHeadersRewritten).String("src_ip") != "1.2.3.4" {
+	rec := p.logs.Only(t, logging.EventRequestHeadersRewritten)
+	if rec.String("src_ip") != "1.2.3.4" {
 		t.Fatal("rewritten record missing resolved src_ip")
+	}
+	// A rewrite is the trusted-proxy path working as designed, and it fires on
+	// every request behind a trusted ingress, so it is diagnostic rather than a
+	// warning.
+	if rec.String("level") != "DEBUG" {
+		t.Fatalf("rewritten record is %s, want DEBUG: %v", rec.String("level"), rec)
+	}
+
+	// The same request against a -v=0 logger produces nothing: at the default
+	// verbosity an operator sees only the records that need acting on.
+	quiet, quietLogs := logtest.New(t, 0)
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.0.7:1"
+	req.Header.Set("X-Forwarded-For", "1.2.3.4, 10.0.0.9")
+	req = withTestRequestID(req)
+	req = req.WithContext(logging.NewContext(req.Context(), logging.ForComponent(quiet, logging.ComponentRequest)))
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	if n := len(quietLogs.ByEvent(logging.EventRequestHeadersRewritten)); n != 0 {
+		t.Fatalf("rewritten records at -v=0 = %d, want 0: %s", n, quietLogs.Raw())
 	}
 }
 
