@@ -51,9 +51,11 @@ jobs:
         # deploy that image unless image.tag is explicitly overridden.
         run: |
           app_version="$(yq -r .appVersion "$CHART/Chart.yaml")"
-          rendered="$(helm template ci-single "$CHART" -f "$CHART/ci/single-issuer-values.yaml" \
-            | awk '/^ +image: "ghcr.io\//{gsub(/"/,"",$2); print $2; exit}')"
+          render_image() {
+            helm template ci-single "$CHART" -f "$CHART/ci/single-issuer-values.yaml" "$@" \
+              --show-only templates/deployment.yaml | yq -r '.spec.template.spec.containers[0].image'
+          }
+          rendered="$(render_image)"
           [ "$rendered" = "ghcr.io/rafpe/kube-oidc-proxy:${app_version}" ] || { echo "::error::rendered ${rendered}, expected appVersion ${app_version}"; exit 1; }
-          rendered="$(helm template ci-single "$CHART" -f "$CHART/ci/single-issuer-values.yaml" --set image.tag=9.9.9 \
-            | awk '/^ +image: "ghcr.io\//{gsub(/"/,"",$2); print $2; exit}')"
+          rendered="$(render_image --set image.tag=9.9.9)"
           [ "$rendered" = "ghcr.io/rafpe/kube-oidc-proxy:9.9.9" ] || { echo "::error::image.tag override not honoured: ${rendered}"; exit 1; }

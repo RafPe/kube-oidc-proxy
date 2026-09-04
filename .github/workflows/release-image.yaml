@@ -157,7 +157,7 @@ jobs:
           # Guard against publishing a chart whose default values deploy an
           # image other than this release (the rendered tag must match).
           RENDERED="$(helm template guard "$PKG" -f "${CHART_DIR}/ci/single-issuer-values.yaml" \
-            | awk '/^ +image: "ghcr.io\//{gsub(/"/,"",$2); print $2; exit}')"
+            --show-only templates/deployment.yaml | yq -r '.spec.template.spec.containers[0].image')"
           EXPECTED="ghcr.io/${OWNER}/kube-oidc-proxy:${VERSION}"
           [ "$RENDERED" = "$EXPECTED" ] || { echo "::error::packaged chart renders image ${RENDERED}, expected ${EXPECTED}"; exit 1; }
 
