@@ -34,3 +34,24 @@ func TestLimiterAllowsBurstThenSummarises(t *testing.T) {
 		t.Fatal("flush with nothing suppressed emitted a summary")
 	}
 }
+
+// TestLimiterRefillsAtTheConfiguredRatePerSecond pins the unit and the type of
+// the first parameter: it is a float64 count of records per second, so a
+// caller holding a rate does not have to know the bucket implementation.
+func TestLimiterRefillsAtTheConfiguredRatePerSecond(t *testing.T) {
+	var ratePerSecond float64 = 2
+	now := time.Unix(0, 0)
+	l := logging.NewLimiter(ratePerSecond, 1, time.Minute, func() time.Time { return now })
+
+	if !l.Allow("reserved_identity") {
+		t.Fatal("the first record was refused with a burst of 1")
+	}
+	if l.Allow("reserved_identity") {
+		t.Fatal("a second record was allowed before the bucket refilled")
+	}
+
+	now = now.Add(500 * time.Millisecond)
+	if !l.Allow("reserved_identity") {
+		t.Fatal("no token half a second after a two-per-second bucket was spent")
+	}
+}

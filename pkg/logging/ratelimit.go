@@ -26,10 +26,10 @@ import (
 // sleeping. A nil Limiter allows everything: a partially wired caller must
 // never silence a warning, because WARN and ERROR are never hidden.
 type Limiter struct {
-	limit    rate.Limit
-	burst    int
-	interval time.Duration
-	clock    func() time.Time
+	limit        rate.Limit
+	burst        int
+	summaryEvery time.Duration
+	clock        func() time.Time
 
 	mu      sync.Mutex
 	entries map[string]*limiterEntry
@@ -43,19 +43,21 @@ type limiterEntry struct {
 	dropped int
 }
 
-// NewLimiter returns a Limiter admitting limit records per second per reason
-// with the given burst, and summarising what it dropped every interval. A nil
+// NewLimiter returns a Limiter admitting ratePerSecond records per second per
+// reason with the given burst, and summarising what it dropped every
+// summaryEvery. The rate is a plain float64 so a caller does not have to know
+// which bucket implementation backs it; it is converted internally. A nil
 // clock means time.Now.
-func NewLimiter(limit rate.Limit, burst int, interval time.Duration, clock func() time.Time) *Limiter {
+func NewLimiter(ratePerSecond float64, burst int, summaryEvery time.Duration, clock func() time.Time) *Limiter {
 	if clock == nil {
 		clock = time.Now
 	}
 	return &Limiter{
-		limit:    limit,
-		burst:    burst,
-		interval: interval,
-		clock:    clock,
-		entries:  make(map[string]*limiterEntry),
+		limit:        rate.Limit(ratePerSecond),
+		burst:        burst,
+		summaryEvery: summaryEvery,
+		clock:        clock,
+		entries:      make(map[string]*limiterEntry),
 	}
 }
 
@@ -96,7 +98,7 @@ func (l *Limiter) Flush(ctx context.Context, logger *slog.Logger) {
 		Emit(ctx, logger, EventLogWarningSuppressed,
 			slog.String("warning_reason", Sanitize(s.reason)),
 			slog.Int("suppressed_count", s.dropped),
-			slog.Int("interval_seconds", int(l.interval.Seconds())))
+			slog.Int("interval_seconds", int(l.summaryEvery.Seconds())))
 	}
 }
 

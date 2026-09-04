@@ -42,9 +42,9 @@ const (
 // one record per second per reason, room for a burst of ten, and one
 // log.warning.suppressed summary a minute reporting what was dropped.
 const (
-	warnLimiterRate     = 1
-	warnLimiterBurst    = 10
-	warnLimiterInterval = time.Minute
+	warnLimiterRate     float64 = 1
+	warnLimiterBurst            = 10
+	warnLimiterInterval         = time.Minute
 )
 
 var (
