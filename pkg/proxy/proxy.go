@@ -361,8 +361,7 @@ func (p *Proxy) reviewToken(rw http.ResponseWriter, req *http.Request) bool {
 
 	bearer, found := utiltoken.ParseFromRequest(req)
 	if !found {
-		klog.Errorf("unable to authenticate the request via TokenReview due to an error (%s): bearer token not found in request",
-			remoteAddr)
+		klog.V(4).Infof("no bearer token in request for TokenReview (%s)", remoteAddr)
 		return false
 	}
 
@@ -374,8 +373,7 @@ func (p *Proxy) reviewToken(rw http.ResponseWriter, req *http.Request) bool {
 	}
 
 	if !ok {
-		klog.V(4).Infof("passing request with valid token through (%s)",
-			remoteAddr)
+		klog.V(4).Infof("token rejected by TokenReview (%s)", remoteAddr)
 
 		return false
 	}
