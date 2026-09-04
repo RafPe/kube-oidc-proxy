@@ -545,6 +545,10 @@ func TestHasImpersonation(t *testing.T) {
 	}
 }
 
+// frozenClock is the instant the test warning limiter measures every bucket
+// against, so a burst never refills mid-test.
+var frozenClock = time.Unix(0, 0)
+
 func newTestProxy(t *testing.T) *fakeProxy {
 	ctrl := gomock.NewController(t)
 	fakeToken := mocks.NewMockToken(ctrl)
@@ -580,6 +584,10 @@ func newTestProxy(t *testing.T) *fakeProxy {
 			noAuthClientTransport: fakeRT,
 			config:                new(Config),
 			hooks:                 hooks.New(logging.ForComponent(root, logging.ComponentShutdown)),
+			// A frozen clock and a small burst make the warning limiter
+			// deterministic: a test asserts on exactly how many warnings
+			// survive sampling, without sleeping for a refill.
+			warnLimiter: logging.NewLimiter(1, 3, time.Minute, func() time.Time { return frozenClock }),
 		},
 	}
 

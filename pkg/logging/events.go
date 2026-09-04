@@ -99,9 +99,9 @@ var Registry = map[EventType]EventSpec{
 	EventRequestHeadersDropped: {
 		Components: []Component{ComponentRequest},
 		Level:      slog.LevelWarn,
-		Required:   []string{"request_id", "src_ip", "forwarded_for_untrusted", "dropped_headers"},
+		Required:   []string{"request_id", "src_ip", "dropped_headers"},
 		Message:    "forwarded headers dropped",
-		Summary:    "X-Forwarded-For or X-Real-Ip removed for an untrusted peer, a fully trusted chain or a malformed hop. Token-bucketed.",
+		Summary:    "X-Forwarded-For or X-Real-Ip removed for an untrusted peer, a fully trusted chain or a malformed hop. Carries forwarded_for_untrusted when the client sent an X-Forwarded-For; a client that sent only X-Real-Ip has no chain to report. Token-bucketed.",
 	},
 	EventRequestAnomalyDetected: {
 		Components: []Component{ComponentRequest},
