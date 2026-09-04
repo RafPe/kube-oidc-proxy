@@ -13,6 +13,7 @@ import (
 
 	"k8s.io/apiserver/pkg/authentication/user"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	proxycontext "github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
 )
 
@@ -137,8 +138,8 @@ func TestSanitize(t *testing.T) {
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			if got := sanitize(tc.in); got != tc.exp {
-				t.Errorf("sanitize(%q) = %q, want %q", tc.in, got, tc.exp)
+			if got := logging.Sanitize(tc.in); got != tc.exp {
+				t.Errorf("Sanitize(%q) = %q, want %q", tc.in, got, tc.exp)
 			}
 		})
 	}

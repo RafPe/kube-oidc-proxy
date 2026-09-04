@@ -24,10 +24,10 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"unicode"
 
 	"k8s.io/apiserver/pkg/authentication/user"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	proxycontext "github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
 )
 
@@ -105,7 +105,7 @@ func requestAttrs(event string, req *http.Request) []slog.Attr {
 	if rawFwd == "" {
 		rawFwd = forwardedFor(req.Header)
 	}
-	if fwd := sanitize(rawFwd); fwd != "" {
+	if fwd := logging.Sanitize(rawFwd); fwd != "" {
 		attrs = append(attrs, slog.String("forwarded_for_untrusted", fwd))
 	}
 	return attrs
@@ -115,12 +115,13 @@ func requestAttrs(event string, req *http.Request) []slog.Attr {
 // prefix. Only allowlisted extras are logged; the number of omitted claim keys
 // is reported so operators can tell data was dropped.
 func userAttrs(prefix string, u user.Info) []slog.Attr {
+	groups, _ := logging.BoundedList(u.GetGroups(), logging.MaxGroups)
 	attrs := []slog.Attr{
-		slog.String(prefix+"_user", sanitize(u.GetName())),
-		slog.Any(prefix+"_groups", sanitizeSlice(u.GetGroups())),
+		slog.String(prefix+"_user", logging.Sanitize(u.GetName())),
+		slog.Any(prefix+"_groups", groups),
 	}
 	if uid := u.GetUID(); uid != "" {
-		attrs = append(attrs, slog.String(prefix+"_uid", sanitize(uid)))
+		attrs = append(attrs, slog.String(prefix+"_uid", logging.Sanitize(uid)))
 	}
 	safe, omitted := loggableExtras(u.GetExtra())
 	if len(safe) > 0 {
@@ -142,7 +143,8 @@ func loggableExtras(extra map[string][]string) (map[string][]string, int) {
 	omitted := 0
 	for k, v := range extra {
 		if _, ok := loggableExtraKeys[k]; ok {
-			safe[sanitize(k)] = sanitizeSlice(v)
+			vals, _ := logging.BoundedList(v, logging.MaxGroups)
+			safe[logging.Sanitize(k)] = vals
 			continue
 		}
 		omitted++
@@ -157,36 +159,7 @@ func sanitizePath(req *http.Request) string {
 	if req.URL == nil {
 		return ""
 	}
-	return sanitize(req.URL.Path)
-}
-
-// sanitize removes control characters from a user-controlled string so that
-// values cannot inject newlines or terminal escapes into the log stream. Tabs,
-// carriage returns and newlines collapse to a single space; other control
-// runes are dropped.
-func sanitize(s string) string {
-	return strings.Map(func(r rune) rune {
-		switch r {
-		case '\n', '\r', '\t':
-			return ' '
-		}
-		if unicode.IsControl(r) {
-			return -1
-		}
-		return r
-	}, s)
-}
-
-// sanitizeSlice sanitizes every element of a slice, returning a fresh slice.
-func sanitizeSlice(in []string) []string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]string, len(in))
-	for i, v := range in {
-		out[i] = sanitize(v)
-	}
-	return out
+	return logging.Sanitize(req.URL.Path)
 }
 
 // forwardedFor returns the raw X-Forwarded-For header value.

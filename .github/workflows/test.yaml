@@ -47,11 +47,20 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      # The generated event table in docs/logging.md must match the registry.
+      # `make verify` cannot catch a stale table because it regenerates first,
+      # so check it here against the committed file.
+      - name: Verify event reference
+        run: make verify_eventdoc && git diff --exit-code docs/logging.md
+
       # e2e packages need Docker + kind and run in e2e.yaml; run unit tests for
       # the maintained cmd/ and pkg/ packages here, plus the standalone test
       # tools, which need no cluster.
+      #
+      # -tags logcheck compiles the required-attribute assertions into Emit, so
+      # a record missing a mandatory field fails a test instead of shipping.
       - name: go test
-        run: go test ./cmd/... ./pkg/... ./test/tools/... ./test/e2e/versions/...
+        run: go test -tags logcheck ./cmd/... ./pkg/... ./test/tools/... ./test/e2e/versions/...
 
       # e2e.yaml runs the suite as three label-filtered shards; an unlabelled
       # case would run in none of them. Cheap text check, no cluster needed.
