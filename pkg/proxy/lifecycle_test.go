@@ -256,8 +256,8 @@ func TestFlushBeforeWriteRecordsTheImplicit200(t *testing.T) {
 // the flush is recognised as the moment the response began.
 func TestFlushStartsALongRunningResponse(t *testing.T) {
 	p := newTestProxy(t)
-	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(
-		&authenticator.Response{User: &authuser.DefaultInfo{Name: "alice"}}, true, nil)
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(
+		oidcAnswer(&authenticator.Response{User: &authuser.DefaultInfo{Name: "alice"}}, true, nil))
 
 	req := watchRequest()
 	req.Header.Set("Authorization", "bearer fake-token")
