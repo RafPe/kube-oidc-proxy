@@ -1,0 +1,37 @@
+{
+  "auth_method": "oidc",
+  "component": "request",
+  "decision": "allow",
+  "event": "AuSuccess",
+  "event_type": "request.access.decided",
+  "forwarded_for_untrusted": "203.0.113.7",
+  "http_method": "GET",
+  "inbound_extra": {
+    "Remote-Client-IP": [
+      "1.2.3.4"
+    ]
+  },
+  "inbound_extra_omitted": 1,
+  "inbound_groups": [
+    "dev"
+  ],
+  "inbound_uid": "alice-uid",
+  "inbound_user": "alice",
+  "level": "INFO",
+  "msg": "access decision",
+  "outbound_extra": {
+    "originaluser.jetstack.io-user": [
+      "alice"
+    ]
+  },
+  "outbound_extra_omitted": 1,
+  "outbound_groups": [
+    "dev"
+  ],
+  "outbound_uid": "bob-uid",
+  "outbound_user": "bob",
+  "path": "/api/v1/namespaces/team-a/pods",
+  "request_id": "fixture-request-id",
+  "schema_version": 1,
+  "src_ip": "1.2.3.4"
+}

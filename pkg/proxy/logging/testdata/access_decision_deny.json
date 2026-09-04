@@ -1,0 +1,29 @@
+{
+  "auth_method": "oidc",
+  "component": "request",
+  "decision": "deny",
+  "event": "AuFail",
+  "event_type": "request.access.decided",
+  "forwarded_for_untrusted": "203.0.113.7",
+  "http_method": "GET",
+  "inbound_extra": {
+    "Remote-Client-IP": [
+      "1.2.3.4"
+    ]
+  },
+  "inbound_extra_omitted": 1,
+  "inbound_groups": [
+    "dev"
+  ],
+  "inbound_uid": "alice-uid",
+  "inbound_user": "alice",
+  "level": "INFO",
+  "msg": "access decision",
+  "path": "/api/v1/namespaces/team-a/pods",
+  "reason": "impersonation_denied",
+  "request_id": "fixture-request-id",
+  "schema_version": 1,
+  "src_ip": "1.2.3.4",
+  "target_kind": "group",
+  "target_name": "system:masters"
+}
