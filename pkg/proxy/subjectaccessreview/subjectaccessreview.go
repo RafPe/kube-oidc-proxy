@@ -371,8 +371,9 @@ func (s *SubjectAccessReview) log() *slog.Logger {
 }
 
 // targetKind maps a review resource onto the closed target_kind value the
-// record schema uses. The four caller forms are exhaustive, so the default
-// only ever serves "userextras/<name>".
+// record schema uses. The four caller forms are exhaustive today; anything else
+// reports "unknown" rather than being labelled as an extra it is not, so the
+// value set stays closed by construction instead of by assumption.
 func targetKind(resource string) string {
 	switch resource {
 	case "users":
@@ -381,9 +382,13 @@ func targetKind(resource string) string {
 		return "group"
 	case "uids":
 		return "uid"
-	default:
+	}
+
+	if strings.HasPrefix(resource, "userextras/") {
 		return "extra"
 	}
+
+	return "unknown"
 }
 
 // decision renders an authorization outcome as the schema's decision value.
