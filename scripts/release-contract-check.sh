@@ -21,6 +21,7 @@ grep -q '^  group: release' .github/workflows/release.yaml || fail "Release must
 grep -q 'uses: ./.github/workflows/e2e.yaml' .github/workflows/release.yaml || fail "Release must run reusable E2E"
 grep -q 'target_ref: \${{ needs.verify.outputs.sha }}' .github/workflows/release.yaml || fail "Release E2E must test the resolved release commit"
 grep -q 'git tag -a' .github/workflows/release.yaml || fail "Release must create an annotated tag after verification"
+grep -q 'packaged chart renders image' .github/workflows/release-image.yaml || fail "Chart publish must assert the packaged chart deploys the release image"
 grep -q 'exactly one' .github/workflows/pr-release-metadata.yml || fail "PR metadata must enforce exactly one release label"
 grep -q '.changes/unreleased' .github/workflows/pr-release-metadata.yml || fail "PR metadata must enforce changelog fragments"
 grep -q 'Ordinary pull requests never publish' docs/releases.md || fail "release docs must describe the publication gate"

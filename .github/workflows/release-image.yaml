@@ -154,6 +154,13 @@ jobs:
           helm package "$CHART_DIR" --version "$VERSION" --app-version "$VERSION"
           PKG="kube-oidc-proxy-${VERSION}.tgz"
 
+          # Guard against publishing a chart whose default values deploy an
+          # image other than this release (the rendered tag must match).
+          RENDERED="$(helm template guard "$PKG" -f "${CHART_DIR}/ci/single-issuer-values.yaml" \
+            | awk '/^ +image: "ghcr.io\//{gsub(/"/,"",$2); print $2; exit}')"
+          EXPECTED="ghcr.io/${OWNER}/kube-oidc-proxy:${VERSION}"
+          [ "$RENDERED" = "$EXPECTED" ] || { echo "::error::packaged chart renders image ${RENDERED}, expected ${EXPECTED}"; exit 1; }
+
           OUT="$(helm push "$PKG" "$OCI" 2>&1)"
           echo "$OUT"
           DIGEST="$(echo "$OUT" | awk '/Digest:/{print $2}')"

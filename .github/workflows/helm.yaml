@@ -45,3 +45,15 @@ jobs:
 
       - name: helm template (multi-issuer fixture)
         run: helm template ci-multi "$CHART" -f "$CHART/ci/multi-issuer-values.yaml" > /dev/null
+
+      - name: default image tag follows appVersion
+        # The release pipeline sets appVersion from the git tag; the chart must
+        # deploy that image unless image.tag is explicitly overridden.
+        run: |
+          app_version="$(yq -r .appVersion "$CHART/Chart.yaml")"
+          rendered="$(helm template ci-single "$CHART" -f "$CHART/ci/single-issuer-values.yaml" \
+            | awk '/^ +image: "ghcr.io\//{gsub(/"/,"",$2); print $2; exit}')"
+          [ "$rendered" = "ghcr.io/rafpe/kube-oidc-proxy:${app_version}" ] || { echo "::error::rendered ${rendered}, expected appVersion ${app_version}"; exit 1; }
+          rendered="$(helm template ci-single "$CHART" -f "$CHART/ci/single-issuer-values.yaml" --set image.tag=9.9.9 \
+            | awk '/^ +image: "ghcr.io\//{gsub(/"/,"",$2); print $2; exit}')"
+          [ "$rendered" = "ghcr.io/rafpe/kube-oidc-proxy:9.9.9" ] || { echo "::error::image.tag override not honoured: ${rendered}"; exit 1; }
