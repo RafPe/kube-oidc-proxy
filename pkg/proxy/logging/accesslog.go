@@ -208,7 +208,7 @@ func userAttrs(prefix string, u user.Info) []slog.Attr {
 		attrs = append(attrs, slog.Int(prefix+"_groups_omitted", groupsOmitted))
 	}
 	if uid := u.GetUID(); uid != "" {
-		attrs = append(attrs, slog.String(prefix+"_uid", logging.Sanitize(uid)))
+		attrs = append(attrs, slog.String(prefix+"_uid", logging.Bound(uid, logging.MaxIdentity)))
 	}
 	safe, omitted := loggableExtras(u.GetExtra())
 	if len(safe) > 0 {

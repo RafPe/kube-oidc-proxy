@@ -43,7 +43,6 @@ const (
 	reasonImpersonationDenied        = "impersonation_denied"
 	reasonTooManyImpersonationValues = "too_many_impersonation_values"
 	reasonClientCanceled             = "client_canceled"
-	reasonUpstreamError              = "upstream_error"
 	reasonInternalError              = "internal_error"
 )
 
@@ -438,13 +437,13 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			return
 
 			// The reverse proxy could not reach or complete the call to the API
-			// server. The request was admitted, so this is not an authorization
-			// outcome; it is recorded here as upstream_error until Task 14 adds
-			// the upstream event that carries the detail.
+			// server. The request was already admitted, and its access decision
+			// was written by RoundTrip: an upstream failure is not a second
+			// decision, so nothing is recorded here. Task 14 adds the upstream
+			// event that carries the failure itself.
 		case errors.As(err, &netErr):
 			klog.Errorf("upstream request failed (%s): %s", r.RemoteAddr, err)
-			p.logDenied(r, reasonUpstreamError, err)
-			http.Error(rw, "", http.StatusInternalServerError)
+			http.Error(rw, "", http.StatusBadGateway)
 			return
 
 			// Server or unknown error. Details stay server-side; the client

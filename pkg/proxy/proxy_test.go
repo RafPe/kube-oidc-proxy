@@ -320,9 +320,7 @@ func TestErrorClassifiesEveryReason(t *testing.T) {
 			http.StatusForbidden, reasonImpersonationDenied},
 		"no impersonation config": {errNoImpersonationConfig, http.StatusInternalServerError, reasonInternalError},
 		"no impersonation user":   {subjectaccessreview.ErrorNoImpersonationUserFound, http.StatusInternalServerError, reasonInternalError},
-		"upstream transport failure": {&net.OpError{Op: "dial", Err: errors.New("connection refused")},
-			http.StatusInternalServerError, reasonUpstreamError},
-		"unknown": {errors.New("boom"), http.StatusInternalServerError, reasonInternalError},
+		"unknown":                 {errors.New("boom"), http.StatusInternalServerError, reasonInternalError},
 	}
 
 	for name, test := range tests {
@@ -330,6 +328,22 @@ func TestErrorClassifiesEveryReason(t *testing.T) {
 			_, records := tryError(t, test.expCode, test.err)
 			assertDeniedReason(t, records, test.expReason)
 		})
+	}
+}
+
+// TestErrorUpstreamTransportFailureIsNotAnAccessDecision pins the one-record
+// rule: the access decision is written exactly once per request, by RoundTrip,
+// at the moment the request is admitted. A transport failure afterwards is not
+// a second decision -- the request was already allowed -- so the error handler
+// records nothing here and answers 502. Task 14 adds the upstream event that
+// carries the failure itself.
+func TestErrorUpstreamTransportFailureIsNotAnAccessDecision(t *testing.T) {
+	_, records := tryError(t, http.StatusBadGateway,
+		&net.OpError{Op: "dial", Err: errors.New("connection refused")})
+
+	if got := records.ByEvent(logging.EventRequestAccessDecided); len(got) != 0 {
+		t.Fatalf("the error handler wrote %d access records for a transport failure: %s",
+			len(got), records.Raw())
 	}
 }
 

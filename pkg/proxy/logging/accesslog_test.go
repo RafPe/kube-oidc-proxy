@@ -345,6 +345,30 @@ func TestOutboundExtraDoesNotLeakOriginalUserClaims(t *testing.T) {
 	}
 }
 
+// TestUIDsAreBounded pins the identity bound on both UID fields. A UID reaches
+// the record straight from a token claim, so an unbounded one lets a hostile
+// issuer inflate every access record it produces.
+func TestUIDsAreBounded(t *testing.T) {
+	a, cap := newAccess(t)
+
+	long := strings.Repeat("u", 300)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil)
+	req.RemoteAddr = "1.2.3.4:5555"
+	req = proxycontext.WithRequestID(req, "id")
+
+	a.LogDecision(req, Decision{Allowed: true, AuthMethod: "oidc",
+		Inbound:  &user.DefaultInfo{Name: "alice", UID: long},
+		Outbound: &user.DefaultInfo{Name: "alice", UID: long},
+	})
+
+	rec := cap.Only(t, logging.EventRequestAccessDecided)
+	for _, key := range []string{"inbound_uid", "outbound_uid"} {
+		if got := len([]rune(rec.String(key))); got != logging.MaxIdentity {
+			t.Errorf("%s is %d runes, want %d", key, got, logging.MaxIdentity)
+		}
+	}
+}
+
 // TestAllowlistedExtraValuesAreNotTruncated pins that the group cap applies to
 // groups only. The allowlisted extra arrays are part of the frozen record shape
 // and carry no cap, so nothing may silently drop values from them.
