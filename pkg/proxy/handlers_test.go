@@ -2,14 +2,12 @@
 package proxy
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -22,8 +20,9 @@ import (
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	authuser "k8s.io/apiserver/pkg/authentication/user"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
-	"k8s.io/klog/v2"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	proxycontext "github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 	fakesubjectaccessreview "github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview/fake"
 )
@@ -60,7 +59,7 @@ func TestWithImpersonateRequestDoesNotMutateAuthenticatorUser(t *testing.T) {
 	handler := p.withImpersonateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req = req.WithContext(genericapirequest.WithUser(req.Context(), usr))
+	req = req.WithContext(genericapirequest.WithUser(logging.WithRequestID(req.Context(), "test-request-id"), usr))
 
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
@@ -77,73 +76,94 @@ func TestWithImpersonateRequestDoesNotMutateAuthenticatorUser(t *testing.T) {
 	}
 }
 
-// TestWithAuthenticateRequestLogsValidationFailureAtV2 asserts that a token
-// that was present and failed OIDC validation is reported at a verbosity
-// operators actually run at, with the resolved remote address. Routing is
-// unchanged: the request still falls through to the token-review path.
-func TestWithAuthenticateRequestLogsValidationFailureAtV2(t *testing.T) {
-	buf := captureKlogAtV2(t)
-
+// TestOIDCFailureEmitsAuthnOIDCFailed asserts that a token that was present
+// and failed OIDC validation produces the structured failure event, carrying
+// the request id from the context and the resolved client IP -- never the raw
+// peer address with its port. Routing is unchanged: the request still falls
+// through to the token-review path.
+func TestOIDCFailureEmitsAuthnOIDCFailed(t *testing.T) {
 	p := newTestProxy(t)
-
-	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(
-		nil, false, errors.New("oidc: token is expired"))
-
-	handler := p.withAuthenticateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Error("inner handler was reached for a token that failed validation")
-	}))
-
-	rw := httptest.NewRecorder()
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(nil, false, errors.New("oidc: token is expired"))
+	handler := p.withAuthenticateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("reached inner") }))
 	req := reservedIdentityRequest(t, nil)
 	req.RemoteAddr = "8.8.8.8:1234"
-	handler.ServeHTTP(rw, req)
+	req = proxycontext.WithRequestID(req, "rid-1")
+	req = req.WithContext(logging.NewContext(logging.WithRequestID(req.Context(), "rid-1"), p.logger))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
 
-	// Routing is unchanged: token review is disabled here, so the request is
-	// still answered as unauthorized rather than being rejected outright.
-	if got, want := rw.Result().StatusCode, http.StatusUnauthorized; got != want {
-		t.Errorf("unexpected response code, exp=%d got=%d", want, got)
+	rec := p.logs.Only(t, logging.EventAuthnOIDCFailed)
+	if rec.String("component") != string(logging.ComponentOIDC) {
+		t.Errorf("component = %q, want %q", rec.String("component"), logging.ComponentOIDC)
 	}
-
-	klog.Flush()
-	logged := buf.String()
-	if !strings.Contains(logged, "oidc: token is expired") {
-		t.Errorf("validation failure was not logged at V(2), got: %q", logged)
+	if rec.String("request_id") != "rid-1" || rec.String("src_ip") != "8.8.8.8" || rec.String("reason") != "unauthorized" {
+		t.Fatalf("%v", rec)
 	}
-	if !strings.Contains(logged, "8.8.8.8") {
-		t.Errorf("validation failure log does not name the remote address, got: %q", logged)
+	if strings.Contains(p.logs.Raw(), "8.8.8.8:1234") {
+		t.Fatal("raw peer address with port logged")
 	}
-
-	p.ctrl.Finish()
 }
 
-// captureKlogAtV2 redirects klog to a buffer at verbosity 2 for the duration of
-// the test. klog's verbosity and output are process-global, so the cleanup
-// restores both — including the output writer, which would otherwise leave
-// later klog calls in this package writing into a dead buffer.
-func captureKlogAtV2(t *testing.T) *bytes.Buffer {
-	t.Helper()
-
-	var fs flag.FlagSet
-	klog.InitFlags(&fs)
-	previousVerbosity := fs.Lookup("v").Value.String()
-	if err := fs.Set("v", "2"); err != nil {
-		t.Fatalf("setting klog verbosity: %s", err)
+// TestMissingBearerOnTokenReviewIsDebug pins the level of the token-review
+// path's "no credential presented" record: it is routine traffic, not an
+// operator-visible condition.
+func TestMissingBearerOnTokenReviewIsDebug(t *testing.T) {
+	p := newTestProxy(t)
+	req := httptest.NewRequest(http.MethodGet, "/", nil) // no Authorization
+	req = req.WithContext(logging.NewContext(logging.WithRequestID(req.Context(), "rid-2"), p.logger))
+	p.reviewToken(httptest.NewRecorder(), req)
+	rec := p.logs.Only(t, logging.EventAuthnTokenMissing)
+	if rec.String("level") != "DEBUG" {
+		t.Fatalf("level = %s", rec.String("level"))
 	}
+	if rec.String("component") != string(logging.ComponentTokenReview) {
+		t.Errorf("component = %q, want %q", rec.String("component"), logging.ComponentTokenReview)
+	}
+}
 
-	buf := new(bytes.Buffer)
-	klog.LogToStderr(false)
-	klog.SetOutput(buf)
+// TestRejectedTokenReviewIsCompletedNotAuthenticated pins that a TokenReview
+// which answered "not authenticated" is a completed review carrying the
+// outcome, not a failure: only an unreachable or erroring API server is a
+// failure.
+func TestRejectedTokenReviewIsCompletedNotAuthenticated(t *testing.T) {
+	p := newTestProxy(t)
+	p.fakeReviewer.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(nil, false, nil)
+	req := reservedIdentityRequest(t, nil)
+	req = req.WithContext(logging.NewContext(req.Context(), p.logger))
+	p.reviewToken(httptest.NewRecorder(), req)
+	rec := p.logs.Only(t, logging.EventAuthnTokenReviewCompleted)
+	if v := rec["authenticated"]; v != false {
+		t.Fatalf("authenticated = %v", v)
+	}
+	if rec.String("component") != string(logging.ComponentTokenReview) {
+		t.Errorf("component = %q, want %q", rec.String("component"), logging.ComponentTokenReview)
+	}
+}
 
-	t.Cleanup(func() {
-		klog.Flush()
-		if err := fs.Set("v", previousVerbosity); err != nil {
-			t.Errorf("restoring klog verbosity: %s", err)
-		}
-		klog.SetOutput(os.Stderr)
-		klog.LogToStderr(true)
-	})
-
-	return buf
+// TestImpersonationAppliedLogsHeaderNamesOnly pins that the impersonation
+// record names the configured extra user headers it applied and never carries
+// their values, which are operator-supplied secrets.
+func TestImpersonationAppliedLogsHeaderNamesOnly(t *testing.T) {
+	p := newTestProxy(t)
+	p.config.ExtraUserHeaders = map[string][]string{"tenant": {"acme-secret"}}
+	handler := p.withImpersonateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	ctx := logging.NewContext(logging.WithRequestID(req.Context(), "rid-3"), p.logger)
+	req = req.WithContext(genericapirequest.WithUser(ctx, &authuser.DefaultInfo{Name: "alice"}))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+	rec := p.logs.Only(t, logging.EventRequestImpersonationApplied)
+	if rec.String("component") != string(logging.ComponentRequest) {
+		t.Errorf("component = %q, want %q", rec.String("component"), logging.ComponentRequest)
+	}
+	if got, want := fmt.Sprint(rec["impersonated_header_names"]),
+		"[Impersonate-Extra-tenant Impersonate-Group Impersonate-User]"; got != want {
+		t.Errorf("impersonated_header_names = %s, want %s", got, want)
+	}
+	if !strings.Contains(fmt.Sprint(rec["impersonated_header_names"]), "tenant") || strings.Contains(p.logs.Raw(), "acme-secret") {
+		t.Fatalf("%v", p.logs.Raw())
+	}
+	if got := rec.String("outbound_user"); got != "alice" {
+		t.Errorf("outbound_user = %q, want alice", got)
+	}
 }
 
 // TestCheckReservedIdentity covers the username/group asymmetry. Username has
@@ -415,23 +435,4 @@ func TestReservedIdentityRejectedBeforeSubjectAccessReview(t *testing.T) {
 	}
 
 	p.ctrl.Finish()
-}
-
-func TestImpersonationExtraHeaderValuesAreNotLogged(t *testing.T) {
-	buf := captureKlogAtV2(t)
-	var fs flag.FlagSet
-	klog.InitFlags(&fs)
-	_ = fs.Set("v", "6")
-	t.Cleanup(func() { _ = fs.Set("v", "2") })
-
-	p := &Proxy{config: &Config{ExtraUserHeaders: map[string][]string{"tenant": {"acme-secret-value"}}}}
-	handler := p.withImpersonateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req = req.WithContext(genericapirequest.WithUser(req.Context(), &authuser.DefaultInfo{Name: "alice"}))
-	handler.ServeHTTP(httptest.NewRecorder(), req)
-	klog.Flush()
-
-	if strings.Contains(buf.String(), "acme-secret-value") {
-		t.Fatalf("configured extra header value logged:\n%s", buf.String())
-	}
 }

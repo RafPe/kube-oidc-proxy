@@ -21,7 +21,6 @@ import (
 	"k8s.io/apiserver/pkg/server"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/transport"
-	"k8s.io/klog/v2"
 
 	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
@@ -92,6 +91,16 @@ type Proxy struct {
 	// emitted through, and the logger the request filter puts on the request
 	// context. Never nil: New requires a root logger.
 	logger *slog.Logger
+
+	// oidcLog, tokenReviewLog and upstreamLog are the component loggers for the
+	// records registered to those components. The request-scoped logger on the
+	// context carries component=request, so it must not be used for them: a
+	// record's component is part of its contract, not of where it happens to be
+	// emitted from. New derives all three from the root logger; read them
+	// through componentLogger, which tolerates a partially wired Proxy.
+	oidcLog        *slog.Logger
+	tokenReviewLog *slog.Logger
+	upstreamLog    *slog.Logger
 
 	// trustedProxies is the parsed form of config.TrustedProxies, resolved once
 	// at construction and applied to the client-IP resolvers when Run starts.
@@ -200,6 +209,9 @@ func New(deps Dependencies) (*Proxy, error) {
 	return &Proxy{
 		restConfig:            deps.RestConfig,
 		logger:                requestLogger,
+		oidcLog:               logging.ForComponent(deps.Logger, logging.ComponentOIDC),
+		tokenReviewLog:        logging.ForComponent(deps.Logger, logging.ComponentTokenReview),
+		upstreamLog:           logging.ForComponent(deps.Logger, logging.ComponentUpstream),
 		hooks:                 hooks.New(logging.ForComponent(deps.Logger, logging.ComponentShutdown)),
 		tokenReviewer:         deps.TokenReviewer,
 		subjectAccessReviewer: deps.SubjectAccessReviewer,
@@ -212,6 +224,16 @@ func New(deps Dependencies) (*Proxy, error) {
 		auditor:               auditor,
 		access:                accesslogging.NewAccessLogger(requestLogger, trustedProxies),
 	}, nil
+}
+
+// componentLogger returns l, or a logger that discards every record when a
+// partially wired Proxy has none. It mirrors NewAccessLogger's nil handling:
+// missing wiring must never panic the request path.
+func componentLogger(l *slog.Logger) *slog.Logger {
+	if l == nil {
+		return slog.New(slog.DiscardHandler)
+	}
+	return l
 }
 
 // parseAllowedReservedGroups turns the configured allowlist into a set. Every
@@ -392,33 +414,28 @@ func (p *Proxy) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 func (p *Proxy) reviewToken(rw http.ResponseWriter, req *http.Request) bool {
-	var remoteAddr string
-	req, remoteAddr = context.RemoteAddr(req)
-
-	klog.V(4).Infof("attempting to validate a token in request using TokenReview endpoint(%s)",
-		remoteAddr)
+	ctx := req.Context()
 
 	bearer, found := utiltoken.ParseFromRequest(req)
 	if !found {
-		klog.V(4).Infof("no bearer token in request for TokenReview (%s)", remoteAddr)
+		logging.Emit(ctx, componentLogger(p.tokenReviewLog), logging.EventAuthnTokenMissing)
 		return false
 	}
 
-	_, ok, err := p.tokenReviewer.AuthenticateToken(req.Context(), bearer)
+	_, ok, err := p.tokenReviewer.AuthenticateToken(ctx, bearer)
 	if err != nil {
-		klog.Errorf("unable to authenticate the request via TokenReview due to an error (%s): %s",
-			remoteAddr, err)
+		// The reviewer could not answer. That is a dependency failure, not a
+		// verdict on the token: the caller fails closed.
+		logging.Emit(ctx, componentLogger(p.tokenReviewLog), logging.EventAuthnTokenReviewFailed,
+			slog.String("reason", reasonAuthenticationDependencyError), logging.ErrAttr(err))
 		return false
 	}
 
-	if !ok {
-		klog.V(4).Infof("token rejected by TokenReview (%s)", remoteAddr)
+	// The reviewer answered. A rejection is a completed review reporting
+	// authenticated=false, not a failure.
+	logging.Emit(ctx, componentLogger(p.tokenReviewLog), logging.EventAuthnTokenReviewCompleted, slog.Bool("authenticated", ok))
 
-		return false
-	}
-
-	// No error and ok so passthrough the request
-	return true
+	return ok
 }
 
 func (p *Proxy) roundTripperForRestConfig(config *rest.Config) (http.RoundTripper, error) {
