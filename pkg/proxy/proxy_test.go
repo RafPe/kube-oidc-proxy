@@ -378,8 +378,14 @@ func TestErrorClassifiesEveryReason(t *testing.T) {
 			Requester: "mmosley", Kind: "group", Target: "'system:masters'"},
 			http.StatusForbidden, reasonImpersonationDenied},
 		"no impersonation config": {errNoImpersonationConfig, http.StatusInternalServerError, reasonInternalError},
-		"no impersonation user":   {subjectaccessreview.ErrorNoImpersonationUserFound, http.StatusInternalServerError, reasonInternalError},
-		"unknown":                 {errors.New("boom"), http.StatusInternalServerError, reasonInternalError},
+		// A SubjectAccessReview that could not be submitted wraps a client-go
+		// transport error, so it satisfies net.Error too. It is the proxy's own
+		// dependency failing, not the upstream hop, so it stays a 500.
+		"subjectaccessreview unavailable": {fmt.Errorf("%w: %w", subjectaccessreview.ErrCreateSubjectAccessReview,
+			&net.OpError{Op: "dial", Err: errors.New("connection refused")}),
+			http.StatusInternalServerError, reasonInternalError},
+		"no impersonation user": {subjectaccessreview.ErrorNoImpersonationUserFound, http.StatusInternalServerError, reasonInternalError},
+		"unknown":               {errors.New("boom"), http.StatusInternalServerError, reasonInternalError},
 	}
 
 	for name, test := range tests {

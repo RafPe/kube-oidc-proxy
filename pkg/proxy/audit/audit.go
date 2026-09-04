@@ -15,6 +15,7 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"k8s.io/apimachinery/pkg/util/sets"
 	genericapifilters "k8s.io/apiserver/pkg/endpoints/filters"
+	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/server"
 	genericfilters "k8s.io/apiserver/pkg/server/filters"
 	"k8s.io/component-base/compatibility"
@@ -33,6 +34,22 @@ import (
 var longRunningRequests = genericfilters.BasicLongRunningRequestCheck(
 	sets.NewString("watch", "proxy"),
 	sets.NewString("attach", "exec", "proxy", "log", "portforward"))
+
+// IsLongRunning reports whether the request is one of the long-running kinds
+// above, using the same rule the audit backend applies so a lifecycle record
+// and an audit event never disagree about a watch or an exec.
+//
+// It answers false when the request carries no RequestInfo: nothing has
+// resolved it into a verb and a resource yet, so there is no basis on which to
+// call it long running.
+func IsLongRunning(req *http.Request) bool {
+	info, ok := genericapirequest.RequestInfoFrom(req.Context())
+	if !ok {
+		return false
+	}
+
+	return longRunningRequests(req, info)
+}
 
 type Audit struct {
 	// logger is the audit-component logger this backend reports its own
@@ -154,6 +171,19 @@ func (a *Audit) Shutdown() error {
 	logging.Emit(ctx, a.logger, logging.EventAuditFlushCompleted,
 		slog.Int64("duration_ms", elapsed.Milliseconds()))
 	return nil
+}
+
+// WithRequestInfo resolves the request into the verb, resource and namespace
+// the rest of the proxy reasons about, and puts it on the request context.
+//
+// The audit filters do this for themselves, but they are the innermost wrap:
+// everything ahead of them -- the lifecycle filter deciding whether a request
+// is long running, and the error handler recording a denial -- would otherwise
+// see a request that has not been resolved at all. Applied high in the chain it
+// resolves once for all of them; the inner filters re-resolve the same value,
+// which is wasted work rather than a disagreement.
+func (a *Audit) WithRequestInfo(handler http.Handler) http.Handler {
+	return genericapifilters.WithRequestInfo(handler, a.serverConfig.RequestInfoResolver)
 }
 
 // WithRequest will wrap the given handler to inject the request information
