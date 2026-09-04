@@ -13,12 +13,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview/fake"
 	v1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apiserver/pkg/authentication/user"
 	clientazv1 "k8s.io/client-go/kubernetes/typed/authorization/v1"
 )
+
+// testRequestContext returns a context carrying a request id, exactly as the
+// proxy's request filter installs one in production. Every record this package
+// emits requires request_id, so a bare context trips the logcheck build.
+func testRequestContext() context.Context {
+	return logging.WithRequestID(context.Background(), "test-request")
+}
 
 // errReview is the sentinel injected into the fake reviewer so that error-path
 // tests can assert with errors.Is after the production code wraps the Create
@@ -309,9 +318,9 @@ func runTest(t *testing.T, name string, test testT) {
 	}
 
 	target, err := testReviewer.CheckAuthorizedForImpersonation(
-		&http.Request{
+		(&http.Request{
 			Header: headers,
-		}, test.requester)
+		}).WithContext(testRequestContext()), test.requester)
 
 	// check if the errors match. The backend-error case wraps both the
 	// production sentinel and the underlying injected error with the multi-%w
@@ -506,7 +515,7 @@ func TestCheckAuthorizedForImpersonationHeaderValueCap(t *testing.T) {
 			}
 
 			target, err := sar.CheckAuthorizedForImpersonation(
-				&http.Request{Header: tc.headers}, requester)
+				(&http.Request{Header: tc.headers}).WithContext(testRequestContext()), requester)
 
 			if tc.expOver {
 				if !errors.Is(err, ErrTooManyImpersonationHeaderValues) {
@@ -604,7 +613,7 @@ func TestCheckAuthorizedForImpersonationCanceled(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(testRequestContext())
 	defer cancel()
 
 	req := (&http.Request{Header: impersonationHeaders()}).WithContext(ctx)
@@ -652,7 +661,7 @@ func TestCheckAuthorizedForImpersonationDeadlineExceeded(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(testRequestContext(), 50*time.Millisecond)
 	defer cancel()
 
 	req := (&http.Request{Header: impersonationHeaders()}).WithContext(ctx)
@@ -695,7 +704,7 @@ func TestCheckAuthorizedForImpersonationConfiguredTimeout(t *testing.T) {
 
 	// context.Background() has no deadline, so only the configured timeout can
 	// abort the blocked SAR call.
-	req := (&http.Request{Header: impersonationHeaders()}).WithContext(context.Background())
+	req := (&http.Request{Header: impersonationHeaders()}).WithContext(testRequestContext())
 	requester := &user.DefaultInfo{Name: "mmosley", Groups: []string{"group1"}}
 
 	done := make(chan sarResult, 1)
@@ -721,5 +730,56 @@ func TestCheckAuthorizedForImpersonationConfiguredTimeout(t *testing.T) {
 
 	if got := reviewer.calls.Load(); got != 1 {
 		t.Errorf("SAR Create ran %d times, want exactly 1 (later checks must be skipped)", got)
+	}
+}
+
+// newSARWithFakeReviewer builds a reviewer that logs through root as the sar
+// component and answers every review with decide. Both cache TTLs are
+// non-zero so the decision cache is live and hit/miss lookups are observable.
+func newSARWithFakeReviewer(t *testing.T, root *slog.Logger, decide func(*v1.SubjectAccessReview) (*v1.SubjectAccessReview, error)) *SubjectAccessReview {
+	t.Helper()
+
+	s, err := New(&fnReviewer{fn: decide}, DefaultTimeout,
+		DefaultAllowCacheTTL, DefaultDenyCacheTTL, DefaultMaxHeaderValues,
+		logging.ForComponent(root, logging.ComponentSAR))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	return s
+}
+
+// TestCacheHitAndLiveCheckEvents pins the records one authorization check
+// emits: a cache lookup every time, a completed live review only when the
+// cache did not answer, and never any cache key material.
+func TestCacheHitAndLiveCheckEvents(t *testing.T) {
+	root, cap := logtest.New(t, 2)
+	s := newSARWithFakeReviewer(t, root, allowAll)
+	requester := &user.DefaultInfo{Name: "mmosley", Groups: []string{"group1"}}
+	ctx := logging.WithRequestID(logging.NewContext(context.Background(), root), "r1")
+
+	if _, err := s.checkRbacImpersonationAuthorization(ctx, "users", "bob", requester); err != nil {
+		t.Fatal(err)
+	}
+	miss := cap.ByEvent(logging.EventCacheSARLookup)
+	if len(miss) != 1 || miss[0].String("cache_result") != "miss" {
+		t.Fatalf("%v", miss)
+	}
+	live := cap.Only(t, logging.EventAuthzSARCompleted)
+	if live.String("decision") != "allow" || live.String("request_id") != "r1" || live["request_coalesced"] != false {
+		t.Fatalf("%v", live)
+	}
+	if _, ok := live.Int("duration_ms"); !ok {
+		t.Fatal("duration_ms missing")
+	}
+
+	if _, err := s.checkRbacImpersonationAuthorization(ctx, "users", "bob", requester); err != nil {
+		t.Fatal(err)
+	}
+	hits := cap.ByEvent(logging.EventCacheSARLookup)
+	if len(hits) != 2 || hits[1].String("cache_result") != "hit" || hits[1].String("decision") != "allow" {
+		t.Fatalf("%v", hits)
+	}
+	if strings.Contains(cap.Raw(), `"spec"`) || strings.Contains(cap.Raw(), "SubjectAccessReviewSpec") {
+		t.Fatal("cache key material logged")
 	}
 }

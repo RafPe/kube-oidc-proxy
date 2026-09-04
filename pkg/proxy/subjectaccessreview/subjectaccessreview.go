@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"golang.org/x/sync/singleflight"
 	v1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -103,9 +104,11 @@ const DefaultMaxHeaderValues = 64
 // single shared timeout budget bounds the whole sequence of checks performed
 // for one request.
 type SubjectAccessReview struct {
-	// logger is the sar-component logger this reviewer reports through. It is
-	// the fallback for a call that carries no request-scoped logger on its
-	// context. Never nil: New substitutes a discarding logger.
+	// logger is the sar-component logger every record this reviewer emits goes
+	// through, so each carries component=sar. The per-request correlation id
+	// travels on the call's context instead, never bound onto a logger, and
+	// Emit reads it from there. Never nil: New substitutes a discarding logger
+	// and log() covers a reviewer built without one.
 	logger *slog.Logger
 
 	reviewer clientazv1.SubjectAccessReviewInterface
@@ -305,6 +308,11 @@ func (s *SubjectAccessReview) CheckAuthorizedForImpersonation(req *http.Request,
 
 	// Authorized: forward the request with the impersonation target.
 	req.Header = newHeaders
+
+	logging.Emit(ctx, s.log(), logging.EventAuthzImpersonationResolved,
+		slog.String("target_kind", "user"),
+		slog.String("target_name", logging.Bound(targetUser.Name, logging.MaxIdentity)))
+
 	return targetUser, nil
 }
 
@@ -332,17 +340,83 @@ func countImpersonationHeaderValues(headers http.Header) int {
 // observed it.
 func (s *SubjectAccessReview) checkRbacImpersonationAuthorization(ctx context.Context, resource string, name string, requester user.Info) (bool, error) {
 	spec := impersonationReviewSpec(resource, name, requester)
+	kind := targetKind(resource)
 
 	key, cacheable := s.cache.key(&spec)
 	if !cacheable {
-		return s.liveCheck(ctx, &spec)
+		logging.Emit(ctx, s.log(), logging.EventCacheSARLookup, slog.String("cache_result", "bypass"))
+		return s.timedLiveCheck(ctx, kind, false, &spec)
 	}
 
 	if allowed, ok := s.cache.get(key); ok {
+		logging.Emit(ctx, s.log(), logging.EventCacheSARLookup,
+			slog.String("cache_result", "hit"),
+			slog.String("decision", decision(allowed)))
 		return allowed, nil
 	}
+	logging.Emit(ctx, s.log(), logging.EventCacheSARLookup, slog.String("cache_result", "miss"))
 
-	return s.sharedLiveCheck(ctx, key, &spec)
+	return s.sharedLiveCheck(ctx, kind, key, &spec)
+}
+
+// log returns the logger this reviewer emits through. It tolerates the
+// zero-valued reviewer tests build directly, which New would have given a
+// discarding logger.
+func (s *SubjectAccessReview) log() *slog.Logger {
+	if s.logger == nil {
+		return slog.New(slog.DiscardHandler)
+	}
+	return s.logger
+}
+
+// targetKind maps a review resource onto the closed target_kind value the
+// record schema uses. The four caller forms are exhaustive, so the default
+// only ever serves "userextras/<name>".
+func targetKind(resource string) string {
+	switch resource {
+	case "users":
+		return "user"
+	case "groups":
+		return "group"
+	case "uids":
+		return "uid"
+	default:
+		return "extra"
+	}
+}
+
+// decision renders an authorization outcome as the schema's decision value.
+func decision(allowed bool) string {
+	if allowed {
+		return "allow"
+	}
+	return "deny"
+}
+
+// timedLiveCheck runs one live check and records its outcome: a completed
+// review carrying how long the caller waited and whether it shared another
+// request's call, or a failure carrying the dependency error. Exactly one
+// terminal record is emitted per authorization question a caller asks.
+func (s *SubjectAccessReview) timedLiveCheck(ctx context.Context, kind string, coalesced bool, spec *v1.SubjectAccessReviewSpec) (bool, error) {
+	start := time.Now()
+	allowed, err := s.liveCheck(ctx, spec)
+	s.observeLiveCheck(ctx, kind, start, coalesced, allowed, err)
+	return allowed, err
+}
+
+// observeLiveCheck emits the terminal record for one live check begun at start.
+func (s *SubjectAccessReview) observeLiveCheck(ctx context.Context, kind string, start time.Time, coalesced, allowed bool, err error) {
+	if err != nil {
+		logging.Emit(ctx, s.log(), logging.EventAuthzSARFailed,
+			slog.String("reason", "authorization_dependency_error"),
+			logging.ErrAttr(err))
+		return
+	}
+	logging.Emit(ctx, s.log(), logging.EventAuthzSARCompleted,
+		slog.String("decision", decision(allowed)),
+		slog.Int64("duration_ms", time.Since(start).Milliseconds()),
+		slog.Bool("request_coalesced", coalesced),
+		slog.String("target_kind", kind))
 }
 
 // sharedLiveCheck performs a live check deduplicated across concurrent callers
@@ -350,7 +424,9 @@ func (s *SubjectAccessReview) checkRbacImpersonationAuthorization(ctx context.Co
 // The winning caller's context governs the shared call, so a waiter whose
 // flight fails with a context error not its own retries with a direct check
 // rather than inheriting another request's cancellation.
-func (s *SubjectAccessReview) sharedLiveCheck(ctx context.Context, key string, spec *v1.SubjectAccessReviewSpec) (bool, error) {
+func (s *SubjectAccessReview) sharedLiveCheck(ctx context.Context, kind, key string, spec *v1.SubjectAccessReviewSpec) (bool, error) {
+	start := time.Now()
+
 	ch := s.flight.DoChan(key, func() (interface{}, error) {
 		allowed, err := s.liveCheck(ctx, spec)
 		if err != nil {
@@ -363,16 +439,23 @@ func (s *SubjectAccessReview) sharedLiveCheck(ctx context.Context, key string, s
 	select {
 	case <-ctx.Done():
 		// Our own request is done; do not wait on the shared flight.
-		return false, fmt.Errorf("%w: %w", ErrCreateSubjectAccessReview, ctx.Err())
+		err := fmt.Errorf("%w: %w", ErrCreateSubjectAccessReview, ctx.Err())
+		s.observeLiveCheck(ctx, kind, start, false, false, err)
+		return false, err
 	case res := <-ch:
 		if res.Err != nil {
 			if res.Shared && ctx.Err() == nil &&
 				(errors.Is(res.Err, context.Canceled) || errors.Is(res.Err, context.DeadlineExceeded)) {
-				return s.liveCheck(ctx, spec)
+				// The foreign flight's failure was not ours to report; the retry
+				// below emits this caller's one terminal record.
+				return s.timedLiveCheck(ctx, kind, false, spec)
 			}
+			s.observeLiveCheck(ctx, kind, start, res.Shared, false, res.Err)
 			return false, res.Err
 		}
-		return res.Val.(bool), nil
+		allowed := res.Val.(bool)
+		s.observeLiveCheck(ctx, kind, start, res.Shared, allowed, nil)
+		return allowed, nil
 	}
 }
 
