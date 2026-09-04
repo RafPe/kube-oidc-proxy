@@ -14,11 +14,16 @@ result here was written from expectation.
 - **A SIEM analyst filters denials by reason.** Every denial is one
   `request.access.decided` record at INFO with `decision=deny` and a
   closed-set `reason`, never rate-limited and never dropped.
-- **A security reviewer proves no token or claim appears at `-v=10`.** Bearer
-  tokens, `Authorization` and `Cookie` values, bodies, cache keys, arbitrary
-  claims and extras, configured extra-header values, `User-Agent` and full
-  issuer URLs are absent from the stream at maximum verbosity, and the e2e
-  suite asserts it against a live cluster.
+- **A security reviewer proves no token or claim appears at `-v=10`.** Tests
+  below assert, at maximum verbosity, that a rejected bearer token, arbitrary
+  claims and extras, configured extra-header values and full issuer URLs never
+  reach the stream — in unit tests and, for the token, against a live cluster in
+  the e2e suite. The remaining never-log items — `Cookie` values, request and
+  response bodies, cache keys and the `User-Agent` header — are absent by
+  construction rather than by a dedicated assertion: no log call site anywhere
+  in `pkg/` or `cmd/` references them (`Cookie` and `User-Agent` appear nowhere
+  in the Go sources; a token-review cache key is a hash that is never passed to
+  a logger). Treat those four as reviewed-by-inspection, not test-held.
 - **A maintainer adds an event and CI regenerates the docs.** A new event is
   one entry in `pkg/logging/events.go`; `make eventdoc` regenerates the table in
   `docs/logging.md`, `make verify` fails if it was not committed, and the
@@ -34,7 +39,7 @@ RED cannot be reproduced on this tree without reverting.
 
 | Guarantee | Tests | Type | RED | GREEN |
 | --- | --- | --- | --- | --- |
-| Every record is one JSON object with `schema_version` and `component`; `--logging-format=text` is also valid | `TestRootAddsSchemaVersionAndComponent`, `TestTextFormatIsValid` | unit | Task 4: `go test -tags logcheck ./pkg/logging/... -v` → `FAIL ... [setup failed]`, no package `logtest` | Same command: `PASS` |
+| Every record is one JSON object with `schema_version` and `component`; `--logging-format=text` is also valid | `TestRootAddsSchemaVersionAndComponent`, `TestTextFormatIsValid` | unit | Task 4: `go test -tags logcheck ./pkg/logging/... -v` → `FAIL ... [setup failed]`, no package `logtest` — the capture helper did not exist yet, so both tests failed to build rather than failing an assertion | Same command: `PASS` |
 | `event_type` is a closed set of 39 values matching `^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*){2}$`, and `component` is a closed set | `TestEventTypeGrammar`, `TestEveryEventIsRegisteredWithValidSpec`, `TestEventAttr`, `TestAllComponentsClosedSet` | unit | Task 1: `go test ./pkg/logging/ -run 'TestEventTypeGrammar\|...' -v` → `[build failed]`, `undefined: AllEventTypes`, `undefined: EventRequestAccessDecided` | `go test ./pkg/logging/ -v`: all four `--- PASS` |
 | Every record any test emits is registered, under the right component and an allowed level, with its required fields | `logtest.AssertRegistered` swept in `pkg/proxy` (`TestMain`), `pkg/probe`, `pkg/proxy/audit`, `pkg/proxy/hooks`, `pkg/proxy/subjectaccessreview`, `pkg/proxy/tokenreview` | integration | Task 17, three separate mutations: `events sweep: proxy.server.started missing required address`; `authz.sar.failed emitted at DEBUG, registry says ERROR`; `proxy.hook.completed emitted under component ""` | `go test -tags logcheck ./pkg/...`: `ok` for all six packages |
 | `Emit` refuses a record missing a required field, and takes `request_id` from the context when the caller did not pass one | `TestEmitPanicsOnMissingRequiredFieldUnderLogcheck`, `TestEmitTakesRequiredRequestIDFromContext`, `TestEmitKeepsAnExplicitRequestIDOverTheContext`, `TestEmitPanicsWhenRequestIDIsNeitherPassedNorInContext`, `TestRequestIDFromIsEmptyWhenAbsent` | unit | Task 4: `undefined: logging.RequestIDFrom` / `logging.WithRequestID`; then `request_id = "from-context", want explicit` and `request_id appears 2 times, want 1` | `go test -tags logcheck -run 'TestEmit\|TestRequestID' ./pkg/logging/ -v`: all `--- PASS` |
