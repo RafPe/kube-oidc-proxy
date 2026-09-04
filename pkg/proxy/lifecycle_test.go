@@ -9,6 +9,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"go.uber.org/mock/gomock"
+	"k8s.io/apiserver/pkg/authentication/authenticator"
+	authuser "k8s.io/apiserver/pkg/authentication/user"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
@@ -134,13 +137,18 @@ func TestClientCancelTermination(t *testing.T) {
 
 // serveChain runs a request through the whole production filter chain, so a
 // test can assert on what the order of the filters -- not one filter in
-// isolation -- produces.
-func serveChain(t *testing.T, p *fakeProxy, req *http.Request) *httptest.ResponseRecorder {
+// isolation -- produces. inner stands in for the reverse proxy; a request the
+// chain refuses never reaches it.
+func serveChain(t *testing.T, p *fakeProxy, req *http.Request, inner http.HandlerFunc) *httptest.ResponseRecorder {
 	t.Helper()
 	rw := httptest.NewRecorder()
-	p.withHandlers(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(rw, req)
+	p.withHandlers(inner).ServeHTTP(rw, req)
 	return rw
 }
+
+// noopHandler is the stand-in for the reverse proxy when the request under test
+// never gets that far.
+func noopHandler(http.ResponseWriter, *http.Request) {}
 
 // watchRequest is an unauthenticated watch: the chain refuses it with a 401,
 // which is enough to exercise every filter that runs before the decision.
@@ -158,7 +166,7 @@ func watchRequest() *http.Request {
 func TestChainResolvesRequestInfoBeforeLifecycle(t *testing.T) {
 	p := newTestProxy(t)
 
-	if code := serveChain(t, p, watchRequest()).Code; code != http.StatusUnauthorized {
+	if code := serveChain(t, p, watchRequest(), noopHandler).Code; code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", code)
 	}
 	if _, ok := p.logs.Only(t, logging.EventRequestResponseStarted).Int("time_to_headers_ms"); !ok {
@@ -173,7 +181,7 @@ func TestChainResolvesRequestInfoBeforeLifecycle(t *testing.T) {
 func TestChainResolvesRequestInfoBeforeTheErrorHandler(t *testing.T) {
 	p := newTestProxy(t)
 
-	serveChain(t, p, watchRequest())
+	serveChain(t, p, watchRequest(), noopHandler)
 
 	rec := p.logs.Only(t, logging.EventRequestAccessDecided)
 	if rec.String("event") != "AuFail" {
@@ -221,5 +229,53 @@ func TestResponseStartedNotEmittedForAResolvedShortRequest(t *testing.T) {
 
 	if n := len(p.logs.ByEvent(logging.EventRequestResponseStarted)); n != 0 {
 		t.Fatalf("response_started records = %d for a resolved short request: %s", n, p.logs.Raw())
+	}
+}
+
+// TestFlushBeforeWriteRecordsTheImplicit200 pins the status a streaming handler
+// actually sends. net/http writes the implicit 200 inside its own Flush, so a
+// recorder that forwards the call untouched never learns a response began and
+// reports http_status=0 for a request the client was answered 200.
+func TestFlushBeforeWriteRecordsTheImplicit200(t *testing.T) {
+	p := newTestProxy(t)
+	serveWith(t, p, func(w http.ResponseWriter, r *http.Request) { w.(http.Flusher).Flush() },
+		httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil))
+
+	rec := p.logs.Only(t, logging.EventRequestResponseCompleted)
+	if s, _ := rec.Int("http_status"); s != http.StatusOK {
+		t.Fatalf("http_status = %d, want 200: %v", s, rec)
+	}
+	if rec.String("termination") != terminationNormal {
+		t.Fatalf("%v", rec)
+	}
+}
+
+// TestFlushStartsALongRunningResponse is the case that matters in production:
+// a watch flushes its headers and then streams for as long as the client holds
+// it open. The started record is what makes that visible, and it only fires if
+// the flush is recognised as the moment the response began.
+func TestFlushStartsALongRunningResponse(t *testing.T) {
+	p := newTestProxy(t)
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(
+		&authenticator.Response{User: &authuser.DefaultInfo{Name: "alice"}}, true, nil)
+
+	req := watchRequest()
+	req.Header.Set("Authorization", "bearer fake-token")
+
+	var served bool
+	serveChain(t, p, req, func(w http.ResponseWriter, r *http.Request) {
+		served = true
+		w.(http.Flusher).Flush()
+	})
+	if !served {
+		t.Fatalf("the watch never reached the reverse proxy: %s", p.logs.Raw())
+	}
+
+	started := p.logs.Only(t, logging.EventRequestResponseStarted)
+	if s, _ := started.Int("http_status"); s != http.StatusOK {
+		t.Fatalf("started http_status = %d, want 200: %v", s, started)
+	}
+	if s, _ := p.logs.Only(t, logging.EventRequestResponseCompleted).Int("http_status"); s != http.StatusOK {
+		t.Fatalf("completed http_status = %d, want 200", s)
 	}
 }

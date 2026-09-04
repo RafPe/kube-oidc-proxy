@@ -77,10 +77,24 @@ func (r *responseRecorder) Write(b []byte) (int, error) {
 	return n, err
 }
 
+// Flush records the implicit 200 that net/http sends when a handler flushes
+// before it has written anything, and only then forwards the call. Forwarded
+// untouched, the status would be written by the ResponseWriter underneath and
+// this recorder would never learn a response had begun: a watch that flushes
+// its headers and then streams for an hour would produce no started record and
+// a terminal record claiming http_status=0.
+//
+// Nothing is synthesised when there is no Flusher underneath, because then no
+// flush -- and so no implicit status -- happens either.
 func (r *responseRecorder) Flush() {
-	if f, ok := r.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
+	f, ok := r.ResponseWriter.(http.Flusher)
+	if !ok {
+		return
 	}
+	if !r.wrote {
+		r.WriteHeader(http.StatusOK)
+	}
+	f.Flush()
 }
 
 // Hijack hands the connection to the caller and marks the response as no longer
