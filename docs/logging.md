@@ -8,7 +8,7 @@
 | `audit.flush.completed` | `audit` | INFO | `duration_ms` | The pre-shutdown audit flush succeeded. |
 | `audit.flush.failed` | `audit` | ERROR | `error_message` | The pre-shutdown audit flush failed. |
 | `authn.oidc.failed` | `oidc` | DEBUG | `request_id`, `reason` | The OIDC authenticator rejected the token. The denial itself is INFO on request.access.decided. |
-| `authn.oidc.succeeded` | `oidc` | DEBUG | `request_id`, `issuer_name` | The OIDC authenticator accepted the token. |
+| `authn.oidc.succeeded` | `oidc` | DEBUG | `request_id` | The OIDC authenticator accepted the token. Carries issuer_name when known. |
 | `authn.token.missing` | `tokenreview` | DEBUG | `request_id` | No bearer token was presented on the TokenReview path. |
 | `authn.tokenreview.completed` | `tokenreview` | DEBUG | `request_id`, `authenticated` | A TokenReview answered. Carries duration_ms on a live call. |
 | `authn.tokenreview.failed` | `tokenreview` | ERROR | `request_id`, `reason`, `error_message` | The API server was unreachable or returned a status error. Carries reason=authentication_dependency_error. |
@@ -33,6 +33,7 @@
 | `readiness.server.failed` | `readiness` | ERROR | `error_message` | The readiness HTTP server returned an error. |
 | `request.access.decided` | `request` | INFO | `request_id`, `event`, `src_ip`, `path`, `http_method`, `auth_method`, `decision` | Authentication, authorization and proxy admission decided for a request. Carries event=AuSuccess\|AuFail. |
 | `request.anomaly.detected` | `request` | WARN | `request_id`, `src_ip`, `reason` | A rejection that indicates an exploit attempt or gross misconfiguration. Token-bucketed; the access record still carries the outcome. |
+| `request.handler.failed` | `request` | ERROR | `request_id`, `reason`, `error_message` | The proxy hit an internal error while handling a request; the access record carries reason=internal_error. |
 | `request.headers.dropped` | `request` | WARN | `request_id`, `src_ip`, `forwarded_for_untrusted`, `dropped_headers` | X-Forwarded-For or X-Real-Ip removed for an untrusted peer, a fully trusted chain or a malformed hop. Token-bucketed. |
 | `request.headers.rewritten` | `request` | WARN | `request_id`, `src_ip`, `forwarded_for_untrusted` | X-Forwarded-For collapsed to the resolved client IP on the trusted-proxy path. |
 | `request.impersonation.applied` | `request` | DEBUG | `request_id`, `outbound_user`, `impersonated_header_names` | Outbound impersonation headers built. Header names only, never values. |

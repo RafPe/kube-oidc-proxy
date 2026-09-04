@@ -5,7 +5,6 @@ import (
 	"bytes"
 	stdcontext "context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -29,7 +28,6 @@ import (
 	"k8s.io/apiserver/pkg/server"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/cert"
-	"k8s.io/klog/v2"
 
 	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
@@ -64,8 +62,11 @@ func newAccessLogger(t *testing.T) (*accesslogging.AccessLogger, *logtest.Captur
 }
 
 // withTestRequestID stamps the correlation id the request-id filter mints in
-// production. Every access record is required to carry one.
+// production, on both channels the filter uses: the proxy context the access
+// record reads, and the logging context Emit reads to supply request_id to any
+// event that requires it. Every access record is required to carry one.
 func withTestRequestID(req *http.Request) *http.Request {
+	req = req.WithContext(logging.WithRequestID(req.Context(), "test-request-id"))
 	return proxycontext.WithRequestID(req, "test-request-id")
 }
 
@@ -284,6 +285,62 @@ func TestError(t *testing.T) {
 		t.Errorf("unexpected response, exp='%s' got='%s'", exp, frw.buffer)
 	}
 	assertDeniedReason(t, records, reasonInternalError)
+}
+
+// TestErrorHandlerInternalFailureEmitsHandlerFailed pins the record the proxy
+// writes when it failed for its own reasons rather than the client's. Every
+// internal-error branch of the error handler reports request.handler.failed at
+// ERROR, carrying the bounded error text that the client-facing empty 500 body
+// deliberately withholds.
+func TestErrorHandlerInternalFailureEmitsHandlerFailed(t *testing.T) {
+	tests := map[string]struct {
+		err            error
+		wantErrMessage string
+	}{
+		"called with no error": {
+			err:            nil,
+			wantErrMessage: "error handler called with nil error",
+		},
+		"impersonation configuration missing": {
+			err:            errNoImpersonationConfig,
+			wantErrMessage: errNoImpersonationConfig.Error(),
+		},
+		"unclassified error": {
+			err:            errors.New("boom"),
+			wantErrMessage: "boom",
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			root, records := logtest.New(t, 0)
+			requestLogger := logging.ForComponent(root, logging.ComponentRequest)
+			p := &Proxy{
+				logger: requestLogger,
+				access: accesslogging.NewAccessLogger(requestLogger, nil),
+			}
+			p.handleError = p.newErrorHandler()
+
+			p.handleError(newFakeRW(), newFakeR(), test.err)
+
+			rec := records.Only(t, logging.EventRequestHandlerFailed)
+			if got := rec.String("level"); got != "ERROR" {
+				t.Errorf("level = %q, want ERROR", got)
+			}
+			if got := rec.String("component"); got != string(logging.ComponentRequest) {
+				t.Errorf("component = %q, want %q", got, logging.ComponentRequest)
+			}
+			if got := rec.String("request_id"); got != "test-request-id" {
+				t.Errorf("request_id = %q, want %q", got, "test-request-id")
+			}
+			if got := rec.String("reason"); got != reasonInternalError {
+				t.Errorf("reason = %q, want %q", got, reasonInternalError)
+			}
+			if got := rec.String("error_message"); got != test.wantErrMessage {
+				t.Errorf("error_message = %q, want %q", got, test.wantErrMessage)
+			}
+		})
+	}
 }
 
 // assertDeniedReason pins the single AuFail record a refusal writes, and the
@@ -512,6 +569,9 @@ func newTestProxy(t *testing.T) *fakeProxy {
 		logs:         logs,
 		Proxy: &Proxy{
 			logger:                requestLogger,
+			oidcLog:               logging.ForComponent(root, logging.ComponentOIDC),
+			tokenReviewLog:        logging.ForComponent(root, logging.ComponentTokenReview),
+			upstreamLog:           logging.ForComponent(root, logging.ComponentUpstream),
 			access:                accesslogging.NewAccessLogger(requestLogger, nil),
 			oidcRequestAuther:     bearertoken.New(fakeToken),
 			tokenReviewer:         fakeReviewer,
@@ -1384,32 +1444,5 @@ func TestParseAllowedReservedGroups(t *testing.T) {
 				t.Errorf("parseAllowedReservedGroups(%q) has %d entries, want %d", test.groups, got.Len(), len(test.groups))
 			}
 		})
-	}
-}
-
-// TestReviewTokenRejectedIsNotLoggedAsValid pins the token-review denial
-// message: an unauthenticated review result is a rejection, and reporting it as
-// a valid token passing through misleads anyone reading the log during an
-// incident.
-func TestReviewTokenRejectedIsNotLoggedAsValid(t *testing.T) {
-	buf := captureKlogAtV2(t)
-	var fs flag.FlagSet
-	klog.InitFlags(&fs)
-	_ = fs.Set("v", "4")
-	t.Cleanup(func() { _ = fs.Set("v", "2") })
-
-	p := newTestProxy(t)
-	p.fakeReviewer.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(nil, false, nil)
-
-	req := reservedIdentityRequest(t, nil)
-	if ok := p.reviewToken(httptest.NewRecorder(), req); ok {
-		t.Fatal("rejected token reported as passthrough-ok")
-	}
-	klog.Flush()
-	if strings.Contains(buf.String(), "valid token") {
-		t.Fatalf("rejected token logged as valid:\n%s", buf.String())
-	}
-	if !strings.Contains(buf.String(), "rejected") {
-		t.Fatalf("rejected token not logged as rejected:\n%s", buf.String())
 	}
 }

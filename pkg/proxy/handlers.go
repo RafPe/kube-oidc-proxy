@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"slices"
@@ -15,8 +16,8 @@ import (
 	authuser "k8s.io/apiserver/pkg/authentication/user"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/client-go/transport"
-	"k8s.io/klog/v2"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/audit"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
 	accesslogging "github.com/rafpe/kube-oidc-proxy/pkg/proxy/logging"
@@ -44,6 +45,18 @@ const (
 	reasonTooManyImpersonationValues = "too_many_impersonation_values"
 	reasonClientCanceled             = "client_canceled"
 	reasonInternalError              = "internal_error"
+
+	// reasonAuthenticationDependencyError classifies a TokenReview that could
+	// not be answered at all: the API server was unreachable or returned a
+	// status error. It is not a verdict on the credential.
+	reasonAuthenticationDependencyError = "authentication_dependency_error"
+)
+
+// Why impersonation was not applied to a request, as reported by
+// request.impersonation.skipped.
+const (
+	skipReasonDisabled    = "disabled"
+	skipReasonPassthrough = "passthrough"
 )
 
 // authMethodKey is the context key carrying how the request authenticated. It
@@ -122,10 +135,13 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 		if err != nil {
 			// An error here means a token was present and failed validation;
 			// an absent or unparseable token yields ok == false with a nil
-			// error. Log it at the level operators run at, not V(5).
-			var remoteAddr string
-			req, remoteAddr = context.RemoteAddr(req)
-			klog.V(2).Infof("failed to authenticate request (%s): %s", remoteAddr, err)
+			// error. The error text itself stays out of the record: the denial
+			// is reported by reason, and a validation message is attacker
+			// influenced.
+			var srcIP string
+			req, srcIP = context.RemoteAddr(req)
+			logging.Emit(req.Context(), componentLogger(p.oidcLog), logging.EventAuthnOIDCFailed,
+				slog.String("src_ip", srcIP), slog.String("reason", reasonUnauthorized))
 
 			// Since we have failed OIDC auth, we will try a token review, if enabled.
 			// Routing is deliberately unchanged: falling through to token
@@ -140,10 +156,14 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 			return
 		}
 
-		var remoteAddr string
-		req, remoteAddr = context.RemoteAddr(req)
-
-		klog.V(4).Infof("authenticated request: %s", remoteAddr)
+		// issuer_name is absent until the issuer registry names the issuer that
+		// accepted the token; the field is conditional rather than required so
+		// the record is emittable in the meantime.
+		var oidcAttrs []slog.Attr
+		if name := context.IssuerName(req); name != "" {
+			oidcAttrs = append(oidcAttrs, slog.String("issuer_name", logging.Bound(name, logging.MaxIdentity)))
+		}
+		logging.Emit(req.Context(), componentLogger(p.oidcLog), logging.EventAuthnOIDCSucceeded, oidcAttrs...)
 
 		// The token was accepted, so every record from here on -- including a
 		// rejection by the reserved-identity guard -- reports the OIDC path.
@@ -234,6 +254,8 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		// If no impersonation has already been set, return early
 		if context.NoImpersonation(req) {
+			logging.Emit(req.Context(), logging.FromContext(req.Context()), logging.EventRequestImpersonationSkipped,
+				slog.String("skip_reason", skipReasonPassthrough))
 			handler.ServeHTTP(rw, req)
 			return
 		}
@@ -245,7 +267,8 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 
 		// If we have disabled impersonation we can forward the request right away
 		if p.config.DisableImpersonation {
-			klog.V(2).Infof("passing on request with no impersonation: %s", remoteAddr)
+			logging.Emit(req.Context(), logging.FromContext(req.Context()), logging.EventRequestImpersonationSkipped,
+				slog.String("skip_reason", skipReasonDisabled))
 			// Indicate we need to not use impersonation.
 			req = context.WithNoImpersonation(req)
 			handler.ServeHTTP(rw, req)
@@ -293,20 +316,14 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 		// If client IP user extra header option set then append the remote client
 		// address.
 		if p.config.ExtraUserHeadersClientIPEnabled {
-			klog.V(6).Infof("adding impersonate extra user header %s (%s)",
-				UserHeaderClientIPKey, remoteAddr)
-
 			extra[UserHeaderClientIPKey] = append(extra[UserHeaderClientIPKey], remoteAddr)
 		}
 
-		// Add custom extra user headers to impersonation request.
+		// Add custom extra user headers to impersonation request. append copies
+		// into the freshly cloned value slice, so the configured slice is never
+		// aliased into the outbound request.
 		for k, vs := range p.config.ExtraUserHeaders {
-			for _, v := range vs {
-				klog.V(6).Infof("adding impersonate extra user header %s (%s)",
-					k, remoteAddr)
-
-				extra[k] = append(extra[k], v)
-			}
+			extra[k] = append(extra[k], vs...)
 		}
 
 		if targetForContext != nil {
@@ -343,17 +360,43 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 			ImpersonatedUser: &targetForContext,
 		}
 
+		logging.Emit(req.Context(), logging.FromContext(req.Context()), logging.EventRequestImpersonationApplied,
+			slog.String("outbound_user", logging.Bound(user.GetName(), logging.MaxIdentity)),
+			slog.Any("impersonated_header_names", impersonatedHeaderNames(conf.ImpersonationConfig)))
+
 		// Add the impersonation configuration to the context.
 		req = context.WithImpersonationConfig(req, conf)
 		handler.ServeHTTP(rw, req)
 	})
 }
 
+// impersonatedHeaderNames returns the sorted names of the impersonation headers
+// the round tripper will send for this configuration. Names only: the values
+// carry the impersonated identity, the client address and operator-supplied
+// secrets, none of which belong in a log record. Sorted because map iteration
+// is unordered and a record whose fields shuffle between otherwise identical
+// requests is harder to diff.
+func impersonatedHeaderNames(c *transport.ImpersonationConfig) []string {
+	names := []string{transport.ImpersonateUserHeader}
+	if len(c.Groups) > 0 {
+		names = append(names, transport.ImpersonateGroupHeader)
+	}
+	if c.UID != "" {
+		names = append(names, transport.ImpersonateUIDHeader)
+	}
+	for k := range c.Extra {
+		names = append(names, transport.ImpersonateUserExtraHeaderPrefix+logging.Sanitize(k))
+	}
+
+	slices.Sort(names)
+
+	return names
+}
+
 // newErrorHandler returns a handler failed requests.
 func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, err error) {
 
 	unauthedHandler := audit.NewUnauthenticatedHandler(p.auditor, func(rw http.ResponseWriter, r *http.Request) {
-		klog.V(2).Infof("unauthenticated user request %s", r.RemoteAddr)
 		http.Error(rw, "Unauthorized", http.StatusUnauthorized)
 	})
 
@@ -369,7 +412,11 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 	return func(rw http.ResponseWriter, r *http.Request, err error) {
 
 		if err == nil {
-			klog.Error("error was called with no error")
+			// Nothing was decided about a request, so nothing is recorded about
+			// one; the proxy bug is still reported.
+			logging.EmitLevel(r.Context(), componentLogger(p.logger), logging.EventRequestHandlerFailed, slog.LevelError,
+				slog.String("reason", reasonInternalError),
+				slog.String("error_message", "error handler called with nil error"))
 			http.Error(rw, "", http.StatusInternalServerError)
 			return
 		}
@@ -389,21 +436,19 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 
 			// Authenticated, but the identity is one a token must never mint.
 		case errors.Is(err, errReservedIdentity):
-			klog.V(2).Infof("rejecting reserved identity (%s): %s", r.RemoteAddr, err)
 			p.logDenied(r, reasonReservedIdentity, err)
 			forbiddenHandler.ServeHTTP(rw, r)
 			return
 
 			// No name given or available in oidc request
 		case errors.Is(err, errNoName):
-			klog.V(2).Infof("no name available in oidc info %s", r.RemoteAddr)
 			p.logDenied(r, reasonNoUsernameClaim, err)
 			http.Error(rw, "Username claim not available in OIDC Issuer response", http.StatusForbidden)
 			return
 
 			// No impersonation configuration found in context
 		case errors.Is(err, errNoImpersonationConfig):
-			klog.Errorf("impersonation configuration missing from request context (%s): %s", r.RemoteAddr, err)
+			p.logHandlerFailed(r, err)
 			p.logDenied(r, reasonInternalError, err)
 			http.Error(rw, "", http.StatusInternalServerError)
 			return
@@ -418,7 +463,6 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			// configured cap. Refused before any SubjectAccessReview was sent;
 			// this is a request-shape rejection, not an authorization denial.
 		case errors.Is(err, subjectaccessreview.ErrTooManyImpersonationHeaderValues):
-			klog.V(2).Infof("too many impersonation header values (%s): %s", r.RemoteAddr, err)
 			p.logDenied(r, reasonTooManyImpersonationValues, err)
 			http.Error(rw, err.Error(), http.StatusRequestHeaderFieldsTooLarge)
 			return
@@ -426,7 +470,6 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			// Requester is not authorized to impersonate the requested identity.
 			// Classified by typed error (errors.Is), not by message text.
 		case errors.Is(err, subjectaccessreview.ErrImpersonationNotAllowed):
-			klog.V(2).Infof("impersonation not authorized (%s): %s", r.RemoteAddr, err)
 			p.logDenied(r, reasonImpersonationDenied, err)
 			http.Error(rw, err.Error(), http.StatusForbidden)
 			return
@@ -434,7 +477,8 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			// Client canceled the request (SAR or reverse-proxy). Nothing to
 			// write back; the connection is already going away.
 		case errors.Is(err, stdcontext.Canceled):
-			klog.V(4).Infof("request canceled by client: %s", r.RemoteAddr)
+			logging.Emit(r.Context(), componentLogger(p.upstreamLog), logging.EventUpstreamRequestCanceled,
+				slog.String("reason", reasonClientCanceled))
 			p.logDenied(r, reasonClientCanceled, err)
 			return
 
@@ -444,18 +488,25 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			// decision, so nothing is recorded here. Task 14 adds the upstream
 			// event that carries the failure itself.
 		case errors.As(err, &netErr):
-			klog.Errorf("upstream request failed (%s): %s", r.RemoteAddr, err)
 			http.Error(rw, "", http.StatusBadGateway)
 			return
 
 			// Server or unknown error. Details stay server-side; the client
 			// receives an empty 500 body.
 		default:
-			klog.Errorf("unknown error (%s): %s", r.RemoteAddr, err)
+			p.logHandlerFailed(r, err)
 			p.logDenied(r, reasonInternalError, err)
 			http.Error(rw, "", http.StatusInternalServerError)
 		}
 	}
+}
+
+// logHandlerFailed reports a failure the proxy itself is responsible for. The
+// error text is kept out of the client-facing body and recorded here instead,
+// bounded and sanitized; the access record carries reason=internal_error.
+func (p *Proxy) logHandlerFailed(r *http.Request, err error) {
+	logging.EmitLevel(r.Context(), componentLogger(p.logger), logging.EventRequestHandlerFailed, slog.LevelError,
+		slog.String("reason", reasonInternalError), logging.ErrAttr(err))
 }
 
 // logDenied writes the access record for a refused request. The impersonation

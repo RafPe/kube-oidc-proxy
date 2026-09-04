@@ -20,6 +20,7 @@ const (
 	EventRequestAnomalyDetected      EventType = "request.anomaly.detected"
 	EventRequestImpersonationApplied EventType = "request.impersonation.applied"
 	EventRequestImpersonationSkipped EventType = "request.impersonation.skipped"
+	EventRequestHandlerFailed        EventType = "request.handler.failed"
 	EventAuthnOIDCSucceeded          EventType = "authn.oidc.succeeded"
 	EventAuthnOIDCFailed             EventType = "authn.oidc.failed"
 	// gosec G101 fires on the "token" substring in the three names below. They
@@ -123,12 +124,19 @@ var Registry = map[EventType]EventSpec{
 		Message:    "impersonation skipped",
 		Summary:    "Impersonation was disabled by flag, or the request took the TokenReview passthrough path.",
 	},
+	EventRequestHandlerFailed: {
+		Components: []Component{ComponentRequest},
+		Level:      slog.LevelError,
+		Required:   []string{"request_id", "reason", "error_message"},
+		Message:    "request handler failed",
+		Summary:    "The proxy hit an internal error while handling a request; the access record carries reason=internal_error.",
+	},
 	EventAuthnOIDCSucceeded: {
 		Components: []Component{ComponentOIDC},
 		Level:      slog.LevelDebug,
-		Required:   []string{"request_id", "issuer_name"},
+		Required:   []string{"request_id"},
 		Message:    "oidc authentication succeeded",
-		Summary:    "The OIDC authenticator accepted the token.",
+		Summary:    "The OIDC authenticator accepted the token. Carries issuer_name when known.",
 	},
 	EventAuthnOIDCFailed: {
 		Components: []Component{ComponentOIDC},
