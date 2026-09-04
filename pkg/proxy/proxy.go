@@ -23,10 +23,11 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/audit"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/hooks"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/logging"
+	accesslogging "github.com/rafpe/kube-oidc-proxy/pkg/proxy/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 	utiltoken "github.com/rafpe/kube-oidc-proxy/pkg/util/token"
 )
@@ -93,6 +94,11 @@ type Proxy struct {
 	// allowedReservedGroups is the set form of config.AllowedReservedGroups,
 	// resolved once at construction so the request path does no allocation.
 	allowedReservedGroups sets.Set[string]
+
+	// access writes the one access record per request. Injected rather than a
+	// package global so the destination and the trusted-proxy networks are
+	// fixed at construction.
+	access *accesslogging.AccessLogger
 
 	hooks       *hooks.Hooks
 	handleError errorHandlerFn
@@ -171,6 +177,14 @@ func New(deps Dependencies) (*Proxy, error) {
 		return nil, err
 	}
 
+	// The access record goes to the JSON stream on stdout, as it always has.
+	// The root logger becomes an injected dependency in a later change; the
+	// destination and the record shape do not change with it.
+	root, err := logging.New(logging.Options{})
+	if err != nil {
+		return nil, err
+	}
+
 	return &Proxy{
 		restConfig:            deps.RestConfig,
 		hooks:                 hooks.New(),
@@ -183,6 +197,7 @@ func New(deps Dependencies) (*Proxy, error) {
 		oidcRequestAuther:     bearertoken.New(deps.TokenAuthenticator),
 		tokenAuthenticator:    deps.TokenAuthenticator,
 		auditor:               auditor,
+		access:                accesslogging.NewAccessLogger(logging.ForComponent(root, logging.ComponentRequest), trustedProxies),
 	}, nil
 }
 
@@ -251,12 +266,12 @@ func cloneHeaderMap(in map[string][]string) map[string][]string {
 // is closed. It returns a channel that is closed once serving has fully stopped
 // and a second channel that is closed once the listener has stopped accepting.
 func (p *Proxy) Run(stopCh <-chan struct{}) (<-chan struct{}, <-chan struct{}, error) {
-	// Apply the trusted-proxy networks to both client-IP resolvers so the audit
+	// Apply the trusted-proxy networks to the context resolver so the audit
 	// log's src_ip and the Remote-Client-IP impersonation extra resolve
-	// identically. Done here (rather than in New) to keep the package-global
-	// setters out of construction-time unit tests.
+	// identically to the access record, which took the same networks at
+	// construction. Done here (rather than in New) to keep the package-global
+	// setter out of construction-time unit tests.
 	context.SetTrustedProxies(p.trustedProxies)
-	logging.SetTrustedProxies(p.trustedProxies)
 
 	// standard round tripper for proxy to API Server
 	clientRT, err := p.roundTripperForRestConfig(p.restConfig)
@@ -333,6 +348,11 @@ func (p *Proxy) RoundTrip(req *http.Request) (*http.Response, error) {
 	if context.NoImpersonation(req) {
 		token := context.BearerToken(req)
 		req.Header.Add("Authorization", token)
+		p.access.LogDecision(req, accesslogging.Decision{
+			Allowed:    true,
+			AuthMethod: authMethodFrom(req),
+			Inbound:    userFromContext(req),
+		})
 		return p.noAuthClientTransport.RoundTrip(req)
 	}
 
@@ -345,8 +365,14 @@ func (p *Proxy) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Set up impersonation request.
 	rt := transport.NewImpersonatingRoundTripper(*impersonationConf.ImpersonationConfig, p.clientTransport)
 
-	// Log the request
-	logging.LogSuccessfulRequest(req, *impersonationConf.InboundUser, *impersonationConf.ImpersonatedUser)
+	// Record the admitted request. Written before the upstream call so a watch
+	// or exec that runs for hours still produces its access record immediately.
+	p.access.LogDecision(req, accesslogging.Decision{
+		Allowed:    true,
+		AuthMethod: authMethodFrom(req),
+		Inbound:    *impersonationConf.InboundUser,
+		Outbound:   *impersonationConf.ImpersonatedUser,
+	})
 
 	// Push request through round trippers to the API server.
 	return rt.RoundTrip(req)

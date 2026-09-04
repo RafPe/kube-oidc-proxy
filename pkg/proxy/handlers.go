@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"slices"
 	"strings"
@@ -18,13 +19,72 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/audit"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/logging"
+	accesslogging "github.com/rafpe/kube-oidc-proxy/pkg/proxy/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 )
 
 // reservedIdentityPrefix is the username/group prefix Kubernetes reserves for
 // its own identities.
 const reservedIdentityPrefix = "system:"
+
+// How a request authenticated, as reported by the access record's auth_method.
+const (
+	authMethodOIDC        = "oidc"
+	authMethodTokenReview = "tokenreview"
+	authMethodNone        = "none"
+)
+
+// The closed set of access-record reasons this package classifies. A denial
+// carries exactly one of them, so a query never has to match on message text.
+const (
+	reasonUnauthorized               = "unauthorized"
+	reasonReservedIdentity           = "reserved_identity"
+	reasonNoUsernameClaim            = "no_username_claim"
+	reasonImpersonationDenied        = "impersonation_denied"
+	reasonTooManyImpersonationValues = "too_many_impersonation_values"
+	reasonClientCanceled             = "client_canceled"
+	reasonUpstreamError              = "upstream_error"
+	reasonInternalError              = "internal_error"
+)
+
+// authMethodKey is the context key carrying how the request authenticated. It
+// is set by the handler that accepted the credential and read by the access
+// record, which runs after the decision on both the success and failure paths.
+type authMethodKey struct{}
+
+// withAuthMethod records how the request authenticated.
+func withAuthMethod(req *http.Request, method string) *http.Request {
+	return req.WithContext(stdcontext.WithValue(req.Context(), authMethodKey{}, method))
+}
+
+// authMethodFrom returns how the request authenticated. A request refused
+// before any authenticator accepted it has none.
+func authMethodFrom(req *http.Request) string {
+	method, _ := req.Context().Value(authMethodKey{}).(string)
+	if method == "" {
+		return authMethodNone
+	}
+	return method
+}
+
+// userFromContext returns the identity the request presented, or nil when it
+// was refused before one was established.
+func userFromContext(req *http.Request) authuser.Info {
+	info, ok := genericapirequest.UserFrom(req.Context())
+	if !ok {
+		return nil
+	}
+	return info
+}
+
+// impersonationTargetKind maps the kind as the client-facing denial message
+// renders it onto the closed target_kind value set.
+func impersonationTargetKind(kind string) string {
+	if kind == "extra info" {
+		return "extra"
+	}
+	return kind
+}
 
 func (p *Proxy) withHandlers(handler http.Handler) http.Handler {
 	// Set up proxy handlers
@@ -83,6 +143,10 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 		req, remoteAddr = context.RemoteAddr(req)
 
 		klog.V(4).Infof("authenticated request: %s", remoteAddr)
+
+		// The token was accepted, so every record from here on -- including a
+		// rejection by the reserved-identity guard -- reports the OIDC path.
+		req = withAuthMethod(req, authMethodOIDC)
 
 		// Add the user info to the request context. Done before the
 		// reserved-identity check so a rejection is audited against the identity
@@ -157,6 +221,7 @@ func (p *Proxy) withTokenReview(handler http.Handler) http.Handler {
 		}
 
 		// Set no impersonation headers and re-add removed headers.
+		req = withAuthMethod(req, authMethodTokenReview)
 		req = context.WithNoImpersonation(req)
 
 		handler.ServeHTTP(rw, req)
@@ -308,37 +373,43 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			return
 		}
 
-		// regardless of reason, log failed auth
-		logging.LogFailedRequest(r)
+		// The access record carries the classified reason, so every branch below
+		// records why the request was refused before it writes the response.
+		var netErr net.Error
 
 		switch {
 
 		// Failed auth
 		case errors.Is(err, errUnauthorized):
 			// If Unauthorized then error and report to audit
+			p.logDenied(r, reasonUnauthorized, err)
 			unauthedHandler.ServeHTTP(rw, r)
 			return
 
 			// Authenticated, but the identity is one a token must never mint.
 		case errors.Is(err, errReservedIdentity):
 			klog.V(2).Infof("rejecting reserved identity (%s): %s", r.RemoteAddr, err)
+			p.logDenied(r, reasonReservedIdentity, err)
 			forbiddenHandler.ServeHTTP(rw, r)
 			return
 
 			// No name given or available in oidc request
 		case errors.Is(err, errNoName):
 			klog.V(2).Infof("no name available in oidc info %s", r.RemoteAddr)
+			p.logDenied(r, reasonNoUsernameClaim, err)
 			http.Error(rw, "Username claim not available in OIDC Issuer response", http.StatusForbidden)
 			return
 
 			// No impersonation configuration found in context
 		case errors.Is(err, errNoImpersonationConfig):
 			klog.Errorf("impersonation configuration missing from request context (%s): %s", r.RemoteAddr, err)
+			p.logDenied(r, reasonInternalError, err)
 			http.Error(rw, "", http.StatusInternalServerError)
 			return
 
 			// No impersonation user found
 		case errors.Is(err, subjectaccessreview.ErrorNoImpersonationUserFound):
+			p.logDenied(r, reasonInternalError, err)
 			http.Error(rw, subjectaccessreview.ErrorNoImpersonationUserFound.Error(), http.StatusInternalServerError)
 			return
 
@@ -347,6 +418,7 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			// this is a request-shape rejection, not an authorization denial.
 		case errors.Is(err, subjectaccessreview.ErrTooManyImpersonationHeaderValues):
 			klog.V(2).Infof("too many impersonation header values (%s): %s", r.RemoteAddr, err)
+			p.logDenied(r, reasonTooManyImpersonationValues, err)
 			http.Error(rw, err.Error(), http.StatusRequestHeaderFieldsTooLarge)
 			return
 
@@ -354,6 +426,7 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			// Classified by typed error (errors.Is), not by message text.
 		case errors.Is(err, subjectaccessreview.ErrImpersonationNotAllowed):
 			klog.V(2).Infof("impersonation not authorized (%s): %s", r.RemoteAddr, err)
+			p.logDenied(r, reasonImpersonationDenied, err)
 			http.Error(rw, err.Error(), http.StatusForbidden)
 			return
 
@@ -361,15 +434,47 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			// write back; the connection is already going away.
 		case errors.Is(err, stdcontext.Canceled):
 			klog.V(4).Infof("request canceled by client: %s", r.RemoteAddr)
+			p.logDenied(r, reasonClientCanceled, err)
+			return
+
+			// The reverse proxy could not reach or complete the call to the API
+			// server. The request was admitted, so this is not an authorization
+			// outcome; it is recorded here as upstream_error until Task 14 adds
+			// the upstream event that carries the detail.
+		case errors.As(err, &netErr):
+			klog.Errorf("upstream request failed (%s): %s", r.RemoteAddr, err)
+			p.logDenied(r, reasonUpstreamError, err)
+			http.Error(rw, "", http.StatusInternalServerError)
 			return
 
 			// Server or unknown error. Details stay server-side; the client
 			// receives an empty 500 body.
 		default:
 			klog.Errorf("unknown error (%s): %s", r.RemoteAddr, err)
+			p.logDenied(r, reasonInternalError, err)
 			http.Error(rw, "", http.StatusInternalServerError)
 		}
 	}
+}
+
+// logDenied writes the access record for a refused request. The impersonation
+// target, when the error names one, is taken from the typed error rather than
+// parsed back out of the client-facing message.
+func (p *Proxy) logDenied(r *http.Request, reason string, err error) {
+	d := accesslogging.Decision{
+		Allowed:    false,
+		Reason:     reason,
+		AuthMethod: authMethodFrom(r),
+		Inbound:    userFromContext(r),
+	}
+
+	var authErr *subjectaccessreview.ImpersonationAuthError
+	if errors.As(err, &authErr) {
+		d.TargetKind = impersonationTargetKind(authErr.Kind)
+		d.TargetName = strings.Trim(authErr.Target, "'")
+	}
+
+	p.access.LogDecision(r, d)
 }
 
 // cloneExtra returns a deep copy of an authenticator-owned extra map: both the
