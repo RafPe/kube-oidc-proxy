@@ -71,9 +71,15 @@ func decodeRecords(raw string) ([]map[string]any, error) {
 			continue
 		}
 
-		rec := make(map[string]any)
+		// Declared, not made: unmarshalling JSON null into a map succeeds and
+		// leaves it nil rather than erroring, so the nil check below is the
+		// only thing that stops a "null" line becoming an empty record.
+		var rec map[string]any
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
 			return nil, fmt.Errorf("line %d is not a JSON object: %s: %w", i+1, bound(line), err)
+		}
+		if rec == nil {
+			return nil, fmt.Errorf("line %d is JSON null, not an object: %s", i+1, bound(line))
 		}
 		records = append(records, rec)
 	}

@@ -42,6 +42,21 @@ func TestDecodeRecordsRejectsANonObjectLine(t *testing.T) {
 	}
 }
 
+// A "null" line is the trap case: unmarshalling JSON null into a map succeeds
+// and leaves the map nil, so without an explicit check it becomes an empty
+// record rather than an error.
+func TestDecodeRecordsRejectsANullLine(t *testing.T) {
+	raw := `{"schema_version":1}` + "\n" + `null`
+
+	records, err := decodeRecords(raw)
+	if err == nil {
+		t.Fatalf("decodeRecords accepted a JSON null line, got=%d records: %v", len(records), records)
+	}
+	if got := err.Error(); !strings.Contains(got, "line 2") {
+		t.Errorf("error does not name the offending line number: %q", got)
+	}
+}
+
 // Blank lines are framing, not records: a log stream ends with a newline.
 func TestDecodeRecordsSkipsBlankLinesAndDecodesTheRest(t *testing.T) {
 	raw := `{"event_type":"proxy.config.loaded"}` + "\n\n" + `{"event_type":"readiness.proxy.ready"}` + "\n"
