@@ -192,6 +192,7 @@ func (s *SubjectAccessReview) CheckAuthorizedForImpersonation(req *http.Request,
 	// server cannot stall the request indefinitely.
 	ctx, cancel := context.WithTimeout(req.Context(), s.sarTimeout)
 	defer cancel()
+	ctx = withRequesterErr(ctx, req.Context().Err)
 
 	impersonatedUser := req.Header.Get("impersonate-user")
 
@@ -404,21 +405,50 @@ func (s *SubjectAccessReview) timedLiveCheck(ctx context.Context, kind string, c
 	return allowed, err
 }
 
+// requesterErrKey carries the inbound request context's Err function into the
+// derived authorization context.
+type requesterErrKey struct{}
+
+// withRequesterErr records how to ask whether the requester's own context is
+// finished. The authorization context is derived from the request context with
+// the SAR budget applied, so its own Err cannot tell the two deadlines apart;
+// only the parent's can.
+func withRequesterErr(ctx context.Context, errFn func() error) context.Context {
+	return context.WithValue(ctx, requesterErrKey{}, errFn)
+}
+
+// requesterDone reports whether the requester itself has gone away. Without a
+// recorded parent — a check called directly, as the unit tests do — ctx is the
+// requester's own context and answers for itself.
+func requesterDone(ctx context.Context) bool {
+	if errFn, ok := ctx.Value(requesterErrKey{}).(func() error); ok {
+		return errFn() != nil
+	}
+	return ctx.Err() != nil
+}
+
 // observeLiveCheck emits the terminal record for one live check begun at start.
-// A failure is classified before it is recorded: only the API server failing to
-// answer is a dependency error worth an always-visible ERROR. A requester that
-// abandoned its own request — a client disconnect, or its authorization budget
-// running out — is a per-request condition at DEBUG, so a client cannot drive
-// the ERROR stream simply by hanging up mid-request.
+// A failure is classified before it is recorded, and a context error is not
+// self-explanatory: the authorization context carries both the requester's
+// deadline and the proxy's own SAR budget. When the requester is the one that
+// went away — a client disconnect, or its own deadline — the failure is a
+// per-request condition at DEBUG, so a client cannot drive the ERROR stream
+// simply by hanging up mid-request. When the requester is still waiting, the
+// deadline that expired is the proxy's budget, which means the API server did
+// not answer in time: that is a dependency failure and stays an ERROR.
 func (s *SubjectAccessReview) observeLiveCheck(ctx context.Context, kind string, start time.Time, coalesced, allowed bool, err error) {
 	if err != nil {
-		reason, level := "authorization_dependency_error", slog.LevelError
+		reason, level, logged := "authorization_dependency_error", slog.LevelError, err
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			reason, level = "client_canceled", slog.LevelDebug
+			if requesterDone(ctx) {
+				reason, level = "client_canceled", slog.LevelDebug
+			} else {
+				logged = fmt.Errorf("subject access review timed out after %s: %w", s.sarTimeout, err)
+			}
 		}
 		logging.EmitLevel(ctx, s.log(), logging.EventAuthzSARFailed, level,
 			slog.String("reason", reason),
-			logging.ErrAttr(err))
+			logging.ErrAttr(logged))
 		return
 	}
 	logging.Emit(ctx, s.log(), logging.EventAuthzSARCompleted,

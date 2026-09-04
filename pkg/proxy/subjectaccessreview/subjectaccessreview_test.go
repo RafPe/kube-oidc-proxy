@@ -736,10 +736,10 @@ func TestCheckAuthorizedForImpersonationConfiguredTimeout(t *testing.T) {
 
 // newLoggingSAR builds a reviewer that logs through root as the sar component,
 // so the records a check emits are observable with the given cache TTLs.
-func newLoggingSAR(t *testing.T, root *slog.Logger, r clientazv1.SubjectAccessReviewInterface, allowTTL, denyTTL time.Duration) *SubjectAccessReview {
+func newLoggingSAR(t *testing.T, root *slog.Logger, r clientazv1.SubjectAccessReviewInterface, sarTimeout, allowTTL, denyTTL time.Duration) *SubjectAccessReview {
 	t.Helper()
 
-	s, err := New(r, DefaultTimeout, allowTTL, denyTTL, DefaultMaxHeaderValues,
+	s, err := New(r, sarTimeout, allowTTL, denyTTL, DefaultMaxHeaderValues,
 		logging.ForComponent(root, logging.ComponentSAR))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -753,7 +753,7 @@ func newLoggingSAR(t *testing.T, root *slog.Logger, r clientazv1.SubjectAccessRe
 func newSARWithFakeReviewer(t *testing.T, root *slog.Logger, decide func(*v1.SubjectAccessReview) (*v1.SubjectAccessReview, error)) *SubjectAccessReview {
 	t.Helper()
 
-	return newLoggingSAR(t, root, &fnReviewer{fn: decide}, DefaultAllowCacheTTL, DefaultDenyCacheTTL)
+	return newLoggingSAR(t, root, &fnReviewer{fn: decide}, DefaultTimeout, DefaultAllowCacheTTL, DefaultDenyCacheTTL)
 }
 
 // loggingTestRequester is the authenticated identity the logging tests ask
@@ -821,7 +821,7 @@ func TestCacheBypassEvents(t *testing.T) {
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			root, cap := logtest.New(t, 2)
-			s := newLoggingSAR(t, root, &fnReviewer{fn: allowAll}, tc.allowTTL, tc.denyTTL)
+			s := newLoggingSAR(t, root, &fnReviewer{fn: allowAll}, DefaultTimeout, tc.allowTTL, tc.denyTTL)
 			ctx := logging.WithRequestID(context.Background(), "r1")
 
 			for i := range 2 {
@@ -858,7 +858,7 @@ func TestCacheBypassEvents(t *testing.T) {
 func TestCachedDenyDecisionEvents(t *testing.T) {
 	root, cap := logtest.New(t, 2)
 	reviewer := &fnReviewer{fn: denyAll}
-	s := newLoggingSAR(t, root, reviewer, DefaultAllowCacheTTL, DefaultDenyCacheTTL)
+	s := newLoggingSAR(t, root, reviewer, DefaultTimeout, DefaultAllowCacheTTL, DefaultDenyCacheTTL)
 	ctx := logging.WithRequestID(context.Background(), "r1")
 
 	for i := range 2 {
@@ -895,7 +895,7 @@ func TestCachedDenyDecisionEvents(t *testing.T) {
 func TestLiveCheckFailureEvents(t *testing.T) {
 	t.Run("an apiserver error is an ERROR dependency failure", func(t *testing.T) {
 		root, cap := logtest.New(t, 2)
-		s := newLoggingSAR(t, root, &fnReviewer{fn: failWith(errReview)}, DefaultAllowCacheTTL, DefaultDenyCacheTTL)
+		s := newLoggingSAR(t, root, &fnReviewer{fn: failWith(errReview)}, DefaultTimeout, DefaultAllowCacheTTL, DefaultDenyCacheTTL)
 		ctx := logging.WithRequestID(context.Background(), "r1")
 
 		if _, err := s.checkRbacImpersonationAuthorization(ctx, "users", "bob", loggingTestRequester()); !errors.Is(err, ErrCreateSubjectAccessReview) {
@@ -924,7 +924,7 @@ func TestLiveCheckFailureEvents(t *testing.T) {
 	t.Run("caller cancellation is a DEBUG client condition", func(t *testing.T) {
 		root, cap := logtest.New(t, 2)
 		reviewer := &blockingReviewer{entered: make(chan struct{}, 1)}
-		s := newLoggingSAR(t, root, reviewer, DefaultAllowCacheTTL, DefaultDenyCacheTTL)
+		s := newLoggingSAR(t, root, reviewer, DefaultTimeout, DefaultAllowCacheTTL, DefaultDenyCacheTTL)
 
 		ctx, cancel := context.WithCancel(logging.WithRequestID(context.Background(), "r1"))
 		defer cancel()
@@ -965,6 +965,98 @@ func TestLiveCheckFailureEvents(t *testing.T) {
 			t.Errorf("request_id = %q, want r1", rec.String("request_id"))
 		}
 	})
+
+	t.Run("the proxy's own authorization budget expiring is an ERROR dependency failure", func(t *testing.T) {
+		root, cap := logtest.New(t, 2)
+		reviewer := &blockingReviewer{entered: make(chan struct{}, 1)}
+		s := newLoggingSAR(t, root, reviewer, 50*time.Millisecond, DefaultAllowCacheTTL, DefaultDenyCacheTTL)
+
+		h := http.Header{}
+		h.Set("Impersonate-User", "bob")
+		// The requester never goes away: the only deadline that can expire is
+		// the proxy's own SAR budget, which means the API server did not answer
+		// in time. That is a dependency failure, not a client condition.
+		req := (&http.Request{Header: h}).WithContext(logging.WithRequestID(context.Background(), "r1"))
+
+		done := make(chan error, 1)
+		go func() {
+			_, err := s.CheckAuthorizedForImpersonation(req, loggingTestRequester())
+			done <- err
+		}()
+
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("error = %v, want errors.Is(context.DeadlineExceeded)", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("the check never returned after the authorization budget expired")
+		}
+
+		rec := cap.Only(t, logging.EventAuthzSARFailed)
+		if rec.String("level") != "ERROR" {
+			t.Errorf("level = %q, want ERROR: a slow API server is a dependency failure", rec.String("level"))
+		}
+		if rec.String("reason") != "authorization_dependency_error" {
+			t.Errorf("reason = %q, want authorization_dependency_error", rec.String("reason"))
+		}
+		if !strings.Contains(rec.String("error_message"), "timed out") {
+			t.Errorf("error_message = %q, want it to say the subject access review timed out", rec.String("error_message"))
+		}
+		if rec.String("request_id") != "r1" {
+			t.Errorf("request_id = %q, want r1", rec.String("request_id"))
+		}
+	})
+
+	t.Run("a client disconnect on the request path stays a DEBUG client condition", func(t *testing.T) {
+		root, cap := logtest.New(t, 2)
+		reviewer := &blockingReviewer{entered: make(chan struct{}, 1)}
+		// A generous authorization budget, so the only deadline that can fire is
+		// the requester's own. This is the production path, where the derived
+		// context carries the parent to classify against; the direct-call subtest
+		// above exercises the fallback for a check with no recorded parent.
+		s := newLoggingSAR(t, root, reviewer, DefaultTimeout, DefaultAllowCacheTTL, DefaultDenyCacheTTL)
+
+		reqCtx, cancel := context.WithCancel(logging.WithRequestID(context.Background(), "r1"))
+		defer cancel()
+
+		h := http.Header{}
+		h.Set("Impersonate-User", "bob")
+		req := (&http.Request{Header: h}).WithContext(reqCtx)
+
+		done := make(chan error, 1)
+		go func() {
+			_, err := s.CheckAuthorizedForImpersonation(req, loggingTestRequester())
+			done <- err
+		}()
+
+		select {
+		case <-reviewer.entered:
+		case <-time.After(2 * time.Second):
+			t.Fatal("SAR Create was never entered")
+		}
+		cancel()
+
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("error = %v, want errors.Is(context.Canceled)", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("the check never returned after the client disconnected")
+		}
+
+		rec := cap.Only(t, logging.EventAuthzSARFailed)
+		if rec.String("level") != "DEBUG" {
+			t.Errorf("level = %q, want DEBUG: a client disconnect must not raise an ERROR", rec.String("level"))
+		}
+		if rec.String("reason") != "client_canceled" {
+			t.Errorf("reason = %q, want client_canceled", rec.String("reason"))
+		}
+		if strings.Contains(rec.String("error_message"), "timed out") {
+			t.Errorf("error_message = %q, must not blame the API server for a client disconnect", rec.String("error_message"))
+		}
+	})
 }
 
 // gateReviewer holds every Create open until release is closed, so a second
@@ -994,7 +1086,7 @@ func (r *gateReviewer) Create(_ context.Context, req *v1.SubjectAccessReview, _ 
 func TestCoalescedLiveCheckEvent(t *testing.T) {
 	root, cap := logtest.New(t, 2)
 	reviewer := &gateReviewer{entered: make(chan struct{}, 1), release: make(chan struct{})}
-	s := newLoggingSAR(t, root, reviewer, DefaultAllowCacheTTL, DefaultDenyCacheTTL)
+	s := newLoggingSAR(t, root, reviewer, DefaultTimeout, DefaultAllowCacheTTL, DefaultDenyCacheTTL)
 	ctx := logging.WithRequestID(context.Background(), "r1")
 
 	check := func(wg *sync.WaitGroup, err *error) {
