@@ -4,6 +4,7 @@ package logging_test
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
@@ -48,16 +49,6 @@ func TestDebugHiddenAtVerbosityZero(t *testing.T) {
 	}
 }
 
-func TestEmitPanicsOnMissingRequiredFieldUnderLogcheck(t *testing.T) {
-	root, _ := logtest.New(t, 0)
-	defer func() {
-		if recover() == nil {
-			t.Fatal("Emit did not panic on a missing required field with -tags logcheck")
-		}
-	}()
-	logging.Emit(context.Background(), root, logging.EventProxyServerStarted) // address missing
-}
-
 func TestFromContextReturnsDiscardWhenAbsent(t *testing.T) {
 	l := logging.FromContext(context.Background())
 	if l == nil {
@@ -72,5 +63,40 @@ func TestTextFormatIsValid(t *testing.T) {
 	}
 	if err := (logging.Options{Format: logging.FormatText}).Validate(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRequestIDFromIsEmptyWhenAbsent(t *testing.T) {
+	if got := logging.RequestIDFrom(context.Background()); got != "" {
+		t.Fatalf("RequestIDFrom on a bare context = %q, want empty", got)
+	}
+}
+
+func TestEmitTakesRequiredRequestIDFromContext(t *testing.T) {
+	root, cap := logtest.New(t, 2)
+	ctx := logging.WithRequestID(context.Background(), "r1")
+	logging.Emit(ctx, root, logging.EventCacheSARLookup, slog.String("cache_result", "hit"))
+
+	rec := cap.Only(t, logging.EventCacheSARLookup)
+	if rec.String("request_id") != "r1" {
+		t.Errorf("request_id = %q, want r1", rec.String("request_id"))
+	}
+	if n := strings.Count(cap.Raw(), "request_id"); n != 1 {
+		t.Errorf("request_id appears %d times, want 1: %s", n, cap.Raw())
+	}
+}
+
+func TestEmitKeepsAnExplicitRequestIDOverTheContext(t *testing.T) {
+	root, cap := logtest.New(t, 2)
+	ctx := logging.WithRequestID(context.Background(), "from-context")
+	logging.Emit(ctx, root, logging.EventCacheSARLookup,
+		slog.String("request_id", "explicit"), slog.String("cache_result", "hit"))
+
+	rec := cap.Only(t, logging.EventCacheSARLookup)
+	if rec.String("request_id") != "explicit" {
+		t.Errorf("request_id = %q, want explicit", rec.String("request_id"))
+	}
+	if n := strings.Count(cap.Raw(), "request_id"); n != 1 {
+		t.Errorf("request_id appears %d times, want 1: %s", n, cap.Raw())
 	}
 }

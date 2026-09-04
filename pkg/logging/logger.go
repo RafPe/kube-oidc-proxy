@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"slices"
 )
 
 // SchemaVersion is stamped on every first-party record. Bump it only for a
@@ -76,7 +77,27 @@ func ForComponent(root *slog.Logger, c Component) *slog.Logger {
 	return root.With(slog.String("component", string(c)))
 }
 
+// attrRequestID is the record field naming the per-request id, and the one
+// Required key Emit can supply from the context.
+const attrRequestID = "request_id"
+
 type ctxKey struct{}
+
+type requestIDKey struct{}
+
+// WithRequestID returns a context carrying the id minted for the request being
+// served. Emit reads it so a call site deep in the request path does not have
+// to thread request_id through every signature.
+func WithRequestID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, requestIDKey{}, id)
+}
+
+// RequestIDFrom returns the request id carried by the context, or "" when
+// there is none.
+func RequestIDFrom(ctx context.Context) string {
+	id, _ := ctx.Value(requestIDKey{}).(string)
+	return id
+}
 
 // NewContext returns a context carrying the request-scoped logger.
 func NewContext(ctx context.Context, l *slog.Logger) context.Context {
@@ -109,6 +130,7 @@ func Emit(ctx context.Context, l *slog.Logger, e EventType, attrs ...slog.Attr) 
 // cancellation).
 func EmitLevel(ctx context.Context, l *slog.Logger, e EventType, level slog.Level, attrs ...slog.Attr) {
 	spec, _ := e.Spec()
+	attrs = withContextRequestID(ctx, spec, attrs)
 	checkRequired(e, spec, attrs) // no-op unless built with -tags logcheck
 	if !l.Enabled(ctx, level) {
 		return
@@ -117,4 +139,30 @@ func EmitLevel(ctx context.Context, l *slog.Logger, e EventType, level slog.Leve
 	all = append(all, e.Attr())
 	all = append(all, attrs...)
 	l.LogAttrs(ctx, level, spec.Message, all...)
+}
+
+// withContextRequestID supplies request_id from the context for an event whose
+// registry entry requires it and whose caller did not pass it. A caller that
+// passes the attribute always wins, so a record never carries the key twice.
+// Emit inherits this through EmitLevel.
+func withContextRequestID(ctx context.Context, spec EventSpec, attrs []slog.Attr) []slog.Attr {
+	if !slices.Contains(spec.Required, attrRequestID) || hasAttr(attrs, attrRequestID) {
+		return attrs
+	}
+	id := RequestIDFrom(ctx)
+	if id == "" {
+		return attrs
+	}
+	// Full slice expression: appending must not write into the caller's array.
+	return append(attrs[:len(attrs):len(attrs)], slog.String(attrRequestID, id))
+}
+
+// hasAttr reports whether attrs carries the given key, whatever its value.
+func hasAttr(attrs []slog.Attr, key string) bool {
+	for _, a := range attrs {
+		if a.Key == key {
+			return true
+		}
+	}
+	return false
 }
