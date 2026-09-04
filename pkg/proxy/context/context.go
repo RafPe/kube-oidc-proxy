@@ -31,6 +31,8 @@ import (
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/client-go/transport"
+
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 )
 
 type key int
@@ -140,9 +142,12 @@ func NoImpersonation(req *http.Request) bool {
 }
 
 // WithRequestID returns a copy of the request carrying id as the request's
-// authoritative correlation id.
+// authoritative correlation id. The id is stored twice on purpose: under this
+// package's key, which the access record reads, and under the logging package's
+// key, which Emit reads to supply request_id to any event that requires it.
 func WithRequestID(req *http.Request, id string) *http.Request {
-	return req.WithContext(request.WithValue(req.Context(), requestIDKey, id))
+	return req.WithContext(logging.WithRequestID(
+		request.WithValue(req.Context(), requestIDKey, id), id))
 }
 
 // RequestID returns the request's authoritative correlation id, or "" when the

@@ -6,6 +6,7 @@ package audit
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
@@ -31,6 +32,10 @@ var longRunningRequests = genericfilters.BasicLongRunningRequestCheck(
 	sets.NewString("attach", "exec", "proxy", "log", "portforward"))
 
 type Audit struct {
+	// logger is the audit-component logger this backend reports its own
+	// lifecycle through. Never nil: New substitutes a discarding logger.
+	logger *slog.Logger
+
 	opts         *options.AuditOptions
 	serverConfig *server.CompletedConfig
 }
@@ -38,7 +43,14 @@ type Audit struct {
 // New creates a new Audit struct to handle auditing for proxy requests. This
 // is mostly a wrapper for the apiserver auditing handlers to combine them with
 // the proxy.
-func New(opts *options.AuditOptions, externalAddress string, secureServingInfo *server.SecureServingInfo) (*Audit, error) {
+//
+// logger is the audit-component logger; a nil logger yields one that discards
+// every record, so a partially wired caller cannot panic on the request path.
+func New(opts *options.AuditOptions, externalAddress string, secureServingInfo *server.SecureServingInfo, logger *slog.Logger) (*Audit, error) {
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+
 	serverConfig := &server.Config{
 		ExternalAddress: externalAddress,
 		SecureServing:   secureServingInfo,
@@ -69,6 +81,7 @@ func New(opts *options.AuditOptions, externalAddress string, secureServingInfo *
 	completed := serverConfig.Complete(nil)
 
 	return &Audit{
+		logger:       logger,
 		opts:         opts,
 		serverConfig: &completed,
 	}, nil

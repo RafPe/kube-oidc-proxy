@@ -4,6 +4,7 @@ package subjectaccessreview
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -402,7 +403,7 @@ func TestErrorsNeverCached(t *testing.T) {
 func TestCacheDisabled(t *testing.T) {
 	reviewer := &fnReviewer{}
 	reviewer.set(allowAll)
-	sar, err := New(reviewer, DefaultTimeout, 0, 0, DefaultMaxHeaderValues)
+	sar, err := New(reviewer, DefaultTimeout, 0, 0, DefaultMaxHeaderValues, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

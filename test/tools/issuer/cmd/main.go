@@ -3,6 +3,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -14,7 +15,9 @@ import (
 
 func main() {
 	opts := new(options.Options)
-	stopCh := signals.Handler()
+	// These test tools have no logging flags of their own; the shutdown
+	// reporting the handler will do goes to the process default logger.
+	stopCh := signals.Handler(slog.Default())
 
 	cmd := &cobra.Command{
 		Use:   "oidc-issuer",

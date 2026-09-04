@@ -8,6 +8,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"sort"
@@ -28,10 +29,12 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/probe"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/tokenreview"
+	"github.com/rafpe/kube-oidc-proxy/pkg/util/signals"
 	"github.com/rafpe/kube-oidc-proxy/pkg/util/token"
 )
 
@@ -73,12 +76,16 @@ func checkReservedIdentityPrefixes(opts *options.Options) error {
 	return nil
 }
 
-func NewRunCommand(stopCh <-chan struct{}) *cobra.Command {
+// NewRunCommand builds the root command. The signal handler is installed inside
+// RunE rather than by the caller, because the shutdown logger it reports
+// through is derived from the root logger, which cannot exist until the
+// command line has been parsed.
+func NewRunCommand() *cobra.Command {
 	// Build options
 	opts := options.New()
 
 	// Build command
-	cmd := buildRunCommand(stopCh, opts)
+	cmd := buildRunCommand(opts)
 
 	// Add option flags to command
 	opts.AddFlags(cmd)
@@ -87,7 +94,7 @@ func NewRunCommand(stopCh <-chan struct{}) *cobra.Command {
 }
 
 // Proxy command
-func buildRunCommand(stopCh <-chan struct{}, opts *options.Options) *cobra.Command {
+func buildRunCommand(opts *options.Options) *cobra.Command {
 	return &cobra.Command{
 		Use:  options.AppName,
 		Long: "kube-oidc-proxy is a reverse proxy to authenticate users to Kubernetes API servers with Open ID Connect Authentication.",
@@ -96,12 +103,25 @@ func buildRunCommand(stopCh <-chan struct{}, opts *options.Options) *cobra.Comma
 				return err
 			}
 
+			// One root logger for the whole process, built from the flags and
+			// injected into every collaborator below; no package holds its own.
+			root, err := logging.New(opts.Logging.ToLoggerOptions(os.Stdout))
+			if err != nil {
+				return err
+			}
+			slog.SetDefault(root)
+
+			// Trap SIGINT/SIGTERM only once the root logger exists, so shutdown
+			// reports through the configured stream. Nothing is serving before
+			// this point, so a signal that arrives earlier ends the process
+			// with Go's default behaviour.
+			stopCh := signals.Handler(logging.ForComponent(root, logging.ComponentShutdown))
+
 			if err := checkReservedIdentityPrefixes(opts); err != nil {
 				return err
 			}
 
 			// Here we determine to either use custom or 'in-cluster' client configuration
-			var err error
 			var restConfig *rest.Config
 			if opts.Client.ClientFlagsChanged(cmd) {
 				// One or more client flags have been set to use client flag built
@@ -134,7 +154,9 @@ func buildRunCommand(stopCh <-chan struct{}, opts *options.Options) *cobra.Comma
 			// reviewer when both TTLs are zero.
 			var tokenReviewer authenticator.Token
 			if opts.App.TokenPassthrough.Enabled {
-				reviewer, err := tokenreview.New(restConfig, opts.App.TokenPassthrough.Audiences, opts.App.TokenPassthrough.RequestTimeout)
+				reviewer, err := tokenreview.New(restConfig, opts.App.TokenPassthrough.Audiences,
+					opts.App.TokenPassthrough.RequestTimeout,
+					logging.ForComponent(root, logging.ComponentTokenReview))
 				if err != nil {
 					return err
 				}
@@ -176,6 +198,7 @@ func buildRunCommand(stopCh <-chan struct{}, opts *options.Options) *cobra.Comma
 				opts.App.SubjectAccessReviewAllowCacheTTL,
 				opts.App.SubjectAccessReviewDenyCacheTTL,
 				opts.App.MaxImpersonationHeaderValues,
+				logging.ForComponent(root, logging.ComponentSAR),
 			)
 			if err != nil {
 				return err
@@ -188,6 +211,7 @@ func buildRunCommand(stopCh <-chan struct{}, opts *options.Options) *cobra.Comma
 
 			// Initialise proxy with token authenticator
 			p, err := proxy.New(proxy.Dependencies{
+				Logger:                root,
 				RestConfig:            restConfig,
 				TokenAuthenticator:    tokenAuther,
 				AuditOptions:          opts.Audit,
@@ -229,7 +253,8 @@ func buildRunCommand(stopCh <-chan struct{}, opts *options.Options) *cobra.Comma
 			// synchronously so a port-in-use failure surfaces here at startup.
 			probeServer := probe.NewServer(strconv.Itoa(opts.App.ReadinessProbePort),
 				issuerProbes, opts.App.ReadinessRequireAllIssuers,
-				p.OIDCTokenAuthenticator())
+				p.OIDCTokenAuthenticator(),
+				logging.ForComponent(root, logging.ComponentReadiness))
 			if err := probeServer.Start(ctx); err != nil {
 				return err
 			}
