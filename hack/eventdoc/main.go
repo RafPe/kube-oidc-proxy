@@ -12,6 +12,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/pmezard/go-difflib/difflib"
+
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 )
 
@@ -55,11 +57,29 @@ func run(check bool) error {
 		return nil
 	}
 	if check {
-		return fmt.Errorf("%s is out of date: run `make eventdoc` and commit the result", docPath)
+		diff, err := unifiedDiff(string(current), want)
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("%s is out of date: run `make eventdoc` and commit the result\n\n%s", docPath, diff)
 	}
 	// docPath is a compile-time constant relative to the repository root, so
 	// gosec's G703 taint warning here has no reachable attacker input.
 	return os.WriteFile(docPath, []byte(want), 0600) //nolint:gosec // constant path, no user input
+}
+
+// unifiedDiff renders the change -check would have written, so the failure
+// names the drifted rows instead of only reporting staleness.
+func unifiedDiff(current, want string) (string, error) {
+	return difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
+		A:        difflib.SplitLines(current),
+		B:        difflib.SplitLines(want),
+		FromFile: docPath,
+		FromDate: "committed",
+		ToFile:   docPath,
+		ToDate:   "generated",
+		Context:  3,
+	})
 }
 
 // replaceSection swaps the text between the two markers for table, keeping
