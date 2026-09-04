@@ -41,31 +41,55 @@ func (h *Helper) PodLogs(ns, selector string) (string, error) {
 // ProxyLogRecords returns the structured records the proxy has written, decoded
 // one per line, together with the raw log text. The raw text is returned
 // alongside so a caller can assert on what the stream does *not* contain, and
-// so a failing expectation can report the output it was matched against.
-//
-// Lines that are not a JSON object are skipped rather than reported as an
-// error: the decoded records and the raw text are two separate assertions, and
-// a caller checking that every line is JSON needs the raw text to say which one
-// was not.
+// so a failing expectation can report the output it was matched against. The
+// raw text is returned even on a decode error, so the caller can report the
+// stream the error came from.
 func (h *Helper) ProxyLogRecords(ns, selector string) ([]map[string]any, string, error) {
 	raw, err := h.PodLogs(ns, selector)
 	if err != nil {
 		return nil, "", err
 	}
 
+	records, err := decodeRecords(raw)
+	if err != nil {
+		return nil, raw, err
+	}
+
+	return records, raw, nil
+}
+
+// decodeRecords decodes every non-empty line of raw as one JSON object. A line
+// that does not decode is an error naming the line number and the line itself,
+// never a skip: the proxy's contract is one JSON object per line, and a
+// silently dropped line would let a malformed record disappear from every
+// assertion made against the decoded set.
+func decodeRecords(raw string) ([]map[string]any, error) {
 	var records []map[string]any
-	for _, line := range strings.Split(raw, "\n") {
+	for i, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "{") {
+		if line == "" {
 			continue
 		}
 
 		rec := make(map[string]any)
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
-			continue
+			return nil, fmt.Errorf("line %d is not a JSON object: %s: %w", i+1, bound(line), err)
 		}
 		records = append(records, rec)
 	}
 
-	return records, raw, nil
+	return records, nil
+}
+
+// maxReportedLine is how much of an undecodable line the error quotes. A single
+// record can run to kilobytes (client-go logs a whole curl command at -v=10),
+// and the point of the quote is to identify the line, not to reproduce it.
+const maxReportedLine = 200
+
+// bound renders a line for an error message, truncated and quoted.
+func bound(line string) string {
+	if len(line) > maxReportedLine {
+		return fmt.Sprintf("%q (truncated from %d bytes)", line[:maxReportedLine], len(line))
+	}
+	return fmt.Sprintf("%q", line)
 }

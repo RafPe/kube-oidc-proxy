@@ -3,6 +3,7 @@ package logging
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -42,15 +43,38 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 			Expect(r).To(HaveKeyWithValue("schema_version", float64(1)))
 			Expect(r).To(HaveKey("component"))
 		}
+		// Decoded here, not merely prefix-checked: a line such as "{invalid"
+		// begins with a brace and is not a record, and the contract this spec
+		// exists to pin is that every line the proxy writes decodes as one JSON
+		// object. It fails on the first line that does not.
 		for _, line := range nonEmptyLines(raw) {
-			Expect(line).To(HavePrefix("{"), "non-JSON line in proxy output: %s", line)
+			var rec map[string]any
+			Expect(json.Unmarshal([]byte(line), &rec)).To(Succeed(),
+				"non-JSON line in proxy output: %s", line)
+			Expect(rec).NotTo(BeNil(),
+				"line decoded to JSON null rather than an object: %s", line)
 		}
 	})
 
 	It("records startup configuration and every configured issuer", func() {
 		recs, _ := records(f)
 		Expect(byEvent(recs, "proxy.config.loaded")).To(HaveLen(1))
-		Expect(byEvent(recs, "oidc.issuer.configured")).NotTo(BeEmpty())
+
+		// One record per configured issuer, not merely one record: the
+		// expected set is derived from the issuer the framework configured the
+		// proxy with, so it follows a deploy that configures more than one.
+		want := configuredIssuerNames(f)
+		configured := byEvent(recs, "oidc.issuer.configured")
+		Expect(configured).To(HaveLen(len(want)))
+
+		var got []string
+		for _, r := range configured {
+			name, _ := r["issuer_name"].(string)
+			Expect(name).NotTo(BeEmpty(), "oidc.issuer.configured with no issuer_name: %v", r)
+			got = append(got, name)
+		}
+		Expect(got).To(ConsistOf(want))
+
 		Expect(byEvent(recs, "readiness.proxy.ready")).To(HaveLen(1))
 	})
 
@@ -180,6 +204,14 @@ func fakeAPIServerLogs(f *framework.Framework) string {
 	Expect(err).NotTo(HaveOccurred())
 
 	return logs
+}
+
+// configuredIssuerNames returns the issuer_name the proxy records for each
+// issuer the framework configured it with. The default deploy passes exactly
+// one --oidc-issuer-url, the mock issuer the framework stood up, and a record
+// names an issuer by its host: the full issuer URL is never logged.
+func configuredIssuerNames(f *framework.Framework) []string {
+	return []string{f.IssuerURL().Host}
 }
 
 // byEvent returns the records carrying the given event_type.
