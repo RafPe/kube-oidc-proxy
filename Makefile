@@ -66,8 +66,12 @@ go_fmt:
 		exit 1; \
 	fi
 
+# Both build configurations: a build tag selects one of pkg/logging's two
+# checkRequired implementations, so one pass can only ever see one of them.
+# Untagged is what ships; -tags logcheck is what every test run compiles.
 go_vet:
 	go vet ./...
+	go vet -tags logcheck ./...
 
 go_lint: $(BINDIR)/golangci-lint ## lint golang code for problems
 	$(BINDIR)/golangci-lint run --timeout 5m ./...

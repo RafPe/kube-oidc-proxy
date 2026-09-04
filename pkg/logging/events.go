@@ -59,9 +59,14 @@ const (
 type EventSpec struct {
 	Components []Component // nil means any component (log.warning.suppressed)
 	Level      slog.Level
-	Required   []string // attribute keys that must be present and non-empty
-	Message    string   // static msg
-	Summary    string   // one line for docs
+	// AllowedLevels names the levels this event may also be emitted at, for
+	// the few whose severity depends on the outcome rather than the event. A
+	// dependency failure the client itself caused by hanging up is not an
+	// operator's problem, so it drops to DEBUG; nothing else may vary.
+	AllowedLevels []slog.Level
+	Required      []string // attribute keys that must be present and non-empty
+	Message       string   // static msg
+	Summary       string   // one line for docs
 }
 
 // Registry holds one entry per EventType constant. Required lists the mandatory
@@ -174,11 +179,12 @@ var Registry = map[EventType]EventSpec{
 		Summary:    "A live or shared SubjectAccessReview returned. Fires once per impersonation header value, so one request can emit several.",
 	},
 	EventAuthzSARFailed: {
-		Components: []Component{ComponentSAR},
-		Level:      slog.LevelError,
-		Required:   []string{"request_id", "reason", "error_message"},
-		Message:    "subject access review failed",
-		Summary:    "The SubjectAccessReview call failed. Carries reason=authorization_dependency_error.",
+		Components:    []Component{ComponentSAR},
+		Level:         slog.LevelError,
+		AllowedLevels: []slog.Level{slog.LevelDebug},
+		Required:      []string{"request_id", "reason", "error_message"},
+		Message:       "subject access review failed",
+		Summary:       "The SubjectAccessReview call failed. Carries reason=authorization_dependency_error, or reason=client_canceled at DEBUG when the client hung up before the review answered.",
 	},
 	EventAuthzImpersonationResolved: {
 		Components: []Component{ComponentSAR},
@@ -321,11 +327,12 @@ var Registry = map[EventType]EventSpec{
 		Summary:    "The pre-shutdown audit flush failed.",
 	},
 	EventUpstreamRequestFailed: {
-		Components: []Component{ComponentUpstream},
-		Level:      slog.LevelError,
-		Required:   []string{"request_id", "reason", "termination", "error_message"},
-		Message:    "upstream request failed",
-		Summary:    "The reverse proxy transport failed. Carries reason=upstream_error and a classified termination.",
+		Components:    []Component{ComponentUpstream},
+		Level:         slog.LevelError,
+		AllowedLevels: []slog.Level{slog.LevelDebug},
+		Required:      []string{"request_id", "reason", "termination", "error_message"},
+		Message:       "upstream request failed",
+		Summary:       "The reverse proxy transport failed. Carries reason=upstream_error and a classified termination; drops to DEBUG when the client canceled the request.",
 	},
 	EventUpstreamRequestCanceled: {
 		Components: []Component{ComponentUpstream},

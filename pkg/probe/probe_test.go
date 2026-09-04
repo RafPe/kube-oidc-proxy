@@ -586,6 +586,7 @@ func TestCheckDoesNotHoldLockDuringAuth(t *testing.T) {
 // already computes.
 func TestIssuerPendingEmittedOnStateChangeWithReason(t *testing.T) {
 	root, cap := logtest.New(t, 0)
+	defer logtest.AssertRegistered(t, cap)
 	hc := newTestHealthCheckWithLogger(t, root, true, map[string]bool{"https://a": true},
 		IssuerReadiness{IssuerURL: "https://a", FakeJWT: "jwt-a"})
 	hc.SetServing()
@@ -605,6 +606,7 @@ func TestIssuerPendingEmittedOnStateChangeWithReason(t *testing.T) {
 // V(4) while the pending line repeated on every scrape.
 func TestReadyTransitionIsInfo(t *testing.T) {
 	root, cap := logtest.New(t, 0)
+	defer logtest.AssertRegistered(t, cap)
 	hc := newTestHealthCheckWithLogger(t, root, false, nil, IssuerReadiness{IssuerURL: "https://a", FakeJWT: "jwt-a"})
 	hc.SetServing()
 	if err := hc.Check(); err != nil {
@@ -655,6 +657,7 @@ func TestIssuerNameNeverEmitsRawInput(t *testing.T) {
 // be reported rather than swallowed.
 func TestReadinessServerFailedOnShutdownError(t *testing.T) {
 	root, cap := logtest.New(t, 0)
+	defer logtest.AssertRegistered(t, cap)
 
 	port := freePort(t)
 	s := NewServer(port, nil, false, &fakeAuther{}, root)

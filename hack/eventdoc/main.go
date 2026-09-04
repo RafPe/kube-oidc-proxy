@@ -114,13 +114,23 @@ func renderTable() string {
 		fmt.Fprintf(&b, "| `%s` | %s | %s | %s | %s |\n",
 			escape(string(e)),
 			components(spec.Components),
-			escape(spec.Level.String()),
+			levels(spec),
 			code(spec.Required),
 			escape(spec.Summary),
 		)
 	}
 
 	return b.String()
+}
+
+// levels names the level an event is emitted at, and the alternatives its
+// entry allows for an event whose severity depends on the outcome.
+func levels(spec logging.EventSpec) string {
+	out := []string{escape(spec.Level.String())}
+	for _, l := range spec.AllowedLevels {
+		out = append(out, escape(l.String()))
+	}
+	return strings.Join(out, " or ")
 }
 
 func components(cs []logging.Component) string {
