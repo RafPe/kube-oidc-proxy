@@ -621,6 +621,7 @@ func newCachedWithFake(t *testing.T, root *slog.Logger, create func(*authv1.Toke
 // never the bearer token itself.
 func TestCachedTokenReviewEvents(t *testing.T) {
 	root, cap := logtest.New(t, 2)
+	defer logtest.AssertRegistered(t, cap)
 	tr := newCachedWithFake(t, root, authenticatedResponse)
 	ctx := logging.WithRequestID(logging.NewContext(context.Background(), root), "r1")
 	_, _, _ = tr.AuthenticateToken(ctx, "s3cr3t-tok-value")
@@ -658,6 +659,7 @@ func TestLiveTokenReviewCompletedEvent(t *testing.T) {
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			root, cap := logtest.New(t, 2)
+			defer logtest.AssertRegistered(t, cap)
 			tr := newLoggingTokenReview(root, func(*authv1.TokenReview) (*authv1.TokenReview, error) {
 				return tc.review, nil
 			})
@@ -707,6 +709,7 @@ func TestTokenReviewFailureEmitsNoCompletedEvent(t *testing.T) {
 	for name, create := range tests {
 		t.Run(name, func(t *testing.T) {
 			root, cap := logtest.New(t, 2)
+			defer logtest.AssertRegistered(t, cap)
 			tr := newLoggingTokenReview(root, create)
 
 			if _, ok, err := tr.AuthenticateToken(testRequestContext(), "s3cr3t-tok-value"); err == nil || ok {
@@ -725,6 +728,7 @@ func TestTokenReviewFailureEmitsNoCompletedEvent(t *testing.T) {
 // very fast API server.
 func TestCachedTokenReviewHitCarriesNoDuration(t *testing.T) {
 	root, cap := logtest.New(t, 2)
+	defer logtest.AssertRegistered(t, cap)
 	tr := newCachedWithFake(t, root, authenticatedResponse)
 	ctx := logging.WithRequestID(context.Background(), "r1")
 

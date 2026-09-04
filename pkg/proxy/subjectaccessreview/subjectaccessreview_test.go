@@ -767,6 +767,7 @@ func loggingTestRequester() *user.DefaultInfo {
 // cache did not answer, and never any cache key material.
 func TestCacheHitAndLiveCheckEvents(t *testing.T) {
 	root, cap := logtest.New(t, 2)
+	defer logtest.AssertRegistered(t, cap)
 	s := newSARWithFakeReviewer(t, root, allowAll)
 	requester := &user.DefaultInfo{Name: "mmosley", Groups: []string{"group1"}}
 	ctx := logging.WithRequestID(logging.NewContext(context.Background(), root), "r1")
@@ -821,6 +822,7 @@ func TestCacheBypassEvents(t *testing.T) {
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			root, cap := logtest.New(t, 2)
+			defer logtest.AssertRegistered(t, cap)
 			s := newLoggingSAR(t, root, &fnReviewer{fn: allowAll}, DefaultTimeout, tc.allowTTL, tc.denyTTL)
 			ctx := logging.WithRequestID(context.Background(), "r1")
 
@@ -857,6 +859,7 @@ func TestCacheBypassEvents(t *testing.T) {
 // review is run.
 func TestCachedDenyDecisionEvents(t *testing.T) {
 	root, cap := logtest.New(t, 2)
+	defer logtest.AssertRegistered(t, cap)
 	reviewer := &fnReviewer{fn: denyAll}
 	s := newLoggingSAR(t, root, reviewer, DefaultTimeout, DefaultAllowCacheTTL, DefaultDenyCacheTTL)
 	ctx := logging.WithRequestID(context.Background(), "r1")
@@ -895,6 +898,7 @@ func TestCachedDenyDecisionEvents(t *testing.T) {
 func TestLiveCheckFailureEvents(t *testing.T) {
 	t.Run("an apiserver error is an ERROR dependency failure", func(t *testing.T) {
 		root, cap := logtest.New(t, 2)
+		defer logtest.AssertRegistered(t, cap)
 		s := newLoggingSAR(t, root, &fnReviewer{fn: failWith(errReview)}, DefaultTimeout, DefaultAllowCacheTTL, DefaultDenyCacheTTL)
 		ctx := logging.WithRequestID(context.Background(), "r1")
 
@@ -923,6 +927,7 @@ func TestLiveCheckFailureEvents(t *testing.T) {
 
 	t.Run("caller cancellation is a DEBUG client condition", func(t *testing.T) {
 		root, cap := logtest.New(t, 2)
+		defer logtest.AssertRegistered(t, cap)
 		reviewer := &blockingReviewer{entered: make(chan struct{}, 1)}
 		s := newLoggingSAR(t, root, reviewer, DefaultTimeout, DefaultAllowCacheTTL, DefaultDenyCacheTTL)
 
@@ -968,6 +973,7 @@ func TestLiveCheckFailureEvents(t *testing.T) {
 
 	t.Run("the proxy's own authorization budget expiring is an ERROR dependency failure", func(t *testing.T) {
 		root, cap := logtest.New(t, 2)
+		defer logtest.AssertRegistered(t, cap)
 		reviewer := &blockingReviewer{entered: make(chan struct{}, 1)}
 		s := newLoggingSAR(t, root, reviewer, 50*time.Millisecond, DefaultAllowCacheTTL, DefaultDenyCacheTTL)
 
@@ -1010,6 +1016,7 @@ func TestLiveCheckFailureEvents(t *testing.T) {
 
 	t.Run("a client disconnect on the request path stays a DEBUG client condition", func(t *testing.T) {
 		root, cap := logtest.New(t, 2)
+		defer logtest.AssertRegistered(t, cap)
 		reviewer := &blockingReviewer{entered: make(chan struct{}, 1)}
 		// A generous authorization budget, so the only deadline that can fire is
 		// the requester's own. This is the production path, where the derived
@@ -1085,6 +1092,7 @@ func (r *gateReviewer) Create(_ context.Context, req *v1.SubjectAccessReview, _ 
 // reports its own completion record so the sharing is queryable per request.
 func TestCoalescedLiveCheckEvent(t *testing.T) {
 	root, cap := logtest.New(t, 2)
+	defer logtest.AssertRegistered(t, cap)
 	reviewer := &gateReviewer{entered: make(chan struct{}, 1), release: make(chan struct{})}
 	s := newLoggingSAR(t, root, reviewer, DefaultTimeout, DefaultAllowCacheTTL, DefaultDenyCacheTTL)
 	ctx := logging.WithRequestID(context.Background(), "r1")
@@ -1142,6 +1150,7 @@ func TestCoalescedLiveCheckEvent(t *testing.T) {
 // impersonation sequence: the user target it resolved to, and nothing else.
 func TestImpersonationResolvedEvent(t *testing.T) {
 	root, cap := logtest.New(t, 2)
+	defer logtest.AssertRegistered(t, cap)
 	s := newSARWithFakeReviewer(t, root, allowAll)
 
 	h := http.Header{}

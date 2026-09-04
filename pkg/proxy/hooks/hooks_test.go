@@ -133,7 +133,10 @@ func TestRunPreShutdownHooksNoHooks(t *testing.T) {
 // aggregate wrapping the caller sees.
 func TestHooksEmitPerHookResult(t *testing.T) {
 	root, cap := logtest.New(t, 0)
-	h := New(root)
+	defer logtest.AssertRegistered(t, cap)
+	// The shutdown component, exactly as run.go names it: a hook record with no
+	// component is not the record production emits.
+	h := New(logging.ForComponent(root, logging.ComponentShutdown))
 	h.AddPreShutdownHook("ok", func() error { return nil })
 	h.AddPreShutdownHook("bad", func() error { return errors.New("boom") })
 	_ = h.RunPreShutdownHooks()

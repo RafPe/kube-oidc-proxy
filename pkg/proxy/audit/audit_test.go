@@ -341,6 +341,7 @@ func newTestAuditWithBackend(t testing.TB, root *slog.Logger, backend audit.Back
 // completed and Shutdown reports no failure to the caller.
 func TestShutdownReportsFlushResult(t *testing.T) {
 	root, cap := logtest.New(t, 0)
+	defer logtest.AssertRegistered(t, cap)
 	a := newTestAuditWithBackend(t, root, &fakeBackend{shutdownErr: nil})
 	if err := a.Shutdown(); err != nil {
 		t.Fatal(err)
@@ -353,6 +354,7 @@ func TestShutdownReportsFlushResult(t *testing.T) {
 // the error reaches the caller, so a lost audit flush is not silent.
 func TestShutdownReportsFlushFailure(t *testing.T) {
 	root, cap := logtest.New(t, 0)
+	defer logtest.AssertRegistered(t, cap)
 	a := newTestAuditWithBackend(t, root, &fakeBackend{shutdownErr: errors.New("flush timed out")})
 	err := a.Shutdown()
 	if err == nil {
@@ -371,6 +373,7 @@ func TestShutdownReportsFlushFailure(t *testing.T) {
 // correlated with the audit flags.
 func TestRunReportsBackendStarted(t *testing.T) {
 	root, cap := logtest.New(t, 0)
+	defer logtest.AssertRegistered(t, cap)
 	a := newTestAuditWithBackend(t, root, &fakeBackend{})
 
 	if err := a.Run(make(chan struct{})); err != nil {
@@ -391,6 +394,7 @@ func TestRunReportsBackendStarted(t *testing.T) {
 // reported at ERROR and the cause reaches the caller.
 func TestRunReportsBackendFailed(t *testing.T) {
 	root, cap := logtest.New(t, 0)
+	defer logtest.AssertRegistered(t, cap)
 	a := newTestAuditWithBackend(t, root, &fakeBackend{runErr: errors.New("webhook unreachable")})
 
 	err := a.Run(make(chan struct{}))
@@ -415,6 +419,7 @@ func TestRunReportsBackendFailed(t *testing.T) {
 // consumer tells "auditing off" from "auditing broken".
 func TestRunWithoutBackendIsSilent(t *testing.T) {
 	root, cap := logtest.New(t, 0)
+	defer logtest.AssertRegistered(t, cap)
 	a := newTestAuditWithBackend(t, root, nil)
 
 	if err := a.Run(make(chan struct{})); err != nil {

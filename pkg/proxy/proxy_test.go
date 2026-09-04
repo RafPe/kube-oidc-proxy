@@ -583,6 +583,7 @@ func newTestProxy(t *testing.T) *fakeProxy {
 	// the same stream, so a test can assert on any record the request produced
 	// through fakeProxy.logs.
 	root, logs := logtest.New(t, 2)
+	trackCapture(logs)
 	requestLogger := logging.ForComponent(root, logging.ComponentRequest)
 
 	fakeSubjectAccessReviewer := fakesubjectaccessreview.New(nil)
