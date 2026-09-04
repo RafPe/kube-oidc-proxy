@@ -61,6 +61,24 @@ func newAccessLogger(t *testing.T) (*accesslogging.AccessLogger, *logtest.Captur
 	return accesslogging.NewAccessLogger(logging.ForComponent(root, logging.ComponentRequest), nil), records
 }
 
+// testIssuerName is the issuer the fake OIDC authenticator attributes an
+// accepted token to, standing in for the WithIssuerName wrapper run.go puts
+// around every configured issuer's authenticator.
+const testIssuerName = "corp"
+
+// oidcAnswer returns a fake AuthenticateToken body that answers with resp and,
+// when it accepted the token, names testIssuerName on the request the way the
+// WithIssuerName wrapper does in production. Every success path needs it:
+// authn.oidc.succeeded requires a non-empty issuer_name.
+func oidcAnswer(resp *authenticator.Response, ok bool, err error) func(stdcontext.Context, string) (*authenticator.Response, bool, error) {
+	return func(ctx stdcontext.Context, _ string) (*authenticator.Response, bool, error) {
+		if ok && err == nil {
+			setIssuerName(ctx, testIssuerName)
+		}
+		return resp, ok, err
+	}
+}
+
 // withTestRequestID stamps the correlation id the request-id filter mints in
 // production, on both channels the filter uses: the proxy context the access
 // record reads, and the logging context Emit reads to supply request_id to any
@@ -1210,8 +1228,8 @@ func TestHandlers(t *testing.T) {
 			w := httptest.NewRecorder()
 
 			if test.authResponse != nil {
-				p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), test.expAuthToken).Return(
-					test.authResponse.resp, test.authResponse.pass, test.authResponse.err)
+				p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), test.expAuthToken).DoAndReturn(
+					oidcAnswer(test.authResponse.resp, test.authResponse.pass, test.authResponse.err))
 			}
 
 			p.fakeRT.expUser = test.expUser
@@ -1396,7 +1414,7 @@ func TestHeadersConfig(t *testing.T) {
 				},
 			}
 
-			p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(authResponse, true, nil)
+			p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(oidcAnswer(authResponse, true, nil))
 
 			p.fakeRT.expUser = "a-user"
 			p.fakeRT.expGroup = []string{user.AllAuthenticated}

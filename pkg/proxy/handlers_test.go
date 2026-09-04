@@ -94,15 +94,15 @@ func assertRecord(t *testing.T, rec logtest.Record, event logging.EventType, com
 }
 
 // TestOIDCSuccessEmitsAuthnOIDCSucceeded pins the record the OIDC path writes
-// when it accepts a token. issuer_name is absent until the issuer registry
-// names the issuer that authenticated the request, so the field must not
-// appear empty rather than absent.
+// when it accepts a token, including the name of the issuer that accepted it:
+// with several issuers configured, a record that cannot say which one answered
+// cannot answer the question the event exists for.
 func TestOIDCSuccessEmitsAuthnOIDCSucceeded(t *testing.T) {
 	p := newTestProxy(t)
-	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(
-		&authenticator.Response{
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(
+		oidcAnswer(&authenticator.Response{
 			User: &authuser.DefaultInfo{Name: "alice", Groups: []string{"devs"}},
-		}, true, nil)
+		}, true, nil))
 
 	var served bool
 	handler := p.withAuthenticateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -122,8 +122,8 @@ func TestOIDCSuccessEmitsAuthnOIDCSucceeded(t *testing.T) {
 	if got := rec.String("level"); got != "DEBUG" {
 		t.Errorf("level = %q, want DEBUG", got)
 	}
-	if v, ok := rec["issuer_name"]; ok {
-		t.Errorf("issuer_name = %v, want the field to be absent while no issuer is named", v)
+	if got := rec.String("issuer_name"); got != testIssuerName {
+		t.Errorf("issuer_name = %q, want %q", got, testIssuerName)
 	}
 
 	p.ctrl.Finish()
@@ -421,10 +421,10 @@ func reservedIdentityRequest(t *testing.T, extraHeaders map[string]string) *http
 func TestWithAuthenticateRequestRejectsReservedIdentity(t *testing.T) {
 	p := newTestProxy(t)
 
-	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(
-		&authenticator.Response{
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(
+		oidcAnswer(&authenticator.Response{
 			User: &authuser.DefaultInfo{Name: "alice", Groups: []string{"system:masters"}},
-		}, true, nil)
+		}, true, nil))
 
 	var served bool
 	handler := p.withAuthenticateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -451,10 +451,10 @@ func TestWithAuthenticateRequestAllowsAllowlistedReservedGroup(t *testing.T) {
 	p := newTestProxy(t)
 	p.allowedReservedGroups = sets.New("system:masters")
 
-	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(
-		&authenticator.Response{
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(
+		oidcAnswer(&authenticator.Response{
 			User: &authuser.DefaultInfo{Name: "alice", Groups: []string{"system:masters"}},
-		}, true, nil)
+		}, true, nil))
 
 	var served bool
 	handler := p.withAuthenticateRequest(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
@@ -510,10 +510,10 @@ func TestOverCapImpersonationRejectedBeforeSubjectAccessReview(t *testing.T) {
 	}
 	p.subjectAccessReviewer = sar
 
-	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(
-		&authenticator.Response{
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(
+		oidcAnswer(&authenticator.Response{
 			User: &authuser.DefaultInfo{Name: "alice", Groups: []string{"devs"}},
-		}, true, nil)
+		}, true, nil))
 
 	var served bool
 	handler := p.withHandlers(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -561,10 +561,10 @@ func TestReservedIdentityRejectedBeforeSubjectAccessReview(t *testing.T) {
 	}
 	p.subjectAccessReviewer = sar
 
-	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(
-		&authenticator.Response{
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(
+		oidcAnswer(&authenticator.Response{
 			User: &authuser.DefaultInfo{Name: "alice", Groups: []string{"system:masters"}},
-		}, true, nil)
+		}, true, nil))
 
 	var served bool
 	handler := p.withHandlers(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -596,10 +596,10 @@ func TestReservedIdentityRejectedBeforeSubjectAccessReview(t *testing.T) {
 // identity carrying a reserved group, so a request built by
 // reservedIdentityRequest is refused by checkReservedIdentity.
 func reservedIdentityUser(p *fakeProxy, groups []string, times int) {
-	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(
-		&authenticator.Response{
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(
+		oidcAnswer(&authenticator.Response{
 			User: &authuser.DefaultInfo{Name: "alice", Groups: groups},
-		}, true, nil).Times(times)
+		}, true, nil)).Times(times)
 }
 
 func TestUntrustedForwardedHeadersDroppedIsWarn(t *testing.T) {
