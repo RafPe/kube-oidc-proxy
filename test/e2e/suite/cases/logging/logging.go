@@ -105,7 +105,14 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 	})
 
 	It("records an impersonation denial with reason and target", func() {
-		resp := doRequest(f, validToken(f), map[string]string{"Impersonate-Group": "system:masters"})
+		// The impersonation target is a user the e2e RBAC does allow, paired
+		// with a group it does not: a group header on its own never reaches a
+		// SubjectAccessReview, so the denial being asserted here would not
+		// happen. The SAR clears the user and refuses the group.
+		resp := doRequest(f, validToken(f), map[string]string{
+			"Impersonate-User":  "ok-to-impersonate@nodomain.dev",
+			"Impersonate-Group": "system:masters",
+		})
 		Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
 		id := resp.Header.Get("Audit-ID")
 		Eventually(func() []map[string]any {
