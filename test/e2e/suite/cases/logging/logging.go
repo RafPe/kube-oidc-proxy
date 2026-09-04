@@ -97,7 +97,11 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 		recs, raw := records(f)
 		Expect(withRequestID(byEvent(recs, "request.access.decided"), id)[0]).To(HaveKeyWithValue("reason", "unauthorized"))
 		Expect(raw).NotTo(ContainSubstring(tok))
-		Expect(raw).NotTo(ContainSubstring("Authorization"))
+		// The stream is checked for an unmasked credential rather than for the
+		// header name: at -v=10 client-go's debug round tripper prints a curl
+		// command naming the Authorization header, with its value already
+		// masked, for the proxy's own requests to the API server.
+		Expect(raw).NotTo(MatchRegexp(`(?i)bearer\s+[A-Za-z0-9._-]{20,}`))
 	})
 
 	It("records an impersonation denial with reason and target", func() {
@@ -141,7 +145,16 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 		f.DeployProxyWith(extraOIDCVolumes, fmt.Sprintf("--server=%s", fakeAPIServerURL), "--certificate-authority=/fake-apiserver/ca.pem")
 		resp := doRequest(f, validToken(f), nil)
 		id := resp.Header.Get("Audit-ID")
-		Eventually(func() string { return fakeAPIServerLogs(f) }, 20*time.Second, time.Second).Should(ContainSubstring("Audit-Id: " + id))
+
+		// The fake API server logs header names without their values, so the
+		// value that reached it is observed through the echo instead: it
+		// reflects every request header onto its response, and the proxy sets
+		// Audit-ID on the response itself, so the id arrives twice only if the
+		// upstream received it.
+		Expect(resp.Header.Values("Audit-ID")).To(ContainElements(id, id),
+			"the upstream did not echo back the request id the proxy minted")
+		Eventually(func() string { return fakeAPIServerLogs(f) }, 20*time.Second, time.Second).
+			Should(ContainSubstring("Audit-Id"))
 	})
 })
 
