@@ -14,7 +14,7 @@
 | `authn.tokenreview.failed` | `tokenreview` | ERROR | `request_id`, `reason`, `error_message` | The API server was unreachable or returned a status error. Carries reason=authentication_dependency_error. |
 | `authz.impersonation.resolved` | `sar` | DEBUG | `request_id`, `target_kind`, `target_name` | The whole impersonation sequence was allowed. A denial is request.access.decided with decision=deny and reason=impersonation_denied. |
 | `authz.sar.completed` | `sar` | DEBUG | `request_id`, `decision`, `duration_ms`, `request_coalesced`, `target_kind` | A live or shared SubjectAccessReview returned. Fires once per impersonation header value, so one request can emit several. |
-| `authz.sar.failed` | `sar` | ERROR | `request_id`, `reason`, `error_message` | The SubjectAccessReview call failed. Carries reason=authorization_dependency_error. |
+| `authz.sar.failed` | `sar` | ERROR or DEBUG | `request_id`, `reason`, `error_message` | The SubjectAccessReview call failed. Carries reason=authorization_dependency_error, or reason=client_canceled at DEBUG when the client hung up before the review answered. |
 | `cache.sar.lookup` | `sar` | DEBUG | `request_id`, `cache_result` | One SubjectAccessReview cache consultation. Carries decision on a hit, never the cache key. |
 | `cache.tokenreview.lookup` | `tokenreview` | DEBUG | `request_id`, `cache_result` | One TokenReview cache consultation. Carries authenticated on a hit, never the cache key. |
 | `log.warning.suppressed` | any | WARN | `warning_reason`, `suppressed_count`, `interval_seconds` | Token-bucket summary of dropped warning records. |
@@ -41,5 +41,5 @@
 | `request.response.completed` | `request` | INFO | `request_id`, `http_status`, `duration_ms`, `termination` | The handler returned. The terminal record for every request, mirroring the audit stage ResponseComplete. |
 | `request.response.started` | `request` | INFO | `request_id`, `http_status`, `time_to_headers_ms` | First WriteHeader on a long-running request. Mirrors the audit stage ResponseStarted. |
 | `upstream.request.canceled` | `upstream` | DEBUG | `request_id`, `reason` | The client went away before the upstream response completed. Carries reason=client_canceled. |
-| `upstream.request.failed` | `upstream` | ERROR | `request_id`, `reason`, `termination`, `error_message` | The reverse proxy transport failed. Carries reason=upstream_error and a classified termination. |
+| `upstream.request.failed` | `upstream` | ERROR or DEBUG | `request_id`, `reason`, `termination`, `error_message` | The reverse proxy transport failed. Carries reason=upstream_error and a classified termination; drops to DEBUG when the client canceled the request. |
 <!-- events:end -->

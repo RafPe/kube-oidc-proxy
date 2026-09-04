@@ -61,6 +61,16 @@ func TestEveryEventIsRegisteredWithValidSpec(t *testing.T) {
 		default:
 			t.Errorf("%q has invalid level %v", e, spec.Level)
 		}
+		for _, l := range spec.AllowedLevels {
+			switch l {
+			case slog.LevelDebug, slog.LevelInfo, slog.LevelWarn, slog.LevelError:
+			default:
+				t.Errorf("%q allows invalid level %v", e, l)
+			}
+			if l == spec.Level {
+				t.Errorf("%q lists its own level %v as an alternative", e, l)
+			}
+		}
 		for _, c := range spec.Components {
 			if c == ComponentK8s {
 				t.Errorf("%q is registered for component k8s; bridged records carry no event_type", e)
