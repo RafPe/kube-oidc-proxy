@@ -4,6 +4,7 @@ package logging
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 
 	"k8s.io/apiserver/pkg/authentication/user"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	proxycontext "github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
 )
 
@@ -137,8 +139,8 @@ func TestSanitize(t *testing.T) {
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			if got := sanitize(tc.in); got != tc.exp {
-				t.Errorf("sanitize(%q) = %q, want %q", tc.in, got, tc.exp)
+			if got := logging.Sanitize(tc.in); got != tc.exp {
+				t.Errorf("Sanitize(%q) = %q, want %q", tc.in, got, tc.exp)
 			}
 		})
 	}
@@ -269,5 +271,63 @@ func TestOutboundExtraDoesNotLeakOriginalUserClaims(t *testing.T) {
 	}
 	if rec["outbound_extra_omitted"] != float64(1) {
 		t.Fatalf("outbound_extra_omitted = %v, want 1", rec["outbound_extra_omitted"])
+	}
+}
+
+// TestLargeGroupsAndExtrasAreNotTruncated pins the frozen access-log values:
+// inbound_groups, outbound_groups and the allowlisted extra arrays are logged
+// in full. Nothing here caps them, so no *_omitted field may appear either --
+// a count is only ever emitted for extras dropped by the allowlist.
+func TestLargeGroupsAndExtrasAreNotTruncated(t *testing.T) {
+	buf, restore := captureLogger(t)
+	defer restore()
+
+	groups := make([]string, 40)
+	values := make([]string, 40)
+	for i := range groups {
+		groups[i] = fmt.Sprintf("g%d", i)
+		values[i] = fmt.Sprintf("v%d", i)
+	}
+
+	req := &http.Request{RemoteAddr: "1.2.3.4:5555", URL: &url.URL{Path: "/api/v1/pods"}, Header: http.Header{}}
+	inbound := &user.DefaultInfo{
+		Name:   "alice",
+		Groups: groups,
+		Extra:  map[string][]string{"originaluser.jetstack.io-groups": values},
+	}
+
+	LogSuccessfulRequest(req, inbound, &user.DefaultInfo{Name: "alice", Groups: groups})
+
+	var rec map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &rec); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, buf.String())
+	}
+
+	for _, key := range []string{"inbound_groups", "outbound_groups"} {
+		got, ok := rec[key].([]any)
+		if !ok {
+			t.Fatalf("%s missing or wrong type: %v", key, rec[key])
+		}
+		if len(got) != 40 {
+			t.Errorf("%s has %d entries, want 40", key, len(got))
+		}
+	}
+
+	extra, ok := rec["inbound_extra"].(map[string]any)
+	if !ok {
+		t.Fatalf("inbound_extra missing or wrong type: %v", rec["inbound_extra"])
+	}
+	vals, ok := extra["originaluser.jetstack.io-groups"].([]any)
+	if !ok {
+		t.Fatalf("allowlisted extra missing or wrong type: %v", extra)
+	}
+	if len(vals) != 40 {
+		t.Errorf("allowlisted extra has %d values, want 40", len(vals))
+	}
+
+	for key := range rec {
+		if strings.HasSuffix(key, "_omitted") {
+			t.Errorf("unexpected omission field %s = %v; nothing was dropped", key, rec[key])
+		}
 	}
 }
