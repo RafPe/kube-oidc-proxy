@@ -11,7 +11,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -19,6 +18,7 @@ import (
 	"k8s.io/client-go/rest"
 
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
+	"github.com/rafpe/kube-oidc-proxy/test/e2e/suite/cases/sharedtests"
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
 )
 
@@ -86,12 +86,24 @@ var _ = framework.CasesDescribe("Reserved identity", Label("shard-c"), func() {
 			Expect(code).To(Equal(http.StatusForbidden), body)
 			Expect(body).To(ContainSubstring(forbiddenBody))
 
+			By("Checking the refusal was recorded as an anomaly")
+			// A token minting a reserved identity is an exploit attempt, not an
+			// ordinary denial, so it is recorded as one alongside the access
+			// record. The record is written on the same code path as the
+			// refusal, which is what makes waiting for it the right way to
+			// know the proxy's whole output for this request is readable:
+			// any SubjectAccessReview would have been submitted before the
+			// response the client has already received.
+			var raw string
+			Eventually(func() []map[string]any {
+				var recs []map[string]any
+				recs, raw = proxyLogs(f)
+				return sharedtests.ByEvent(recs, "request.anomaly.detected")
+			}, time.Second*15, time.Second).ShouldNot(BeEmpty(),
+				"the proxy refused a reserved identity without recording request.anomaly.detected")
+
 			By("Checking no SubjectAccessReview was submitted for the request")
-			// Any SAR would have been submitted before the response the proxy
-			// has already written; the pause is only to let the container
-			// runtime catch up with the proxy's stderr.
-			time.Sleep(time.Second * 2)
-			Expect(proxyLogs(f)).NotTo(ContainSubstring(sarRequestPath),
+			Expect(raw).NotTo(ContainSubstring(sarRequestPath),
 				"the proxy submitted a SubjectAccessReview for an identity it refused; the guard must run before the SAR, "+
 					"which builds its review from the requester's own (forged) groups")
 		})
@@ -140,7 +152,10 @@ var _ = framework.CasesDescribe("Reserved identity", Label("shard-c"), func() {
 			Expect(code).To(Equal(http.StatusOK), body)
 
 			By("Checking the SubjectAccessReview did reach the API server")
-			Eventually(func() string { return proxyLogs(f) }, time.Second*15, time.Second).
+			Eventually(func() string {
+				_, raw := proxyLogs(f)
+				return raw
+			}, time.Second*15, time.Second).
 				Should(ContainSubstring(sarRequestPath),
 					"no SubjectAccessReview was logged even with the group allowlisted, so the zero-SAR assertion "+
 						"in the refused specs cannot be trusted to fail")
@@ -217,20 +232,14 @@ func listPods(f *framework.Framework, signedToken, impersonateUser string) (int,
 	return int(statusErr.ErrStatus.Code), body
 }
 
-// proxyLogs returns the logs of the proxy container currently deployed in the
-// test namespace.
-func proxyLogs(f *framework.Framework) string {
-	pods, err := f.Helper().KubeClient.CoreV1().Pods(f.Namespace.Name).List(context.TODO(),
-		metav1.ListOptions{LabelSelector: "app=" + kind.ProxyImageName})
-	Expect(err).NotTo(HaveOccurred())
-	if len(pods.Items) != 1 {
-		Expect(fmt.Errorf("expected single kube-oidc-proxy pod running, got=%d", len(pods.Items))).NotTo(HaveOccurred())
-	}
-
-	logs, err := f.Helper().KubeClient.CoreV1().Pods(f.Namespace.Name).
-		GetLogs(pods.Items[0].Name, &corev1.PodLogOptions{Container: kind.ProxyImageName}).
-		DoRaw(context.TODO())
+// proxyLogs returns the decoded records the proxy currently deployed in the
+// test namespace has written, and the raw log text they were decoded from. The
+// SubjectAccessReview assertions match the raw text: the path appears inside a
+// bridged client-go message, so it is a substring of the JSON line rather than
+// a field of its own.
+func proxyLogs(f *framework.Framework) ([]map[string]any, string) {
+	recs, raw, err := f.Helper().ProxyLogRecords(f.Namespace.Name, "app="+kind.ProxyImageName)
 	Expect(err).NotTo(HaveOccurred())
 
-	return string(logs)
+	return recs, raw
 }
