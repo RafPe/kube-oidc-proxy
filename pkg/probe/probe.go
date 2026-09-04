@@ -68,6 +68,13 @@ type HealthCheck struct {
 	mu          sync.Mutex
 	ready       bool
 	initialized map[string]bool
+
+	// lastPending is the pending issuer set as of the previous Check, joined
+	// into a comparable key. The pending line is a state-change report, not a
+	// per-probe status: the kubelet calls Check every few seconds, so restating
+	// an unchanged set would flood the log for as long as an issuer stays
+	// unreachable.
+	lastPending string
 }
 
 // SetServing records that the proxy has started serving. Until it is called,
@@ -297,9 +304,14 @@ func (h *HealthCheck) Check() error {
 		klog.Infof("OIDC issuer initialized: %s (%d/%d ready)", issuerURL, len(h.initialized), len(h.issuers))
 	}
 
-	if len(pending) > 0 {
-		klog.Infof("readiness: %d/%d OIDC issuers initialized, pending: %v",
-			len(h.initialized), len(h.issuers), pending)
+	// Log only on change, and record the new set either way so that a pending
+	// set which clears and later recurs is reported again.
+	if key := strings.Join(pending, ","); key != h.lastPending {
+		if len(pending) > 0 {
+			klog.Infof("readiness: %d/%d OIDC issuers initialized, pending: %v",
+				len(h.initialized), len(h.issuers), pending)
+		}
+		h.lastPending = key
 	}
 
 	if h.ready {
@@ -314,6 +326,6 @@ func (h *HealthCheck) Check() error {
 	}
 
 	h.ready = true
-	klog.V(4).Info("OIDC provider(s) initialized, marking ready.")
+	klog.Info("OIDC provider(s) initialized, marking ready.")
 	return nil
 }

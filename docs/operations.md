@@ -53,31 +53,44 @@ Security, troubleshooting, and testing the proxy locally.
 
 ### Reading the request log
 
-The proxy logs every request to stdout so a SIEM (via fluentd or similar) can
-ingest them. A successful authentication looks like:
+The proxy logs every request to stdout as a single JSON object per record, so a
+SIEM (via fluentd or similar) can ingest them without a custom parser. Every
+value is sanitized: control characters are stripped, so nothing a client sends
+can inject a second record or fake a field.
 
-```
-[2021-11-25T01:05:17+0000] AuSuccess src:[10.42.0.5 / 10.42.1.3, 10.42.0.5] URI:/api/v1/namespaces/openunison/pods?limit=500 inbound:[mlbadmin1 / system:masters|system:authenticated /]
-```
+A successful authentication looks like:
 
-- The bracketed prefix is an ISO-8601 timestamp.
-- `AuSuccess` indicates authentication succeeded (`AuFail` on failure).
-- `src` is the remote address, followed by the `X-Forwarded-For` value if present.
-- `URI` is the request path.
-- `inbound` is the username, groups, and extra info taken from the JWT.
-
-When impersonation headers are present, an `outbound` section is appended showing
-the impersonated identity:
-
-```
-[2021-11-25T01:05:17+0000] AuSuccess src:[10.42.0.5 / 10.42.1.3] URI:/api/v1/namespaces/openunison/pods?limit=500 inbound:[mlbadmin1 / system:masters|system:authenticated /] outbound:[mlbadmin2 / group2|system:authenticated /]
+```json
+{"time":"2026-09-04T10:53:24.615018Z","level":"INFO","msg":"proxied request","event":"AuSuccess","src_ip":"10.42.1.3","path":"/api/v1/namespaces/default/pods","forwarded_for_untrusted":"10.42.0.5","inbound_user":"alice@example.com","inbound_groups":["platform-admins","system:authenticated"],"inbound_extra":{"Remote-Client-IP":["10.42.1.3"]},"inbound_extra_omitted":1}
 ```
 
-A failure omits the token information:
+When impersonation headers are present, the `outbound_*` fields report the
+impersonated identity alongside the authenticated one:
 
+```json
+{"time":"2026-09-04T10:53:24.615236Z","level":"INFO","msg":"proxied request","event":"AuSuccess","src_ip":"10.42.1.3","path":"/api/v1/namespaces/default/pods","forwarded_for_untrusted":"10.42.0.5","inbound_user":"alice@example.com","inbound_groups":["platform-admins","system:authenticated"],"outbound_user":"bob@example.com","outbound_groups":["developers","system:authenticated"]}
 ```
-[2021-11-25T01:05:24+0000] AuFail src:[10.42.0.5 / 10.42.1.3] URI:/api/v1/nodes
+
+A failure carries no identity at all — the token never authenticated, so there
+is nothing trustworthy to attribute the request to:
+
+```json
+{"time":"2026-09-04T10:53:24.615241Z","level":"INFO","msg":"rejected request","event":"AuFail","src_ip":"10.42.1.3","path":"/api/v1/nodes"}
 ```
+
+| Field | Meaning |
+| --- | --- |
+| `event` | `AuSuccess` when the request authenticated and was proxied, `AuFail` when it was rejected. |
+| `src_ip` | The **authoritative** client IP. It is the direct peer unless that peer is inside a configured `--trusted-proxies` network, in which case the forwarded chain is walked right-to-left past the trusted hops — see [Trusted proxies and client IP](./configuration.md#trusted-proxies-and-client-ip). This is the field to use for identity and rate limiting. |
+| `forwarded_for_untrusted` | The raw `X-Forwarded-For` chain exactly as the client sent it, present only when the header was set. It is forensic data that any client can forge — never treat it as identity. |
+| `path` | The request path. The query string is deliberately excluded, because it can carry tokens. |
+| `inbound_user`, `inbound_groups`, `inbound_uid` | The identity the OIDC token authenticated as. `inbound_uid` appears only when the authenticator supplied one. |
+| `inbound_extra` | The impersonation extras the proxy sets itself, from a fixed allowlist. Arbitrary claim data from the token is never logged. |
+| `inbound_extra_omitted` | How many extra keys were dropped because they are not on that allowlist, so you can tell data was withheld rather than absent. |
+| `outbound_user`, `outbound_groups`, `outbound_uid`, `outbound_extra`, `outbound_extra_omitted` | The same fields for the impersonated identity, present only when the request carried impersonation headers. Compare these with the `inbound_*` fields to see who acted as whom. |
+
+Bearer tokens, `Authorization` and `Cookie` values, request and response bodies,
+and arbitrary token claims are never logged.
 
 ## Development and testing
 

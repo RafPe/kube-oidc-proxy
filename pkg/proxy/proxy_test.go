@@ -4,6 +4,7 @@ package proxy
 import (
 	"bytes"
 	"errors"
+	"flag"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -25,6 +26,7 @@ import (
 	"k8s.io/apiserver/pkg/server"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/cert"
+	"k8s.io/klog/v2"
 
 	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
 	"github.com/rafpe/kube-oidc-proxy/pkg/mocks"
@@ -38,8 +40,9 @@ import (
 type fakeProxy struct {
 	ctrl *gomock.Controller
 
-	fakeToken *mocks.MockToken
-	fakeRT    *fakeRT
+	fakeToken    *mocks.MockToken
+	fakeReviewer *mocks.MockToken
+	fakeRT       *fakeRT
 	*Proxy
 }
 
@@ -350,16 +353,19 @@ func TestHasImpersonation(t *testing.T) {
 func newTestProxy(t *testing.T) *fakeProxy {
 	ctrl := gomock.NewController(t)
 	fakeToken := mocks.NewMockToken(ctrl)
+	fakeReviewer := mocks.NewMockToken(ctrl)
 	fakeRT := &fakeRT{t: t}
 	fakeSubjectAccessReviewer := fakesubjectaccessreview.New(nil)
 	subjectAccessReview, _ := subjectaccessreview.New(fakeSubjectAccessReviewer, subjectaccessreview.DefaultTimeout, 0, 0, subjectaccessreview.DefaultMaxHeaderValues)
 
 	p := &fakeProxy{
-		ctrl:      ctrl,
-		fakeToken: fakeToken,
-		fakeRT:    fakeRT,
+		ctrl:         ctrl,
+		fakeToken:    fakeToken,
+		fakeReviewer: fakeReviewer,
+		fakeRT:       fakeRT,
 		Proxy: &Proxy{
 			oidcRequestAuther:     bearertoken.New(fakeToken),
+			tokenReviewer:         fakeReviewer,
 			subjectAccessReviewer: subjectAccessReview,
 			clientTransport:       fakeRT,
 			noAuthClientTransport: fakeRT,
@@ -1099,5 +1105,32 @@ func TestParseAllowedReservedGroups(t *testing.T) {
 				t.Errorf("parseAllowedReservedGroups(%q) has %d entries, want %d", test.groups, got.Len(), len(test.groups))
 			}
 		})
+	}
+}
+
+// TestReviewTokenRejectedIsNotLoggedAsValid pins the token-review denial
+// message: an unauthenticated review result is a rejection, and reporting it as
+// a valid token passing through misleads anyone reading the log during an
+// incident.
+func TestReviewTokenRejectedIsNotLoggedAsValid(t *testing.T) {
+	buf := captureKlogAtV2(t)
+	var fs flag.FlagSet
+	klog.InitFlags(&fs)
+	_ = fs.Set("v", "4")
+	t.Cleanup(func() { _ = fs.Set("v", "2") })
+
+	p := newTestProxy(t)
+	p.fakeReviewer.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(nil, false, nil)
+
+	req := reservedIdentityRequest(t, nil)
+	if ok := p.reviewToken(httptest.NewRecorder(), req); ok {
+		t.Fatal("rejected token reported as passthrough-ok")
+	}
+	klog.Flush()
+	if strings.Contains(buf.String(), "valid token") {
+		t.Fatalf("rejected token logged as valid:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "rejected") {
+		t.Fatalf("rejected token not logged as rejected:\n%s", buf.String())
 	}
 }

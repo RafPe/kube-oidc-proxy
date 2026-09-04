@@ -333,7 +333,7 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 
 			// No impersonation configuration found in context
 		case errors.Is(err, errNoImpersonationConfig):
-			klog.Errorf("if you are seeing this, there is likely a bug in the proxy (%s): %s", r.RemoteAddr, err)
+			klog.Errorf("impersonation configuration missing from request context (%s): %s", r.RemoteAddr, err)
 			http.Error(rw, "", http.StatusInternalServerError)
 			return
 

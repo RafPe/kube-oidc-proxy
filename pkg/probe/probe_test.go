@@ -2,11 +2,14 @@
 package probe
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"flag"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -14,6 +17,7 @@ import (
 	"time"
 
 	"k8s.io/apiserver/pkg/authentication/authenticator"
+	"k8s.io/klog/v2"
 )
 
 // fakeAuther simulates the union authenticator: tokens listed in notInit
@@ -548,5 +552,56 @@ func TestCheckDoesNotHoldLockDuringAuth(t *testing.T) {
 
 	if got := auther.maxConcurrent(); got < 2 {
 		t.Fatalf("expected >=2 concurrent authenticator calls, got %d", got)
+	}
+}
+
+// captureKlog redirects klog to a buffer at the given verbosity for the
+// duration of the test. klog's verbosity and output are process-global, so the
+// cleanup restores both — including the output writer, which would otherwise
+// leave later klog calls in this package writing into a dead buffer.
+func captureKlog(t *testing.T, level string) *bytes.Buffer {
+	t.Helper()
+
+	var fs flag.FlagSet
+	klog.InitFlags(&fs)
+	previousVerbosity := fs.Lookup("v").Value.String()
+	if err := fs.Set("v", level); err != nil {
+		t.Fatalf("setting klog verbosity: %s", err)
+	}
+
+	buf := new(bytes.Buffer)
+	klog.LogToStderr(false)
+	klog.SetOutput(buf)
+
+	t.Cleanup(func() {
+		klog.Flush()
+		if err := fs.Set("v", previousVerbosity); err != nil {
+			t.Errorf("restoring klog verbosity: %s", err)
+		}
+		klog.SetOutput(os.Stderr)
+		klog.LogToStderr(true)
+	})
+
+	return buf
+}
+
+// TestPendingLoggedOnlyOnChange pins the pending line to state changes: an
+// unchanged pending set must not restate itself on every kubelet probe, which
+// would otherwise flood the log for the whole lifetime of an unreachable
+// issuer.
+func TestPendingLoggedOnlyOnChange(t *testing.T) {
+	buf := captureKlog(t, "0")
+	hc := newTestHealthCheck(true, map[string]bool{"jwt-a": true, "jwt-b": true},
+		IssuerReadiness{IssuerURL: "https://a", FakeJWT: "jwt-a"},
+		IssuerReadiness{IssuerURL: "https://b", FakeJWT: "jwt-b"})
+	hc.SetServing()
+
+	_ = hc.Check()
+	_ = hc.Check()
+	_ = hc.Check()
+	klog.Flush()
+
+	if got := strings.Count(buf.String(), "pending:"); got != 1 {
+		t.Fatalf("pending message logged %d times for an unchanged pending set, want 1:\n%s", got, buf.String())
 	}
 }
