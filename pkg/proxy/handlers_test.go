@@ -413,3 +413,22 @@ func TestReservedIdentityRejectedBeforeSubjectAccessReview(t *testing.T) {
 
 	p.ctrl.Finish()
 }
+
+func TestImpersonationExtraHeaderValuesAreNotLogged(t *testing.T) {
+	buf := captureKlogAtV2(t)
+	var fs flag.FlagSet
+	klog.InitFlags(&fs)
+	_ = fs.Set("v", "6")
+	t.Cleanup(func() { _ = fs.Set("v", "2") })
+
+	p := &Proxy{config: &Config{ExtraUserHeaders: map[string][]string{"tenant": {"acme-secret-value"}}}}
+	handler := p.withImpersonateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req = req.WithContext(genericapirequest.WithUser(req.Context(), &authuser.DefaultInfo{Name: "alice"}))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+	klog.Flush()
+
+	if strings.Contains(buf.String(), "acme-secret-value") {
+		t.Fatalf("configured extra header value logged:\n%s", buf.String())
+	}
+}
