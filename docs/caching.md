@@ -145,6 +145,45 @@ sequenceDiagram
   carry more values; see [troubleshooting](./operations.md#troubleshooting) for
   the 431 symptom.
 
+## Observing the caches
+
+Every cache consultation and every live review is a DEBUG record on the normal
+log stream, so `-v=1` turns cache behaviour into something you can count rather
+than infer. All three carry `request_id`, so they join the request's
+`request.access.decided` record.
+
+| `event_type` | Level | Fields | Emitted when |
+| --- | --- | --- | --- |
+| `cache.tokenreview.lookup` | DEBUG | `request_id`, `cache_result`; `authenticated` on a hit | Each consultation of the [TokenReview result cache](#tokenreview-result-cache). |
+| `cache.sar.lookup` | DEBUG | `request_id`, `cache_result`; `decision` on a hit | Each consultation of the [SubjectAccessReview decision cache](#subjectaccessreview-decision-cache). Fires once per impersonation header value, so one request can emit several. |
+| `authz.sar.completed` | DEBUG | `request_id`, `decision`, `duration_ms`, `request_coalesced`, `target_kind` | A live or shared `SubjectAccessReview` returned — that is, a lookup that did **not** come from the cache. |
+
+`cache_result` is one of:
+
+- `hit` — answered from memory, no API-server round trip.
+- `miss` — nothing cached, or the entry had expired; a live review follows.
+- `bypass` — the cache was not consulted at all: the TTL is `0`, or the SAR
+  spec was too large to key. A live review follows.
+
+`request_coalesced=true` on `authz.sar.completed` means singleflight shared one
+in-flight review between concurrent requests rather than issuing a second one,
+which is how a request storm for the same identity stays a single round trip.
+`duration_ms` is the live call duration and is absent on a cache hit.
+
+Neither cache key, the token, nor the serialized `SubjectAccessReview` spec is
+ever logged — the cache identity is in the event type, not in a field.
+
+To see the hit rate for a window, count `cache_result` on the lookup record:
+
+```bash
+kubectl -n kube-oidc-proxy logs deploy/kube-oidc-proxy --since=10m \
+  | jq -r 'select(.event_type == "cache.sar.lookup") | .cache_result' \
+  | sort | uniq -c
+```
+
+See the [logging reference](./logging.md) for the full field reference and more
+worked queries.
+
 ## Tuning
 
 | You want | Set |
@@ -161,6 +200,8 @@ sequenceDiagram
 - [Configuration reference](./configuration.md) — the full flag tables.
 - [Architecture](./architecture.md#the-auth--impersonate-handler-chain) — where
   these steps sit in the handler chain.
+- [Logging reference](./logging.md) — the record shape, the event registry and
+  worked queries.
 - [Operations: security](./operations.md#security) and
   [troubleshooting](./operations.md#troubleshooting) — symptoms of cache lag
   and the 431 rejection.

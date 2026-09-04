@@ -42,12 +42,14 @@ Security, troubleshooting, and testing the proxy locally.
 | --- | --- |
 | Pod never becomes Ready in multi-issuer mode | With `readinessRequireAllIssuers: true`, **all** issuers must fetch their JWKS. Check pod logs for the per-issuer initialization messages and confirm each issuer URL is reachable and serves a valid discovery/JWKS document. Set it to `false` to become ready on the first issuer. |
 | `authentication-config and --oidc-* flags are mutually exclusive` | You set both `authenticationConfig.content` and one or more `oidc.*` values. Pick one mode. |
-| `401 Unauthorized` from the proxy | The token failed OIDC validation — wrong `issuerUrl`/`clientId` (audience), expired token, unmet `requiredClaims`, or a signing algorithm not in `--oidc-signing-algs`. Look for an `AuFail` line in the proxy logs. |
+| `401 Unauthorized` from the proxy | The token failed OIDC validation — wrong `issuerUrl`/`clientId` (audience), expired token, unmet `requiredClaims`, or a signing algorithm not in `--oidc-signing-algs`. Look for an `AuFail` line with `reason=unauthorized` in the proxy logs (`event_type=request.access.decided`). |
 | `403 Forbidden` after a successful login | Authentication worked but RBAC denied the impersonated identity. Grant the mapped username/groups the appropriate roles. Watch for username **prefixes** (e.g. `google:alice@example.com`). |
-| `kubectl --as` fails through the proxy | The authenticated user isn't authorized to impersonate that identity (`SubjectAccessReview` denied), or the proxy's ServiceAccount lacks impersonation RBAC for a named `Impersonate-Extra-` key. |
+| `kubectl --as` fails through the proxy | The authenticated user isn't authorized to impersonate that identity (`SubjectAccessReview` denied), or the proxy's ServiceAccount lacks impersonation RBAC for a named `Impersonate-Extra-` key. The `AuFail` record carries `reason=impersonation_denied` with `target_kind` and `target_name`. |
 | `431 Request Header Fields Too Large` on `kubectl --as` | The request carried more impersonation header values (user + every group, uid and extra value) than the proxy accepts per request (default 64). Raise `--max-impersonation-header-values` (`maxImpersonationHeaderValues` in the chart) if the identity legitimately needs more — see [the header value cap](./caching.md#impersonation-header-value-cap). |
 | RBAC impersonation grant/revoke takes up to 10s to take effect through the proxy | Expected: impersonation `SubjectAccessReview` decisions are cached. A revoked grant keeps working for up to `--subject-access-review-cache-allow-ttl`; a new grant keeps failing for up to `--subject-access-review-cache-deny-ttl` (both default `10s`). Set either TTL to `0` to re-check that class on every request — see [the SAR decision cache](./caching.md#subjectaccessreview-decision-cache). |
 | TLS errors connecting to the proxy | The client's kubeconfig `certificate-authority` must trust the proxy's **serving** certificate (self-signed by the chart, your own Secret, or cert-manager). |
+| Trace one request end to end | Take `request_id` from any proxy record (the client also gets it back in the `Audit-ID` response header) and grep every proxy record for it; the same value is the kube-apiserver audit `auditID` — see [correlation](./logging.md#correlation). |
+| An issuer is stuck | `event_type=oidc.issuer.pending` names the issuer and a `pending_reason`; it is emitted on state change, so the newest record per issuer is current — see [worked queries](./logging.md#issuer-pending). |
 | Confirm which issuers loaded | `kubectl -n kube-oidc-proxy logs deploy/kube-oidc-proxy \| grep "configured OIDC issuers"`. |
 | A revoked passthrough token still works / a newly valid one is rejected | The TokenReview result cache. A revoked token passes for up to `--token-passthrough-cache-success-ttl`; a token that just became valid can be rejected for up to `--token-passthrough-cache-failure-ttl` (both default 10s). Set either flag to `0` to disable that side — see [the TokenReview cache](./caching.md#tokenreview-result-cache). |
 
@@ -58,39 +60,105 @@ SIEM (via fluentd or similar) can ingest them without a custom parser. Every
 value is sanitized: control characters are stripped, so nothing a client sends
 can inject a second record or fake a field.
 
-A successful authentication looks like:
+The record to key on is `event_type=request.access.decided`: exactly one per
+request, on every path — impersonation, no-impersonation, TokenReview
+passthrough, and every failure class. `event` (`AuSuccess` / `AuFail`) is
+unchanged from earlier releases, so existing SIEM rules keep matching. The
+[logging reference](./logging.md) has the full field reference, the event
+registry and worked Loki/Splunk queries; this section is the operator's
+short version.
+
+A successful authentication looks like this (one line in the stream, wrapped
+here to read):
 
 ```json
-{"time":"2026-09-04T10:53:24.615018Z","level":"INFO","msg":"proxied request","event":"AuSuccess","src_ip":"10.42.1.3","path":"/api/v1/namespaces/default/pods","forwarded_for_untrusted":"10.42.0.5","inbound_user":"alice@example.com","inbound_groups":["platform-admins","system:authenticated"],"inbound_extra":{"Remote-Client-IP":["10.42.1.3"]},"inbound_extra_omitted":1}
+{"time":"2026-09-04T10:53:24.615018Z","level":"INFO","msg":"access decision","schema_version":1,
+ "component":"request","event_type":"request.access.decided",
+ "request_id":"7f1a9c1e-6a2b-4a1f-9f0e-3d9d1c2b5a04","event":"AuSuccess","src_ip":"10.42.1.3",
+ "path":"/api/v1/namespaces/default/pods","forwarded_for_untrusted":"10.42.0.5","http_method":"GET",
+ "auth_method":"oidc","issuer_name":"corp","k8s_verb":"list","k8s_api_group":"","k8s_resource":"pods",
+ "k8s_namespace":"default","decision":"allow","inbound_user":"alice@example.com",
+ "inbound_groups":["platform-admins","system:authenticated"],
+ "inbound_extra":{"Remote-Client-IP":["10.42.1.3"]},"inbound_extra_omitted":1}
 ```
 
 When impersonation headers are present, the `outbound_*` fields report the
 impersonated identity alongside the authenticated one:
 
 ```json
-{"time":"2026-09-04T10:53:24.615236Z","level":"INFO","msg":"proxied request","event":"AuSuccess","src_ip":"10.42.1.3","path":"/api/v1/namespaces/default/pods","forwarded_for_untrusted":"10.42.0.5","inbound_user":"alice@example.com","inbound_groups":["platform-admins","system:authenticated"],"outbound_user":"bob@example.com","outbound_groups":["developers","system:authenticated"]}
+{"time":"2026-09-04T10:53:24.615236Z","level":"INFO","msg":"access decision","schema_version":1,
+ "component":"request","event_type":"request.access.decided",
+ "request_id":"c0a8f1d2-9b34-4d7e-8a11-6e2f0b7c4d55","event":"AuSuccess","src_ip":"10.42.1.3",
+ "path":"/api/v1/namespaces/default/pods","http_method":"GET","auth_method":"oidc",
+ "k8s_verb":"list","k8s_api_group":"","k8s_resource":"pods","k8s_namespace":"default",
+ "decision":"allow","inbound_user":"alice@example.com",
+ "inbound_groups":["platform-admins","system:authenticated"],
+ "outbound_user":"bob@example.com","outbound_groups":["developers","system:authenticated"]}
 ```
 
-A failure carries no identity at all — the token never authenticated, so there
-is nothing trustworthy to attribute the request to:
+An `AuFail` is a rejection, and `reason` says which kind. **Not every `AuFail`
+means the token failed to authenticate.** An authentication failure has no
+trustworthy identity to attribute the request to, so it carries no `inbound_*`
+fields:
 
 ```json
-{"time":"2026-09-04T10:53:24.615241Z","level":"INFO","msg":"rejected request","event":"AuFail","src_ip":"10.42.1.3","path":"/api/v1/nodes"}
+{"time":"2026-09-04T10:53:24.615241Z","level":"INFO","msg":"access decision","schema_version":1,
+ "component":"request","event_type":"request.access.decided",
+ "request_id":"3b7c5e10-4f28-49a6-b0d3-8c1e5a90f2b7","event":"AuFail","src_ip":"10.42.1.3",
+ "path":"/api/v1/nodes","http_method":"GET","auth_method":"oidc","decision":"deny",
+ "reason":"unauthorized"}
 ```
+
+An **authorization** failure is also an `AuFail`, and there the token *did*
+authenticate: the request is refused because the authenticated user may not
+impersonate the identity it asked for, or asked for a reserved one. Those
+records carry the full `inbound_*` identity plus `target_kind` and
+`target_name` naming what was refused:
+
+```json
+{"time":"2026-09-04T10:53:24.615318Z","level":"INFO","msg":"access decision","schema_version":1,
+ "component":"request","event_type":"request.access.decided",
+ "request_id":"9d41a7b8-2c60-4e15-9f83-71ab0c3d6e42","event":"AuFail","src_ip":"10.42.1.3",
+ "path":"/api/v1/namespaces/default/pods","http_method":"GET","auth_method":"oidc",
+ "k8s_verb":"list","k8s_api_group":"","k8s_resource":"pods","k8s_namespace":"default",
+ "decision":"deny","reason":"impersonation_denied","target_kind":"user",
+ "target_name":"bob@example.com","inbound_user":"alice@example.com",
+ "inbound_groups":["platform-admins","system:authenticated"]}
+```
+
+So: `reason=unauthorized` or `no_username_claim` means the token never
+authenticated and there is no identity in the record. `reason=impersonation_denied`,
+`reserved_identity` or `too_many_impersonation_values` means it authenticated
+fine and was then refused — `inbound_user` is real and worth investigating.
 
 | Field | Meaning |
 | --- | --- |
-| `event` | `AuSuccess` when the request authenticated and was proxied, `AuFail` when it was rejected. |
+| `event_type` | `request.access.decided` on this record. The machine-readable record shape — filter on it rather than on `msg`. |
+| `event` | `AuSuccess` when the request authenticated and was proxied, `AuFail` when it was rejected. Frozen: SIEM rules key on it. |
+| `request_id` | Correlates every record this request produced, is sent upstream as the `Audit-ID` header (so it is also the kube-apiserver audit `auditID`), and is echoed to the client — see [correlation](./logging.md#correlation). |
+| `decision` / `reason` | `allow` or `deny`, and on a denial which of the closed [reason values](./logging.md#reason-vocabularies) applies. |
 | `src_ip` | The **authoritative** client IP. It is the direct peer unless that peer is inside a configured `--trusted-proxies` network, in which case the forwarded chain is walked right-to-left past the trusted hops — see [Trusted proxies and client IP](./configuration.md#trusted-proxies-and-client-ip). This is the field to use for identity and rate limiting. |
 | `forwarded_for_untrusted` | The raw `X-Forwarded-For` chain exactly as the client sent it, present only when the header was set. It is forensic data that any client can forge — never treat it as identity. |
 | `path` | The request path. The query string is deliberately excluded, because it can carry tokens. |
+| `http_method`, `k8s_verb`, `k8s_resource`, `k8s_namespace` | The HTTP method, and the Kubernetes API dimensions the request-info resolver determined. The `k8s_*` fields are absent on non-resource paths such as `/healthz` and discovery. |
+| `auth_method` | `oidc`, `tokenreview` (passthrough) or `none` (no token presented). |
+| `issuer_name` | Which configured issuer accepted the token, in a multi-issuer setup. Never the full issuer URL. |
 | `inbound_user`, `inbound_groups`, `inbound_uid` | The identity the OIDC token authenticated as. `inbound_uid` appears only when the authenticator supplied one. |
 | `inbound_extra` | The impersonation extras the proxy sets itself, from a fixed allowlist. Arbitrary claim data from the token is never logged. |
 | `inbound_extra_omitted` | How many extra keys were dropped because they are not on that allowlist, so you can tell data was withheld rather than absent. |
 | `outbound_user`, `outbound_groups`, `outbound_uid`, `outbound_extra`, `outbound_extra_omitted` | The same fields for the impersonated identity, present only when the request carried impersonation headers. Compare these with the `inbound_*` fields to see who acted as whom. |
+| `target_kind`, `target_name` | On an impersonation denial, what was refused — so a denial never has to be recovered by parsing error text. |
 
 Bearer tokens, `Authorization` and `Cookie` values, request and response bodies,
-and arbitrary token claims are never logged.
+and arbitrary token claims are never logged. The full list is in
+[redaction](./logging.md#redaction).
+
+Two more records close out a request, both INFO:
+`request.response.started` (first `WriteHeader` on a long-running request such
+as a watch or `exec`, with `time_to_headers_ms`) and
+`request.response.completed` (the terminal record for every request, with
+`http_status`, `duration_ms`, `response_bytes` and a classified `termination`).
+Join them to the access record on `request_id`.
 
 ## Development and testing
 
@@ -318,7 +386,7 @@ If you get `401`, the token expired — rerun step 5. Steps 2–4 stay up.
 ### 7. Access logs and cleanup
 
 ```bash
-kubectl -n kube-oidc-proxy logs deploy/kube-oidc-proxy --tail=20   # AuSuccess / AuFail
+kubectl -n kube-oidc-proxy logs deploy/kube-oidc-proxy --tail=20   # request.access.decided: AuSuccess / AuFail
 kill %1
 kind delete cluster --name oidc-test
 ```

@@ -287,6 +287,46 @@ to only report ready when every issuer is initialized. Configuration errors
 (invalid YAML, unknown fields, duplicate issuers, bad CEL) always fail
 startup, regardless of this flag.
 
+### Issuer records in the log
+
+Issuer state is visible on the normal log stream at the default `-v=0`; you do
+not need to raise verbosity to see which issuers are up.
+
+| `event_type` | Level | Fields | Emitted when |
+| --- | --- | --- | --- |
+| `oidc.issuer.configured` | INFO | `issuer_name`, `issuer_count` | Once per configured issuer at startup. Its `msg` is still `configured OIDC issuers`, so the documented grep keeps working. |
+| `oidc.issuer.initialized` | INFO | `issuer_name`, `issuer_state=initialized`, `ready_issuers`, `total_issuers` | That issuer's JWKS loaded and it can now validate tokens. |
+| `oidc.issuer.pending` | WARN | `issuer_name`, `issuer_state=pending`, `pending_reason`, `ready_issuers`, `total_issuers` | The pending set or a pending reason **changed**. Not emitted on every readiness scrape, so the newest record per `issuer_name` is that issuer's current state. |
+| `readiness.proxy.ready` | INFO | `ready_issuers`, `total_issuers`, `readiness_mode` | Readiness latched to ready. `readiness_mode` is `any` or `all`, mirroring `readinessRequireAllIssuers`. |
+
+`pending_reason` is one of `not_initialized` (the first fetch has not finished
+yet), `transient` (the JWKS endpoint is failing but the fetch is being retried),
+or `error`. `ready_issuers`/`total_issuers` on any of these records tells you
+how far initialization has got without reading the probe.
+
+`issuer_name` is the **configured** issuer name, bounded to 256 characters and
+sanitized. The full issuer URL is never logged, on any record. The same
+`issuer_name` also appears on `request.access.decided`, which is how you tell
+which issuer accepted a given token:
+
+```bash
+kubectl -n kube-oidc-proxy logs deploy/kube-oidc-proxy --since=1h \
+  | jq -r 'select(.event_type == "request.access.decided" and .event == "AuSuccess")
+           | .issuer_name' \
+  | sort | uniq -c
+```
+
+To list issuers that are currently pending, and why:
+
+```bash
+kubectl -n kube-oidc-proxy logs deploy/kube-oidc-proxy \
+  | jq -r 'select(.event_type == "oidc.issuer.pending")
+           | "\(.issuer_name)\t\(.pending_reason)\t\(.ready_issuers)/\(.total_issuers)"'
+```
+
+The [logging reference](./logging.md) has the equivalent LogQL and Splunk
+queries and the full field reference.
+
 ## Helm
 
 ```yaml
@@ -328,3 +368,5 @@ readinessRequireAllIssuers: false
 - [Configuration reference](./configuration.md) — all flags and impersonation.
 - [Local multi-issuer test: kind and GitHub Actions](./operations.md#local-multi-issuer-test-kind-and-github-actions).
 - [Architecture: union authenticator](./architecture.md#multi-issuer-union-authenticator).
+- [Logging reference](./logging.md) — the `oidc.issuer.*` records and how to
+  query them.
