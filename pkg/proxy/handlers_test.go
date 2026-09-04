@@ -686,3 +686,30 @@ func TestAnomalyIsRateLimitedButAccessRecordIsNot(t *testing.T) {
 		t.Fatalf("anomaly records = %d, want burst 3", n)
 	}
 }
+
+// TestFlushWarnLimiterSummarisesOnShutdown covers the shutdown half of the
+// flush loop: a burst suppressed just before the proxy stops is still
+// accounted for, rather than lost with the goroutine.
+func TestFlushWarnLimiterSummarisesOnShutdown(t *testing.T) {
+	p := newTestProxy(t)
+	for i := 0; i < 10; i++ {
+		p.warnLimiter.Allow(reasonReservedIdentity)
+	}
+
+	stopCh := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.flushWarnLimiter(stopCh)
+	}()
+	close(stopCh)
+	<-done
+
+	rec := p.logs.Only(t, logging.EventLogWarningSuppressed)
+	if n, _ := rec.Int("suppressed_count"); n != 7 {
+		t.Fatalf("suppressed_count = %d, want 7 (10 offered, burst of 3 allowed)", n)
+	}
+	if rec.String("warning_reason") != reasonReservedIdentity {
+		t.Fatalf("%v", rec)
+	}
+}
