@@ -10,7 +10,7 @@ type: application
 # automation overrides both `version` and `appVersion` from the git tag
 # (vX.Y.Z); the values here are the development baseline. The Deployment
 # image tag defaults to `appVersion`, so the override also selects the image.
-version: 1.6.0
+version: 1.7.0
 appVersion: "1.6.0"
 home: https://github.com/rafpe/kube-oidc-proxy
 sources:
