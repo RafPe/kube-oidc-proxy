@@ -51,6 +51,12 @@ func (m *MiscOptions) AddFlags(fs *pflag.FlagSet) *MiscOptions {
 	return m
 }
 
+// Version returns the build version this binary reports, for the startup
+// record that fixes what an operator is actually running.
+func (m *MiscOptions) Version() string {
+	return m.gitVersion
+}
+
 func (m *MiscOptions) PrintVersionAndExit() {
 	fmt.Printf("%s version: %#v\n", AppName,
 		apimachineryversion.Info{
