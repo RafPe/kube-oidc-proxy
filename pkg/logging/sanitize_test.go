@@ -21,3 +21,21 @@ func TestBoundedList(t *testing.T) {
 		t.Fatalf("got %v omitted=%d", out, omitted)
 	}
 }
+
+func TestSanitizeList(t *testing.T) {
+	got := SanitizeList([]string{"dev", "bad\ngroup"})
+	if len(got) != 2 || got[0] != "dev" || got[1] != "bad group" {
+		t.Fatalf("SanitizeList = %q", got)
+	}
+	// No cap: a list far longer than MaxGroups is kept whole.
+	in := make([]string, MaxGroups+8)
+	for i := range in {
+		in[i] = "g"
+	}
+	if got := SanitizeList(in); len(got) != len(in) {
+		t.Fatalf("SanitizeList capped %d entries to %d", len(in), len(got))
+	}
+	if got := SanitizeList(nil); got != nil {
+		t.Fatalf("SanitizeList(nil) = %v, want nil", got)
+	}
+}

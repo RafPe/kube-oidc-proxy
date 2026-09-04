@@ -115,10 +115,9 @@ func requestAttrs(event string, req *http.Request) []slog.Attr {
 // prefix. Only allowlisted extras are logged; the number of omitted claim keys
 // is reported so operators can tell data was dropped.
 func userAttrs(prefix string, u user.Info) []slog.Attr {
-	groups, _ := logging.BoundedList(u.GetGroups(), logging.MaxGroups)
 	attrs := []slog.Attr{
 		slog.String(prefix+"_user", logging.Sanitize(u.GetName())),
-		slog.Any(prefix+"_groups", groups),
+		slog.Any(prefix+"_groups", logging.SanitizeList(u.GetGroups())),
 	}
 	if uid := u.GetUID(); uid != "" {
 		attrs = append(attrs, slog.String(prefix+"_uid", logging.Sanitize(uid)))
@@ -143,8 +142,7 @@ func loggableExtras(extra map[string][]string) (map[string][]string, int) {
 	omitted := 0
 	for k, v := range extra {
 		if _, ok := loggableExtraKeys[k]; ok {
-			vals, _ := logging.BoundedList(v, logging.MaxGroups)
-			safe[logging.Sanitize(k)] = vals
+			safe[logging.Sanitize(k)] = logging.SanitizeList(v)
 			continue
 		}
 		omitted++
