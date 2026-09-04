@@ -6,6 +6,7 @@ import (
 	_ "github.com/rafpe/kube-oidc-proxy/test/e2e/suite/cases/authconfig"
 	_ "github.com/rafpe/kube-oidc-proxy/test/e2e/suite/cases/headers"
 	_ "github.com/rafpe/kube-oidc-proxy/test/e2e/suite/cases/impersonation"
+	_ "github.com/rafpe/kube-oidc-proxy/test/e2e/suite/cases/logging"
 	_ "github.com/rafpe/kube-oidc-proxy/test/e2e/suite/cases/passthrough"
 	_ "github.com/rafpe/kube-oidc-proxy/test/e2e/suite/cases/probe"
 	_ "github.com/rafpe/kube-oidc-proxy/test/e2e/suite/cases/rbac"
