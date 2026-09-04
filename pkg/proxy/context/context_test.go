@@ -321,3 +321,34 @@ func TestSanitizeForwardHeaders(t *testing.T) {
 		})
 	}
 }
+
+// TestRequestScopedIDAccessors covers the round trip of the correlation-id and
+// issuer-name accessors, including the zero value on a request that never
+// passed the request-id filter.
+func TestRequestScopedIDAccessors(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+
+	if got := RequestID(req); got != "" {
+		t.Errorf("RequestID on a bare request = %q, want empty", got)
+	}
+	if got := ClientRequestID(req); got != "" {
+		t.Errorf("ClientRequestID on a bare request = %q, want empty", got)
+	}
+	if got := IssuerName(req); got != "" {
+		t.Errorf("IssuerName on a bare request = %q, want empty", got)
+	}
+
+	req = WithRequestID(req, "minted-1")
+	req = WithClientRequestID(req, "client-1")
+	req = WithIssuerName(req, "corp-idp")
+
+	if got := RequestID(req); got != "minted-1" {
+		t.Errorf("RequestID = %q, want minted-1", got)
+	}
+	if got := ClientRequestID(req); got != "client-1" {
+		t.Errorf("ClientRequestID = %q, want client-1", got)
+	}
+	if got := IssuerName(req); got != "corp-idp" {
+		t.Errorf("IssuerName = %q, want corp-idp", got)
+	}
+}
