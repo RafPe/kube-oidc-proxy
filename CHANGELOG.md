@@ -1,6 +1,10 @@
 # Unreleased
 <!-- next-release -->
 
+## [1.6.1] - 2026-09-04
+
+- Helm chart now deploys the image matching its appVersion by default. Charts 1.2.0 through 1.6.0 shipped with a hardcoded `image.tag` of 1.1.0, so installs without an explicit `image.tag` override ran the 1.1.0 binary; the release pipeline now refuses to publish a chart whose default image tag differs from the release version.
+
 ## [1.6.0] - 2026-09-01
 
 - Bump github.com/google/cel-go to v0.30.0 and go.etcd.io/etcd/{api,client/pkg,client}/v3 to v3.7.1 to remediate GO-2026-6094 and GO-2026-6107.
