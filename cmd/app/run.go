@@ -500,7 +500,7 @@ func buildSingleAuther(o *options.OIDCAuthenticationOptions, oidcLogger, startup
 	}
 	logIssuersConfigured(oidcLogger, issuerNames([]string{o.IssuerURL}))
 
-	return auther, []string{o.IssuerURL}, nil
+	return proxy.WithIssuerName(probe.IssuerName(o.IssuerURL), auther), []string{o.IssuerURL}, nil
 }
 
 func buildUnionAuther(opts *options.Options, oidcLogger *slog.Logger) (authenticator.Token, []string, error) {
@@ -520,13 +520,21 @@ func buildUnionAuther(opts *options.Options, oidcLogger *slog.Logger) (authentic
 		if err != nil {
 			return nil, nil, fmt.Errorf("building authenticator for issuer %q: %w", jwtEntry.Issuer.URL, err)
 		}
-		authers = append(authers, auther)
+		authers = append(authers, proxy.WithIssuerName(issuerNameFor(jwtEntry), auther))
 		issuerURLs = append(issuerURLs, jwtEntry.Issuer.URL)
 	}
 
 	logIssuersConfigured(oidcLogger, issuerNames(issuerURLs))
 
 	return tokenunion.NewFailOnError(authers...), issuerURLs, nil
+}
+
+// issuerNameFor returns the name a request authenticated by this
+// authentication-config entry is attributed to. An operator-supplied name
+// would take precedence, but the vendored JWTAuthenticator carries none, so
+// the name is the issuer URL's host: the full URL is never logged.
+func issuerNameFor(jwtEntry apiserverapi.JWTAuthenticator) string {
+	return probe.IssuerName(jwtEntry.Issuer.URL)
 }
 
 func oidcAutherFromJWT(

@@ -134,9 +134,9 @@ var Registry = map[EventType]EventSpec{
 	EventAuthnOIDCSucceeded: {
 		Components: []Component{ComponentOIDC},
 		Level:      slog.LevelDebug,
-		Required:   []string{"request_id"},
+		Required:   []string{"request_id", "issuer_name"},
 		Message:    "oidc authentication succeeded",
-		Summary:    "The OIDC authenticator accepted the token. Carries issuer_name when known.",
+		Summary:    "The OIDC authenticator accepted the token. Names the issuer that accepted it.",
 	},
 	EventAuthnOIDCFailed: {
 		Components: []Component{ComponentOIDC},

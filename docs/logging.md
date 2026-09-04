@@ -8,7 +8,7 @@
 | `audit.flush.completed` | `audit` | INFO | `duration_ms` | The pre-shutdown audit flush succeeded. |
 | `audit.flush.failed` | `audit` | ERROR | `error_message` | The pre-shutdown audit flush failed. |
 | `authn.oidc.failed` | `oidc` | DEBUG | `request_id`, `reason` | The OIDC authenticator rejected the token. The denial itself is INFO on request.access.decided. |
-| `authn.oidc.succeeded` | `oidc` | DEBUG | `request_id` | The OIDC authenticator accepted the token. Carries issuer_name when known. |
+| `authn.oidc.succeeded` | `oidc` | DEBUG | `request_id`, `issuer_name` | The OIDC authenticator accepted the token. Names the issuer that accepted it. |
 | `authn.token.missing` | `tokenreview` | DEBUG | `request_id` | No bearer token was presented on the TokenReview path. |
 | `authn.tokenreview.completed` | `tokenreview` | DEBUG | `request_id`, `authenticated` | A TokenReview answered. Carries duration_ms on a live call. |
 | `authn.tokenreview.failed` | `tokenreview` | ERROR | `request_id`, `reason`, `error_message` | The API server was unreachable or returned a status error. Carries reason=authentication_dependency_error. |

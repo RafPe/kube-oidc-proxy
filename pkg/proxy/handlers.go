@@ -195,6 +195,14 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 	tokenReviewHandler := p.withTokenReview(handler)
 
 	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		// An authenticator is handed a context and answers with a user, so it
+		// has no way to name itself on the request. The holder placed here is
+		// how the issuer that accepts the token reports its name back, without
+		// it travelling in the identity's extras and out as an impersonation
+		// header; it is read back below.
+		ctx, issuer := withIssuerHolder(req.Context())
+		req = req.WithContext(ctx)
+
 		// Auth request and handle unauthed
 		info, ok, err := p.oidcRequestAuther.AuthenticateRequest(req)
 		if err != nil {
@@ -221,14 +229,12 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 			return
 		}
 
-		// issuer_name is absent until the issuer registry names the issuer that
-		// accepted the token; the field is conditional rather than required so
-		// the record is emittable in the meantime.
-		var oidcAttrs []slog.Attr
-		if name := context.IssuerName(req); name != "" {
-			oidcAttrs = append(oidcAttrs, slog.String("issuer_name", logging.Bound(name, logging.MaxIdentity)))
-		}
-		logging.Emit(req.Context(), componentLogger(p.oidcLog), logging.EventAuthnOIDCSucceeded, oidcAttrs...)
+		// Attribute the request to the issuer that accepted its token, for this
+		// record and for every access record the request goes on to produce.
+		req = context.WithIssuerName(req, issuer.name)
+
+		logging.Emit(req.Context(), componentLogger(p.oidcLog), logging.EventAuthnOIDCSucceeded,
+			slog.String("issuer_name", logging.Bound(issuer.name, logging.MaxIdentity)))
 
 		// The token was accepted, so every record from here on -- including a
 		// rejection by the reserved-identity guard -- reports the OIDC path.
