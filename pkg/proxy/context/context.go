@@ -65,6 +65,11 @@ const (
 	// issuerNameKey is the context key for the configured name of the OIDC
 	// issuer that authenticated the request.
 	issuerNameKey
+
+	// terminationKey is the context key for the holder the request lifecycle
+	// filter installs so a handler further down the chain can classify how the
+	// request ended.
+	terminationKey
 )
 
 // trustedProxies holds the networks whose forwarded headers are honoured when
@@ -182,6 +187,47 @@ func WithIssuerName(req *http.Request, name string) *http.Request {
 func IssuerName(req *http.Request) string {
 	name, _ := req.Context().Value(issuerNameKey).(string)
 	return name
+}
+
+// Termination is how a request ended, as classified by a handler deeper in the
+// chain than the lifecycle filter that reports it. Reason is the closed
+// access-record reason that goes with it, or "" when there is none.
+type Termination struct {
+	Termination string
+	Reason      string
+}
+
+// WithTerminationHolder returns a copy of the request carrying an empty
+// termination the lifecycle filter reads once the handler has returned.
+//
+// The holder is a pointer on purpose. The handler that classifies the failure
+// sees a request derived several filters further down, and a context value
+// written there is invisible to the filter that installed it; a write through
+// the shared holder is not.
+func WithTerminationHolder(req *http.Request) *http.Request {
+	return req.WithContext(request.WithValue(req.Context(), terminationKey, new(Termination)))
+}
+
+// WithTermination records how the request ended on the holder the lifecycle
+// filter installed. It is a no-op when the request carries no holder, so a
+// handler called outside that filter -- a test, or an error on a request that
+// never reached it -- needs no special case.
+func WithTermination(req *http.Request, termination, reason string) {
+	if h, ok := req.Context().Value(terminationKey).(*Termination); ok {
+		h.Termination = termination
+		h.Reason = reason
+	}
+}
+
+// TerminationFrom returns the termination a handler classified for the
+// request, or the zero value when none did.
+func TerminationFrom(req *http.Request) Termination {
+	h, ok := req.Context().Value(terminationKey).(*Termination)
+	if !ok {
+		return Termination{}
+	}
+
+	return *h
 }
 
 // WithImpersonationConfig returns a copy of parent in which contains the impersonation configuration.

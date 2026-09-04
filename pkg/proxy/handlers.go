@@ -3,14 +3,18 @@ package proxy
 
 import (
 	stdcontext "context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
+	"syscall"
 
 	"k8s.io/apimachinery/pkg/util/sets"
 	authuser "k8s.io/apiserver/pkg/authentication/user"
@@ -56,6 +60,12 @@ const (
 	reasonTooManyImpersonationValues = "too_many_impersonation_values"
 	reasonClientCanceled             = "client_canceled"
 	reasonInternalError              = "internal_error"
+
+	// reasonUpstreamError classifies a failure of the hop to the API server
+	// itself, as opposed to anything the proxy decided about the request. It
+	// is carried by the upstream record and by the terminal record, never by
+	// an access decision: the request was already admitted.
+	reasonUpstreamError = "upstream_error"
 
 	// reasonAuthenticationDependencyError classifies a TokenReview that could
 	// not be answered at all: the API server was unreachable or returned a
@@ -115,6 +125,10 @@ func (p *Proxy) withHandlers(handler http.Handler) http.Handler {
 	handler = p.withImpersonateRequest(handler)
 	handler = p.withAuthenticateRequest(handler)
 	handler = p.withSanitizedForwardHeaders(handler)
+	handler = p.withRequestLifecycle(handler)
+	// Resolved before the lifecycle filter and the error handler, both of which
+	// run outside the audit chain and need the request's verb and resource.
+	handler = p.auditor.WithRequestInfo(handler)
 	handler = p.withRequestID(handler)
 
 	// Add the auditor backend as a shutdown hook
@@ -494,8 +508,6 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 
 		// The access record carries the classified reason, so every branch below
 		// records why the request was refused before it writes the response.
-		var netErr net.Error
-
 		switch {
 
 		// Failed auth
@@ -559,12 +571,30 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			p.logDenied(r, reasonClientCanceled, err)
 			return
 
+			// A SubjectAccessReview the proxy could not submit. It wraps a
+			// client-go transport error that satisfies net.Error, so it has to
+			// be matched ahead of the upstream case below: the call that failed
+			// is the proxy's own authorization dependency, not the reverse
+			// proxy's hop to the API server, and the request is refused rather
+			// than proxied.
+		case errors.Is(err, subjectaccessreview.ErrCreateSubjectAccessReview):
+			p.logHandlerFailed(r, err)
+			p.logDenied(r, reasonInternalError, err)
+			http.Error(rw, "", http.StatusInternalServerError)
+			return
+
 			// The reverse proxy could not reach or complete the call to the API
 			// server. The request was already admitted, and its access decision
 			// was written by RoundTrip: an upstream failure is not a second
-			// decision, so nothing is recorded here. Task 14 adds the upstream
-			// event that carries the failure itself.
-		case errors.As(err, &netErr):
+			// decision, so none is recorded here. The failure is reported on its
+			// own upstream record, and the termination it classifies is handed
+			// to the lifecycle filter for the terminal record.
+		case isUpstreamTransportError(err):
+			term := upstreamTermination(err)
+			context.WithTermination(r, term, reasonUpstreamError)
+			logging.Emit(r.Context(), componentLogger(p.upstreamLog), logging.EventUpstreamRequestFailed,
+				slog.String("reason", reasonUpstreamError), slog.String("termination", term),
+				logging.ErrAttr(err))
 			http.Error(rw, "", http.StatusBadGateway)
 			return
 
@@ -576,6 +606,43 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			http.Error(rw, "", http.StatusInternalServerError)
 		}
 	}
+}
+
+// isUpstreamTransportError reports whether the error came from the transport
+// carrying the request to the API server rather than from a decision the proxy
+// made about it. The error handler is dual-use -- the authentication and
+// impersonation filters call it directly, not only the reverse proxy -- so the
+// test is by error type, never a catch-all: an unrecognised error stays a 500.
+func isUpstreamTransportError(err error) bool {
+	var (
+		netErr  net.Error
+		opErr   *net.OpError
+		urlErr  *url.Error
+		certErr *tls.CertificateVerificationError
+		errno   syscall.Errno
+	)
+
+	return errors.As(err, &netErr) || errors.As(err, &opErr) || errors.As(err, &urlErr) ||
+		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.As(err, &errno) || errors.As(err, &certErr)
+}
+
+// upstreamTermination classifies an upstream transport failure into the closed
+// termination set the terminal record reports, so an operator can tell an API
+// server that is slow from one that is dropping connections without reading
+// error text.
+func upstreamTermination(err error) string {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return terminationUpstreamTimeout
+	}
+
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
+		return terminationUpstreamReset
+	}
+
+	return terminationProxyError
 }
 
 // logHandlerFailed reports a failure the proxy itself is responsible for. The

@@ -3,14 +3,19 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 
 	"go.uber.org/mock/gomock"
@@ -733,3 +738,47 @@ func TestFlushWarnLimiterSummarisesOnShutdown(t *testing.T) {
 		t.Fatalf("%v", rec)
 	}
 }
+
+// TestErrorHandlerClassifiesUpstreamTransportErrors pins the upstream branch:
+// a transport failure on the hop to the API server is answered 502, carries a
+// classified termination on its own upstream record, and never writes a second
+// access decision -- RoundTrip already recorded the admission.
+func TestErrorHandlerClassifiesUpstreamTransportErrors(t *testing.T) {
+	cases := map[string]struct {
+		err  error
+		term string
+	}{
+		"timeout": {err: &net.OpError{Op: "dial", Err: &timeoutErr{}}, term: "upstream_timeout"},
+		"reset":   {err: &net.OpError{Op: "read", Err: syscall.ECONNRESET}, term: "upstream_reset"},
+		"eof":     {err: io.EOF, term: "upstream_reset"},
+		// A TLS failure is an upstream failure the transport could not classify
+		// any further: the hop happened, the peer was simply not trusted.
+		"other": {err: &tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}, term: "proxy_error"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			p := newTestProxy(t)
+			rw := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req = withTestRequestID(req)
+			req = req.WithContext(logging.NewContext(req.Context(), p.logger))
+			p.handleError(rw, req, c.err)
+			if rw.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d, want 502", rw.Code)
+			}
+			up := p.logs.Only(t, logging.EventUpstreamRequestFailed)
+			if up.String("termination") != c.term || up.String("reason") != reasonUpstreamError {
+				t.Fatalf("%v", up)
+			}
+			if got := p.logs.ByEvent(logging.EventRequestAccessDecided); len(got) != 0 {
+				t.Fatalf("an upstream failure wrote %d access records: %s", len(got), p.logs.Raw())
+			}
+		})
+	}
+}
+
+type timeoutErr struct{}
+
+func (timeoutErr) Error() string   { return "i/o timeout" }
+func (timeoutErr) Timeout() bool   { return true }
+func (timeoutErr) Temporary() bool { return true }
