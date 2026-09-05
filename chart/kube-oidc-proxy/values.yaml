@@ -148,9 +148,13 @@ rbac:
   # header as `impersonate` on `userextras/<key>`, and a key that is not
   # granted fails the whole request with 403.
   #
-  # Every `claimMappings.extra[].key` in authenticationConfig.content is
-  # granted automatically, so this list is only for keys that reach the proxy
-  # another way (e.g. a token-passthrough identity carrying its own extras).
+  # Every `claimMappings.extra[].key` in authenticationConfig.content and every
+  # key in extraImpersonationHeaders.headers is granted automatically, so this
+  # list is only for keys that reach the proxy another way: typically
+  # Impersonate-Extra-<key> headers that clients send themselves (the
+  # `as-user-extra` field of a kubeconfig user entry), which the proxy
+  # authorizes against the caller's own RBAC and then forwards.
+  # Keys are lowercased, matching how the API server authorizes them.
   # Example:
   #   userExtras:
   #     - example.com/team

@@ -50,11 +50,18 @@ Extra user-info keys the proxy must be allowed to impersonate.
 The API server authorizes every Impersonate-Extra-<key> header separately, as
 `impersonate` on `userextras/<key>` in authentication.k8s.io. A key the
 ServiceAccount is not granted fails the whole request with 403, so the
-ClusterRole has to name every key the proxy can emit. Two sources feed it:
+ClusterRole has to name every key the proxy can emit. Three sources feed it:
 
   1. `claimMappings.extra[].key` of every issuer in authenticationConfig.content,
      read straight from that YAML so the grant cannot drift from the mapping;
-  2. `rbac.userExtras`, for keys that reach the proxy some other way.
+  2. the keys of `extraImpersonationHeaders.headers` (`k1=v1,k2=v2`), which the
+     proxy adds to every impersonated request;
+  3. `rbac.userExtras`, for keys that reach the proxy some other way, such as
+     Impersonate-Extra-* headers clients send themselves.
+
+Keys are lowercased: the API server lowercases extra keys taken from headers
+before authorizing them, and Kubernetes already rejects non-lowercase keys in
+claimMappings.extra, so a mixed-case grant would never match a request.
 
 Returns a sorted, de-duplicated JSON array (helpers can only return strings).
 */}}
@@ -79,10 +86,19 @@ is nil rather than its default.
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- with .Values.extraImpersonationHeaders -}}
+{{- with .headers -}}
+{{- range (splitList "," (toString .)) -}}
+{{- with (trim (first (splitList "=" .))) -}}{{- $keys = append $keys . -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- with .Values.rbac -}}
 {{- range (default (list) .userExtras) -}}
 {{- $keys = append $keys (toString .) -}}
 {{- end -}}
 {{- end -}}
-{{- $keys | uniq | sortAlpha | toJson -}}
+{{- $lowered := list -}}
+{{- range $keys -}}{{- $lowered = append $lowered (lower .) -}}{{- end -}}
+{{- $lowered | uniq | sortAlpha | toJson -}}
 {{- end -}}

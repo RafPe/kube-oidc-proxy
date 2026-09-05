@@ -356,9 +356,10 @@ readinessRequireAllIssuers: false
 If an issuer declares `claimMappings.extra`, the proxy forwards each key as an
 `Impersonate-Extra-<key>` header and the API server authorizes every one of
 them separately, as `impersonate` on `userextras/<key>`. The chart reads the
-keys out of `authenticationConfig.content` and grants them in its ClusterRole,
-so nothing extra is needed there; `rbac.userExtras` covers keys that reach the
-proxy another way. Installing without the chart, grant them yourself, or every
+keys out of `authenticationConfig.content` (and out of
+`extraImpersonationHeaders.headers`) and grants them in its ClusterRole, so
+nothing extra is needed there; `rbac.userExtras` covers keys that clients send
+themselves. Installing without the chart, grant them yourself, or every
 request carrying an extra fails with 403:
 
 ```yaml
