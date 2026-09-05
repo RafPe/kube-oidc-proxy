@@ -412,28 +412,32 @@ sourcetype match, which the queries above use.
 ### One line per request
 
 An access decision and a terminal `request.response.completed` are two records
-of one request. Grouping on `request_id` puts the decision and the upstream
-status on the same line.
+of one request; a `kubectl --as` request at `-v=1` adds one `cache.sar.lookup`
+per impersonation header value. Grouping on `request_id` puts the decision, the
+upstream status and the cache outcome on the same line.
 
 ```bash
 kubectl -n kube-oidc-proxy logs -l app.kubernetes.io/name=kube-oidc-proxy --since=15m --tail=-1 \
-  | jq -rs 'map(select(.component == "request")) | group_by(.request_id)
+  | jq -rs 'map(select(.request_id != null)) | group_by(.request_id)
             | map((map(select(.event_type == "request.access.decided"))[0] // {}) as $a
                   | (map(select(.event_type == "request.response.completed"))[0] // {}) as $r
+                  | (map(select(.event_type == "cache.sar.lookup") | .cache_result) | join(",")) as $c
                   | select($a.time != null)
                   | [$a.time, $a.event, ($a.reason // "-"), ($a.inbound_user // "-"),
                      ($a.k8s_verb // "-"), ($a.k8s_api_group // ""), ($a.k8s_resource // "-"),
-                     ($a.k8s_namespace // "-"),
+                     ($a.k8s_namespace // "-"), (if $c == "" then "-" else $c end),
                      (($r.http_status // "-") | tostring), $a.request_id] | @tsv)
             | .[]'
 ```
 
 ```splunk
-index=kubernetes sourcetype=kube-oidc-proxy earliest=-15m component="request"
+index=kubernetes sourcetype=kube-oidc-proxy earliest=-15m request_id=*
 | stats earliest(_time) AS _time values(event) AS event values(reason) AS reason
         values(inbound_user) AS user values(k8s_verb) AS verb
         values(k8s_api_group) AS api_group values(k8s_resource) AS resource
-        values(k8s_namespace) AS namespace values(http_status) AS status by request_id
+        values(k8s_namespace) AS namespace values(cache_result) AS cache
+        values(http_status) AS status by request_id
+| where isnotnull(event)
 | sort _time
 ```
 

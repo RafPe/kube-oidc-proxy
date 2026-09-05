@@ -185,11 +185,13 @@ kubectl -n kube-oidc-proxy logs -l app.kubernetes.io/name=kube-oidc-proxy \
 sees plain JSON; drop both to keep the pod names. `--tail=-1` lifts the
 per-pod line cap kubectl applies when a selector matches several pods.
 
-**One line per request.** A request produces at least two records, the access
-decision and the terminal `request.response.completed` that carries the HTTP
-status. Joining them on `request_id` gives one row per request with the
-upstream status attached, which is the quickest way to tell an authentication
-problem from an authorization one:
+**One line per request.** A request produces several records: the access
+decision, the terminal `request.response.completed` that carries the HTTP
+status, and, on a `kubectl --as` request at `-v=1`, one `cache.sar.lookup` per
+impersonation header value. Joining them on `request_id` gives one row per
+request with the upstream status and the cache outcome attached, which is the
+quickest way to tell an authentication problem from an authorization one, and
+to see whether the decision cache is doing its job:
 
 ```bash
 # ~/.zshrc or a file you source
@@ -199,14 +201,23 @@ kop-requests() {
       --since="${1:-15m}" --tail=-1 --prefix --max-log-requests=20 \
   | sed -E 's#^\[pod/([^/]+)/[^]]+\] \{#{"pod":"\1",#' \
   | jq -rs '
-      map(select(.component == "request"))
+      map(select(.request_id != null))
       | group_by(.request_id)
       | map(
           (map(select(.event_type == "request.access.decided"))[0] // {}) as $a
           | (map(select(.event_type == "request.response.completed"))[0] // {}) as $r
+          # Cache consultations are separate DEBUG records (visible at -v=1),
+          # several per request; fold them into one hit/miss/bypass summary.
+          | (map(select(.event_type == "cache.sar.lookup" or .event_type == "cache.tokenreview.lookup")
+                 | .cache_result)
+             | if length == 0 then "-" else
+                 (group_by(.) | map("\(.[0]):\(length)") | join(",")) end) as $c
           | select($a.time != null)
           | [ $a.time[11:19], $a.pod[-5:], $a.event, ($a.reason // "-"),
-              ($a.inbound_user // "-"), ($a.issuer_name // "-"),
+              # The authenticated user, plus who it acted as on a kubectl --as
+              # request. Impersonation is the only path the SAR cache serves.
+              (($a.inbound_user // "-") + (if $a.outbound_user then " as " + $a.outbound_user else "" end)),
+              ($a.issuer_name // "-"),
               # Kubernetes verb and group/resource, as RBAC rules name them. A
               # non-resource path (discovery, /healthz) has neither, so it
               # shows the HTTP method and the path instead.
@@ -216,32 +227,44 @@ kop-requests() {
                   else $a.k8s_api_group + "/" + $a.k8s_resource end)
                else ($a.path // "-") end),
               ($a.k8s_namespace // "-"),
+              $c,
               (($r.http_status // "-") | tostring), (($r.duration_ms // "-") | tostring),
               $a.request_id[0:8] ]
           | @tsv)
       | .[]' \
   | sort \
-  | { printf 'TIME\tPOD\tEVENT\tREASON\tUSER\tISSUER\tVERB\tRESOURCE\tNAMESPACE\tSTATUS\tMS\tRID\n'; cat; } \
+  | { printf 'TIME\tPOD\tEVENT\tREASON\tUSER\tISSUER\tVERB\tRESOURCE\tNAMESPACE\tCACHE\tSTATUS\tMS\tRID\n'; cat; } \
   | column -t -s $'\t'
 }
 ```
 
 ```text
-TIME      POD    EVENT      REASON                USER                                ISSUER                               VERB    RESOURCE                                  NAMESPACE  STATUS  MS   RID
-17:23:59  l5qhs  AuSuccess  -                     gha:my-org/my-repo:refs/heads/main  token.actions.githubusercontent.com  create  authentication.k8s.io/selfsubjectreviews  -          403     298  9fd2e1f1
-17:44:42  snqkt  AuSuccess  -                     gha:my-org/my-repo:refs/heads/main  token.actions.githubusercontent.com  create  authentication.k8s.io/selfsubjectreviews  -          201     117  3b1c0a77
-17:45:10  l5qhs  AuSuccess  -                     google:alice@example.com            accounts.google.com                  list    apps/deployments                          payments   200     88   5c9d2e40
-17:45:31  snqkt  AuSuccess  -                     gha:my-org/my-repo:refs/heads/main  token.actions.githubusercontent.com  list    secrets                                   default    403     61   7e0f1a22
-17:52:03  l5qhs  AuFail     unauthorized          -                                   -                                    get     /api/v1/namespaces                        -          401     4    a1b2c3d4
-17:53:40  snqkt  AuFail     impersonation_denied  google:alice@example.com            accounts.google.com                  list    pods                                      -          403     3    e5f6a7b8
-17:54:12  l5qhs  AuSuccess  -                     google:alice@example.com            accounts.google.com                  get     /apis                                     -          200     12   c0ffee00
+TIME      POD    EVENT      REASON        USER                                             ISSUER                               VERB    RESOURCE                                  NAMESPACE  CACHE   STATUS  MS   RID
+17:23:59  l5qhs  AuSuccess  -             gha:my-org/my-repo:refs/heads/main               token.actions.githubusercontent.com  create  authentication.k8s.io/selfsubjectreviews  -          -       403     298  9fd2e1f1
+17:44:42  snqkt  AuSuccess  -             gha:my-org/my-repo:refs/heads/main               token.actions.githubusercontent.com  create  authentication.k8s.io/selfsubjectreviews  -          -       201     117  3b1c0a77
+17:45:10  l5qhs  AuSuccess  -             google:alice@example.com                         accounts.google.com                  list    apps/deployments                          payments   -       200     88   5c9d2e40
+17:45:31  snqkt  AuSuccess  -             gha:my-org/my-repo:refs/heads/main               token.actions.githubusercontent.com  list    secrets                                   default    -       403     61   7e0f1a22
+17:52:03  l5qhs  AuFail     unauthorized  -                                                -                                    get     /api/v1/namespaces                        -          -       401     4    a1b2c3d4
+17:53:40  snqkt  AuSuccess  -             gha:my-org/my-repo:refs/heads/main as ci-viewer  token.actions.githubusercontent.com  list    namespaces                                -          miss:1  200     93   e5f6a7b8
+17:53:43  snqkt  AuSuccess  -             gha:my-org/my-repo:refs/heads/main as ci-viewer  token.actions.githubusercontent.com  list    namespaces                                -          hit:1   200     22   f00dbabe
+17:54:12  l5qhs  AuSuccess  -             google:alice@example.com                         accounts.google.com                  get     /apis                                     -          -       200     12   c0ffee00
 ```
 
-`VERB`, `RESOURCE` and `NAMESPACE` are the request-info dimensions the proxy
-resolved (`k8s_verb`, `k8s_api_group`/`k8s_resource`, `k8s_namespace`), in
-the same shape RBAC rules use: the verb is `list`, not `GET`, and the resource
-is `apps/deployments` with the core group left bare. A path with no resource
-behind it, such as discovery, falls back to the HTTP method and the path.
+Column notes:
+
+- `EVENT` is the frozen outcome, `AuSuccess` or `AuFail`; every row is a
+  `request.access.decided` record, so the event type itself is not repeated.
+- `VERB`, `RESOURCE` and `NAMESPACE` are the request-info dimensions the proxy
+  resolved (`k8s_verb`, `k8s_api_group`/`k8s_resource`, `k8s_namespace`), in
+  the same shape RBAC rules use: the verb is `list`, not `GET`, and the
+  resource is `apps/deployments` with the core group left bare. A path with no
+  resource behind it, such as discovery, falls back to the HTTP method and the
+  path.
+- `CACHE` counts the request's cache consultations by result. It is `-` for
+  plain token requests, which never touch a cache: the
+  [SubjectAccessReview decision cache](./caching.md#subjectaccessreview-decision-cache)
+  serves only `kubectl --as` requests and the TokenReview cache only
+  passthrough. Those records are DEBUG, so the column is empty below `-v=1`.
 
 How to read it:
 
@@ -253,11 +276,15 @@ How to read it:
   `kubectl auth whoami` looks like this from the proxy's side.
 - **Row four:** a healthy 403. The identity is fine; the `view` role excludes
   secrets. Authentication succeeded, authorization did not.
-- **The last two** never reached the API server. The proxy rejected them and
+- **Row five** never reached the API server. The proxy rejected it and
   `REASON` says why, from the
-  [closed vocabulary](./logging.md#reason-vocabularies). An expired token is
-  `unauthorized` with no user or issuer, because no identity was established;
-  a `kubectl --as` the caller may not perform is `impersonation_denied`.
+  [closed vocabulary](./logging.md#reason-vocabularies): an expired token is
+  `unauthorized`, with no user or issuer because no identity was established.
+  A `kubectl --as` the caller may not perform shows as `impersonation_denied`.
+- **Rows six and seven** are the same `kubectl --as ci-viewer` command run
+  twice within the allow TTL. The first consulted the cache, missed, and paid
+  for a live `SubjectAccessReview`; the second was answered from memory and
+  took a quarter of the time.
 
 The `POD` column is the last five characters of the pod name, `RID` the first
 eight of the request ID. That prefix is enough to pull every record for one
