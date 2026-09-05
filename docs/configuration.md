@@ -112,10 +112,89 @@ server still authorizes the impersonated identity.
 ### Inbound impersonation (`kubectl --as`)
 
 The proxy also honours impersonation headers on **inbound** requests, so
-`kubectl --as` works through it. When a request carries impersonation headers,
-the proxy first checks — via `SubjectAccessReview` against the API server — that
-the authenticated user may assume that identity, then forwards the impersonated
-identity instead of the caller's own.
+`kubectl --as` works through it. Nobody can become anybody: an impersonating
+request is authorized twice, and both checks deny by default.
+
+1. **The proxy asks whether the caller may impersonate.** For every inbound
+   `Impersonate-*` header value it sends a `SubjectAccessReview` to the API
+   server asking whether the **authenticated** identity, the one the token
+   mapped to, holds the `impersonate` verb on that value. A single refused
+   value fails the whole request with `403` and
+   `reason=impersonation_denied`; nothing is forwarded. These are the
+   decisions the [SubjectAccessReview cache](./caching.md#subjectaccessreview-decision-cache)
+   remembers.
+2. **The API server authorizes the target.** The request is forwarded
+   impersonating the target identity, so RBAC applies to the target, not to
+   the caller. A target with no bindings can do nothing.
+
+Each header value is a separate authorization against a separate resource,
+which is what a grant has to name:
+
+| Header | Authorized as `impersonate` on |
+| --- | --- |
+| `Impersonate-User` | `users`, core API group |
+| `Impersonate-Group` | `groups`, core API group |
+| `Impersonate-Uid` | `uids`, `authentication.k8s.io` |
+| `Impersonate-Extra-<key>` | `userextras/<key>`, `authentication.k8s.io`; the key is lowercased first |
+
+kubectl sends only the headers you ask for, so `--as=<user>` alone sends one
+user header and needs only a `users` rule; `--as-group` adds a `groups` check
+per group. Grant impersonation as narrowly as the use case allows. A `users`
+rule with no `resourceNames` permits impersonating any user, `cluster-admin`
+holders included; with `resourceNames` it permits exactly the names listed.
+The proxy refuses `system:` targets regardless, as described below.
+
+A minimal grant, letting one CI identity act as a fixed read-only user:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: impersonate-ci-viewer
+rules:
+- apiGroups: [""]
+  resources: ["users"]
+  resourceNames: ["ci-viewer"]        # this username only
+  verbs: ["impersonate"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ci-impersonate-ci-viewer
+subjects:
+- kind: Group
+  name: "gha:repo:my-org/my-repo"     # who may impersonate
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: impersonate-ci-viewer
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ci-viewer-view
+subjects:
+- kind: User
+  name: ci-viewer                     # what the target may do
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: view
+  apiGroup: rbac.authorization.k8s.io
+```
+
+With that in place, `kubectl --token=<ci token> --as=ci-viewer get pods` is
+allowed by the proxy and authorized by the API server as `ci-viewer`. Two
+consequences of the model are easy to miss:
+
+- **Nothing is hidden by impersonating.** The proxy's access record carries
+  the caller as `inbound_user` and the target as `outbound_user`, and the
+  API server's audit event carries the target as `impersonatedUser` next to
+  the [original-user headers](#original-user-audit-headers) naming the caller.
+- **Revocation lags by the cache TTL.** Removing an impersonation binding is
+  enforced through the proxy only once the cached allow expires, up to
+  `--subject-access-review-cache-allow-ttl`.
 
 ### SubjectAccessReview caching and the header value cap
 
