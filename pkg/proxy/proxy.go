@@ -470,10 +470,10 @@ func (p *Proxy) reviewToken(rw http.ResponseWriter, req *http.Request) bool {
 		return false
 	}
 
-	// The reviewer answered. A rejection is a completed review reporting
-	// authenticated=false, not a failure.
-	logging.Emit(ctx, componentLogger(p.tokenReviewLog), logging.EventAuthnTokenReviewCompleted, slog.Bool("authenticated", ok))
-
+	// The reviewer answered, and it has already recorded the outcome: a live
+	// TokenReview emits authn.tokenreview.completed with its duration, a cache
+	// hit emits cache.tokenreview.lookup with the cached verdict. A rejection
+	// is such an answer, not a failure, so nothing more is recorded here.
 	return ok
 }
 

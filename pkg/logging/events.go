@@ -162,7 +162,7 @@ var Registry = map[EventType]EventSpec{
 		Level:      slog.LevelDebug,
 		Required:   []string{"request_id", "authenticated"},
 		Message:    "tokenreview completed",
-		Summary:    "A TokenReview answered. Carries duration_ms on a live call.",
+		Summary:    "A live TokenReview answered, with duration_ms. A cache hit is reported by cache.tokenreview.lookup instead.",
 	},
 	EventAuthnTokenReviewFailed: {
 		Components: []Component{ComponentTokenReview},

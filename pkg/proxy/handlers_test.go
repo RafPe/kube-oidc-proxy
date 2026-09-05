@@ -282,22 +282,24 @@ func TestMissingBearerOnTokenReviewIsDebug(t *testing.T) {
 	}
 }
 
-// TestRejectedTokenReviewIsCompletedNotAuthenticated pins that a TokenReview
-// which answered "not authenticated" is a completed review carrying the
-// outcome, not a failure: only an unreachable or erroring API server is a
-// failure.
-func TestRejectedTokenReviewIsCompletedNotAuthenticated(t *testing.T) {
+// TestRejectedTokenReviewIsNotAFailure pins that a TokenReview which answered
+// "not authenticated" is denied without a failure record, and that the proxy
+// adds no completion record of its own: the reviewer that answered emits
+// authn.tokenreview.completed (with duration_ms on a live call), so a second
+// one here would double-count every live review.
+func TestRejectedTokenReviewIsNotAFailure(t *testing.T) {
 	p := newTestProxy(t)
 	p.fakeReviewer.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(nil, false, nil)
 	req := reservedIdentityRequest(t, nil)
 	req = req.WithContext(logging.NewContext(req.Context(), p.logger))
-	p.reviewToken(httptest.NewRecorder(), req)
-	rec := p.logs.Only(t, logging.EventAuthnTokenReviewCompleted)
-	if v := rec["authenticated"]; v != false {
-		t.Fatalf("authenticated = %v", v)
+	if p.reviewToken(httptest.NewRecorder(), req) {
+		t.Fatal("a rejected token passed review")
 	}
-	if rec.String("component") != string(logging.ComponentTokenReview) {
-		t.Errorf("component = %q, want %q", rec.String("component"), logging.ComponentTokenReview)
+	if got := p.logs.ByEvent(logging.EventAuthnTokenReviewFailed); len(got) != 0 {
+		t.Errorf("a rejected token was recorded as a failure: %s", p.logs.Raw())
+	}
+	if got := p.logs.ByEvent(logging.EventAuthnTokenReviewCompleted); len(got) != 0 {
+		t.Errorf("the proxy emitted a completion record the reviewer already owns: %s", p.logs.Raw())
 	}
 }
 
