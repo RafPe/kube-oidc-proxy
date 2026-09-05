@@ -102,8 +102,10 @@ of `my-org/my-repo` carries:
 Things to notice:
 
 - **There is no groups claim.** Every group has to be synthesized with CEL.
-- **Every value is a string**, including `ref_protected: "false"`. Compare
-  against `"true"` in quotes; a bare boolean never matches.
+- **Every GitHub-specific value is a string**, including `ref_protected:
+  "false"` and every numeric ID; only the standard `iat`, `nbf` and `exp`
+  are numbers. Compare against `"true"` in quotes; a bare boolean never
+  matches.
 - **Names can be recycled, IDs cannot.** `repository_owner_id`,
   `repository_id` and `enterprise_id` are the values to pin in validation
   rules; the names are for reading.
@@ -451,7 +453,7 @@ subjects:
   name: "gke-prod-ns:payments"               # every SA in one GKE namespace
   apiGroup: rbac.authorization.k8s.io
 - kind: User
-  name: "gha:repo:my-org/platform-iac:ref:refs/heads/main"
+  name: "gha:my-org/platform-iac:refs/heads/main"   # one repo, main branch only
   apiGroup: rbac.authorization.k8s.io
 roleRef:
   kind: ClusterRole
@@ -530,10 +532,12 @@ authenticationConfig:
         audiences: ["kube-oidc-proxy.example.com"]
       claimMappings:
         username:
-          claim: sub
-          prefix: "gha:"
+          expression: '"gha:" + claims.repository + ":" + claims.ref'
         groups:
-          expression: '["github:" + claims.repository_owner]'
+          expression: '["gha:org:" + claims.repository_owner]'
+      claimValidationRules:
+      - expression: 'claims.repository_owner_id == "1234567"'
+        message: "token not issued for the expected organisation"
     - issuer:
         url: https://auth.internal.example.com
         audiences: ["kubernetes"]

@@ -165,7 +165,9 @@ user header and needs only a `users` rule; `--as-group` adds a `groups` check
 per group. Grant impersonation as narrowly as the use case allows. A `users`
 rule with no `resourceNames` permits impersonating any user, `cluster-admin`
 holders included; with `resourceNames` it permits exactly the names listed.
-The proxy refuses `system:` targets regardless, as described below.
+Note that the `system:` guard described below applies to the **authenticated**
+identity, not to impersonation targets: a binding that permits impersonating
+`system:masters` is honoured, on the assumption that it was granted on purpose.
 
 A minimal grant, letting one CI identity act as a fixed read-only user:
 
@@ -240,16 +242,18 @@ Impersonation earns its place in a few situations:
   service's, so the service cannot be talked into doing what its caller
   could not, and the audit log names the caller.
 - **Reduced privilege for one job.** A broadly privileged identity
-  impersonates a narrow one for a risky step. A migration runner allowed to
-  impersonate only `payments-migrator`, bound in one namespace, cannot damage
-  anything else even if the script is wrong.
+  impersonates a narrow one for a risky step. Requests a migration runner
+  makes as `payments-migrator`, bound in one namespace, are limited to that
+  namespace. This bounds what the script does through that path; it does not
+  bound what the credential could do if used directly.
 - **One credential, several roles.** A shared CI token maps to one identity,
   and different pipelines impersonate different team users with their own
   bindings. Access is partitioned by an RBAC rule rather than by minting more
   credentials.
 
-Impersonation never exceeds the target's permissions, never hides who acted,
-and cannot reach a `system:` identity through the proxy.
+Impersonation never exceeds the target's permissions and never hides who
+acted. Whether a `system:` target is reachable is decided by RBAC alone, as
+noted above.
 
 ### SubjectAccessReview caching and the header value cap
 

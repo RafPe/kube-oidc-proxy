@@ -208,8 +208,14 @@ omitStages: ["RequestReceived"]
 rules:
   - level: None
     nonResourceURLs: ["/healthz*", "/readyz*", "/livez*", "/api", "/api/*", "/apis", "/apis/*"]
-  # Request bodies for every write from CI. No response bodies: those would
-  # echo Secret data back into the log.
+  # Secrets first, whoever writes them: a Request-level rule below would copy
+  # the value into the log on every create.
+  - level: Metadata
+    resources:
+      - group: ""
+        resources: ["secrets"]
+  # Request bodies for every other write from CI. No response bodies: those
+  # would echo data back into the log.
   - level: Request
     userGroups: ["gha:org:my-org", "gitlab:ns:my-group"]
     verbs: ["create", "update", "patch", "delete", "deletecollection"]
