@@ -150,6 +150,13 @@ func (a *Audit) backendKind() string {
 // both as a record and to the caller. A failed flush means audit events for
 // requests this process already served were dropped, so it must not be
 // swallowed.
+//
+// Only a backend implementing errorReporter can say that it failed: the
+// upstream audit.Backend interface returns nothing from Shutdown, and the
+// bundled log and buffered webhook backends log a delivery failure through the
+// Kubernetes error handler instead of returning it. For those the flush is
+// recorded as completed and the failure, if any, is a bridged component=k8s
+// record.
 func (a *Audit) Shutdown() error {
 	backend := a.serverConfig.AuditBackend
 	if backend == nil {
