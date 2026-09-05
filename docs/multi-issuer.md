@@ -508,12 +508,14 @@ kubectl -n kube-oidc-proxy logs deploy/kube-oidc-proxy --since=1h \
   | sort | uniq -c
 ```
 
-To list issuers that are currently pending, and why:
+To see each issuer's current state in one pod, take the newest of its
+`pending` and `initialized` records:
 
 ```bash
 kubectl -n kube-oidc-proxy logs deploy/kube-oidc-proxy \
-  | jq -r 'select(.event_type == "oidc.issuer.pending")
-           | "\(.issuer_name)\t\(.pending_reason)\t\(.ready_issuers)/\(.total_issuers)"'
+  | jq -rs 'map(select(.event_type == "oidc.issuer.pending" or .event_type == "oidc.issuer.initialized"))
+            | group_by(.issuer_name) | map(last)
+            | .[] | "\(.issuer_name)\t\(.issuer_state)\t\(.pending_reason // "-")\t\(.ready_issuers)/\(.total_issuers)"'
 ```
 
 The [logging reference](./logging.md) has the equivalent LogQL and Splunk

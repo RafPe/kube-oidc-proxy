@@ -380,26 +380,33 @@ index=kubernetes sourcetype=kube-oidc-proxy earliest=-1h
 | sort -count
 ```
 
-### Issuer pending
+### Issuer state
+
+An issuer's lifecycle is two record types: `oidc.issuer.pending`, emitted when
+the pending set or a pending reason changes, and `oidc.issuer.initialized`,
+emitted once its JWKS has loaded. Its current state is therefore the newest of
+the two per `issuer_name`, within one process; a query on pending records
+alone shows pending history and would miss the initialization that ended it.
 
 ```bash
 kubectl -n kube-oidc-proxy logs "$POD" \
-  | jq -r 'select(.event_type == "oidc.issuer.pending")
-           | "\(.issuer_name)\t\(.pending_reason)\t\(.ready_issuers)/\(.total_issuers)"'
+  | jq -rs 'map(select(.event_type == "oidc.issuer.pending" or .event_type == "oidc.issuer.initialized"))
+            | group_by(.issuer_name) | map(last)
+            | .[] | "\(.issuer_name)\t\(.issuer_state)\t\(.pending_reason // "-")\t\(.ready_issuers)/\(.total_issuers)"'
 ```
 
 ```logql
-{app="kube-oidc-proxy"} | json | event_type = "oidc.issuer.pending"
-  | line_format "{{.issuer_name}} {{.pending_reason}} {{.ready_issuers}}/{{.total_issuers}}"
+{app="kube-oidc-proxy"} | json | event_type =~ "oidc.issuer.(pending|initialized)"
+  | line_format "{{.issuer_name}} {{.issuer_state}} {{.pending_reason}} {{.ready_issuers}}/{{.total_issuers}}"
 ```
 
 ```splunk
-index=kubernetes sourcetype=kube-oidc-proxy event_type="oidc.issuer.pending"
-| stats latest(pending_reason) AS pending_reason latest(_time) AS last_seen by issuer_name
+index=kubernetes sourcetype=kube-oidc-proxy event_type IN ("oidc.issuer.pending", "oidc.issuer.initialized")
+| stats latest(issuer_state) AS state latest(pending_reason) AS pending_reason latest(_time) AS last_seen by pod, issuer_name
 ```
 
-`oidc.issuer.pending` fires on a state change, not on every readiness scrape, so
-the newest record per `issuer_name` is the current state. See
+Group by pod as well as issuer when several replicas run: each process
+initializes its issuers independently. See
 [multi-issuer readiness](./multi-issuer.md#readiness).
 
 ### Every replica at once

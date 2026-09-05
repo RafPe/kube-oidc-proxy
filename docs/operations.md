@@ -77,8 +77,8 @@ Security, troubleshooting, and testing the proxy locally.
 | RBAC impersonation grant/revoke takes up to 10s to take effect through the proxy | Expected: impersonation `SubjectAccessReview` decisions are cached. A revoked grant keeps working for up to `--subject-access-review-cache-allow-ttl`; a new grant keeps failing for up to `--subject-access-review-cache-deny-ttl` (both default `10s`). Set either TTL to `0` to re-check that class on every request — see [the SAR decision cache](./caching.md#subjectaccessreview-decision-cache). |
 | TLS errors connecting to the proxy | The client's kubeconfig `certificate-authority` must trust the proxy's **serving** certificate (self-signed by the chart, your own Secret, or cert-manager). |
 | Trace one request end to end | Take `request_id` from any proxy record (the client also gets it back in the `Audit-ID` response header) and grep every proxy record for it; the same value is the kube-apiserver audit `auditID` — see [correlation](./logging.md#correlation). |
-| An issuer is stuck | `event_type=oidc.issuer.pending` names the issuer and a `pending_reason`; it is emitted on state change, so the newest record per issuer is current — see [worked queries](./logging.md#issuer-pending). |
-| Confirm which issuers loaded | `kubectl -n kube-oidc-proxy logs deploy/kube-oidc-proxy \| grep "configured OIDC issuers"`. |
+| An issuer is stuck | `event_type=oidc.issuer.pending` names the issuer and a `pending_reason`; it is emitted on state change, so the newest record per issuer is current — see [issuer state](./logging.md#issuer-state). |
+| Confirm which issuers loaded | `kubectl -n kube-oidc-proxy logs deploy/kube-oidc-proxy \| jq -r 'select(.event_type == "oidc.issuer.initialized") \| .issuer_name'` — one line per issuer whose JWKS loaded, in this pod. The current state of each issuer, pending or initialized, is the [issuer state query](./logging.md#issuer-state). |
 | A revoked passthrough token still works / a newly valid one is rejected | The TokenReview result cache. A revoked token passes for up to `--token-passthrough-cache-success-ttl`; a token that just became valid can be rejected for up to `--token-passthrough-cache-failure-ttl` (both default 10s). Set either flag to `0` to disable that side — see [the TokenReview cache](./caching.md#tokenreview-result-cache). |
 
 ### Reading the request log
@@ -435,14 +435,19 @@ logging:
   verbosity: "1"
 ```
 
-Or as a temporary switch that rolls the pods; drop the override afterwards:
+Or as a temporary switch that rolls the pods. Pin the chart version you are
+running, so a debugging change does not also upgrade the chart:
 
 ```bash
 helm upgrade kube-oidc-proxy oci://ghcr.io/rafpe/charts/kube-oidc-proxy \
-  -n kube-oidc-proxy -f values.yaml --set logging.verbosity=1
+  --version <x.y.z> -n kube-oidc-proxy -f values.yaml --set logging.verbosity=1
 kubectl -n kube-oidc-proxy rollout status deploy/kube-oidc-proxy
 kubectl -n kube-oidc-proxy get deploy kube-oidc-proxy \
   -o jsonpath='{.spec.template.spec.containers[0].args}'
+
+# Back to the default when done: the same command without the override.
+helm upgrade kube-oidc-proxy oci://ghcr.io/rafpe/charts/kube-oidc-proxy \
+  --version <x.y.z> -n kube-oidc-proxy -f values.yaml
 ```
 
 Then read the DEBUG records around an access record, and anything the

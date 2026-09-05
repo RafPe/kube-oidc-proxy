@@ -21,7 +21,12 @@ A reverse proxy that brings OIDC login to managed Kubernetes clusters, with mult
 
 ## Quickstart
 
-Prerequisites: a Kubernetes cluster, `kubectl`, Helm 3+, and one or more OIDC issuers (see [prerequisites](./docs/getting-started.md#prerequisites)).
+This is a smoke test, not a production install: it needs a cluster, `kubectl`,
+Helm 3+, an OIDC issuer, and an ID token from that issuer in `$ID_TOKEN` (see
+[prerequisites](./docs/getting-started.md#prerequisites)). The proxy runs with a
+ServiceAccount allowed to impersonate any user, and clients will talk to the
+proxy instead of the API server; [getting started](./docs/getting-started.md)
+covers both.
 
 Install from the published, signed OCI chart:
 
@@ -45,9 +50,13 @@ kubectl --server=https://127.0.0.1:8443 --insecure-skip-tls-verify \
 
 ```text
 ATTRIBUTE   VALUE
-Username    google:alice@example.com
+Username    alice@example.com
 Groups      [system:authenticated]
 ```
+
+The username is the token's `email` claim as configured above; add
+`--set oidc.usernamePrefix=google:` to namespace it, which matters as soon as a
+second issuer is added.
 
 Full flow — TLS, kubeconfig, and auth modes: [docs/getting-started.md](./docs/getting-started.md).
 
@@ -98,19 +107,20 @@ See [docs/architecture.md](./docs/architecture.md) for the full C4 model (system
 
 ## Documentation
 
-| Topic | Where |
+| I want to… | Read |
 | --- | --- |
-| **Multi-issuer authentication** (headline feature) | [docs/multi-issuer.md](./docs/multi-issuer.md) |
-| Install, TLS, kubeconfig, auth modes | [docs/getting-started.md](./docs/getting-started.md) |
-| All flags, impersonation, task recipes | [docs/configuration.md](./docs/configuration.md) |
-| Caching and API-server protection: TokenReview/SAR caches, header cap | [docs/caching.md](./docs/caching.md) |
-| How it works: request flow, union authenticator, readiness | [docs/architecture.md](./docs/architecture.md) |
-| Security, troubleshooting, watching requests, local testing | [docs/operations.md](./docs/operations.md) |
-| Structured log reference: records, fields, correlation, worked queries | [docs/logging.md](./docs/logging.md) |
-| Auditing: proxy audit log, policies, joining with the API server's audit log | [docs/auditing.md](./docs/auditing.md) |
-| All chart values | [chart/kube-oidc-proxy/README.md](./chart/kube-oidc-proxy/README.md) |
-| Multi-issuer demo | [demo/README.md](./demo/README.md) |
-| Release process and recovery | [docs/releases.md](./docs/releases.md) |
+| Understand how it works: request flow, impersonation, readiness | [Architecture](./docs/architecture.md) |
+| Install it and get the first request through | [Getting started](./docs/getting-started.md) |
+| Accept tokens from one or several issuers | [Multi-issuer authentication](./docs/multi-issuer.md) |
+| Debug a failing request, watch traffic, turn up verbosity | [Operations](./docs/operations.md) |
+| Read the structured log or ship it to a SIEM | [Logging reference](./docs/logging.md) |
+| Audit who did what, on the proxy and the API server | [Auditing](./docs/auditing.md) |
+| Tune the review caches and the header cap | [Caching and API-server protection](./docs/caching.md) |
+| Look up a flag | [Configuration reference](./docs/configuration.md) |
+| Look up a chart value | [Chart values reference](./chart/kube-oidc-proxy/README.md) |
+| Try it locally with no identity provider | [Multi-issuer demo](./demo/README.md) |
+| Contribute: build, test, run the e2e suite | [Operations: development and testing](./docs/operations.md#development-and-testing) |
+| Maintain: cut a release, recover a failed one | [Releases](./docs/releases.md) |
 
 ## Release process
 

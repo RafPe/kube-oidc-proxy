@@ -16,6 +16,18 @@ When `authenticationConfig.content` is non-empty the chart passes
 `oidc.tlsClient` remains available because its credentials apply to every
 issuer in either mode.
 
+- [Prerequisites](#prerequisites)
+- [Install](#install)
+- [Values](#values)
+- [Single-issuer example](#single-issuer-example)
+- [Multi-issuer example](#multi-issuer-example)
+- [TLS](#tls)
+- [Ingress](#ingress)
+- [High availability](#high-availability)
+- [Security](#security)
+- [Testing the chart](#testing-the-chart)
+- [See also](#see-also)
+
 ## Prerequisites
 
 - Kubernetes cluster and `kubectl`
@@ -35,6 +47,7 @@ Single-issuer:
 
 ```sh
 helm install kube-oidc-proxy oci://ghcr.io/rafpe/charts/kube-oidc-proxy \
+  --namespace kube-oidc-proxy --create-namespace \
   --set oidc.clientId=my-client \
   --set oidc.issuerUrl=https://accounts.google.com \
   --set oidc.usernameClaim=email
@@ -43,13 +56,23 @@ helm install kube-oidc-proxy oci://ghcr.io/rafpe/charts/kube-oidc-proxy \
 Or with a values file:
 
 ```sh
-helm install kube-oidc-proxy oci://ghcr.io/rafpe/charts/kube-oidc-proxy -f my-values.yaml
+helm install kube-oidc-proxy oci://ghcr.io/rafpe/charts/kube-oidc-proxy \
+  --namespace kube-oidc-proxy --create-namespace -f my-values.yaml
+```
+
+Upgrade with the same values file rather than `--reuse-values`, which renders
+with the values stored by the previous release and does not pick up defaults
+added by a newer chart:
+
+```sh
+helm upgrade kube-oidc-proxy oci://ghcr.io/rafpe/charts/kube-oidc-proxy \
+  --namespace kube-oidc-proxy -f my-values.yaml
 ```
 
 Uninstall:
 
 ```sh
-helm uninstall kube-oidc-proxy
+helm uninstall kube-oidc-proxy --namespace kube-oidc-proxy
 ```
 
 ## Values
@@ -213,7 +236,8 @@ Accept tokens from several identity providers by supplying a Kubernetes
 `issuer.certificateAuthority`.
 
 ```yaml
-# All oidc.* fields are ignored while this is set.
+# Issuer-specific oidc.* values are not rendered while this is set;
+# oidc.tlsClient still applies to every issuer.
 readinessRequireAllIssuers: false
 authenticationConfig:
   content: |

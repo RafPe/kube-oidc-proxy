@@ -73,10 +73,12 @@ The proxy has two **mutually exclusive** modes — configure exactly one.
 | **Multi-issuer** (headline feature) | `authenticationConfig.content` | `--authentication-config` |
 
 > [!WARNING]
-> When `authenticationConfig.content` is set, the chart passes
-> `--authentication-config` and omits issuer-specific `--oidc-*` flags.
-> `oidc.tlsClient` remains available and applies to every configured issuer.
-> Setting issuer-specific values in both modes fails startup.
+> The binary refuses to start when both `--authentication-config` and
+> issuer-specific `--oidc-*` flags are given. The chart never produces that
+> combination: while `authenticationConfig.content` is set it passes
+> `--authentication-config` and does not render the issuer-specific `oidc.*`
+> values. `oidc.tlsClient` is the exception; it applies to every issuer in
+> either mode.
 
 ### Single-issuer
 

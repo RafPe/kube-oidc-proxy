@@ -45,7 +45,10 @@ carries over one-to-one.
 
 ### Single-issuer OIDC
 
-All ignored when `--authentication-config` is set.
+Mutually exclusive with `--authentication-config`: the binary refuses to start
+when both are given. The Helm chart never produces that combination, because
+it does not render the issuer-specific `oidc.*` values while
+`authenticationConfig.content` is set.
 
 | Flag | Default | Description |
 | --- | --- | --- |
@@ -310,7 +313,7 @@ made that call on purpose, and blocking it would break break-glass access.
 If a directory legitimately holds a `system:`-prefixed group, name it in
 `--allow-reserved-groups`:
 
-```
+```text
 --allow-reserved-groups=system:monitoring,system:logging
 ```
 
@@ -348,7 +351,7 @@ performs a [TokenReview](https://kubernetes.io/docs/reference/access-authn-authz
 against the target backend via the Kubernetes API; if it succeeds, the request
 is forwarded as-is with the token intact and no other authentication applied.
 
-```
+```text
 --token-passthrough
 ```
 
@@ -356,7 +359,7 @@ If the API server's authenticator is audience-aware, it validates the token's
 audiences against the API server's own. To validate against a different set
 instead, supply them — at least one must be present in the token:
 
-```
+```text
 --token-passthrough-audiences=aud1.foo.bar,aud2.foo.bar
 ```
 
@@ -375,7 +378,7 @@ as-is, with no header changes and no authentication injected by the proxy. The
 OIDC bearer token stays in the request. Useful for fronting endpoints that
 implement no authentication or authorization of their own.
 
-```
+```text
 --disable-impersonation
 ```
 
@@ -386,7 +389,7 @@ details to the target server. Two options are supported.
 
 **Client IP** — append the remote client IP:
 
-```
+```text
 --extra-user-header-client-ip
 ```
 
@@ -398,15 +401,15 @@ when the peer is a configured trusted proxy.
 **Arbitrary headers** — comma-separated `key=value` pairs; a key may repeat to
 carry multiple values:
 
-```
+```text
 --extra-user-headers=key1=foo,key2=bar,key1=bar
 ```
 
 Proxied requests then carry:
 
-```
+```text
 Impersonate-Extra-Key1: foo,bar
-Impersonate-Extra-Key2: foo
+Impersonate-Extra-Key2: bar
 ```
 
 ## Trusted proxies and client IP

@@ -9,6 +9,14 @@ Kubernetes API server as distinct users.
 Everything runs locally in a [kind](https://kind.sigs.k8s.io/) cluster. No cloud
 accounts, no DNS, no browser.
 
+- [What it shows](#what-it-shows)
+- [Prerequisites](#prerequisites)
+- [Usage](#usage)
+- [How it works](#how-it-works)
+- [Poking at it after a run](#poking-at-it-after-a-run)
+- [Troubleshooting](#troubleshooting)
+- [Layout](#layout)
+
 ## What it shows
 
 ```
@@ -44,14 +52,18 @@ accounts, no DNS, no browser.
 
 Install and have on your `PATH`: `kind`, `docker` (daemon running), `kubectl`,
 `helm` (verified with v4; v3.8+ should also work), `openssl`, `jq`, `curl`, and
-the Go toolchain (`go`, to build the proxy binary). The demo builds the proxy image locally because the chart's
-default image tag is not published for this fork.
+the Go toolchain (`go`, to build the proxy binary). The demo builds the proxy
+image from your checkout rather than pulling a published release, so it
+exercises the code you have, including uncommitted changes.
 
 ## Usage
 
+Both scripts locate their own files, so they work from any directory. The
+commands on this page are written for the repository root:
+
 ```sh
-./run.sh       # build, deploy, and verify (leaves the cluster running)
-./cleanup.sh   # delete the kind cluster and generated artifacts
+demo/run.sh       # build, deploy, and verify (leaves the cluster running)
+demo/cleanup.sh   # delete the kind cluster and generated artifacts
 ```
 
 `run.sh` is idempotent: if a `kube-oidc-proxy-demo` cluster already exists it is
