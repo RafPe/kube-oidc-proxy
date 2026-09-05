@@ -289,12 +289,77 @@ How to read it:
 The `POD` column is the last five characters of the pod name, `RID` the first
 eight of the request ID. That prefix is enough to pull every record for one
 request, on the proxy and in the API server's audit log where it is the
-`auditID`:
+`auditID`.
+
+**Every record, one per line.** The per-request table hides the records it
+joined. This second function shows them: one line per record, with the fixed
+columns every record has and a detail column assembled from whichever
+meaningful fields the record carries, so an access decision, a cache lookup
+and an issuer state change all read without a format per event type. With a
+request-ID prefix it traces one request; without, it streams the window.
 
 ```bash
-kubectl -n kube-oidc-proxy logs -l app.kubernetes.io/name=kube-oidc-proxy --since=1h --tail=-1 \
-  | jq -c 'select(.request_id != null and (.request_id | startswith("9fd2e1f1")))'
+# ~/.zshrc or a file you source
+kop-events() {
+  # usage: kop-events [since] [namespace] [rid-prefix]
+  #   kop-events 10m                      every record in the last 10 minutes
+  #   kop-events 1h kube-oidc-proxy 9fd2  every record of one request
+  kubectl -n "${2:-kube-oidc-proxy}" logs -l app.kubernetes.io/name=kube-oidc-proxy \
+      --since="${1:-15m}" --tail=-1 --prefix --max-log-requests=20 \
+  | sed -E 's#^\[pod/([^/]+)/[^]]+\] \{#{"pod":"\1",#' \
+  | jq -r --arg rid "${3:-}" '
+      select($rid == "" or ((.request_id // "") | startswith($rid)))
+      | [ (.time[11:19] + "." + (((.time[20:] | gsub("[^0-9]"; "")) + "000")[0:3])),
+          (.pod // "-")[-5:], .level, (.component // "-"), (.event_type // "-"),
+          ((.request_id // "-")[0:8]),
+          # Every meaningful field the record has, as key=value, in this order.
+          ([ "event", "reason", "decision", "cache_result", "authenticated",
+             "request_coalesced", "target_kind", "target_name",
+             "issuer_name", "issuer_state", "pending_reason", "ready_issuers",
+             "src_ip", "forwarded_for_untrusted", "auth_method",
+             "inbound_user", "outbound_user", "k8s_verb", "k8s_resource", "k8s_namespace",
+             "http_status", "duration_ms", "termination", "error_message" ] as $keys
+           | . as $rec
+           | [ $keys[] | select($rec[.] != null) | "\(.)=\($rec[.] | tostring)" ]
+           | if length == 0 then ($rec.msg // "-") else join(" ") end) ]
+      | @tsv' \
+  | sort \
+  | { printf 'TIME\tPOD\tLEVEL\tCOMPONENT\tEVENT_TYPE\tRID\tDETAIL\n'; cat; } \
+  | column -t -s $'\t'
+}
 ```
+
+One `kubectl --as ci-viewer get namespaces` at `-v=1`, traced by its prefix:
+
+```text
+TIME          POD    LEVEL  COMPONENT  EVENT_TYPE                  RID       DETAIL
+17:53:40.000  snqkt  DEBUG  sar        cache.sar.lookup            e5f6a7b8  cache_result=miss
+17:53:40.040  snqkt  DEBUG  sar        authz.sar.completed         e5f6a7b8  decision=allow request_coalesced=false target_kind=user duration_ms=41
+17:53:40.050  snqkt  INFO   request    request.access.decided      e5f6a7b8  event=AuSuccess decision=allow issuer_name=token.actions.githubusercontent.com src_ip=10.89.165.80 auth_method=oidc inbound_user=gha:my-org/my-repo:refs/heads/main outbound_user=ci-viewer k8s_verb=list k8s_resource=namespaces
+17:53:40.090  snqkt  INFO   request    request.response.completed  e5f6a7b8  http_status=200 duration_ms=93 termination=normal
+```
+
+Read top to bottom: the cache was consulted and missed, a live
+`SubjectAccessReview` took 41 ms and allowed the impersonation, the access
+decision recorded who acted as whom from which address, and the upstream
+answered 200 in 93 ms end to end. The same command three seconds later shows
+`cache_result=hit decision=allow` and no `authz.sar.completed` line at all.
+
+Where the detail fields come from, so you know what to expect on each row:
+
+- `src_ip` and `forwarded_for_untrusted` appear on the access record only.
+  `src_ip` is the authoritative client address after the trusted-proxy rules;
+  the forwarded chain is shown as the client sent it and is never trusted —
+  see [trusted proxies](./configuration.md#trusted-proxies-and-client-ip).
+- `cache_result`, `decision`, `duration_ms` and `request_coalesced` come from
+  the cache and review records, which are DEBUG and need `-v=1`.
+- `issuer_state`, `pending_reason` and `ready_issuers` come from the
+  `oidc.issuer.*` lifecycle records, which have no request ID and show up
+  only in the window view.
+- A record with none of the listed fields falls back to its `msg`.
+
+The full list of fields per record is in the
+[logging field reference](./logging.md#field-reference).
 
 **Nothing shows up at all.** Then no request reached the proxy in that window.
 An expired token still produces an `AuFail`, so an empty result points at the
