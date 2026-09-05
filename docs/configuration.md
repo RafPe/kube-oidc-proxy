@@ -219,6 +219,38 @@ consequences of the model are easy to miss:
   enforced through the proxy only once the cached allow expires, up to
   `--subject-access-review-cache-allow-ttl`.
 
+**When `--as` is worth using.** For most callers it is not: an identity whose
+claim mappings already put it in the right groups has its permissions without
+an extra hop, and binding roles to those groups is the better default.
+Impersonation earns its place in a few situations:
+
+- **Testing RBAC without owning the identity.** Before a binding goes live,
+  an operator checks what it grants with
+  `kubectl auth can-i --list --as=<user>` or `--as-group=<group>`. No token
+  to obtain, and the answer is exact because the API server evaluates it for
+  that identity.
+- **Break-glass with a trail.** People hold a low-privilege identity day to
+  day and a narrow grant lets them impersonate an admin identity when needed.
+  Every such request is audited with the person in the original-user headers
+  and the admin identity as the target, so escalation is visible per request
+  instead of being a standing permission.
+- **A service acting on behalf of its callers.** A deployment portal or a
+  GitOps service authenticates once as itself and impersonates the requesting
+  user on each call. The API server enforces the caller's RBAC, not the
+  service's, so the service cannot be talked into doing what its caller
+  could not, and the audit log names the caller.
+- **Reduced privilege for one job.** A broadly privileged identity
+  impersonates a narrow one for a risky step. A migration runner allowed to
+  impersonate only `payments-migrator`, bound in one namespace, cannot damage
+  anything else even if the script is wrong.
+- **One credential, several roles.** A shared CI token maps to one identity,
+  and different pipelines impersonate different team users with their own
+  bindings. Access is partitioned by an RBAC rule rather than by minting more
+  credentials.
+
+Impersonation never exceeds the target's permissions, never hides who acted,
+and cannot reach a `system:` identity through the proxy.
+
 ### SubjectAccessReview caching and the header value cap
 
 Impersonation authorization decisions are served from a bounded in-memory cache
