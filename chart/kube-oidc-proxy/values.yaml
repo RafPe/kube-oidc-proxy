@@ -162,7 +162,7 @@ rbac:
 
 # Token passthrough: forward the original bearer token to the API server for
 # requests whose token is not an OIDC token the proxy can verify.
-# https://github.com/rafpe/kube-oidc-proxy/blob/main/docs/configuration.md#token-passthrough
+# https://github.com/rafpe/kube-oidc-proxy/blob/main/docs/authentication.md#token-passthrough
 tokenPassthrough:
   enabled: false
   # Audiences that passthrough tokens are allowed to have.
@@ -212,7 +212,7 @@ subjectAccessReview:
 maxImpersonationHeaderValues:
 
 # Extra impersonation headers added to requests forwarded to the API server.
-# https://github.com/rafpe/kube-oidc-proxy/blob/main/docs/configuration.md#extra-impersonation-headers
+# https://github.com/rafpe/kube-oidc-proxy/blob/main/docs/authentication.md#extra-impersonation-headers
 extraImpersonationHeaders:
   # Send the client's source IP as an extra user header.
   clientIP: false

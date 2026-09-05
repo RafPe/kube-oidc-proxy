@@ -99,8 +99,8 @@ kubectl -n kube-oidc-proxy logs deploy/kube-oidc-proxy \
             | .[] | "\(.issuer_name)\t\(.issuer_state)\t\(.pending_reason // "-")\t\(.ready_issuers)/\(.total_issuers)"'
 ```
 
-The [logging reference](./logging.md) has the equivalent LogQL and Splunk
-queries and the full field reference.
+The [logging reference](./logging.md#issuer-state) has the Splunk equivalent,
+the LogQL history and metric forms, and the full field reference.
 
 ## Helm
 

@@ -103,7 +103,7 @@ the proxy. Each names what to look at.
 | Forwarded client IPs are trusted only from your own hops | `--trusted-proxies` is empty, or lists exactly the CIDRs of the ingress or load balancer in front ([trusted proxies](./configuration.md#trusted-proxies-and-client-ip)). |
 | Token passthrough is off unless understood | `tokenPassthrough.enabled: false`, or the audiences are constrained and the success TTL is deliberate ([caching](./caching.md#tokenreview-result-cache)). |
 | Audit data is handled as sensitive | Audit events and access records carry usernames, groups and `extra` values; the log pipeline they go to has the same access controls as the API server's audit log ([auditing](./auditing.md)). |
-| The pod security defaults are intact | `helm get values` shows no override of `podSecurityContext` or `securityContext`; file audit logs use an `emptyDir` rather than a writable root filesystem. |
+| The pod security defaults are intact | `helm -n kube-oidc-proxy get values kube-oidc-proxy` shows no override of `podSecurityContext` or `securityContext`; file audit logs use an `emptyDir` rather than a writable root filesystem. |
 
 ## Troubleshooting
 
@@ -461,8 +461,8 @@ kubectl --server=https://127.0.0.1:8443 --insecure-skip-tls-verify=true --token=
 ```
 
 `auth whoami` prints the identity exactly as the API server saw it: the mapped
-username, the groups (plus `system:authenticated`, which the API server adds
-itself) and every `extra` value. Add `-v 8` to see the raw status and body
+username, the groups (plus `system:authenticated`, which the proxy appends to
+every request it impersonates) and every `extra` value. Add `-v 8` to see the raw status and body
 behind kubectl's summary messages.
 
 ### Turning up verbosity
@@ -512,7 +512,7 @@ Issuer state, in case a JWKS fetch is the problem rather than the token:
 
 ```bash
 kubectl -n kube-oidc-proxy logs -l app.kubernetes.io/name=kube-oidc-proxy --tail=-1 \
-  | jq -r 'select(.event_type | startswith("oidc.issuer."))
+  | jq -r 'select((.event_type // "") | startswith("oidc.issuer."))
            | [.time, .event_type, .issuer_name, .issuer_state // "-", .pending_reason // "-"] | @tsv'
 ```
 
@@ -672,9 +672,12 @@ together with the request rate and the number of open streams from the log:
 # requests per minute over the window
 kubectl -n kube-oidc-proxy logs -l app.kubernetes.io/name=kube-oidc-proxy --since=1h --tail=-1 \
   | jq -r 'select(.event_type == "request.response.completed") | .time[0:16]' | sort | uniq -c
-# how many requests were long-running streams
-kubectl -n kube-oidc-proxy logs -l app.kubernetes.io/name=kube-oidc-proxy --since=1h --tail=-1 \
-  | jq -r 'select(.event_type == "request.response.started") | .request_id' | wc -l
+# streams open right now: started but not yet completed. No --since here,
+# because the streams that cost memory are the ones open the longest
+kubectl -n kube-oidc-proxy logs -l app.kubernetes.io/name=kube-oidc-proxy --tail=-1 \
+  | jq -rs '(map(select(.event_type == "request.response.started") | .request_id))
+            - (map(select(.event_type == "request.response.completed") | .request_id))
+            | length'
 ```
 
 Set requests to the observed steady state with headroom for the streams you

@@ -414,9 +414,24 @@ kubectl -n kube-oidc-proxy logs "$POD" \
             | .[] | "\(.issuer_name)\t\(.issuer_state)\t\(.pending_reason // "-")\t\(.ready_issuers)/\(.total_issuers)"'
 ```
 
+In Loki a log query cannot keep only the newest line per issuer, so the
+line-level form below is the lifecycle history, newest first, not the current
+state; read the last line for each `issuer_name` and pod.
+
 ```logql
 {app="kube-oidc-proxy"} | json | event_type =~ "oidc.issuer.(pending|initialized)"
   | line_format "{{.issuer_name}} {{.issuer_state}} {{.pending_reason}} {{.ready_issuers}}/{{.total_issuers}}"
+```
+
+For the current state as a table, use the fact that an issuer never returns
+to pending within one process: every pod and issuer pair that has logged
+`oidc.issuer.initialized` is ready, and a configured issuer missing from the
+result is still pending.
+
+```logql
+sum by (pod, issuer_name) (
+  count_over_time({app="kube-oidc-proxy"} | json | event_type = "oidc.issuer.initialized" [$__range])
+)
 ```
 
 ```splunk

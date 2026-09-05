@@ -131,8 +131,13 @@ Prefer plain YAML for `kubectl apply` or GitOps? Render it from the chart:
 ```sh
 helm template kube-oidc-proxy ./chart/kube-oidc-proxy \
   --namespace kube-oidc-proxy -f values.yaml > kube-oidc-proxy.yaml
-kubectl apply -f kube-oidc-proxy.yaml
+kubectl create namespace kube-oidc-proxy
+kubectl apply -n kube-oidc-proxy -f kube-oidc-proxy.yaml
 ```
+
+The rendered objects carry no `metadata.namespace` of their own, so apply
+them into the namespace you rendered for: the ClusterRoleBinding names that
+namespace for the ServiceAccount, and the two must agree.
 
 Wait for the pod to report ready. In multi-issuer configuration that means at
 least one issuer's JWKS has loaded; the log says which:
@@ -271,9 +276,10 @@ Username    gha:my-org/my-repo:refs/heads/main
 Groups      [gha:org:my-org gha:repo:my-org/my-repo system:authenticated]
 ```
 
-That output is the mapped identity exactly as the API server saw it, with the
-`system:authenticated` group the API server adds itself. Then prove
-authorization is scoped, with one allowed and one denied action:
+That output is the mapped identity exactly as the API server saw it. The
+`system:authenticated` group is not in the token: the proxy appends it to
+every request before impersonating. Then prove authorization is scoped, with
+one allowed and one denied action:
 
 ```sh
 kubectl --server=https://kube-oidc-proxy.example.com --token="$TOKEN" get namespaces   # allowed by view

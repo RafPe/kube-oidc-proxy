@@ -166,7 +166,7 @@ kubectl -n kube-oidc-proxy rollout status deploy/kube-oidc-proxy --timeout=180s
 
 # The proxy lists its issuers at startup, then reports each one initialized:
 kubectl -n kube-oidc-proxy logs deploy/kube-oidc-proxy \
-  | jq -r 'select(.event_type | startswith("oidc.issuer.")) | [.event_type, .issuer_name] | @tsv'
+  | jq -r 'select((.event_type // "") | startswith("oidc.issuer.")) | [.event_type, .issuer_name] | @tsv'
 ```
 
 To change config later, edit the values file and `helm upgrade kube-oidc-proxy
