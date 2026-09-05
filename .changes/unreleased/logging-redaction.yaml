@@ -1,2 +1,0 @@
-kind: Security
-body: The access log no longer emits the original user's full extra-claims map under `outbound_extra`, and configured impersonation header values are no longer logged at any verbosity.

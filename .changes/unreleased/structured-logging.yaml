@@ -1,2 +1,0 @@
-kind: Added
-body: One JSON log stream with a per-request `request_id` (also sent upstream as `Audit-ID`), a closed `event_type` registry documented in docs/logging.md, and `--logging-format`.

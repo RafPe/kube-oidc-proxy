@@ -8,11 +8,13 @@ on:
       - 'chart/kube-oidc-proxy/**'
       - '.github/workflows/helm.yaml'
       - 'hack/verify-chart-logging.sh'
+      - 'hack/verify-chart-rbac.sh'
   pull_request:
     paths:
       - 'chart/kube-oidc-proxy/**'
       - '.github/workflows/helm.yaml'
       - 'hack/verify-chart-logging.sh'
+      - 'hack/verify-chart-rbac.sh'
 
 permissions:
   contents: read
@@ -50,6 +52,9 @@ jobs:
 
       - name: logging values render as proxy flags
         run: bash hack/verify-chart-logging.sh
+
+      - name: ClusterRole grants every declared userextras key
+        run: bash hack/verify-chart-rbac.sh
 
       - name: default image tag follows appVersion
         # The release pipeline sets appVersion from the git tag; the chart must

@@ -2,7 +2,9 @@
 # authenticationConfig.content is set, so the chart must emit
 # --authentication-config and omit issuer-specific --oidc-* flags.
 # requiredClaims is set on purpose to prove it is ignored, while tlsClient is
-# set to prove shared OIDC transport credentials remain available.
+# set to prove shared OIDC transport credentials remain available. The GitHub
+# issuer declares claimMappings.extra keys and rbac.userExtras adds one more,
+# so the rendered ClusterRole must grant impersonate on all of them.
 readinessRequireAllIssuers: true
 oidc:
   requiredClaims:
@@ -30,3 +32,11 @@ authenticationConfig:
           username:
             claim: sub
             prefix: "github:"
+          extra:
+            - key: github.com/actor
+              valueExpression: claims.actor
+            - key: github.com/run-id
+              valueExpression: claims.run_id
+rbac:
+  userExtras:
+    - example.com/team
