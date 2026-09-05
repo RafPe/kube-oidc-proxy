@@ -162,7 +162,7 @@ rbac:
 
 # Token passthrough: forward the original bearer token to the API server for
 # requests whose token is not an OIDC token the proxy can verify.
-# https://github.com/rafpe/kube-oidc-proxy/blob/main/docs/configuration.md#token-passthrough
+# https://github.com/rafpe/kube-oidc-proxy/blob/main/docs/authentication.md#token-passthrough
 tokenPassthrough:
   enabled: false
   # Audiences that passthrough tokens are allowed to have.
@@ -212,7 +212,7 @@ subjectAccessReview:
 maxImpersonationHeaderValues:
 
 # Extra impersonation headers added to requests forwarded to the API server.
-# https://github.com/rafpe/kube-oidc-proxy/blob/main/docs/configuration.md#extra-impersonation-headers
+# https://github.com/rafpe/kube-oidc-proxy/blob/main/docs/authentication.md#extra-impersonation-headers
 extraImpersonationHeaders:
   # Send the client's source IP as an extra user header.
   clientIP: false
@@ -352,9 +352,10 @@ podSecurityContext:
     type: RuntimeDefault
 
 # Container-level security context. Hardened by default.
-# readOnlyRootFilesystem assumes the proxy needs no writable rootfs. If you
-# enable a feature that writes locally (e.g. audit-log-path to a file), add an
-# emptyDir via extraVolumes/extraVolumeMounts and relax this.
+# readOnlyRootFilesystem applies to the image's filesystem only; mounted
+# volumes stay writable. If you enable a feature that writes locally (e.g.
+# audit-log-path to a file), mount an emptyDir at that path via
+# extraVolumes/extraVolumeMounts and leave this on.
 securityContext:
   allowPrivilegeEscalation: false
   readOnlyRootFilesystem: true

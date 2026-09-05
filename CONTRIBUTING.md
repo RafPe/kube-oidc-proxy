@@ -14,7 +14,7 @@ logs.
 - Unit tests: `go test ./cmd/... ./pkg/...`
 - Generated files (mocks, the event table): `make generate`.
 - End-to-end suite on a local kind cluster: `make e2e` (see
-  [docs/operations.md](./docs/operations.md#development-and-testing)).
+  [docs/development.md](./docs/development.md#end-to-end-tests)).
 
 ## Pull requests
 
