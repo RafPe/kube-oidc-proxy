@@ -1,0 +1,2 @@
+kind: Fixed
+body: The Helm chart's ClusterRole now lets the proxy's ServiceAccount create `SubjectAccessReview`s. The proxy authorizes every inbound `Impersonate-*` header value with one before forwarding, so on a chart install every `kubectl --as` request failed with HTTP 500 and `reason=internal_error` (`authz.sar.failed` carried `cannot create resource "subjectaccessreviews"`). The end-to-end suite grants this in its own fixture, which is why it never surfaced there. Plain token requests were unaffected.

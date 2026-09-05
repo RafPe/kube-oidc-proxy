@@ -31,6 +31,16 @@ rules:
   verbs:
   - "create"
   - "impersonate"
+# Inbound impersonation (kubectl --as): the proxy authorizes every
+# Impersonate-* header value with a SubjectAccessReview before forwarding.
+# Without this grant the review itself is refused and every impersonating
+# request fails with 500.
+- apiGroups:
+  - "authorization.k8s.io"
+  resources:
+  - "subjectaccessreviews"
+  verbs:
+  - "create"
 {{- $extraKeys := include "kube-oidc-proxy.userExtraKeys" . | fromJsonArray }}
 {{- if $extraKeys }}
 # Extra user-info keys the proxy forwards as Impersonate-Extra-* headers:
