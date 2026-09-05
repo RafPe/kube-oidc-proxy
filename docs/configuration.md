@@ -321,13 +321,16 @@ client IP. This is the safe default.
 ## Auditing
 
 The proxy exposes the same auditing options as the Kubernetes API server, except
-dynamic configuration (`--audit-dynamic-configuration` is **not** supported). See
-the [Kubernetes auditing docs](https://kubernetes.io/docs/tasks/debug-application-cluster/audit)
-to configure it. The proxy stamps every request with an `Audit-ID` that is also
-the `request_id` in its own log and the `auditID` in the kube-apiserver audit
-event, so the three streams join — see
-[correlation](./logging.md#correlation). For the proxy's own per-request stdout
-log, see [reading the request log](./operations.md#reading-the-request-log).
+dynamic configuration (`--audit-dynamic-configuration` is **not** supported).
+The proxy stamps every request with an `Audit-ID` that is also the `request_id`
+in its own log and the `auditID` in the kube-apiserver audit event, so the three
+streams join.
+
+[Auditing](./auditing.md) covers the rest: how the audit filters sit in the
+request path, enabling a stdout audit log with the chart, policy examples, and
+joining the proxy's events with the API server's audit log. For the proxy's own
+per-request stdout log, see
+[reading the request log](./operations.md#reading-the-request-log).
 
 ## See also
 

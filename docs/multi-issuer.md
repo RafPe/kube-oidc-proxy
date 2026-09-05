@@ -10,7 +10,8 @@ provider can be configured.
 - [Enabling](#enabling)
 - [Examples](#examples)
   - [GitHub Actions](#github-actions)
-    - [Synthesizing several groups from one token](#synthesizing-several-groups-from-one-token)
+    - [What a token contains](#what-a-token-contains)
+    - [Minimal mapping](#minimal-mapping)
     - [Production mapping: trust tiers, audit extras, hard gates](#production-mapping-trust-tiers-audit-extras-hard-gates)
   - [TeamCity](#teamcity-teamcity-oidc-jwt-plugin)
   - [Google service accounts (workloads on GKE / GCE)](#google-service-accounts-workloads-on-gke--gce)
@@ -46,11 +47,83 @@ groups prefix (see [Security](#security-always-use-distinct-per-issuer-prefixes)
 
 ### GitHub Actions
 
-GitHub Actions tokens carry no groups claim, so CEL synthesizes one from
-`repository_owner`. Note that newer GitHub `sub` claims embed numeric IDs
-(`repo:Owner@<owner_id>/repo@<repo_id>:ref:...`) — decode a real token before
-writing bindings, or use the CEL username alternative for a stable, readable
-identity.
+GitHub mints an OIDC token for a workflow job on request
+(`permissions: id-token: write`, then `core.getIDToken('<audience>')` in
+`actions/github-script`, or the equivalent in your action of choice). The
+audience you pass must equal the issuer's `audiences` entry below. Tokens live
+about five minutes.
+
+#### What a token contains
+
+Decode one before writing mappings; the claims are the raw material and a few
+of them are not what their names suggest. A `workflow_dispatch` run on `main`
+of `my-org/my-repo` carries:
+
+```json
+{
+  "iss": "https://token.actions.githubusercontent.com",
+  "aud": "kube-oidc-proxy.example.com",
+  "sub": "repo:my-org/my-repo:ref:refs/heads/main",
+
+  "repository": "my-org/my-repo",
+  "repository_id": "7654321",
+  "repository_owner": "my-org",
+  "repository_owner_id": "1234567",
+  "repository_visibility": "internal",
+  "enterprise": "my-enterprise",
+  "enterprise_id": "2468",
+
+  "ref": "refs/heads/main",
+  "ref_type": "branch",
+  "ref_protected": "false",
+  "base_ref": "",
+  "head_ref": "",
+  "sha": "bcdb9add7ec52edf83c3a2df6869187302d2fc7b",
+
+  "workflow": "deploy",
+  "workflow_ref": "my-org/my-repo/.github/workflows/deploy.yml@refs/heads/main",
+  "workflow_sha": "bcdb9add7ec52edf83c3a2df6869187302d2fc7b",
+  "job_workflow_ref": "my-org/my-repo/.github/workflows/deploy.yml@refs/heads/main",
+  "job_workflow_sha": "bcdb9add7ec52edf83c3a2df6869187302d2fc7b",
+
+  "event_name": "workflow_dispatch",
+  "actor": "octocat",
+  "actor_id": "555",
+  "run_id": "33964329992",
+  "run_number": "1",
+  "run_attempt": "1",
+  "runner_environment": "github-hosted",
+  "check_run_id": "101301612960",
+  "jti": "f2f7364b-09a2-4422-8ef4-7b8e6c135597",
+  "iat": 1788608938, "nbf": 1788608638, "exp": 1788609238
+}
+```
+
+Things to notice:
+
+- **There is no groups claim.** Every group has to be synthesized with CEL.
+- **Every value is a string**, including `ref_protected: "false"`. Compare
+  against `"true"` in quotes; a bare boolean never matches.
+- **Names can be recycled, IDs cannot.** `repository_owner_id`,
+  `repository_id` and `enterprise_id` are the values to pin in validation
+  rules; the names are for reading.
+- **`sub` is not a stable format.** Newer GitHub tokens embed numeric IDs in it
+  (`repo:Owner@<owner_id>/repo@<repo_id>:ref:...`), so a username derived from
+  `sub` can change under existing bindings. Build the username from
+  `repository` and `ref` instead.
+- **`environment` is present only when the job declares one**, and
+  `enterprise`/`enterprise_id` only on GitHub Enterprise Cloud. Referencing an
+  absent claim makes the whole expression error and the token is rejected, so
+  guard optional claims with `has()`.
+- **Two workflow refs.** `job_workflow_ref` names the workflow file actually
+  running the job, which for a reusable workflow is the called one;
+  `workflow_ref` is the top-level caller. Pin `job_workflow_ref` when the
+  trust lives in a central reusable workflow.
+
+#### Minimal mapping
+
+A readable username, one group for the owning organisation, and the owner ID
+pinned. Enough for a first binding; the next section is what to grow it into.
 
 ```yaml
 - issuer:
@@ -58,77 +131,18 @@ identity.
     audiences: ["kube-oidc-proxy.example.com"]
   claimMappings:
     username:
-      claim: sub
-      prefix: "gha:"
-    # Alternative: readable username independent of GitHub's sub format:
-    # username:
-    #   expression: '"gha:" + claims.repository + ":" + claims.ref'
+      expression: '"gha:" + claims.repository + ":" + claims.ref'
     groups:
-      expression: '["github:" + claims.repository_owner]'
+      expression: '["gha:org:" + claims.repository_owner]'
   claimValidationRules:
-  - expression: 'claims.repository_owner == "my-org"'
-    message: "only my-org tokens are accepted"
-  # Recommended hardening: pin numeric IDs so a recycled repo/owner name
-  # cannot inherit access:
-  # - expression: 'claims.repository_owner_id == "1234567"'
-  #   message: "token not issued for the expected account"
+  - expression: 'claims.repository_owner_id == "1234567"'
+    message: "token not issued for the expected organisation"
 ```
 
-Workflow side: `permissions: id-token: write`, then
-`core.getIDToken('kube-oidc-proxy.example.com')` (actions/github-script) —
-the audience argument must match `audiences` above.
-
-#### Synthesizing several groups from one token
-
-A groups `expression` may return a **list**, so one token can carry several
-groups cut along different axes — the owning org, the exact workflow, and the
-triggering actor. Bindings can then target whichever granularity they need
-(broad org-wide access, or a single workflow) without issuing more tokens.
-
-```yaml
-- issuer:
-    url: https://token.actions.githubusercontent.com
-    audiences: ["kube-oidc-proxy.example.com"]
-  claimMappings:
-    username:
-      claim: sub
-      prefix: "gha:"
-    groups:
-      # A list expression returns multiple groups from one token. Prefixes must
-      # live inside the expression (the `prefix:` field is only for `claim:`),
-      # so a shared `gha:` root keeps the three axes in one namespace.
-      expression: >-
-        [
-          "gha:org:" + claims.repository_owner,
-          "gha:workflow:" + claims.job_workflow_ref,
-          "gha:actor:" + claims.actor
-        ]
-  claimValidationRules:
-  - expression: 'claims.repository_owner == "my-org"'
-    message: "only my-org tokens are accepted"
-```
-
-For the example claims `repository_owner: my-org`, `actor: octocat`, and
-`job_workflow_ref: my-org/deploy/.github/workflows/release.yml@refs/heads/main`,
-that token authenticates with the groups:
-
-- `gha:org:my-org`
-- `gha:workflow:my-org/deploy/.github/workflows/release.yml@refs/heads/main`
-- `gha:actor:octocat`
-
-Notes:
-
-- Every claim referenced must be present or the expression errors and
-  authentication fails. `repository_owner`, `actor`, and `job_workflow_ref`
-  are always set on Actions tokens; guard optional claims (e.g. `environment`)
-  with `has(claims.environment) ? ["gha:env:" + claims.environment] : []` and
-  concatenate lists with `+`.
-- Each group is bound in RBAC by its **exact** string, colons included; the
-  whole value is one opaque group name, not a hierarchy Kubernetes interprets.
-- `job_workflow_ref` is high-cardinality — prefer it for narrow,
-  per-workflow bindings and use `gha:org:` for broad access. Use
-  `workflow_ref` instead if you want the top-level workflow rather than the
-  called/reusable one.
+The token above authenticates as user `gha:my-org/my-repo:refs/heads/main` in
+group `gha:org:my-org`. Prefixes must live inside the expression: the `prefix:`
+field only applies to the `claim:` form, and a shared `gha:` root keeps every
+group this issuer produces in one namespace.
 
 #### Production mapping: trust tiers, audit extras, hard gates
 
@@ -282,6 +296,11 @@ Notes:
   `base_ref`/`head_ref` are empty outside pull requests. `sub` is not used for
   the username because GitHub is changing its format to embed numeric IDs,
   which would silently change every binding.
+- Each group is bound in RBAC by its **exact** string, colons and slashes
+  included; the whole value is one opaque group name, not a hierarchy
+  Kubernetes interprets.
+- `gha:workflow:` is high-cardinality: prefer it for narrow, per-workflow
+  bindings and use the org or repo tiers for broad access.
 
 ### TeamCity ([teamcity-oidc-jwt](https://github.com/JetBrains/teamcity-oidc-jwt) plugin)
 

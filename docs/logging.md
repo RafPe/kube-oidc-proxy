@@ -396,6 +396,51 @@ index=kubernetes sourcetype=kube-oidc-proxy event_type="oidc.issuer.pending"
 the newest record per `issuer_name` is the current state. See
 [multi-issuer readiness](./multi-issuer.md#readiness).
 
+### Every replica at once
+
+`kubectl logs deploy/<name>` reads one pod. Select by label to merge all
+replicas, and lift the per-pod line cap kubectl applies to a selector:
+
+```bash
+kubectl -n kube-oidc-proxy logs -l app.kubernetes.io/name=kube-oidc-proxy \
+  --since=15m --tail=-1 --prefix
+```
+
+Loki and Splunk already see every pod; the equivalent there is a label or
+sourcetype match, which the queries above use.
+
+### One line per request
+
+An access decision and a terminal `request.response.completed` are two records
+of one request. Grouping on `request_id` puts the decision and the upstream
+status on the same line.
+
+```bash
+kubectl -n kube-oidc-proxy logs -l app.kubernetes.io/name=kube-oidc-proxy --since=15m --tail=-1 \
+  | jq -rs 'map(select(.component == "request")) | group_by(.request_id)
+            | map((map(select(.event_type == "request.access.decided"))[0] // {}) as $a
+                  | (map(select(.event_type == "request.response.completed"))[0] // {}) as $r
+                  | select($a.time != null)
+                  | [$a.time, $a.event, ($a.reason // "-"), ($a.inbound_user // "-"),
+                     ($a.k8s_verb // "-"), ($a.k8s_resource // "-"),
+                     (($r.http_status // "-") | tostring), $a.request_id] | @tsv)
+            | .[]'
+```
+
+```splunk
+index=kubernetes sourcetype=kube-oidc-proxy earliest=-15m component="request"
+| stats earliest(_time) AS _time values(event) AS event values(reason) AS reason
+        values(inbound_user) AS user values(k8s_verb) AS verb values(k8s_resource) AS resource
+        values(http_status) AS status by request_id
+| sort _time
+```
+
+In LogQL there is no join across lines; filter on `request_id` for one request
+(above), or alert on `request.response.completed` with `http_status` and pull
+the decision by ID when a line needs explaining. A shell function that renders
+this as a table, with a worked example of what each row means, is in
+[operations: watching requests](./operations.md#watching-requests).
+
 ## ECS mapping
 
 The proxy's field names are the contract; they are **not** renamed to
