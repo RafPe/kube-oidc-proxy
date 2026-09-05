@@ -1,0 +1,8 @@
+# Values the e2e suite renders the chart's ClusterRole with. Only what the
+# suite's own cases need on top of the chart defaults: the impersonation cases
+# send an Impersonate-Extra-oktoimpersonateextra header, which the API server
+# authorizes as userextras/oktoimpersonateextra, and rbac.userExtras is the
+# operator-facing way to grant a key that clients send themselves.
+rbac:
+  userExtras:
+    - oktoimpersonateextra

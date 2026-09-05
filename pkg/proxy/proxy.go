@@ -34,7 +34,10 @@ import (
 )
 
 const (
-	UserHeaderClientIPKey = "Remote-Client-IP"
+	// UserHeaderClientIPKey is the logging package's constant re-exported for
+	// the callers that historically reached it here; the canonical list of
+	// keys the proxy sets is accesslogging.FixedImpersonationExtraKeys.
+	UserHeaderClientIPKey = accesslogging.UserHeaderClientIPKey
 	timestampLayout       = "2006-01-02T15:04:05-0700"
 )
 
