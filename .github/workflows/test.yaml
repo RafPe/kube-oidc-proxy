@@ -47,6 +47,12 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      # The release workflow runs this check against the merged release commit,
+      # after the release PR is already closed. Run it on every PR too so a
+      # docs or workflow edit cannot break the next release from main.
+      - name: Verify release contract
+        run: sh scripts/release-contract-check.sh
+
       # The generated event table in docs/logging.md must match the registry.
       # `make verify` cannot catch a stale table because it regenerates first,
       # so check it here against the committed file.
