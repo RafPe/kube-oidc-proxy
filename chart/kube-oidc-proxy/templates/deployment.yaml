@@ -5,6 +5,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "kube-oidc-proxy.fullname" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
 {{ include "kube-oidc-proxy.labels" . | indent 4 }}
 spec:

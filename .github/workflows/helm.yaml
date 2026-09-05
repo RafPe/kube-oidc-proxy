@@ -9,12 +9,14 @@ on:
       - '.github/workflows/helm.yaml'
       - 'hack/verify-chart-logging.sh'
       - 'hack/verify-chart-rbac.sh'
+      - 'hack/verify-chart-namespace.sh'
   pull_request:
     paths:
       - 'chart/kube-oidc-proxy/**'
       - '.github/workflows/helm.yaml'
       - 'hack/verify-chart-logging.sh'
       - 'hack/verify-chart-rbac.sh'
+      - 'hack/verify-chart-namespace.sh'
 
 permissions:
   contents: read
@@ -55,6 +57,9 @@ jobs:
 
       - name: ClusterRole grants every declared userextras key
         run: bash hack/verify-chart-rbac.sh
+
+      - name: namespaced objects carry the release namespace
+        run: bash hack/verify-chart-namespace.sh
 
       - name: default image tag follows appVersion
         # The release pipeline sets appVersion from the git tag; the chart must
