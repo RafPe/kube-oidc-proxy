@@ -38,4 +38,10 @@ func TestSanitizeList(t *testing.T) {
 	if got := SanitizeList(nil); got != nil {
 		t.Fatalf("SanitizeList(nil) = %v, want nil", got)
 	}
+	// Each element is an identity string and is bounded like one: the list is
+	// uncapped, its members are not.
+	long := strings.Repeat("x", MaxIdentity+1)
+	if got := SanitizeList([]string{long}); len(got) != 1 || len([]rune(got[0])) != MaxIdentity {
+		t.Fatalf("SanitizeList left an element of %d runes, want %d", len([]rune(got[0])), MaxIdentity)
+	}
 }

@@ -48,17 +48,18 @@ func Bound(s string, max int) string {
 	return string(runes[:max])
 }
 
-// SanitizeList sanitizes every element of a slice, returning a fresh slice and
-// nil for an empty input, so the field stays absent rather than empty. It
-// imposes no cap: use it where the full list is part of a frozen record shape
-// and BoundedList where the record reports what it dropped.
+// SanitizeList sanitizes every element of a slice and bounds each to
+// MaxIdentity, returning a fresh slice and nil for an empty input, so the field
+// stays absent rather than empty. It caps the elements, not the list: use it
+// where the full list is part of a frozen record shape and BoundedList where
+// the record reports what it dropped.
 func SanitizeList(in []string) []string {
 	if len(in) == 0 {
 		return nil
 	}
 	out := make([]string, len(in))
 	for i, v := range in {
-		out[i] = Sanitize(v)
+		out[i] = Bound(v, MaxIdentity)
 	}
 	return out
 }
