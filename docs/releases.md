@@ -66,6 +66,29 @@ The workflow verifies that tag belongs to `main`, reruns checks and E2E, and
 resumes publication. It refuses to move a tag or overwrite an already published
 release.
 
+If **Release** fails before the tag exists (`release:check` or `release:e2e`
+failed on the merged release PR), the changelog entry and the draft release
+already exist but nothing was tagged or published. Do not re-run the failed
+`pull_request` run: it checks out the original merge commit, which still lacks
+the fix. Instead:
+
+1. Fix forward on `main` with a `release/skip` PR. Its own CI runs the unit
+   tests, the release contract check, and the E2E suite against the fix.
+2. Tag the fixed `main` commit by hand and push the tag. The tag push triggers
+   **release-image**, which builds, signs, and publishes the image and chart:
+
+   ```sh
+   git fetch origin
+   git tag -a vX.Y.Z -m "Release vX.Y.Z" origin/main
+   git push origin refs/tags/vX.Y.Z
+   ```
+
+3. When **release-image** is green, promote the draft that **Prepare Release**
+   created: `gh release edit vX.Y.Z --draft=false`.
+
+Do not also dispatch **Release** with that tag: its `release:artifact` job
+would publish the image and chart a second time.
+
 ## Repository setup
 
 Prepare Release depends on repository state that is not in this repository.

@@ -139,4 +139,4 @@ Format, readiness and the per-issuer prefix rule: [multi-issuer authentication](
 
 Contributions are welcome — issues and pull requests both. Building requires Go 1.26. [Development](./docs/development.md) covers running the proxy from source, the hermetic `make e2e` end-to-end suite and a local multi-issuer test against a real GitHub Actions token; the [demo](./demo/README.md) stands the whole flow up with one command.
 
-Releases are review-gated and label-driven: every ordinary PR carries exactly one `release/*` label and every non-skip PR adds a changelog fragment, and ordinary merges never publish. The exact flow and its recovery procedure are in the [maintainer runbook](./docs/releases.md).
+Releases are review-gated and label-driven: every ordinary PR carries exactly one `release/*` label and every non-skip PR adds a changelog fragment, and ordinary merges never publish. A maintainer runs **Prepare Release** to open the automation-owned `release/next` PR, and merging that PR is what tags and publishes. The exact flow and its recovery procedure are in the [maintainer runbook](./docs/releases.md).
