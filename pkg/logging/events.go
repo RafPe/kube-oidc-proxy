@@ -40,6 +40,7 @@ const (
 	EventReadinessServerFailed      EventType = "readiness.server.failed"
 	EventProxyConfigLoaded          EventType = "proxy.config.loaded"
 	EventProxyConfigInvalid         EventType = "proxy.config.invalid"
+	EventProxyStartupFailed         EventType = "proxy.startup.failed"
 	EventProxyServerStarted         EventType = "proxy.server.started"
 	EventProxyServerStopped         EventType = "proxy.server.stopped"
 	EventProxyShutdownStarted       EventType = "proxy.shutdown.started"
@@ -255,6 +256,13 @@ var Registry = map[EventType]EventSpec{
 		Required:   []string{"reason", "error_message"},
 		Message:    "configuration invalid",
 		Summary:    "The configuration cannot be used, including a CA bundle that cannot be read.",
+	},
+	EventProxyStartupFailed: {
+		Components: []Component{ComponentStartup},
+		Level:      slog.LevelError,
+		Required:   []string{"error_message"},
+		Message:    "startup failed",
+		Summary:    "The process could not reach serving after the logger was built; it exits non-zero without a second, unstructured error line.",
 	},
 	EventProxyServerStarted: {
 		Components: []Component{ComponentServer},

@@ -3,10 +3,13 @@ package app
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -443,5 +446,50 @@ func TestIssuerNamesDerivesFromURLs(t *testing.T) {
 	want := []string{"idp.example.com", "unknown"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("issuerNames = %v, want %v", got, want)
+	}
+}
+
+// TestStartupFailureAfterLoggerIsReportedAsARecord pins that an error raised
+// once the root logger exists is emitted as proxy.startup.failed on the
+// configured stream and returned as ErrReported, so main exits non-zero without
+// appending a second, unstructured line to the container log.
+func TestStartupFailureAfterLoggerIsReportedAsARecord(t *testing.T) {
+	var out bytes.Buffer
+	opts := options.New()
+	cmd := buildRunCommand(opts, &out)
+	opts.AddFlags(cmd)
+	cmd.SetArgs([]string{
+		"--oidc-issuer-url=https://issuer.example.com",
+		"--oidc-client-id=kube-oidc-proxy",
+		"--kubeconfig=" + filepath.Join(t.TempDir(), "missing-kubeconfig"),
+	})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+
+	err := cmd.Execute()
+	if !errors.Is(err, ErrReported) {
+		t.Fatalf("Execute() error = %v, want ErrReported", err)
+	}
+
+	var rec map[string]any
+	found := false
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("non-JSON line on the log stream: %q", line)
+		}
+		if rec["event_type"] == string(logging.EventProxyStartupFailed) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("no proxy.startup.failed record on the stream:\n%s", out.String())
+	}
+	if rec["level"] != "ERROR" || rec["component"] != string(logging.ComponentStartup) {
+		t.Errorf("level/component = %v/%v, want ERROR/startup", rec["level"], rec["component"])
+	}
+	msg, _ := rec["error_message"].(string)
+	if !strings.Contains(msg, "missing-kubeconfig") {
+		t.Errorf("error_message = %q, want the underlying cause", msg)
 	}
 }

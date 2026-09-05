@@ -9,7 +9,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -154,6 +156,11 @@ func issuerNames(issuerURLs []string) []string {
 	return names
 }
 
+// ErrReported marks an error that was already emitted on the log stream. main
+// exits non-zero on it without printing it again, so a failure after the
+// logger exists never adds an unstructured line beside the JSON records.
+var ErrReported = errors.New("error already reported on the log stream")
+
 // NewRunCommand builds the root command. The signal handler is installed inside
 // RunE rather than by the caller, because the shutdown logger it reports
 // through is derived from the root logger, which cannot exist until the
@@ -163,7 +170,7 @@ func NewRunCommand() *cobra.Command {
 	opts := options.New()
 
 	// Build command
-	cmd := buildRunCommand(opts)
+	cmd := buildRunCommand(opts, os.Stdout)
 
 	// Add option flags to command
 	opts.AddFlags(cmd)
@@ -171,11 +178,17 @@ func NewRunCommand() *cobra.Command {
 	return cmd
 }
 
-// Proxy command
-func buildRunCommand(opts *options.Options) *cobra.Command {
+// buildRunCommand builds the proxy command writing its log stream to out, which
+// is stdout in production and a buffer under test.
+func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 	return &cobra.Command{
 		Use:  options.AppName,
 		Long: "kube-oidc-proxy is a reverse proxy to authenticate users to Kubernetes API servers with Open ID Connect Authentication.",
+		// The process reports its own errors: on the log stream once the logger
+		// exists, through main before that. cobra's own error and usage output
+		// would be a second, unstructured copy.
+		SilenceErrors: true,
+		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := opts.Validate(cmd); err != nil {
 				return err
@@ -183,11 +196,19 @@ func buildRunCommand(opts *options.Options) *cobra.Command {
 
 			// One root logger for the whole process, built from the flags and
 			// injected into every collaborator below; no package holds its own.
-			root, err := logging.New(opts.Logging.ToLoggerOptions(os.Stdout))
+			root, err := logging.New(opts.Logging.ToLoggerOptions(out))
 			if err != nil {
 				return err
 			}
 			slog.SetDefault(root)
+
+			// From here on every failure is a record on the configured stream,
+			// and the returned error only carries the exit status.
+			startupLogger := logging.ForComponent(root, logging.ComponentStartup)
+			fail := func(err error) error {
+				logging.Emit(context.Background(), startupLogger, logging.EventProxyStartupFailed, logging.ErrAttr(err))
+				return fmt.Errorf("%w: %w", ErrReported, err)
+			}
 
 			// Kubernetes libraries log through klog; route them into the same
 			// stream under component=k8s rather than leaving a second format
@@ -201,7 +222,7 @@ func buildRunCommand(opts *options.Options) *cobra.Command {
 			stopCh := signals.Handler(logging.ForComponent(root, logging.ComponentShutdown))
 
 			if err := checkReservedIdentityPrefixes(opts); err != nil {
-				return err
+				return fail(err)
 			}
 
 			// Here we determine to either use custom or 'in-cluster' client configuration
@@ -211,14 +232,14 @@ func buildRunCommand(opts *options.Options) *cobra.Command {
 				// config
 				restConfig, err = opts.Client.ToRESTConfig()
 				if err != nil {
-					return err
+					return fail(err)
 				}
 
 			} else {
 				// No client flags have been set so default to in-cluster config
 				restConfig, err = rest.InClusterConfig()
 				if err != nil {
-					return err
+					return fail(err)
 				}
 			}
 
@@ -241,7 +262,7 @@ func buildRunCommand(opts *options.Options) *cobra.Command {
 					opts.App.TokenPassthrough.RequestTimeout,
 					logging.ForComponent(root, logging.ComponentTokenReview))
 				if err != nil {
-					return err
+					return fail(err)
 				}
 				tokenReviewer = tokenreview.NewCached(reviewer,
 					opts.App.TokenPassthrough.CacheSuccessTTL,
@@ -251,7 +272,7 @@ func buildRunCommand(opts *options.Options) *cobra.Command {
 			// Initialise Secure Serving Config
 			secureServingInfo := new(server.SecureServingInfo)
 			if err := opts.SecureServing.ApplyTo(&secureServingInfo); err != nil {
-				return err
+				return fail(err)
 			}
 
 			proxyConfig := &proxy.Config{
@@ -272,7 +293,7 @@ func buildRunCommand(opts *options.Options) *cobra.Command {
 			// Setup Subject Access Review
 			kubeclient, err := kubernetes.NewForConfig(restConfig)
 			if err != nil {
-				return err
+				return fail(err)
 			}
 
 			subjectAccessReviewer, err := subjectaccessreview.New(
@@ -284,15 +305,14 @@ func buildRunCommand(opts *options.Options) *cobra.Command {
 				logging.ForComponent(root, logging.ComponentSAR),
 			)
 			if err != nil {
-				return err
+				return fail(err)
 			}
 
 			oidcLogger := logging.ForComponent(root, logging.ComponentOIDC)
-			startupLogger := logging.ForComponent(root, logging.ComponentStartup)
 
 			tokenAuther, issuerURLs, err := buildTokenAuther(opts, oidcLogger, startupLogger)
 			if err != nil {
-				return err
+				return fail(err)
 			}
 
 			// Initialise proxy with token authenticator
@@ -307,7 +327,7 @@ func buildRunCommand(opts *options.Options) *cobra.Command {
 				Config:                proxyConfig,
 			})
 			if err != nil {
-				return err
+				return fail(err)
 			}
 
 			logConfigLoaded(startupLogger, configSummary{
@@ -322,7 +342,7 @@ func buildRunCommand(opts *options.Options) *cobra.Command {
 			for _, issuerURL := range issuerURLs {
 				fakeJWT, err := token.FakeJWT(issuerURL)
 				if err != nil {
-					return err
+					return fail(err)
 				}
 				issuerProbes = append(issuerProbes, probe.IssuerReadiness{
 					IssuerURL: issuerURL,
@@ -349,13 +369,13 @@ func buildRunCommand(opts *options.Options) *cobra.Command {
 				p.OIDCTokenAuthenticator(),
 				root)
 			if err := probeServer.Start(ctx); err != nil {
-				return err
+				return fail(err)
 			}
 
 			// Run proxy
 			waitCh, listenerStoppedCh, err := p.Run(stopCh)
 			if err != nil {
-				return err
+				return fail(err)
 			}
 			servingSince := time.Now()
 
@@ -381,7 +401,8 @@ func buildRunCommand(opts *options.Options) *cobra.Command {
 			shutdownSince := time.Now()
 			cancel()
 			if err := probeServer.Wait(); err != nil {
-				return err
+				// The readiness server reported readiness.server.failed itself.
+				return fmt.Errorf("%w: %w", ErrReported, err)
 			}
 
 			hooksErr := p.RunPreShutdownHooks()
@@ -392,7 +413,11 @@ func buildRunCommand(opts *options.Options) *cobra.Command {
 				logging.EventProxyShutdownCompleted,
 				slog.Int64("duration_ms", time.Since(shutdownSince).Milliseconds()))
 
-			return hooksErr
+			if hooksErr != nil {
+				// Each failing hook reported proxy.hook.failed itself.
+				return fmt.Errorf("%w: %w", ErrReported, hooksErr)
+			}
+			return nil
 		},
 	}
 }

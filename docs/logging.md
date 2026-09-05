@@ -31,7 +31,7 @@ event-specific field:
 | `msg` | string | static text per event, never interpolated | query on `event_type`, not `msg` |
 | `schema_version` | int | `1` | bumped only on a breaking field change |
 | `component` | string | `startup`, `server`, `oidc`, `readiness`, `request`, `tokenreview`, `sar`, `audit`, `upstream`, `shutdown`, `k8s` | which subsystem spoke; `k8s` marks bridged library output |
-| `event_type` | string | `<domain>.<object>.<action>`, one of the 39 registered values | absent on `component=k8s` records |
+| `event_type` | string | `<domain>.<object>.<action>`, one of the 40 registered values | absent on `component=k8s` records |
 
 An access decision looks like this (line-wrapped here, one line in the stream):
 
@@ -98,7 +98,7 @@ Both flags are documented in the
 
 ## Event registry
 
-39 registered values, generated from the registry. "Required" lists the fields
+40 registered values, generated from the registry. "Required" lists the fields
 that must be present beyond `time`, `level`, `msg`, `schema_version`,
 `component` and `event_type`; conditional fields are described in the summary.
 
@@ -131,6 +131,7 @@ that must be present beyond `time`, `level`, `msg`, `schema_version`,
 | `proxy.server.stopped` | `server` | INFO | `duration_ms` | The secure listener stopped. |
 | `proxy.shutdown.completed` | `shutdown` | INFO | `duration_ms` | Listeners stopped, readiness stopped and pre-shutdown hooks finished. |
 | `proxy.shutdown.started` | `shutdown` | INFO | `signal` | A termination signal was received. The forced exit is the same event with forced=true. |
+| `proxy.startup.failed` | `startup` | ERROR | `error_message` | The process could not reach serving after the logger was built; it exits non-zero without a second, unstructured error line. |
 | `readiness.proxy.ready` | `readiness` | INFO | `ready_issuers`, `total_issuers`, `readiness_mode` | Readiness latched to ready. |
 | `readiness.server.failed` | `readiness` | ERROR | `error_message` | The readiness HTTP server returned an error. |
 | `request.access.decided` | `request` | INFO | `request_id`, `event`, `src_ip`, `path`, `http_method`, `auth_method`, `decision` | Authentication, authorization and proxy admission decided for a request. Carries event=AuSuccess\|AuFail. |
@@ -259,16 +260,31 @@ allowlist, request and response bodies, cache keys, arbitrary claims and
 extras, configured extra-header values, the `User-Agent` header, full issuer
 URLs, and raw peer addresses with ports.
 
-## Shutdown and exit status
+## Startup, shutdown and exit status
+
+The log stream is the only place the process reports its own failures once the
+root logger exists. A startup error after that point (an unreadable kubeconfig,
+a certificate that does not load, a port already bound) emits
+`proxy.startup.failed` with `error_message` and the process exits `1` without
+printing a second, unstructured line. Only a failure before the logger can be
+built, such as an unknown flag or an invalid `--logging-format`, is printed to
+stderr as plain text, because there is nothing else to report through yet.
 
 `audit.Shutdown` flushes the audit backend and **returns** the backend's error
 rather than swallowing it. It is registered as the `AuditBackend` pre-shutdown
-hook, so a failed flush emits `audit.flush.failed` *and* propagates out of
-`RunPreShutdownHooks`, which makes the process **exit non-zero**. A dropped
-audit event for a request this process already served is not a warning to be
-tidied away: the pod terminates with a failure so a supervisor and the
-deployment record both see it. A successful flush emits `audit.flush.completed`
-with `duration_ms` and the process exits `0`.
+hook, so a flush the backend reports as failed emits `audit.flush.failed`,
+propagates out of `RunPreShutdownHooks` as `proxy.hook.failed`, and makes the
+process **exit non-zero**. A dropped audit event for a request this process
+already served is not a warning to be tidied away.
+
+The backends bundled from `k8s.io/apiserver` (`log`, and the buffered `webhook`)
+do not report an error from `Shutdown()`: the upstream `audit.Backend` interface
+has no return value there, and the buffered backend logs a delivery failure
+through the Kubernetes error handler instead. With those backends a lost flush
+is visible as a bridged `component=k8s` ERROR record, `audit.flush.completed`
+still follows with `duration_ms`, and the process exits `0`. The non-zero exit
+applies to a backend that implements the optional `ShutdownErr() error`
+extension, which none of the bundled ones do today.
 
 ## Correlation
 
@@ -427,9 +443,10 @@ This table is for whoever writes the ingest pipeline that copies them.
   retyped, or a closed value set narrowed. Not for a new event, a new optional
   field, or a widened value set.
 
-`request.handler.failed` (component `request`, ERROR) was added to the registry
+`request.handler.failed` (component `request`, ERROR) and
+`proxy.startup.failed` (component `startup`, ERROR) were added to the registry
 during implementation, before the first release that ships `event_type`, under
-the append-only rule. It brings the set to 39. Because nothing had shipped, no
+the append-only rule. They bring the set to 40. Because nothing had shipped, no
 consumer needed a migration; a value added after the first release follows the
 rules above instead.
 
