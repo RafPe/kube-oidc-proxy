@@ -43,3 +43,62 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
+
+{{/*
+Extra user-info keys the proxy must be allowed to impersonate.
+
+The API server authorizes every Impersonate-Extra-<key> header separately, as
+`impersonate` on `userextras/<key>` in authentication.k8s.io. A key the
+ServiceAccount is not granted fails the whole request with 403, so the
+ClusterRole has to name every key the proxy can emit. Three sources feed it:
+
+  1. `claimMappings.extra[].key` of every issuer in authenticationConfig.content,
+     read straight from that YAML so the grant cannot drift from the mapping;
+  2. the keys of `extraImpersonationHeaders.headers` (`k1=v1,k2=v2`), which the
+     proxy adds to every impersonated request;
+  3. `rbac.userExtras`, for keys that reach the proxy some other way, such as
+     Impersonate-Extra-* headers clients send themselves.
+
+Keys are lowercased: the API server lowercases extra keys taken from headers
+before authorizing them, and Kubernetes already rejects non-lowercase keys in
+claimMappings.extra, so a mixed-case grant would never match a request.
+
+Returns a sorted, de-duplicated JSON array (helpers can only return strings).
+*/}}
+{{- define "kube-oidc-proxy.userExtraKeys" -}}
+{{- $keys := list -}}
+{{/*
+Every lookup is wrapped in `with`: `helm upgrade --reuse-values` renders with
+the values stored by the previous release and does not merge this chart's
+defaults, so a key introduced after that release (rbac, and any future one)
+is nil rather than its default.
+*/}}
+{{- with .Values.authenticationConfig -}}
+{{- with .content -}}
+{{- $cfg := fromYaml . -}}
+{{- if hasKey $cfg "Error" -}}
+{{- fail (printf "authenticationConfig.content is not valid YAML: %s" (index $cfg "Error")) -}}
+{{- end -}}
+{{- range $issuer := (default (list) $cfg.jwt) -}}
+{{- range $extra := (default (list) (dig "claimMappings" "extra" (list) $issuer)) -}}
+{{- with $extra.key -}}{{- $keys = append $keys . -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- with .Values.extraImpersonationHeaders -}}
+{{- with .headers -}}
+{{- range (splitList "," (toString .)) -}}
+{{- with (trim (first (splitList "=" .))) -}}{{- $keys = append $keys . -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- with .Values.rbac -}}
+{{- range (default (list) .userExtras) -}}
+{{- $keys = append $keys (toString .) -}}
+{{- end -}}
+{{- end -}}
+{{- $lowered := list -}}
+{{- range $keys -}}{{- $lowered = append $lowered (lower .) -}}{{- end -}}
+{{- $lowered | uniq | sortAlpha | toJson -}}
+{{- end -}}
