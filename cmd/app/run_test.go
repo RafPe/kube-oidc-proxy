@@ -463,28 +463,36 @@ func TestStartupFailureAfterLoggerIsReportedAsARecord(t *testing.T) {
 		"--oidc-client-id=kube-oidc-proxy",
 		"--kubeconfig=" + filepath.Join(t.TempDir(), "missing-kubeconfig"),
 	})
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
+	var cmdOut, cmdErr bytes.Buffer
+	cmd.SetOut(&cmdOut)
+	cmd.SetErr(&cmdErr)
 
 	err := cmd.Execute()
 	if !errors.Is(err, ErrReported) {
 		t.Fatalf("Execute() error = %v, want ErrReported", err)
 	}
+	// cobra must not print the error or the usage text: the record is the
+	// only report, and main prints nothing for ErrReported.
+	if cmdOut.Len() != 0 || cmdErr.Len() != 0 {
+		t.Fatalf("command wrote outside the log stream: stdout=%q stderr=%q", cmdOut.String(), cmdErr.String())
+	}
 
-	var rec map[string]any
-	found := false
+	// Every line of the whole stream is one JSON record, and the failure is
+	// reported exactly once.
+	var failures []map[string]any
 	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		var rec map[string]any
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
 			t.Fatalf("non-JSON line on the log stream: %q", line)
 		}
 		if rec["event_type"] == string(logging.EventProxyStartupFailed) {
-			found = true
-			break
+			failures = append(failures, rec)
 		}
 	}
-	if !found {
-		t.Fatalf("no proxy.startup.failed record on the stream:\n%s", out.String())
+	if len(failures) != 1 {
+		t.Fatalf("want exactly one proxy.startup.failed record, got %d:\n%s", len(failures), out.String())
 	}
+	rec := failures[0]
 	if rec["level"] != "ERROR" || rec["component"] != string(logging.ComponentStartup) {
 		t.Errorf("level/component = %v/%v, want ERROR/startup", rec["level"], rec["component"])
 	}
