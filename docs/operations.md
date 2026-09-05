@@ -420,31 +420,19 @@ export BRANCH="master"
 
 ### 1. Token-minting workflow (one-time)
 
-Commit `.github/workflows/oidc.yaml` and push:
+You need a `workflow_dispatch` workflow in the repository that requests an ID
+token (`permissions: id-token: write`, then `core.getIDToken(<audience>)`)
+and uploads it as a short-lived artifact.
 
-```yaml
-name: mint-oidc-token
-on: workflow_dispatch
-permissions:
-  id-token: write
-jobs:
-  mint:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/github-script@v7
-      with:
-        script: |
-          const t = await core.getIDToken('kube-oidc-proxy-kind-test')
-          require('fs').writeFileSync('token.jwt', t)
-    - uses: actions/upload-artifact@v4
-      with:
-        name: oidc-token
-        path: token.jwt
-        retention-days: 1
-```
+> [!NOTE]
+> This repository's own [`.github/workflows/oidc.yaml`](../.github/workflows/oidc.yaml)
+> is a minimal example to copy from. The audience it requests
+> (`kube-oidc-proxy-kind-test`) is the one the proxy config in step 3 expects;
+> the two must match.
 
-> ⚠️ The artifact briefly holds a live token. It expires after ~5 minutes and
-> only grants what your **local test cluster's** RBAC allows, but treat it as a
+> [!WARNING]
+> The artifact briefly holds a live token. It expires after ~5 minutes and only
+> grants what your **local test cluster's** RBAC allows, but treat it as a
 > secret all the same.
 
 ### 2. Build the image and create the cluster
