@@ -422,7 +422,8 @@ kubectl -n kube-oidc-proxy logs -l app.kubernetes.io/name=kube-oidc-proxy --sinc
                   | (map(select(.event_type == "request.response.completed"))[0] // {}) as $r
                   | select($a.time != null)
                   | [$a.time, $a.event, ($a.reason // "-"), ($a.inbound_user // "-"),
-                     ($a.k8s_verb // "-"), ($a.k8s_resource // "-"),
+                     ($a.k8s_verb // "-"), ($a.k8s_api_group // ""), ($a.k8s_resource // "-"),
+                     ($a.k8s_namespace // "-"),
                      (($r.http_status // "-") | tostring), $a.request_id] | @tsv)
             | .[]'
 ```
@@ -430,10 +431,15 @@ kubectl -n kube-oidc-proxy logs -l app.kubernetes.io/name=kube-oidc-proxy --sinc
 ```splunk
 index=kubernetes sourcetype=kube-oidc-proxy earliest=-15m component="request"
 | stats earliest(_time) AS _time values(event) AS event values(reason) AS reason
-        values(inbound_user) AS user values(k8s_verb) AS verb values(k8s_resource) AS resource
-        values(http_status) AS status by request_id
+        values(inbound_user) AS user values(k8s_verb) AS verb
+        values(k8s_api_group) AS api_group values(k8s_resource) AS resource
+        values(k8s_namespace) AS namespace values(http_status) AS status by request_id
 | sort _time
 ```
+
+`k8s_verb`, `k8s_api_group`, `k8s_resource` and `k8s_namespace` are the
+request-info dimensions, in the vocabulary RBAC rules use: `list` rather than
+`GET`, and the group separate from the resource with the core group empty.
 
 In LogQL there is no join across lines; filter on `request_id` for one request
 (above), or alert on `request.response.completed` with `http_status` and pull

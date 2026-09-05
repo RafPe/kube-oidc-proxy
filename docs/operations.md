@@ -207,26 +207,41 @@ kop-requests() {
           | select($a.time != null)
           | [ $a.time[11:19], $a.pod[-5:], $a.event, ($a.reason // "-"),
               ($a.inbound_user // "-"), ($a.issuer_name // "-"),
-              $a.http_method, ($a.k8s_verb // "-"), ($a.k8s_resource // "-"),
+              # Kubernetes verb and group/resource, as RBAC rules name them. A
+              # non-resource path (discovery, /healthz) has neither, so it
+              # shows the HTTP method and the path instead.
+              ($a.k8s_verb // ($a.http_method | ascii_downcase)),
+              (if $a.k8s_resource then
+                 (if ($a.k8s_api_group // "") == "" then $a.k8s_resource
+                  else $a.k8s_api_group + "/" + $a.k8s_resource end)
+               else ($a.path // "-") end),
+              ($a.k8s_namespace // "-"),
               (($r.http_status // "-") | tostring), (($r.duration_ms // "-") | tostring),
               $a.request_id[0:8] ]
           | @tsv)
       | .[]' \
   | sort \
-  | { printf 'TIME\tPOD\tEVENT\tREASON\tUSER\tISSUER\tMETHOD\tVERB\tRESOURCE\tSTATUS\tMS\tRID\n'; cat; } \
+  | { printf 'TIME\tPOD\tEVENT\tREASON\tUSER\tISSUER\tVERB\tRESOURCE\tNAMESPACE\tSTATUS\tMS\tRID\n'; cat; } \
   | column -t -s $'\t'
 }
 ```
 
 ```text
-TIME      POD    EVENT      REASON                USER                                ISSUER                               METHOD  VERB    RESOURCE            STATUS  MS   RID
-17:23:59  l5qhs  AuSuccess  -                     gha:my-org/my-repo:refs/heads/main  token.actions.githubusercontent.com  POST    create  selfsubjectreviews  403     298  9fd2e1f1
-17:44:42  snqkt  AuSuccess  -                     gha:my-org/my-repo:refs/heads/main  token.actions.githubusercontent.com  POST    create  selfsubjectreviews  201     117  3b1c0a77
-17:45:10  l5qhs  AuSuccess  -                     google:alice@example.com            accounts.google.com                  GET     list    namespaces          200     88   5c9d2e40
-17:45:31  snqkt  AuSuccess  -                     gha:my-org/my-repo:refs/heads/main  token.actions.githubusercontent.com  GET     list    secrets             403     61   7e0f1a22
-17:52:03  l5qhs  AuFail     unauthorized          -                                   -                                    GET     -       -                   401     4    a1b2c3d4
-17:53:40  snqkt  AuFail     impersonation_denied  google:alice@example.com            accounts.google.com                  GET     list    pods                403     3    e5f6a7b8
+TIME      POD    EVENT      REASON                USER                                ISSUER                               VERB    RESOURCE                                  NAMESPACE  STATUS  MS   RID
+17:23:59  l5qhs  AuSuccess  -                     gha:my-org/my-repo:refs/heads/main  token.actions.githubusercontent.com  create  authentication.k8s.io/selfsubjectreviews  -          403     298  9fd2e1f1
+17:44:42  snqkt  AuSuccess  -                     gha:my-org/my-repo:refs/heads/main  token.actions.githubusercontent.com  create  authentication.k8s.io/selfsubjectreviews  -          201     117  3b1c0a77
+17:45:10  l5qhs  AuSuccess  -                     google:alice@example.com            accounts.google.com                  list    apps/deployments                          payments   200     88   5c9d2e40
+17:45:31  snqkt  AuSuccess  -                     gha:my-org/my-repo:refs/heads/main  token.actions.githubusercontent.com  list    secrets                                   default    403     61   7e0f1a22
+17:52:03  l5qhs  AuFail     unauthorized          -                                   -                                    get     /api/v1/namespaces                        -          401     4    a1b2c3d4
+17:53:40  snqkt  AuFail     impersonation_denied  google:alice@example.com            accounts.google.com                  list    pods                                      -          403     3    e5f6a7b8
+17:54:12  l5qhs  AuSuccess  -                     google:alice@example.com            accounts.google.com                  get     /apis                                     -          200     12   c0ffee00
 ```
+
+`VERB`, `RESOURCE` and `NAMESPACE` are the request-info dimensions the proxy
+resolved (`k8s_verb`, `k8s_api_group`/`k8s_resource`, `k8s_namespace`), in
+the same shape RBAC rules use: the verb is `list`, not `GET`, and the resource
+is `apps/deployments` with the core group left bare. A path with no resource
+behind it, such as discovery, falls back to the HTTP method and the path.
 
 How to read it:
 
