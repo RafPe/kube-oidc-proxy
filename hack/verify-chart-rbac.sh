@@ -13,6 +13,14 @@ render() { helm template kop "$CHART" "$@" --show-only templates/clusterrole.yam
 out=$(render --set oidc.issuerUrl=https://x --set oidc.clientId=y)
 ! grep -q -- 'userextras/github.com' <<<"$out" || { echo "userextras rendered without any extra keys" >&2; exit 1; }
 
+# Inbound impersonation is authorized with a SubjectAccessReview the proxy
+# creates itself; the ServiceAccount must be allowed to create them in every
+# mode, or kubectl --as fails with 500 before any authorization happens.
+grep -A4 -- '"authorization.k8s.io"' <<<"$out" | grep -q -- '"subjectaccessreviews"' \
+  || { echo "ClusterRole does not grant subjectaccessreviews in authorization.k8s.io" >&2; exit 1; }
+grep -A6 -- '"subjectaccessreviews"' <<<"$out" | grep -q -- '- "create"' \
+  || { echo "subjectaccessreviews grant lacks the create verb" >&2; exit 1; }
+
 # The multi-issuer fixture declares two extra keys on the GitHub issuer and one
 # more via rbac.userExtras; all three must be granted, exactly once each.
 out=$(render -f "$CHART/ci/multi-issuer-values.yaml")
