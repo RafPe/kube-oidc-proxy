@@ -115,10 +115,16 @@ ifneq ($(strip $(GINKGO_LABEL_FILTER)),)
 E2E_GOTEST_ARGS := -args --ginkgo.label-filter='$(GINKGO_LABEL_FILTER)'
 endif
 
-# Prerequisites (local runs): go, docker (daemon running), kind, and kubectl on
-# PATH. The suite builds and side-loads the proxy + test-tool images itself and
-# creates/destroys its own kind cluster, so no pre-existing cluster is needed.
+# Prerequisites (local runs): go, docker (daemon running), kind, kubectl and
+# helm on PATH. The suite builds and side-loads the proxy + test-tool images
+# itself and creates/destroys its own kind cluster, so no pre-existing cluster
+# is needed. helm renders the chart's ClusterRole, which is the RBAC the suite
+# deploys the proxy with.
 e2e: $(BINDIR)/kubectl ## run the e2e suite hermetically (creates + destroys its own kind cluster)
+	@command -v helm >/dev/null 2>&1 || { \
+		echo "e2e: 'helm' not found on PATH; the suite deploys the proxy with the RBAC rendered from chart/kube-oidc-proxy." >&2; \
+		exit 1; \
+	}
 	mkdir -p $(ARTIFACTS)
 	@echo "e2e: removing any stale cluster from a previous run"
 	@$(MAKE) --no-print-directory e2e-clean
