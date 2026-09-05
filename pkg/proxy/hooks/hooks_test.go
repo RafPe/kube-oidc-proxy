@@ -3,9 +3,13 @@ package hooks
 
 import (
 	"errors"
+	"log/slog"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 )
 
 // TestRunPreShutdownHooksDoesNotHoldLock is the regression test for #54: a hook
@@ -15,7 +19,7 @@ import (
 // that AddPreShutdownHook (which needs the lock) still returns promptly while
 // the hook is mid-flight.
 func TestRunPreShutdownHooksDoesNotHoldLock(t *testing.T) {
-	h := New()
+	h := New(slog.New(slog.DiscardHandler))
 
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -64,7 +68,7 @@ func TestRunPreShutdownHooksDoesNotHoldLock(t *testing.T) {
 // TestRunPreShutdownHooksOrderAndContinuation verifies hooks run in registration
 // order and that one hook's failure does not prevent later hooks from running.
 func TestRunPreShutdownHooksOrderAndContinuation(t *testing.T) {
-	h := New()
+	h := New(slog.New(slog.DiscardHandler))
 
 	var order []string
 	errBoom := errors.New("boom")
@@ -99,7 +103,7 @@ func TestRunPreShutdownHooksOrderAndContinuation(t *testing.T) {
 // TestAddPreShutdownHookOverwritesInPlace verifies that re-registering a name
 // replaces the hook while preserving its original position (last write wins).
 func TestAddPreShutdownHookOverwritesInPlace(t *testing.T) {
-	h := New()
+	h := New(slog.New(slog.DiscardHandler))
 
 	var order []string
 	h.AddPreShutdownHook("a", func() error { order = append(order, "a-old"); return nil })
@@ -119,7 +123,28 @@ func TestAddPreShutdownHookOverwritesInPlace(t *testing.T) {
 
 // TestRunPreShutdownHooksNoHooks verifies the empty registry runs cleanly.
 func TestRunPreShutdownHooksNoHooks(t *testing.T) {
-	if err := New().RunPreShutdownHooks(); err != nil {
+	if err := New(slog.New(slog.DiscardHandler)).RunPreShutdownHooks(); err != nil {
 		t.Fatalf("expected nil error with no hooks, got %v", err)
+	}
+}
+
+// TestHooksEmitPerHookResult pins one record per hook result: a completed hook
+// names itself, and a failing one reports the hook's own error rather than the
+// aggregate wrapping the caller sees.
+func TestHooksEmitPerHookResult(t *testing.T) {
+	root, cap := logtest.New(t, 0)
+	defer logtest.AssertRegistered(t, cap)
+	// The shutdown component, exactly as run.go names it: a hook record with no
+	// component is not the record production emits.
+	h := New(logging.ForComponent(root, logging.ComponentShutdown))
+	h.AddPreShutdownHook("ok", func() error { return nil })
+	h.AddPreShutdownHook("bad", func() error { return errors.New("boom") })
+	_ = h.RunPreShutdownHooks()
+	if cap.Only(t, logging.EventProxyHookCompleted).String("hook") != "ok" {
+		t.Fatal("completed hook not named")
+	}
+	bad := cap.Only(t, logging.EventProxyHookFailed)
+	if bad.String("hook") != "bad" || bad.String("error_message") != "boom" {
+		t.Fatalf("%v", bad)
 	}
 }

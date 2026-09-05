@@ -1,7 +1,8 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
 
-// Package logging emits structured, sanitized access logs for proxied and
-// failed requests.
+// Package logging emits the proxy's access record: one
+// request.access.decided per request, carrying the authentication,
+// authorization and admission outcome.
 //
 // # Client-IP and trusted-proxy semantics (see issue #56)
 //
@@ -11,23 +12,23 @@
 // is walked right-to-left, trusted hops are skipped, and the first untrusted
 // address is taken as the client. When no trusted proxies are configured (the
 // default), forwarded headers are never trusted and the direct peer is used, so
-// an untrusted client cannot spoof its resolved IP. Configure trusted networks
-// with SetTrustedProxies. The raw forwarded chain is still emitted for
+// an untrusted client cannot spoof its resolved IP. The networks are held by
+// the AccessLogger, not by a package global, so a test can build one without
+// disturbing the process. The raw forwarded chain is still emitted for
 // observability under the explicitly-untrusted "forwarded_for_untrusted" field
 // and must not be treated as identity.
 package logging
 
 import (
-	"context"
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
 	"strings"
-	"unicode"
 
 	"k8s.io/apiserver/pkg/authentication/user"
+	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	proxycontext "github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
 )
 
@@ -44,84 +45,175 @@ var loggableExtraKeys = map[string]struct{}{
 	"originaluser.jetstack.io-user":   {},
 	"originaluser.jetstack.io-groups": {},
 	"originaluser.jetstack.io-uid":    {},
-	"originaluser.jetstack.io-extra":  {},
 }
 
-// logger is the structured logger used for access logs. It defaults to a JSON
-// handler writing to stdout, preserving the previous stdout destination while
-// giving deterministic, injection-safe encoding. Tests redirect it with
-// SetLogger.
-var logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
+// AccessLogger writes the access record. It is an injected collaborator rather
+// than a package global so that the destination, the component and the trusted
+// proxies are decided once at construction and a test can hold its own.
+type AccessLogger struct {
+	logger *slog.Logger
 
-// trustedProxies holds the networks whose forwarded headers are honoured when
-// resolving the client IP. Empty (the default) means no proxy is trusted.
-var trustedProxies []*net.IPNet
+	// trustedProxies holds the networks whose forwarded headers are honoured
+	// when resolving the client IP. Empty (the default) trusts no proxy.
+	trustedProxies []*net.IPNet
+}
 
-// SetLogger overrides the structured logger used for access logs. A nil logger
-// is ignored. Intended for wiring and tests.
-func SetLogger(l *slog.Logger) {
-	if l != nil {
-		logger = l
+// NewAccessLogger returns an AccessLogger emitting through logger, which the
+// caller has already bound to the request component. A nil logger yields one
+// that discards every record, so a partially wired caller cannot panic the
+// request path.
+func NewAccessLogger(logger *slog.Logger, trustedProxies []*net.IPNet) *AccessLogger {
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
 	}
+	return &AccessLogger{logger: logger, trustedProxies: trustedProxies}
 }
 
-// SetTrustedProxies configures the trusted-proxy networks used when resolving
-// the client IP from forwarded headers. Passing nil (the default) disables
-// forwarded-header trust entirely.
-func SetTrustedProxies(nets []*net.IPNet) {
-	trustedProxies = nets
+// Decision is the outcome the access record reports. Reason, TargetKind and
+// TargetName describe a denial and are ignored when Allowed is true: an allow
+// has nothing to explain, and a reason on it would break the closed value set
+// the field is queried by.
+type Decision struct {
+	// Allowed selects AuSuccess/allow over AuFail/deny.
+	Allowed bool
+
+	// Reason is one of the closed reason values, on a denial only.
+	Reason string
+
+	// AuthMethod is oidc, tokenreview or none.
+	AuthMethod string
+
+	// Inbound is the authenticated identity that made the request; Outbound is
+	// the identity forwarded upstream when impersonation resolved a different
+	// one. Either may be nil.
+	Inbound  user.Info
+	Outbound user.Info
+
+	// TargetKind and TargetName name the impersonation target that was refused,
+	// so a denial does not have to be recovered by parsing the error text.
+	TargetKind string
+	TargetName string
 }
 
-// LogSuccessfulRequest logs a successfully authenticated and proxied request as
-// a single structured record.
-func LogSuccessfulRequest(req *http.Request, inboundUser user.Info, outboundUser user.Info) {
-	attrs := requestAttrs("AuSuccess", req)
-	attrs = append(attrs, userAttrs("inbound", inboundUser)...)
-	if outboundUser != nil {
-		attrs = append(attrs, userAttrs("outbound", outboundUser)...)
+// LogDecision emits the single request.access.decided record for a request. It
+// is called as soon as authentication, authorization and proxy admission are
+// decided, so a watch or exec that runs for hours is recorded immediately.
+func (a *AccessLogger) LogDecision(req *http.Request, d Decision) {
+	event, decision := "AuFail", "deny"
+	if d.Allowed {
+		event, decision = "AuSuccess", "allow"
 	}
-	logger.LogAttrs(context.Background(), slog.LevelInfo, "proxied request", attrs...)
-}
 
-// LogFailedRequest logs a request that failed authentication or authorization.
-func LogFailedRequest(req *http.Request) {
-	logger.LogAttrs(context.Background(), slog.LevelInfo, "rejected request",
-		requestAttrs("AuFail", req)...)
-}
-
-// requestAttrs builds the request-scoped structured fields shared by successful
-// and failed logs. src_ip is the authoritative resolved client IP;
-// forwarded_for_untrusted is the raw, sanitized forwarded chain and is not
-// identity.
-func requestAttrs(event string, req *http.Request) []slog.Attr {
 	attrs := []slog.Attr{
+		slog.String("request_id", logging.Bound(proxycontext.RequestID(req), logging.MaxRequestID)),
+	}
+	if id := proxycontext.ClientRequestID(req); id != "" {
+		attrs = append(attrs, slog.String("client_request_id", logging.Bound(id, logging.MaxRequestID)))
+	}
+
+	attrs = append(attrs,
 		slog.String("event", event),
-		slog.String("src_ip", resolveClientIP(req.RemoteAddr, forwardedFor(req.Header), trustedProxies)),
+		slog.String("src_ip", resolveClientIP(req.RemoteAddr, forwardedFor(req.Header), a.trustedProxies)),
 		slog.String("path", sanitizePath(req)),
-	}
-	// forwarded_for_untrusted is forensic: it must log the chain the client
-	// actually sent, which SanitizeForwardHeaders preserved on the context
-	// before rewriting the header.
-	rawFwd := proxycontext.OriginalForwardedFor(req)
-	if rawFwd == "" {
-		rawFwd = forwardedFor(req.Header)
-	}
-	if fwd := sanitize(rawFwd); fwd != "" {
+	)
+	if fwd := untrustedForwardedFor(req); fwd != "" {
 		attrs = append(attrs, slog.String("forwarded_for_untrusted", fwd))
+	}
+
+	attrs = append(attrs,
+		slog.String("http_method", req.Method),
+		slog.String("auth_method", d.AuthMethod),
+	)
+	if name := proxycontext.IssuerName(req); name != "" {
+		attrs = append(attrs, slog.String("issuer_name", logging.Bound(name, logging.MaxIdentity)))
+	}
+
+	attrs = append(attrs, kubernetesAttrs(req)...)
+	attrs = append(attrs, slog.String("decision", decision))
+
+	if !d.Allowed {
+		if d.Reason != "" {
+			attrs = append(attrs, slog.String("reason", d.Reason))
+		}
+		if d.TargetKind != "" {
+			attrs = append(attrs, slog.String("target_kind", d.TargetKind))
+		}
+		if d.TargetName != "" {
+			attrs = append(attrs, slog.String("target_name", logging.Bound(d.TargetName, logging.MaxIdentity)))
+		}
+	}
+
+	if d.Inbound != nil {
+		attrs = append(attrs, userAttrs("inbound", d.Inbound)...)
+	}
+	if d.Outbound != nil {
+		attrs = append(attrs, userAttrs("outbound", d.Outbound)...)
+	}
+
+	logging.Emit(req.Context(), a.logger, logging.EventRequestAccessDecided, attrs...)
+
+	// Marked after the record is out, so a handler further down the chain that
+	// would otherwise write a second decision for the same request -- a client
+	// that cancelled after admission, say -- can see that one already exists.
+	proxycontext.MarkDecisionRecorded(req)
+}
+
+// untrustedForwardedFor returns the raw forwarded chain the client actually
+// sent, sanitized. It is forensic: SanitizeForwardHeaders preserved the inbound
+// value on the context before rewriting the header, so the record reports what
+// arrived rather than what was forwarded.
+func untrustedForwardedFor(req *http.Request) string {
+	raw := proxycontext.OriginalForwardedFor(req)
+	if raw == "" {
+		raw = forwardedFor(req.Header)
+	}
+	return logging.Sanitize(raw)
+}
+
+// kubernetesAttrs renders the API dimensions the request-info resolver
+// determined. A non-resource path (healthz, discovery, the metrics endpoint)
+// carries none, so a query on k8s_resource only ever matches API traffic.
+func kubernetesAttrs(req *http.Request) []slog.Attr {
+	info, ok := genericapirequest.RequestInfoFrom(req.Context())
+	if !ok || info == nil || !info.IsResourceRequest {
+		return nil
+	}
+
+	// k8s_api_group is present with an empty value for the core group, which is
+	// how the API itself names it.
+	attrs := []slog.Attr{
+		slog.String("k8s_verb", logging.Sanitize(info.Verb)),
+		slog.String("k8s_api_group", logging.Sanitize(info.APIGroup)),
+		slog.String("k8s_resource", logging.Sanitize(info.Resource)),
+	}
+	if info.Subresource != "" {
+		attrs = append(attrs, slog.String("k8s_subresource", logging.Sanitize(info.Subresource)))
+	}
+	if info.Namespace != "" {
+		attrs = append(attrs, slog.String("k8s_namespace", logging.Sanitize(info.Namespace)))
+	}
+	if info.Name != "" {
+		attrs = append(attrs, slog.String("k8s_name", logging.Bound(info.Name, logging.MaxIdentity)))
 	}
 	return attrs
 }
 
 // userAttrs renders a user.Info as sanitized, structured fields under the given
-// prefix. Only allowlisted extras are logged; the number of omitted claim keys
-// is reported so operators can tell data was dropped.
+// prefix. Groups are capped and the drop is reported rather than hidden; only
+// allowlisted extras are logged, and the number of omitted claim keys is
+// reported so operators can tell data was dropped.
 func userAttrs(prefix string, u user.Info) []slog.Attr {
+	groups, groupsOmitted := logging.BoundedList(u.GetGroups(), logging.MaxGroups)
+
 	attrs := []slog.Attr{
-		slog.String(prefix+"_user", sanitize(u.GetName())),
-		slog.Any(prefix+"_groups", sanitizeSlice(u.GetGroups())),
+		slog.String(prefix+"_user", logging.Bound(u.GetName(), logging.MaxIdentity)),
+		slog.Any(prefix+"_groups", groups),
+	}
+	if groupsOmitted > 0 {
+		attrs = append(attrs, slog.Int(prefix+"_groups_omitted", groupsOmitted))
 	}
 	if uid := u.GetUID(); uid != "" {
-		attrs = append(attrs, slog.String(prefix+"_uid", sanitize(uid)))
+		attrs = append(attrs, slog.String(prefix+"_uid", logging.Bound(uid, logging.MaxIdentity)))
 	}
 	safe, omitted := loggableExtras(u.GetExtra())
 	if len(safe) > 0 {
@@ -134,7 +226,9 @@ func userAttrs(prefix string, u user.Info) []slog.Attr {
 }
 
 // loggableExtras splits an extra map into the allowlisted, sanitized entries
-// safe to log and a count of the omitted (non-allowlisted) keys.
+// safe to log and a count of the omitted (non-allowlisted) keys. The kept
+// values carry no cap: they are part of the frozen record shape and the group
+// cap does not apply to them.
 func loggableExtras(extra map[string][]string) (map[string][]string, int) {
 	if len(extra) == 0 {
 		return nil, 0
@@ -143,7 +237,7 @@ func loggableExtras(extra map[string][]string) (map[string][]string, int) {
 	omitted := 0
 	for k, v := range extra {
 		if _, ok := loggableExtraKeys[k]; ok {
-			safe[sanitize(k)] = sanitizeSlice(v)
+			safe[logging.Sanitize(k)] = logging.SanitizeList(v)
 			continue
 		}
 		omitted++
@@ -158,36 +252,7 @@ func sanitizePath(req *http.Request) string {
 	if req.URL == nil {
 		return ""
 	}
-	return sanitize(req.URL.Path)
-}
-
-// sanitize removes control characters from a user-controlled string so that
-// values cannot inject newlines or terminal escapes into the log stream. Tabs,
-// carriage returns and newlines collapse to a single space; other control
-// runes are dropped.
-func sanitize(s string) string {
-	return strings.Map(func(r rune) rune {
-		switch r {
-		case '\n', '\r', '\t':
-			return ' '
-		}
-		if unicode.IsControl(r) {
-			return -1
-		}
-		return r
-	}, s)
-}
-
-// sanitizeSlice sanitizes every element of a slice, returning a fresh slice.
-func sanitizeSlice(in []string) []string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]string, len(in))
-	for i, v := range in {
-		out[i] = sanitize(v)
-	}
-	return out
+	return logging.Sanitize(req.URL.Path)
 }
 
 // forwardedFor returns the raw X-Forwarded-For header value.
@@ -200,11 +265,11 @@ func forwardedFor(headers http.Header) string {
 // networks. See the package documentation for the full contract. It is
 // IPv4/IPv6 aware and ignores malformed forwarded entries.
 func resolveClientIP(remoteAddr, xff string, trusted []*net.IPNet) string {
-	peer := peerHost(remoteAddr)
+	peer := proxycontext.PeerHost(remoteAddr)
 
 	// Without trust, or when the peer itself is not a trusted proxy, forwarded
 	// headers are ignored entirely: the direct peer is the client.
-	if xff == "" || !ipInNetworks(peer, trusted) {
+	if xff == "" || !proxycontext.IPInNetworks(peer, trusted) {
 		return peer
 	}
 
@@ -218,41 +283,11 @@ func resolveClientIP(remoteAddr, xff string, trusted []*net.IPNet) string {
 			// Malformed hop: cannot trust anything further left through it.
 			return peer
 		}
-		if ipInNetworks(ip, trusted) {
+		if proxycontext.IPInNetworks(ip, trusted) {
 			continue
 		}
 		return ip
 	}
 
 	return peer
-}
-
-// peerHost extracts the host portion of a host:port peer address, IPv6-safe. It
-// falls back to the raw value when the address has no port (some call sites
-// build requests without a RemoteAddr).
-func peerHost(remoteAddr string) string {
-	if remoteAddr == "" {
-		return ""
-	}
-	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
-		return host
-	}
-	return remoteAddr
-}
-
-// ipInNetworks reports whether ip parses and falls within any of the networks.
-func ipInNetworks(ip string, networks []*net.IPNet) bool {
-	if len(networks) == 0 {
-		return false
-	}
-	parsed := net.ParseIP(ip)
-	if parsed == nil {
-		return false
-	}
-	for _, n := range networks {
-		if n != nil && n.Contains(parsed) {
-			return true
-		}
-	}
-	return false
 }

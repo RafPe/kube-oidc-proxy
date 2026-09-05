@@ -71,6 +71,23 @@ not require a pod restart.
 | `--max-impersonation-header-values` | `64` | Maximum total number of impersonation header values accepted per request. Each value costs one `SubjectAccessReview` round trip; over-cap requests are rejected with HTTP 431 before any review is sent. Must be greater than 0. See [caching](./caching.md#impersonation-header-value-cap). |
 | `--allow-reserved-groups` | _(empty)_ | Comma-separated `system:`-prefixed groups a token may carry. See [Reserved `system:` identities](#reserved-system-identities). |
 
+### Logging
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--logging-format` | `json` | Encoding of the whole log stream: `json` or `text`. Any other value is rejected at startup. |
+| `-v` / `--v` | `0` | Verbosity, the single knob. `0` shows ERROR, WARN and INFO — lifecycle records and the per-request access record. `1` and above add DEBUG: the auth path taken, cache hits and misses, live `SubjectAccessReview`s, impersonation header names. WARN and ERROR are never hidden. |
+
+There is no separate `--log-level`: `-v` drives the proxy's own records and the
+bridged Kubernetes library output together, so the two can never disagree. Both
+flags are rendered by the chart from `logging.format` and `logging.verbosity`
+when those values are set, before `extraArgs`, so an `extraArgs` entry for the
+same flag still wins. Both chart values are empty by default, so a default
+install passes neither flag and the binary defaults above apply.
+
+See the [logging reference](./logging.md) for the record shape, the event
+registry, the level policy and worked queries.
+
 ### Serving / TLS & misc
 
 | Flag | Default | Description |
@@ -306,14 +323,18 @@ client IP. This is the safe default.
 The proxy exposes the same auditing options as the Kubernetes API server, except
 dynamic configuration (`--audit-dynamic-configuration` is **not** supported). See
 the [Kubernetes auditing docs](https://kubernetes.io/docs/tasks/debug-application-cluster/audit)
-to configure it. For the proxy's own per-request stdout log, see
-[reading the request log](./operations.md#reading-the-request-log).
+to configure it. The proxy stamps every request with an `Audit-ID` that is also
+the `request_id` in its own log and the `auditID` in the kube-apiserver audit
+event, so the three streams join — see
+[correlation](./logging.md#correlation). For the proxy's own per-request stdout
+log, see [reading the request log](./operations.md#reading-the-request-log).
 
 ## See also
 
 - [Multi-issuer authentication](./multi-issuer.md)
 - [Getting started](./getting-started.md)
 - [Caching and API-server protection](./caching.md)
+- [Logging reference](./logging.md)
 - [Architecture](./architecture.md)
 - [Operations](./operations.md)
 - [Chart values reference](../chart/kube-oidc-proxy/README.md)

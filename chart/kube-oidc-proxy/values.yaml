@@ -199,6 +199,19 @@ extraImpersonationHeaders:
   clientIP: false
   #headers: key1=foo,key2=bar,key1=bar
 
+# Logging output. Both values are empty by default, so the chart renders
+# neither flag and the binary's own defaults apply: format json, verbosity 0.
+# That also keeps the rendered command line valid for an image.tag pinned to a
+# release older than the one that added --logging-format.
+logging:
+  # Log encoding (--logging-format): json or text. Empty leaves the binary
+  # default, json.
+  format: ""
+  # Verbosity (--v): 0 shows lifecycle, access records and warnings, 1 and
+  # above add request internals. Empty leaves the binary default, 0; set it to
+  # "0" to pin that explicitly.
+  verbosity: ""
+
 # Arbitrary extra CLI flags passed to the proxy as --<key>=<value>.
 extraArgs: {}
   #audit-log-path: /audit-log

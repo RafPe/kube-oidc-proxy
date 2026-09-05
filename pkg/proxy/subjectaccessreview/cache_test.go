@@ -4,6 +4,7 @@ package subjectaccessreview
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -94,7 +95,7 @@ func newCachedSAR(r clientazv1.SubjectAccessReviewInterface, allowTTL, denyTTL t
 func impersonateUserRequest(name string) *http.Request {
 	h := http.Header{}
 	h.Set("Impersonate-User", name)
-	return (&http.Request{Header: h}).WithContext(context.Background())
+	return (&http.Request{Header: h}).WithContext(testRequestContext())
 }
 
 func cacheTestRequester() *user.DefaultInfo {
@@ -402,7 +403,7 @@ func TestErrorsNeverCached(t *testing.T) {
 func TestCacheDisabled(t *testing.T) {
 	reviewer := &fnReviewer{}
 	reviewer.set(allowAll)
-	sar, err := New(reviewer, DefaultTimeout, 0, 0, DefaultMaxHeaderValues)
+	sar, err := New(reviewer, DefaultTimeout, 0, 0, DefaultMaxHeaderValues, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -665,7 +666,7 @@ func TestSingleflightWinnerCancellationDoesNotPoisonWaiters(t *testing.T) {
 	reviewer := &winnerCancelReviewer{entered: make(chan struct{}, 1)}
 	sar := newCachedSAR(reviewer, 10*time.Second, 30*time.Second, clk)
 
-	winnerCtx, cancelWinner := context.WithCancel(context.Background())
+	winnerCtx, cancelWinner := context.WithCancel(testRequestContext())
 	defer cancelWinner()
 
 	type outcome struct {

@@ -73,7 +73,7 @@ func TestReviewToken(t *testing.T) {
 
 			p := &Proxy{tokenReviewer: reviewer}
 
-			req := httptest.NewRequest("GET", "https://target.example.com/foo", nil)
+			req := withTestRequestID(httptest.NewRequest("GET", "https://target.example.com/foo", nil))
 			if test.authHeader != "" {
 				req.Header.Set("Authorization", test.authHeader)
 			}
@@ -154,9 +154,11 @@ func TestWithTokenReviewStatusCodes(t *testing.T) {
 				test.reviewerResult(reviewer)
 			}
 
+			access, _ := newAccessLogger(t)
 			p := &Proxy{
 				tokenReviewer: reviewer,
 				config:        &Config{TokenReview: test.tokenReviewEnabled},
+				access:        access,
 			}
 			p.handleError = p.newErrorHandler()
 
@@ -166,7 +168,7 @@ func TestWithTokenReviewStatusCodes(t *testing.T) {
 				rw.WriteHeader(http.StatusOK)
 			})
 
-			req := httptest.NewRequest("GET", "https://target.example.com/foo", nil)
+			req := withTestRequestID(httptest.NewRequest("GET", "https://target.example.com/foo", nil))
 			if test.authHeader != "" {
 				req.Header.Set("Authorization", test.authHeader)
 			}

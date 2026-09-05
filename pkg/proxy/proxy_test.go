@@ -3,8 +3,11 @@ package proxy
 
 import (
 	"bytes"
+	stdcontext "context"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -27,10 +30,13 @@ import (
 	"k8s.io/client-go/util/cert"
 
 	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 	"github.com/rafpe/kube-oidc-proxy/pkg/mocks"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/audit"
+	proxycontext "github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/hooks"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/logging"
+	accesslogging "github.com/rafpe/kube-oidc-proxy/pkg/proxy/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 	fakesubjectaccessreview "github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview/fake"
 )
@@ -38,9 +44,48 @@ import (
 type fakeProxy struct {
 	ctrl *gomock.Controller
 
-	fakeToken *mocks.MockToken
-	fakeRT    *fakeRT
+	fakeToken    *mocks.MockToken
+	fakeReviewer *mocks.MockToken
+	fakeRT       *fakeRT
+
+	// logs is the capture every component of this proxy writes into.
+	logs *logtest.Capture
 	*Proxy
+}
+
+// newAccessLogger builds an access logger writing into a capture, so a test can
+// assert on the records a request produced.
+func newAccessLogger(t *testing.T) (*accesslogging.AccessLogger, *logtest.Capture) {
+	t.Helper()
+	root, records := logtest.New(t, 0)
+	return accesslogging.NewAccessLogger(logging.ForComponent(root, logging.ComponentRequest), nil), records
+}
+
+// testIssuerName is the issuer the fake OIDC authenticator attributes an
+// accepted token to, standing in for the WithIssuerName wrapper run.go puts
+// around every configured issuer's authenticator.
+const testIssuerName = "corp"
+
+// oidcAnswer returns a fake AuthenticateToken body that answers with resp and,
+// when it accepted the token, names testIssuerName on the request the way the
+// WithIssuerName wrapper does in production. Every success path needs it:
+// authn.oidc.succeeded requires a non-empty issuer_name.
+func oidcAnswer(resp *authenticator.Response, ok bool, err error) func(stdcontext.Context, string) (*authenticator.Response, bool, error) {
+	return func(ctx stdcontext.Context, _ string) (*authenticator.Response, bool, error) {
+		if ok && err == nil {
+			setIssuerName(ctx, testIssuerName)
+		}
+		return resp, ok, err
+	}
+}
+
+// withTestRequestID stamps the correlation id the request-id filter mints in
+// production, on both channels the filter uses: the proxy context the access
+// record reads, and the logging context Emit reads to supply request_id to any
+// event that requires it. Every access record is required to carry one.
+func withTestRequestID(req *http.Request) *http.Request {
+	req = req.WithContext(logging.WithRequestID(req.Context(), "test-request-id"))
+	return proxycontext.WithRequestID(req, "test-request-id")
 }
 
 func TestRoundTripperForRestConfigReloadsClientCertificate(t *testing.T) {
@@ -142,9 +187,11 @@ func (f *fakeRW) Header() http.Header {
 }
 
 func newFakeR() *http.Request {
-	return &http.Request{
-		RemoteAddr: "fakeAddr",
-	}
+	return withTestRequestID(&http.Request{
+		Method:     http.MethodGet,
+		RemoteAddr: "1.2.3.4:5555",
+		URL:        &url.URL{Path: "/api/v1/pods"},
+	})
 }
 
 func newFakeRW() *fakeRW {
@@ -156,19 +203,16 @@ func newFakeRW() *fakeRW {
 
 func (f *fakeRT) RoundTrip(h *http.Request) (*http.Response, error) {
 	if h.Header.Get("Impersonate-User") != f.expUser {
-		logging.LogFailedRequest(h)
 		f.t.Errorf("client transport got unexpected user impersonation header, exp=%s got=%s",
 			f.expUser, h.Header.Get("Impersonate-User"))
 	}
 
 	if h.Header.Get("Impersonate-Uid") != f.expUID {
-		logging.LogFailedRequest(h)
 		f.t.Errorf("client transport got unexpected uid impersonation header, exp=%s got=%s",
 			f.expUID, h.Header.Get("Impersonate-Uid"))
 	}
 
 	if exp, act := sort.StringSlice(f.expGroup), sort.StringSlice(h.Header["Impersonate-Group"]); !reflect.DeepEqual(exp, act) {
-		logging.LogFailedRequest(h)
 		f.t.Errorf(
 			"client transport got unexpected group impersonation header, exp=%#v got=%#v",
 			exp,
@@ -180,13 +224,11 @@ func (f *fakeRT) RoundTrip(h *http.Request) (*http.Response, error) {
 		if strings.HasPrefix(k, "Impersonate-Extra-") {
 			expvv, ok := f.expExtra[k]
 			if !ok {
-				logging.LogFailedRequest(h)
 				f.t.Errorf("got unexpected impersonate extra: %s", k)
 				continue
 			}
 
 			if !reflect.DeepEqual(vv, expvv) {
-				logging.LogFailedRequest(h)
 				f.t.Errorf("unexpected values in impersonate extra (%s), exp=%s got=%s", k, expvv, vv)
 			}
 		}
@@ -195,24 +237,22 @@ func (f *fakeRT) RoundTrip(h *http.Request) (*http.Response, error) {
 	for k, expvv := range f.expExtra {
 		vv, ok := h.Header[k]
 		if !ok {
-			logging.LogFailedRequest(h)
 			f.t.Errorf("did not get expected impersonate extra: %s", k)
 			continue
 		}
 
 		if !reflect.DeepEqual(vv, expvv) {
-			logging.LogFailedRequest(h)
 			f.t.Errorf("unexpected values in impersonate extra (%s), exp=%s got=%s", k, expvv, vv)
 		}
 	}
 
-	logging.LogSuccessfulRequest(h, &user.DefaultInfo{}, &user.DefaultInfo{})
-
 	return nil, nil
 }
 
-func tryError(t *testing.T, expCode int, err error) *fakeRW {
+func tryError(t *testing.T, expCode int, err error) (*fakeRW, *logtest.Capture) {
 	p := new(Proxy)
+	access, records := newAccessLogger(t)
+	p.access = access
 	p.handleError = p.newErrorHandler()
 
 	frw := newFakeRW()
@@ -232,29 +272,211 @@ func tryError(t *testing.T, expCode int, err error) *fakeRW {
 			expCode, code)
 	}
 
-	return frw
+	return frw, records
 }
 
 func TestError(t *testing.T) {
 	// no error
-	frw := tryError(t, http.StatusInternalServerError, nil)
+	frw, records := tryError(t, http.StatusInternalServerError, nil)
 	if len(frw.buffer) != 1 {
 		t.Errorf("unexpected response, exp='\n' got='%s'", frw.buffer)
 	}
+	// Nothing was decided about a request, so nothing is recorded about one.
+	if got := records.ByEvent(logging.EventRequestAccessDecided); len(got) != 0 {
+		t.Errorf("an access record was written for a nil error: %s", records.Raw())
+	}
 
-	frw = tryError(t, http.StatusUnauthorized, errUnauthorized)
+	frw, records = tryError(t, http.StatusUnauthorized, errUnauthorized)
 	if exp := []byte("Unauthorized\n"); !bytes.Equal(frw.buffer, exp) {
 		t.Errorf("unexpected response, exp='%s' got='%s'", exp, frw.buffer)
 	}
+	assertDeniedReason(t, records, reasonUnauthorized)
 
-	frw = tryError(t, http.StatusForbidden, errNoName)
+	frw, records = tryError(t, http.StatusForbidden, errNoName)
 	if exp := []byte("Username claim not available in OIDC Issuer response\n"); !bytes.Equal(frw.buffer, exp) {
 		t.Errorf("unexpected response, exp='%s' got='%s'", exp, frw.buffer)
 	}
+	assertDeniedReason(t, records, reasonNoUsernameClaim)
 
-	frw = tryError(t, http.StatusInternalServerError, errors.New("foo"))
+	frw, records = tryError(t, http.StatusInternalServerError, errors.New("foo"))
 	if exp := []byte("\n"); !bytes.Equal(frw.buffer, exp) {
 		t.Errorf("unexpected response, exp='%s' got='%s'", exp, frw.buffer)
+	}
+	assertDeniedReason(t, records, reasonInternalError)
+}
+
+// TestErrorHandlerInternalFailureEmitsHandlerFailed pins the record the proxy
+// writes when it failed for its own reasons rather than the client's. Every
+// internal-error branch of the error handler reports request.handler.failed at
+// ERROR, carrying the bounded error text that the client-facing empty 500 body
+// deliberately withholds.
+func TestErrorHandlerInternalFailureEmitsHandlerFailed(t *testing.T) {
+	tests := map[string]struct {
+		err            error
+		wantErrMessage string
+	}{
+		"called with no error": {
+			err:            nil,
+			wantErrMessage: "error handler called with nil error",
+		},
+		"impersonation configuration missing": {
+			err:            errNoImpersonationConfig,
+			wantErrMessage: errNoImpersonationConfig.Error(),
+		},
+		"unclassified error": {
+			err:            errors.New("boom"),
+			wantErrMessage: "boom",
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			root, records := logtest.New(t, 0)
+			requestLogger := logging.ForComponent(root, logging.ComponentRequest)
+			p := &Proxy{
+				logger: requestLogger,
+				access: accesslogging.NewAccessLogger(requestLogger, nil),
+			}
+			p.handleError = p.newErrorHandler()
+
+			p.handleError(newFakeRW(), newFakeR(), test.err)
+
+			rec := records.Only(t, logging.EventRequestHandlerFailed)
+			if got := rec.String("level"); got != "ERROR" {
+				t.Errorf("level = %q, want ERROR", got)
+			}
+			if got := rec.String("component"); got != string(logging.ComponentRequest) {
+				t.Errorf("component = %q, want %q", got, logging.ComponentRequest)
+			}
+			if got := rec.String("request_id"); got != "test-request-id" {
+				t.Errorf("request_id = %q, want %q", got, "test-request-id")
+			}
+			if got := rec.String("reason"); got != reasonInternalError {
+				t.Errorf("reason = %q, want %q", got, reasonInternalError)
+			}
+			if got := rec.String("error_message"); got != test.wantErrMessage {
+				t.Errorf("error_message = %q, want %q", got, test.wantErrMessage)
+			}
+		})
+	}
+}
+
+// assertDeniedReason pins the single AuFail record a refusal writes, and the
+// closed reason it is classified by.
+func assertDeniedReason(t *testing.T, records *logtest.Capture, wantReason string) {
+	t.Helper()
+	rec := records.Only(t, logging.EventRequestAccessDecided)
+	if got := rec.String("event"); got != "AuFail" {
+		t.Errorf("event = %q, want AuFail", got)
+	}
+	if got := rec.String("decision"); got != "deny" {
+		t.Errorf("decision = %q, want deny", got)
+	}
+	if got := rec.String("reason"); got != wantReason {
+		t.Errorf("reason = %q, want %q", got, wantReason)
+	}
+}
+
+// TestErrorClassifiesEveryReason pins the whole reason map in one place: every
+// error the proxy classifies produces its own closed reason value, so a query
+// on reason can distinguish a 401 from a 403 from an upstream failure.
+func TestErrorClassifiesEveryReason(t *testing.T) {
+	tests := map[string]struct {
+		err       error
+		expCode   int
+		expReason string
+	}{
+		"unauthorized": {errUnauthorized, http.StatusUnauthorized, reasonUnauthorized},
+		"reserved identity": {fmt.Errorf("%w: username %q", errReservedIdentity, "system:masters"),
+			http.StatusForbidden, reasonReservedIdentity},
+		"no username claim": {errNoName, http.StatusForbidden, reasonNoUsernameClaim},
+		"too many impersonation values": {fmt.Errorf("%w: 5 > 2", subjectaccessreview.ErrTooManyImpersonationHeaderValues),
+			http.StatusRequestHeaderFieldsTooLarge, reasonTooManyImpersonationValues},
+		"impersonation denied": {&subjectaccessreview.ImpersonationAuthError{
+			Requester: "mmosley", Kind: "group", Target: "'system:masters'"},
+			http.StatusForbidden, reasonImpersonationDenied},
+		"no impersonation config": {errNoImpersonationConfig, http.StatusInternalServerError, reasonInternalError},
+		// A SubjectAccessReview that could not be submitted wraps a client-go
+		// transport error, so it satisfies net.Error too. It is the proxy's own
+		// dependency failing, not the upstream hop, so it stays a 500.
+		"subjectaccessreview unavailable": {fmt.Errorf("%w: %w", subjectaccessreview.ErrCreateSubjectAccessReview,
+			&net.OpError{Op: "dial", Err: errors.New("connection refused")}),
+			http.StatusInternalServerError, reasonInternalError},
+		"no impersonation user": {subjectaccessreview.ErrorNoImpersonationUserFound, http.StatusInternalServerError, reasonInternalError},
+		"unknown":               {errors.New("boom"), http.StatusInternalServerError, reasonInternalError},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, records := tryError(t, test.expCode, test.err)
+			assertDeniedReason(t, records, test.expReason)
+		})
+	}
+}
+
+// TestErrorUpstreamTransportFailureIsNotAnAccessDecision pins the one-record
+// rule: the access decision is written exactly once per request, by RoundTrip,
+// at the moment the request is admitted. A transport failure afterwards is not
+// a second decision -- the request was already allowed -- so the error handler
+// records nothing here and answers 502. Task 14 adds the upstream event that
+// carries the failure itself.
+func TestErrorUpstreamTransportFailureIsNotAnAccessDecision(t *testing.T) {
+	_, records := tryError(t, http.StatusBadGateway,
+		&net.OpError{Op: "dial", Err: errors.New("connection refused")})
+
+	if got := records.ByEvent(logging.EventRequestAccessDecided); len(got) != 0 {
+		t.Fatalf("the error handler wrote %d access records for a transport failure: %s",
+			len(got), records.Raw())
+	}
+}
+
+// TestErrorCanceledIsRecordedWithoutAResponse pins the one branch that writes
+// no response: the connection is already going away, but the request still
+// produced a decision that has to be recorded.
+func TestErrorCanceledIsRecordedWithoutAResponse(t *testing.T) {
+	p := new(Proxy)
+	access, records := newAccessLogger(t)
+	p.access = access
+	p.handleError = p.newErrorHandler()
+
+	frw := newFakeRW()
+	p.handleError(frw, newFakeR(), stdcontext.Canceled)
+
+	if got := frw.header.Get("StatusCode"); got != "" {
+		t.Errorf("a status code was written for a canceled request: %q", got)
+	}
+	assertDeniedReason(t, records, reasonClientCanceled)
+}
+
+// TestErrorImpersonationDenialNamesTheTarget pins that the refused target is
+// carried as structured fields taken from the typed error, so nobody has to
+// parse it back out of the client-facing message.
+func TestErrorImpersonationDenialNamesTheTarget(t *testing.T) {
+	tests := map[string]struct {
+		kind, target         string
+		expKind, expTargetNm string
+	}{
+		"group": {"group", "'system:masters'", "group", "system:masters"},
+		"user":  {"user", "'a-user'", "user", "a-user"},
+		"uid":   {"uid", "'bar'", "uid", "bar"},
+		// "extra info" is how the client-facing message renders it; the record
+		// carries the closed target_kind value.
+		"extra": {"extra info", "'foo'='bar'", "extra", "foo'='bar"},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, records := tryError(t, http.StatusForbidden, &subjectaccessreview.ImpersonationAuthError{
+				Requester: "mmosley", Kind: test.kind, Target: test.target,
+			})
+			rec := records.Only(t, logging.EventRequestAccessDecided)
+			if got := rec.String("target_kind"); got != test.expKind {
+				t.Errorf("target_kind = %q, want %q", got, test.expKind)
+			}
+			if got := rec.String("target_name"); got != test.expTargetNm {
+				t.Errorf("target_name = %q, want %q", got, test.expTargetNm)
+			}
+		})
 	}
 }
 
@@ -347,28 +569,55 @@ func TestHasImpersonation(t *testing.T) {
 	}
 }
 
+// frozenClock is the instant the test warning limiter measures every bucket
+// against, so a burst never refills mid-test.
+var frozenClock = time.Unix(0, 0)
+
 func newTestProxy(t *testing.T) *fakeProxy {
 	ctrl := gomock.NewController(t)
 	fakeToken := mocks.NewMockToken(ctrl)
+	fakeReviewer := mocks.NewMockToken(ctrl)
 	fakeRT := &fakeRT{t: t}
+
+	// One root, one capture: every component the fake proxy owns writes into
+	// the same stream, so a test can assert on any record the request produced
+	// through fakeProxy.logs.
+	root, logs := logtest.New(t, 2)
+	trackCapture(logs)
+	requestLogger := logging.ForComponent(root, logging.ComponentRequest)
+
 	fakeSubjectAccessReviewer := fakesubjectaccessreview.New(nil)
-	subjectAccessReview, _ := subjectaccessreview.New(fakeSubjectAccessReviewer, subjectaccessreview.DefaultTimeout, 0, 0, subjectaccessreview.DefaultMaxHeaderValues)
+	subjectAccessReview, _ := subjectaccessreview.New(fakeSubjectAccessReviewer, subjectaccessreview.DefaultTimeout, 0, 0,
+		subjectaccessreview.DefaultMaxHeaderValues, logging.ForComponent(root, logging.ComponentSAR))
 
 	p := &fakeProxy{
-		ctrl:      ctrl,
-		fakeToken: fakeToken,
-		fakeRT:    fakeRT,
+		ctrl:         ctrl,
+		fakeToken:    fakeToken,
+		fakeReviewer: fakeReviewer,
+		fakeRT:       fakeRT,
+		logs:         logs,
 		Proxy: &Proxy{
+			logger:                requestLogger,
+			oidcLog:               logging.ForComponent(root, logging.ComponentOIDC),
+			tokenReviewLog:        logging.ForComponent(root, logging.ComponentTokenReview),
+			upstreamLog:           logging.ForComponent(root, logging.ComponentUpstream),
+			access:                accesslogging.NewAccessLogger(requestLogger, nil),
 			oidcRequestAuther:     bearertoken.New(fakeToken),
+			tokenReviewer:         fakeReviewer,
 			subjectAccessReviewer: subjectAccessReview,
 			clientTransport:       fakeRT,
 			noAuthClientTransport: fakeRT,
 			config:                new(Config),
-			hooks:                 hooks.New(),
+			hooks:                 hooks.New(logging.ForComponent(root, logging.ComponentShutdown)),
+			// A frozen clock and a small burst make the warning limiter
+			// deterministic: a test asserts on exactly how many warnings
+			// survive sampling, without sleeping for a refill.
+			warnLimiter: logging.NewLimiter(1, 3, time.Minute, func() time.Time { return frozenClock }),
 		},
 	}
 
-	auditor, err := audit.New(new(options.AuditOptions), "0.0.0.0:1234", new(server.SecureServingInfo))
+	auditor, err := audit.New(new(options.AuditOptions), "0.0.0.0:1234", new(server.SecureServingInfo),
+		logging.ForComponent(root, logging.ComponentAudit))
 	if err != nil {
 		t.Fatalf("failed to create auditor: %s", err)
 	}
@@ -400,13 +649,25 @@ func TestHandlers(t *testing.T) {
 		expGroup []string
 		expExtra map[string][]string
 		expUID   string
+
+		// expEvent is the access record's event field, expReason its reason
+		// (empty on an allow) and expAuthMethod how the request authenticated.
+		expEvent      string
+		expReason     string
+		expAuthMethod string
 	}{
 		"an empty request should 401": {
-			req:     new(http.Request),
-			expCode: http.StatusUnauthorized,
-			expBody: "Unauthorized",
+			expEvent:      "AuFail",
+			expReason:     reasonUnauthorized,
+			expAuthMethod: authMethodNone,
+			req:           new(http.Request),
+			expCode:       http.StatusUnauthorized,
+			expBody:       "Unauthorized",
 		},
 		"a request with a badly formed token should 401": {
+			expEvent:      "AuFail",
+			expReason:     reasonUnauthorized,
+			expAuthMethod: authMethodNone,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization": []string{"foo"},
@@ -416,6 +677,9 @@ func TestHandlers(t *testing.T) {
 			expBody: "Unauthorized",
 		},
 		"a request with a unauthed token should 401": {
+			expEvent:      "AuFail",
+			expReason:     reasonUnauthorized,
+			expAuthMethod: authMethodNone,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization": []string{"bearer fake-token"},
@@ -431,6 +695,9 @@ func TestHandlers(t *testing.T) {
 			expBody: "Unauthorized",
 		},
 		"a request with an error during token auth should 401": {
+			expEvent:      "AuFail",
+			expReason:     reasonUnauthorized,
+			expAuthMethod: authMethodNone,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization": []string{"bearer fake-token"},
@@ -446,6 +713,9 @@ func TestHandlers(t *testing.T) {
 			expBody: "Unauthorized",
 		},
 		"a request with an error but passes during token auth should still 401": {
+			expEvent:      "AuFail",
+			expReason:     reasonUnauthorized,
+			expAuthMethod: authMethodNone,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization": []string{"bearer fake-token"},
@@ -461,6 +731,9 @@ func TestHandlers(t *testing.T) {
 			expBody: "Unauthorized",
 		},
 		"a request with unauth with impersonation should 401": {
+			expEvent:      "AuFail",
+			expReason:     reasonUnauthorized,
+			expAuthMethod: authMethodNone,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":    []string{"bearer fake-token"},
@@ -480,6 +753,8 @@ func TestHandlers(t *testing.T) {
 		// BEGIN IMPERSONATION TESTS
 
 		"an authed request with authorized impersonation user should succeed": {
+			expEvent:      "AuSuccess",
+			expAuthMethod: authMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":    []string{"bearer fake-token"},
@@ -507,6 +782,8 @@ func TestHandlers(t *testing.T) {
 			expBody: "",
 		},
 		"an authed request with authorized impersonation group should succeed": {
+			expEvent:      "AuSuccess",
+			expAuthMethod: authMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":     []string{"bearer fake-token"},
@@ -535,6 +812,8 @@ func TestHandlers(t *testing.T) {
 			expBody: "",
 		},
 		"an authed request with authorized impersonation extra should succeed": {
+			expEvent:      "AuSuccess",
+			expAuthMethod: authMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":                []string{"bearer fake-token"},
@@ -568,6 +847,8 @@ func TestHandlers(t *testing.T) {
 		},
 
 		"an authed request with authorized impersonation extra should succeed, with an empty X-Forwarded-For header": {
+			expEvent:      "AuSuccess",
+			expAuthMethod: authMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":                []string{"bearer fake-token"},
@@ -602,6 +883,8 @@ func TestHandlers(t *testing.T) {
 		},
 
 		"an authed request with authorized impersonation uid should succeed": {
+			expEvent:      "AuSuccess",
+			expAuthMethod: authMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":     []string{"bearer fake-token"},
@@ -633,6 +916,9 @@ func TestHandlers(t *testing.T) {
 		},
 
 		"an authed request with unauthorized impersonation user should error unauthorized": {
+			expEvent:      "AuFail",
+			expReason:     reasonImpersonationDenied,
+			expAuthMethod: authMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":    []string{"bearer fake-token"},
@@ -654,6 +940,9 @@ func TestHandlers(t *testing.T) {
 			expBody: "mmosley is not allowed to impersonate user 'a-user'",
 		},
 		"an authed request with unauthorized impersonation group should error unauthorized": {
+			expEvent:      "AuFail",
+			expReason:     reasonImpersonationDenied,
+			expAuthMethod: authMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":     []string{"bearer fake-token"},
@@ -676,6 +965,9 @@ func TestHandlers(t *testing.T) {
 			expBody: "mmosley is not allowed to impersonate group 'a-group'",
 		},
 		"an authed request with unauthorized impersonation extra should error unauthorized": {
+			expEvent:      "AuFail",
+			expReason:     reasonImpersonationDenied,
+			expAuthMethod: authMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":         []string{"bearer fake-token"},
@@ -698,6 +990,9 @@ func TestHandlers(t *testing.T) {
 			expBody: "mmosley is not allowed to impersonate extra info 'foo'='bar'",
 		},
 		"an authed request with unauthorized impersonation uid should error unauthorized": {
+			expEvent:      "AuFail",
+			expReason:     reasonImpersonationDenied,
+			expAuthMethod: authMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":    []string{"bearer fake-token"},
@@ -721,6 +1016,9 @@ func TestHandlers(t *testing.T) {
 		},
 
 		"an authed request with impersonation groups missing user should fail": {
+			expEvent:      "AuFail",
+			expReason:     reasonInternalError,
+			expAuthMethod: authMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":      []string{"bearer fake-token"},
@@ -743,6 +1041,9 @@ func TestHandlers(t *testing.T) {
 		},
 
 		"an authed request with impersonation extra missing user should fail": {
+			expEvent:      "AuFail",
+			expReason:     reasonInternalError,
+			expAuthMethod: authMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":         []string{"bearer fake-token"},
@@ -765,6 +1066,9 @@ func TestHandlers(t *testing.T) {
 		},
 
 		"an authed request with impersonation uid missing user should fail": {
+			expEvent:      "AuFail",
+			expReason:     reasonInternalError,
+			expAuthMethod: authMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":   []string{"bearer fake-token"},
@@ -787,6 +1091,9 @@ func TestHandlers(t *testing.T) {
 		},
 
 		"an authed request with an invalid impersonation header should fail": {
+			expEvent:      "AuFail",
+			expReason:     reasonInternalError,
+			expAuthMethod: authMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":        []string{"bearer fake-token"},
@@ -812,6 +1119,9 @@ func TestHandlers(t *testing.T) {
 		// END IMPERSONATION TESTS
 
 		"an authed request with no username is token should 403": {
+			expEvent:      "AuFail",
+			expReason:     reasonNoUsernameClaim,
+			expAuthMethod: authMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization": []string{"bearer fake-token"},
@@ -829,6 +1139,8 @@ func TestHandlers(t *testing.T) {
 			expBody: "Username claim not available in OIDC Issuer response",
 		},
 		"an authed request with user should 200": {
+			expEvent:      "AuSuccess",
+			expAuthMethod: authMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization": []string{"bearer fake-token"},
@@ -848,6 +1160,8 @@ func TestHandlers(t *testing.T) {
 			expGroup: []string{"system:authenticated"},
 		},
 		"an authed request with user, group, extra should 200": {
+			expEvent:      "AuSuccess",
+			expAuthMethod: authMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization": []string{"bearer fake-token"},
@@ -880,6 +1194,8 @@ func TestHandlers(t *testing.T) {
 			},
 		},
 		"an authed request with user, group, extra but disabled impersonation should return no impersonation and should 200": {
+			expEvent:      "AuSuccess",
+			expAuthMethod: authMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization": []string{"bearer fake-token"},
@@ -919,8 +1235,8 @@ func TestHandlers(t *testing.T) {
 			w := httptest.NewRecorder()
 
 			if test.authResponse != nil {
-				p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), test.expAuthToken).Return(
-					test.authResponse.resp, test.authResponse.pass, test.authResponse.err)
+				p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), test.expAuthToken).DoAndReturn(
+					oidcAnswer(test.authResponse.resp, test.authResponse.pass, test.authResponse.err))
 			}
 
 			p.fakeRT.expUser = test.expUser
@@ -941,7 +1257,19 @@ func TestHandlers(t *testing.T) {
 				}
 			})
 
-			test.req.URL = new(url.URL)
+			// Fill in the method, path, peer and header map a served request
+			// always has; the request-id filter is the outermost handler in
+			// this chain, so it mints the correlation id itself.
+			test.req.URL = &url.URL{Path: "/api/v1/pods"}
+			if test.req.Method == "" {
+				test.req.Method = http.MethodGet
+			}
+			if test.req.RemoteAddr == "" {
+				test.req.RemoteAddr = "1.2.3.4:5555"
+			}
+			if test.req.Header == nil {
+				test.req.Header = make(http.Header)
+			}
 
 			handler = p.withHandlers(handler)
 			handler.ServeHTTP(w, test.req)
@@ -964,9 +1292,58 @@ func TestHandlers(t *testing.T) {
 					test.expCode, resp.StatusCode)
 			}
 
+			// Exactly one access record per request, carrying the outcome, the
+			// classified reason and how the request authenticated.
+			rec := p.logs.Only(t, logging.EventRequestAccessDecided)
+			if got := rec.String("event"); got != test.expEvent {
+				t.Errorf("event = %q, want %q", got, test.expEvent)
+			}
+			if got := rec.String("reason"); got != test.expReason {
+				t.Errorf("reason = %q, want %q", got, test.expReason)
+			}
+			if got := rec.String("auth_method"); got != test.expAuthMethod {
+				t.Errorf("auth_method = %q, want %q", got, test.expAuthMethod)
+			}
+			// The id is the one the filter minted, not one the test stamped:
+			// the whole chain now runs behind withRequestID.
+			if got := rec.String("request_id"); !uuidRE.MatchString(got) {
+				t.Errorf("request_id = %q, want a minted UUID", got)
+			}
+
 			p.ctrl.Finish()
 		})
 	}
+}
+
+// TestRoundTripLogsTokenReviewPassthrough pins the access record on the
+// TokenReview passthrough path: the request never reaches impersonation, and
+// before this change it produced no record at all.
+func TestRoundTripLogsTokenReviewPassthrough(t *testing.T) {
+	p := newTestProxy(t)
+	p.config = &Config{TokenReview: true}
+
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(nil, false, errors.New("not an oidc token"))
+	p.fakeReviewer.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(
+		&authenticator.Response{User: &user.DefaultInfo{Name: "system:serviceaccount:default:sa"}}, true, nil)
+
+	handler := p.withHandlers(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		if _, err := p.RoundTrip(req); err != nil {
+			t.Errorf("unexpected error: %s", err)
+		}
+	}))
+
+	req := withTestRequestID(reservedIdentityRequest(t, nil))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	rec := p.logs.Only(t, logging.EventRequestAccessDecided)
+	if got := rec.String("event"); got != "AuSuccess" {
+		t.Errorf("event = %q, want AuSuccess", got)
+	}
+	if got := rec.String("auth_method"); got != authMethodTokenReview {
+		t.Errorf("auth_method = %q, want %q", got, authMethodTokenReview)
+	}
+
+	p.ctrl.Finish()
 }
 
 func TestHeadersConfig(t *testing.T) {
@@ -1028,13 +1405,14 @@ func TestHeadersConfig(t *testing.T) {
 			p.config = test.config
 			w := httptest.NewRecorder()
 
-			req := &http.Request{
+			req := withTestRequestID(&http.Request{
+				Method: http.MethodGet,
 				Header: http.Header{
 					"Authorization": []string{"bearer fake-token"},
 				},
 				RemoteAddr: remoteAddr,
-				URL:        new(url.URL),
-			}
+				URL:        &url.URL{Path: "/api/v1/pods"},
+			})
 
 			authResponse := &authenticator.Response{
 				User: &user.DefaultInfo{
@@ -1043,7 +1421,7 @@ func TestHeadersConfig(t *testing.T) {
 				},
 			}
 
-			p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(authResponse, true, nil)
+			p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(oidcAnswer(authResponse, true, nil))
 
 			p.fakeRT.expUser = "a-user"
 			p.fakeRT.expGroup = []string{user.AllAuthenticated}

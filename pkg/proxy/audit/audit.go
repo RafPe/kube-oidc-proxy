@@ -5,12 +5,17 @@
 package audit
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"k8s.io/apimachinery/pkg/util/sets"
 	genericapifilters "k8s.io/apiserver/pkg/endpoints/filters"
+	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/server"
 	genericfilters "k8s.io/apiserver/pkg/server/filters"
 	"k8s.io/component-base/compatibility"
@@ -30,7 +35,27 @@ var longRunningRequests = genericfilters.BasicLongRunningRequestCheck(
 	sets.NewString("watch", "proxy"),
 	sets.NewString("attach", "exec", "proxy", "log", "portforward"))
 
+// IsLongRunning reports whether the request is one of the long-running kinds
+// above, using the same rule the audit backend applies so a lifecycle record
+// and an audit event never disagree about a watch or an exec.
+//
+// It answers false when the request carries no RequestInfo: nothing has
+// resolved it into a verb and a resource yet, so there is no basis on which to
+// call it long running.
+func IsLongRunning(req *http.Request) bool {
+	info, ok := genericapirequest.RequestInfoFrom(req.Context())
+	if !ok {
+		return false
+	}
+
+	return longRunningRequests(req, info)
+}
+
 type Audit struct {
+	// logger is the audit-component logger this backend reports its own
+	// lifecycle through. Never nil: New substitutes a discarding logger.
+	logger *slog.Logger
+
 	opts         *options.AuditOptions
 	serverConfig *server.CompletedConfig
 }
@@ -38,7 +63,14 @@ type Audit struct {
 // New creates a new Audit struct to handle auditing for proxy requests. This
 // is mostly a wrapper for the apiserver auditing handlers to combine them with
 // the proxy.
-func New(opts *options.AuditOptions, externalAddress string, secureServingInfo *server.SecureServingInfo) (*Audit, error) {
+//
+// logger is the audit-component logger; a nil logger yields one that discards
+// every record, so a partially wired caller cannot panic on the request path.
+func New(opts *options.AuditOptions, externalAddress string, secureServingInfo *server.SecureServingInfo, logger *slog.Logger) (*Audit, error) {
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+
 	serverConfig := &server.Config{
 		ExternalAddress: externalAddress,
 		SecureServing:   secureServingInfo,
@@ -69,29 +101,96 @@ func New(opts *options.AuditOptions, externalAddress string, secureServingInfo *
 	completed := serverConfig.Complete(nil)
 
 	return &Audit{
+		logger:       logger,
 		opts:         opts,
 		serverConfig: &completed,
 	}, nil
 }
 
-// Run will run the audit backend if configured.
+// errorReporter is implemented by an audit backend that can say whether its
+// Shutdown flushed successfully. The upstream audit.Backend interface declares
+// Shutdown with no return value, so a backend that knows it dropped events has
+// no way to report that through the interface; one that implements this is
+// asked, and the answer decides between audit.flush.completed and
+// audit.flush.failed.
+type errorReporter interface {
+	ShutdownErr() error
+}
+
+// Run will run the audit backend if configured. A backend that fails to start
+// is an error the process cannot serve correctly through: without it, proxied
+// requests leave no audit trail.
 func (a *Audit) Run(stopCh <-chan struct{}) error {
-	if a.serverConfig.AuditBackend != nil {
-		if err := a.serverConfig.AuditBackend.Run(stopCh); err != nil {
-			return fmt.Errorf("failed to run the audit backend: %s", err)
-		}
+	if a.serverConfig.AuditBackend == nil {
+		return nil
 	}
 
+	ctx := context.Background()
+	if err := a.serverConfig.AuditBackend.Run(stopCh); err != nil {
+		logging.Emit(ctx, a.logger, logging.EventAuditBackendFailed, logging.ErrAttr(err))
+		return fmt.Errorf("failed to run the audit backend: %s", err)
+	}
+
+	logging.Emit(ctx, a.logger, logging.EventAuditBackendStarted,
+		slog.String("backend_kind", a.backendKind()))
 	return nil
 }
 
-// Shutdown will shutdown the audit backend if configured.
+// backendKind names the configured backend for the lifecycle records. The
+// upstream backends describe themselves as their type ("log", "buffered<...>"),
+// which is what an operator needs to correlate the record with the flags.
+func (a *Audit) backendKind() string {
+	if a.serverConfig.AuditBackend == nil {
+		return "none"
+	}
+	return logging.Bound(a.serverConfig.AuditBackend.String(), logging.MaxIdentity)
+}
+
+// Shutdown flushes the audit backend if configured and reports the outcome,
+// both as a record and to the caller. A failed flush means audit events for
+// requests this process already served were dropped, so it must not be
+// swallowed.
+//
+// Only a backend implementing errorReporter can say that it failed: the
+// upstream audit.Backend interface returns nothing from Shutdown, and the
+// bundled log and buffered webhook backends log a delivery failure through the
+// Kubernetes error handler instead of returning it. For those the flush is
+// recorded as completed and the failure, if any, is a bridged component=k8s
+// record.
 func (a *Audit) Shutdown() error {
-	if a.serverConfig.AuditBackend != nil {
-		a.serverConfig.AuditBackend.Shutdown()
+	backend := a.serverConfig.AuditBackend
+	if backend == nil {
+		return nil
 	}
 
+	ctx := context.Background()
+	start := time.Now()
+	backend.Shutdown()
+	elapsed := time.Since(start)
+
+	if reporter, ok := backend.(errorReporter); ok {
+		if err := reporter.ShutdownErr(); err != nil {
+			logging.Emit(ctx, a.logger, logging.EventAuditFlushFailed, logging.ErrAttr(err))
+			return fmt.Errorf("audit backend failed to flush: %w", err)
+		}
+	}
+
+	logging.Emit(ctx, a.logger, logging.EventAuditFlushCompleted,
+		slog.Int64("duration_ms", elapsed.Milliseconds()))
 	return nil
+}
+
+// WithRequestInfo resolves the request into the verb, resource and namespace
+// the rest of the proxy reasons about, and puts it on the request context.
+//
+// The audit filters do this for themselves, but they are the innermost wrap:
+// everything ahead of them -- the lifecycle filter deciding whether a request
+// is long running, and the error handler recording a denial -- would otherwise
+// see a request that has not been resolved at all. Applied high in the chain it
+// resolves once for all of them; the inner filters re-resolve the same value,
+// which is wasted work rather than a disagreement.
+func (a *Audit) WithRequestInfo(handler http.Handler) http.Handler {
+	return genericapifilters.WithRequestInfo(handler, a.serverConfig.RequestInfoResolver)
 }
 
 // WithRequest will wrap the given handler to inject the request information

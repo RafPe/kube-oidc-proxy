@@ -4,6 +4,7 @@ package probe
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,9 @@ import (
 	"time"
 
 	"k8s.io/apiserver/pkg/authentication/authenticator"
+
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 )
 
 // fakeAuther simulates the union authenticator: tokens listed in notInit
@@ -52,16 +56,40 @@ func (f *fakeAuther) callCount(token string) int {
 }
 
 func newTestHealthCheckWithAuther(requireAll bool, auther authenticator.Token, issuers ...IssuerReadiness) *HealthCheck {
+	// Discarding loggers by default: NewServer never leaves either nil, and a
+	// test that asserts on records replaces them via newTestHealthCheckWithLogger.
 	return &HealthCheck{
-		oidcAuther:  auther,
-		issuers:     issuers,
-		requireAll:  requireAll,
-		initialized: make(map[string]bool),
+		readinessLogger: slog.New(slog.DiscardHandler),
+		oidcLogger:      slog.New(slog.DiscardHandler),
+		oidcAuther:      auther,
+		issuers:         issuers,
+		requireAll:      requireAll,
+		initialized:     make(map[string]bool),
 	}
 }
 
 func newTestHealthCheck(requireAll bool, notInit map[string]bool, issuers ...IssuerReadiness) *HealthCheck {
 	return newTestHealthCheckWithAuther(requireAll, &fakeAuther{notInit: notInit}, issuers...)
+}
+
+// newTestHealthCheckWithLogger builds a HealthCheck reporting through root.
+// notInit is keyed by issuer URL rather than by fake JWT, which is what a test
+// asserting on records cares about; the translation to the token keying
+// fakeAuther uses happens here.
+func newTestHealthCheckWithLogger(t testing.TB, root *slog.Logger, requireAll bool, notInit map[string]bool, issuers ...IssuerReadiness) *HealthCheck {
+	t.Helper()
+
+	notInitByToken := make(map[string]bool, len(notInit))
+	for _, issuer := range issuers {
+		if notInit[issuer.IssuerURL] {
+			notInitByToken[issuer.FakeJWT] = true
+		}
+	}
+
+	h := newTestHealthCheckWithAuther(requireAll, &fakeAuther{notInit: notInitByToken}, issuers...)
+	h.readinessLogger = logging.ForComponent(root, logging.ComponentReadiness)
+	h.oidcLogger = logging.ForComponent(root, logging.ComponentOIDC)
+	return h
 }
 
 func TestCheckReadiness(t *testing.T) {
@@ -385,7 +413,7 @@ func TestServerStartReturnsBindError(t *testing.T) {
 		t.Fatalf("splitting host/port: %v", err)
 	}
 
-	s := NewServer(port, nil, false, &fakeAuther{})
+	s := NewServer(port, nil, false, &fakeAuther{}, slog.New(slog.DiscardHandler))
 	if err := s.Start(context.Background()); err == nil {
 		t.Fatal("expected Start to return an error binding an occupied port, got nil")
 	}
@@ -400,7 +428,7 @@ func TestServerStartServesAndShutsDown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	s := NewServer(port, nil, false, &fakeAuther{})
+	s := NewServer(port, nil, false, &fakeAuther{}, slog.New(slog.DiscardHandler))
 	if err := s.Start(ctx); err != nil {
 		t.Fatalf("Start returned unexpected error: %v", err)
 	}
@@ -440,7 +468,7 @@ func TestServerNoGoroutineLeak(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		port := freePort(t)
 		ctx, cancel := context.WithCancel(context.Background())
-		s := NewServer(port, nil, false, &fakeAuther{})
+		s := NewServer(port, nil, false, &fakeAuther{}, slog.New(slog.DiscardHandler))
 		if err := s.Start(ctx); err != nil {
 			cancel()
 			t.Fatalf("Start returned unexpected error: %v", err)
@@ -548,5 +576,160 @@ func TestCheckDoesNotHoldLockDuringAuth(t *testing.T) {
 
 	if got := auther.maxConcurrent(); got < 2 {
 		t.Fatalf("expected >=2 concurrent authenticator calls, got %d", got)
+	}
+}
+
+// TestIssuerPendingEmittedOnStateChangeWithReason pins the pending record to
+// state changes: an unchanged pending set must not restate itself on every
+// kubelet probe, which would otherwise flood the log for the whole lifetime of
+// an unreachable issuer. The record carries the classification the probe
+// already computes.
+func TestIssuerPendingEmittedOnStateChangeWithReason(t *testing.T) {
+	root, cap := logtest.New(t, 0)
+	defer logtest.AssertRegistered(t, cap)
+	hc := newTestHealthCheckWithLogger(t, root, true, map[string]bool{"https://a": true},
+		IssuerReadiness{IssuerURL: "https://a", FakeJWT: "jwt-a"})
+	hc.SetServing()
+	_ = hc.Check()
+	_ = hc.Check()
+	recs := cap.ByEvent(logging.EventOIDCIssuerPending)
+	if len(recs) != 1 {
+		t.Fatalf("pending emitted %d times, want 1", len(recs))
+	}
+	if recs[0].String("pending_reason") != "not_initialized" || recs[0].String("level") != "WARN" {
+		t.Fatalf("%v", recs[0])
+	}
+}
+
+// TestReadyTransitionIsInfo pins the ready latch to a single INFO record
+// naming the readiness mode, inverting the old policy where the transition was
+// V(4) while the pending line repeated on every scrape.
+func TestReadyTransitionIsInfo(t *testing.T) {
+	root, cap := logtest.New(t, 0)
+	defer logtest.AssertRegistered(t, cap)
+	hc := newTestHealthCheckWithLogger(t, root, false, nil, IssuerReadiness{IssuerURL: "https://a", FakeJWT: "jwt-a"})
+	hc.SetServing()
+	if err := hc.Check(); err != nil {
+		t.Fatal(err)
+	}
+	rec := cap.Only(t, logging.EventReadinessProxyReady)
+	if rec.String("readiness_mode") != "any" {
+		t.Fatalf("%v", rec)
+	}
+}
+
+// TestIssuerNameNeverEmitsRawInput pins the binding constraint that a full
+// issuer URL never reaches the log stream. A value the URL parser cannot turn
+// into a host must degrade to a fixed placeholder, not to the input itself:
+// falling back to the raw string is exactly the leak the constraint forbids.
+func TestIssuerNameNeverEmitsRawInput(t *testing.T) {
+	tests := map[string]struct {
+		issuerURL string
+		want      string
+	}{
+		"host is kept":           {issuerURL: "https://idp.example.com/realms/corp", want: "idp.example.com"},
+		"host with port":         {issuerURL: "https://idp.example.com:8443/", want: "idp.example.com:8443"},
+		"no scheme, no host":     {issuerURL: "idp.example.com/realms/corp", want: "unknown"},
+		"unparsable":             {issuerURL: "https://exa mple.com/%zz", want: "unknown"},
+		"control characters":     {issuerURL: "not a url\nissuer=secret", want: "unknown"},
+		"empty":                  {issuerURL: "", want: "unknown"},
+		"opaque scheme, no host": {issuerURL: "mailto:idp@example.com", want: "unknown"},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := IssuerName(tc.issuerURL)
+			if got != tc.want {
+				t.Fatalf("IssuerName(%q) = %q, want %q", tc.issuerURL, got, tc.want)
+			}
+			// The stronger property: whatever the input, the output is either a
+			// bare host or the placeholder. It is never the input.
+			if got != "unknown" && got == tc.issuerURL {
+				t.Fatalf("IssuerName(%q) returned its own input", tc.issuerURL)
+			}
+		})
+	}
+}
+
+// TestReadinessServerFailedOnShutdownError drives the probe listener's error
+// path: a request still in flight when the context is cancelled keeps the
+// graceful shutdown from completing within its timeout, and that failure must
+// be reported rather than swallowed.
+func TestReadinessServerFailedOnShutdownError(t *testing.T) {
+	root, cap := logtest.New(t, 0)
+	defer logtest.AssertRegistered(t, cap)
+
+	port := freePort(t)
+	s := NewServer(port, nil, false, &fakeAuther{}, root)
+
+	// A handler that holds the connection open for longer than the shutdown
+	// budget, so Shutdown returns its context's deadline error.
+	inFlight := make(chan struct{})
+	release := make(chan struct{})
+	s.srv.Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(inFlight)
+		<-release
+		w.WriteHeader(http.StatusOK)
+	})
+	s.shutdownTimeout = 50 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := s.Start(ctx); err != nil {
+		t.Fatalf("Start: %s", err)
+	}
+
+	go func() {
+		//nolint:errcheck // the response never arrives; the request is only here to hold the connection.
+		http.Get("http://127.0.0.1:" + port + "/live")
+	}()
+	<-inFlight
+
+	cancel()
+
+	// Wait for the failure record rather than for a fixed duration.
+	deadline := time.After(5 * time.Second)
+	for len(cap.ByEvent(logging.EventReadinessServerFailed)) == 0 {
+		select {
+		case <-deadline:
+			t.Fatalf("no readiness.server.failed record: %s", cap.Raw())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	rec := cap.ByEvent(logging.EventReadinessServerFailed)[0]
+	if rec.String("level") != "ERROR" || rec.String("error_message") == "" {
+		t.Fatalf("%v", rec)
+	}
+	if rec.String("component") != string(logging.ComponentReadiness) {
+		t.Fatalf("component = %q, want readiness", rec.String("component"))
+	}
+
+	close(release)
+	_ = s.Shutdown()
+}
+
+// TestStalePendingResultIsDroppedOnceInitialized pins the ordering guard for
+// concurrent checks. Two checks can snapshot the same issuer as uninitialized;
+// if the first records it initialized, the second still holds a pending result
+// that is now stale and must not be published after the initialized record,
+// nor hold readiness back.
+func TestStalePendingResultIsDroppedOnceInitialized(t *testing.T) {
+	root, cap := logtest.New(t, 0)
+	defer logtest.AssertRegistered(t, cap)
+	hc := newTestHealthCheckWithLogger(t, root, true, nil,
+		IssuerReadiness{IssuerURL: "https://a", FakeJWT: "jwt-a"})
+
+	hc.mu.Lock()
+	hc.initialized["https://a"] = true
+	pending := hc.recordProbeResults(context.Background(), nil,
+		[]pendingIssuer{{issuerURL: "https://a", reason: pendingNotInitialized}})
+	hc.mu.Unlock()
+
+	if len(pending) != 0 {
+		t.Fatalf("stale pending result kept: %v", pending)
+	}
+	if got := cap.ByEvent(logging.EventOIDCIssuerPending); len(got) != 0 {
+		t.Fatalf("pending published after initialized: %v", got)
 	}
 }

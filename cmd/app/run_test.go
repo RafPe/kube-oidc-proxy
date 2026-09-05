@@ -3,9 +3,13 @@ package app
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +19,8 @@ import (
 	"k8s.io/client-go/util/cert"
 
 	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 )
 
 func writeTempFile(t *testing.T, content string) string {
@@ -173,7 +179,7 @@ func TestBuildTokenAuther_SingleIssuer(t *testing.T) {
 		AuthenticationConfig: &options.AuthenticationConfigOptions{},
 	}
 
-	auther, issuerURLs, err := buildTokenAuther(opts)
+	auther, issuerURLs, err := buildTokenAuther(opts, discardLogger(), discardLogger())
 	if err != nil {
 		t.Fatalf("buildTokenAuther() unexpected error: %v", err)
 	}
@@ -224,7 +230,7 @@ jwt:
 		},
 	}
 
-	auther, issuerURLs, err := buildTokenAuther(opts)
+	auther, issuerURLs, err := buildTokenAuther(opts, discardLogger(), discardLogger())
 	if err != nil {
 		t.Fatalf("buildTokenAuther() unexpected error: %v", err)
 	}
@@ -274,7 +280,7 @@ jwt:
 	opts := options.New()
 	opts.AuthenticationConfig.ConfigFile = path
 
-	auther, issuerURLs, err := buildTokenAuther(opts)
+	auther, issuerURLs, err := buildTokenAuther(opts, discardLogger(), discardLogger())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -293,7 +299,7 @@ func TestBuildTokenAuther_AuthConfig_InvalidFile(t *testing.T) {
 		AuthenticationConfig: &options.AuthenticationConfigOptions{ConfigFile: "/does/not/exist.yaml"},
 	}
 
-	_, _, err := buildTokenAuther(opts)
+	_, _, err := buildTokenAuther(opts, discardLogger(), discardLogger())
 	if err == nil {
 		t.Error("buildTokenAuther() expected error for missing config file, got nil")
 	}
@@ -347,5 +353,151 @@ func TestCheckReservedIdentityPrefixes(t *testing.T) {
 				t.Errorf("checkReservedIdentityPrefixes() = %v, want nil", err)
 			}
 		})
+	}
+}
+
+// discardLogger is the logger the buildTokenAuther cases pass: these tests
+// exercise authenticator construction, not the records it emits.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.DiscardHandler)
+}
+
+// TestLogConfigLoaded pins the startup record that fixes what this pod is
+// configured to do. It is the record an operator diffs between two pods, so
+// every field it promises must be present and carry the value it was given.
+func TestLogConfigLoaded(t *testing.T) {
+	root, cap := logtest.New(t, 0)
+
+	logConfigLoaded(logging.ForComponent(root, logging.ComponentStartup), configSummary{
+		version:       "v1.5.0",
+		configHash:    "0123456789abcdef",
+		issuerCount:   2,
+		readinessMode: "all",
+	})
+
+	rec := cap.Only(t, logging.EventProxyConfigLoaded)
+	if rec.String("version") != "v1.5.0" {
+		t.Errorf("version = %q", rec.String("version"))
+	}
+	if rec.String("config_hash") != "0123456789abcdef" {
+		t.Errorf("config_hash = %q", rec.String("config_hash"))
+	}
+	if got, ok := rec.Int("issuer_count"); !ok || got != 2 {
+		t.Errorf("issuer_count = %v", rec["issuer_count"])
+	}
+	if rec.String("readiness_mode") != "all" {
+		t.Errorf("readiness_mode = %q", rec.String("readiness_mode"))
+	}
+	if rec.String("component") != string(logging.ComponentStartup) {
+		t.Errorf("component = %q, want startup", rec.String("component"))
+	}
+}
+
+// TestLogIssuersConfigured pins one record per configured issuer, each naming
+// the issuer and the size of the set it belongs to. The previous behaviour was
+// a single line with an interpolated slice, which no query can decompose.
+func TestLogIssuersConfigured(t *testing.T) {
+	root, cap := logtest.New(t, 0)
+
+	logIssuersConfigured(logging.ForComponent(root, logging.ComponentOIDC),
+		[]string{"idp.example.com", "github.example.com"})
+
+	recs := cap.ByEvent(logging.EventOIDCIssuerConfigured)
+	if len(recs) != 2 {
+		t.Fatalf("got %d issuer records, want 2: %s", len(recs), cap.Raw())
+	}
+
+	var names []string
+	for _, rec := range recs {
+		names = append(names, rec.String("issuer_name"))
+		if got, ok := rec.Int("issuer_count"); !ok || got != 2 {
+			t.Errorf("issuer_count = %v, want 2", rec["issuer_count"])
+		}
+		if rec.String("msg") != "configured OIDC issuers" {
+			t.Errorf("msg = %q, want %q", rec.String("msg"), "configured OIDC issuers")
+		}
+		if rec.String("component") != string(logging.ComponentOIDC) {
+			t.Errorf("component = %q, want oidc", rec.String("component"))
+		}
+	}
+	if want := []string{"idp.example.com", "github.example.com"}; !reflect.DeepEqual(names, want) {
+		t.Fatalf("issuer names = %v, want %v", names, want)
+	}
+}
+
+// TestLogIssuersConfiguredNoIssuers pins the empty case: with no issuers
+// configured there is nothing to announce, and an empty stream is not the same
+// record with a zero count.
+func TestLogIssuersConfiguredNoIssuers(t *testing.T) {
+	root, cap := logtest.New(t, 0)
+
+	logIssuersConfigured(logging.ForComponent(root, logging.ComponentOIDC), nil)
+
+	if raw := cap.Raw(); raw != "" {
+		t.Fatalf("records emitted with no issuers configured: %s", raw)
+	}
+}
+
+// TestIssuerNamesDerivesFromURLs pins the run.go side of the never-log-a-full-
+// issuer-URL constraint: the names handed to the record are hosts, and a value
+// with no host degrades to the placeholder rather than to the URL itself.
+func TestIssuerNamesDerivesFromURLs(t *testing.T) {
+	got := issuerNames([]string{"https://idp.example.com/realms/corp", "not-a-url"})
+	want := []string{"idp.example.com", "unknown"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("issuerNames = %v, want %v", got, want)
+	}
+}
+
+// TestStartupFailureAfterLoggerIsReportedAsARecord pins that an error raised
+// once the root logger exists is emitted as proxy.startup.failed on the
+// configured stream and returned as ErrReported, so main exits non-zero without
+// appending a second, unstructured line to the container log.
+func TestStartupFailureAfterLoggerIsReportedAsARecord(t *testing.T) {
+	var out bytes.Buffer
+	opts := options.New()
+	cmd := buildRunCommand(opts, &out)
+	opts.AddFlags(cmd)
+	cmd.SetArgs([]string{
+		"--oidc-issuer-url=https://issuer.example.com",
+		"--oidc-client-id=kube-oidc-proxy",
+		"--kubeconfig=" + filepath.Join(t.TempDir(), "missing-kubeconfig"),
+	})
+	var cmdOut, cmdErr bytes.Buffer
+	cmd.SetOut(&cmdOut)
+	cmd.SetErr(&cmdErr)
+
+	err := cmd.Execute()
+	if !errors.Is(err, ErrReported) {
+		t.Fatalf("Execute() error = %v, want ErrReported", err)
+	}
+	// cobra must not print the error or the usage text: the record is the
+	// only report, and main prints nothing for ErrReported.
+	if cmdOut.Len() != 0 || cmdErr.Len() != 0 {
+		t.Fatalf("command wrote outside the log stream: stdout=%q stderr=%q", cmdOut.String(), cmdErr.String())
+	}
+
+	// Every line of the whole stream is one JSON record, and the failure is
+	// reported exactly once.
+	var failures []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("non-JSON line on the log stream: %q", line)
+		}
+		if rec["event_type"] == string(logging.EventProxyStartupFailed) {
+			failures = append(failures, rec)
+		}
+	}
+	if len(failures) != 1 {
+		t.Fatalf("want exactly one proxy.startup.failed record, got %d:\n%s", len(failures), out.String())
+	}
+	rec := failures[0]
+	if rec["level"] != "ERROR" || rec["component"] != string(logging.ComponentStartup) {
+		t.Errorf("level/component = %v/%v, want ERROR/startup", rec["level"], rec["component"])
+	}
+	msg, _ := rec["error_message"].(string)
+	if !strings.Contains(msg, "missing-kubeconfig") {
+		t.Errorf("error_message = %q, want the underlying cause", msg)
 	}
 }

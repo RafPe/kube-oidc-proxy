@@ -9,15 +9,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"k8s.io/apiserver/pkg/authentication/authenticator"
-	"k8s.io/klog/v2"
+
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 )
 
 const (
@@ -45,6 +49,45 @@ var transientMarkers = []string{
 	"i/o timeout",
 }
 
+// Pending reasons classify why an issuer is not yet initialized. They are the
+// closed pending_reason value set carried by the oidc.issuer.pending record.
+const (
+	pendingNotInitialized = "not_initialized"
+	pendingTransient      = "transient"
+	pendingError          = "error"
+)
+
+// unknownIssuerName is what an issuer whose host cannot be determined is
+// called in the log stream. It is a fixed literal rather than anything derived
+// from the input: falling back to the raw value would put the full issuer URL
+// in the record, which is exactly what the logging contract forbids.
+const unknownIssuerName = "unknown"
+
+// IssuerName derives the name an issuer is known by in the log stream. The full
+// issuer URL is never logged, so the host alone identifies the issuer, and
+// anything that does not yield a host — an unparsable value, a schemeless path,
+// an opaque URI, the empty string — becomes unknownIssuerName. The raw input is
+// never returned.
+func IssuerName(issuerURL string) string {
+	u, err := url.Parse(issuerURL)
+	if err != nil || u.Host == "" {
+		return unknownIssuerName
+	}
+	if host := strings.TrimSpace(logging.Bound(u.Host, logging.MaxIdentity)); host != "" {
+		return host
+	}
+	return unknownIssuerName
+}
+
+// pendingIssuer is one issuer that failed its probe, with the classification
+// of why. The reason is part of the state the pending record reports on
+// change: an issuer that moves from unreachable to still-initializing is a
+// change an operator wants to see.
+type pendingIssuer struct {
+	issuerURL string
+	reason    string
+}
+
 // IssuerReadiness pairs an issuer with the fake JWT used to probe whether
 // its authenticator has completed JWKS initialization.
 type IssuerReadiness struct {
@@ -59,6 +102,14 @@ type IssuerReadiness struct {
 // before the potentially slow AuthenticateToken calls (#53), and the serving
 // flag must stay readable without re-entangling it with that lock.
 type HealthCheck struct {
+	// readinessLogger and oidcLogger are the two component loggers this check
+	// reports through: readiness for the ready latch and the probe listener,
+	// oidc for the per-issuer records. Both are derived from the root logger
+	// passed to NewServer, because a single component logger cannot carry two
+	// components and the record registry fixes one per event.
+	readinessLogger *slog.Logger
+	oidcLogger      *slog.Logger
+
 	oidcAuther authenticator.Token
 	issuers    []IssuerReadiness
 	requireAll bool
@@ -68,6 +119,13 @@ type HealthCheck struct {
 	mu          sync.Mutex
 	ready       bool
 	initialized map[string]bool
+
+	// lastPending is the pending issuer set as of the previous Check, joined
+	// into a comparable key. The pending line is a state-change report, not a
+	// per-probe status: the kubelet calls Check every few seconds, so restating
+	// an unchanged set would flood the log for as long as an issuer stays
+	// unreachable.
+	lastPending string
 }
 
 // SetServing records that the proxy has started serving. Until it is called,
@@ -83,6 +141,11 @@ type Server struct {
 	hc  *HealthCheck
 	srv *http.Server
 
+	// shutdownTimeout bounds the graceful shutdown of this server. It is a
+	// field rather than the package constant so a test can exercise the
+	// shutdown failure path without waiting out the production budget.
+	shutdownTimeout time.Duration
+
 	// served is closed once Serve returns; err holds the terminal serve error
 	// (nil after a clean shutdown). Closing served happens-after the write to
 	// err, so Wait observes err safely without additional synchronization.
@@ -93,16 +156,28 @@ type Server struct {
 // NewServer builds a readiness Server that probes the given issuers via
 // oidcAuther and serves the readiness endpoint on the given port. It does not
 // bind or serve until Start is called.
-func NewServer(port string, issuers []IssuerReadiness, requireAll bool, oidcAuther authenticator.Token) *Server {
+//
+// logger is the root logger: the probe reports under two components (readiness
+// for the latch, oidc for the per-issuer records) and derives both from it. A
+// nil logger yields one that discards every record, so a partially wired caller
+// cannot panic on a probe.
+func NewServer(port string, issuers []IssuerReadiness, requireAll bool, oidcAuther authenticator.Token, logger *slog.Logger) *Server {
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+
 	h := &HealthCheck{
-		oidcAuther:  oidcAuther,
-		issuers:     issuers,
-		requireAll:  requireAll,
-		initialized: make(map[string]bool),
+		readinessLogger: logging.ForComponent(logger, logging.ComponentReadiness),
+		oidcLogger:      logging.ForComponent(logger, logging.ComponentOIDC),
+		oidcAuther:      oidcAuther,
+		issuers:         issuers,
+		requireAll:      requireAll,
+		initialized:     make(map[string]bool),
 	}
 
 	return &Server{
-		hc: h,
+		hc:              h,
+		shutdownTimeout: shutdownTimeout,
 		srv: &http.Server{
 			Addr:    net.JoinHostPort("0.0.0.0", port),
 			Handler: h.handler(),
@@ -186,7 +261,10 @@ func (s *Server) Start(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			if err := s.Shutdown(); err != nil {
-				klog.Errorf("readiness probe shutdown error: %s", err)
+				// ctx is already cancelled here, which the record does not care
+				// about: it carries no deadline and no request scope.
+				logging.Emit(ctx, s.hc.readinessLogger,
+					logging.EventReadinessServerFailed, logging.ErrAttr(err))
 			}
 		case <-s.served:
 		}
@@ -199,7 +277,7 @@ func (s *Server) Start(ctx context.Context) error {
 // safe to call more than once and is invoked automatically when the context
 // passed to Start is cancelled.
 func (s *Server) Shutdown() error {
-	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
 	defer cancel()
 	return s.srv.Shutdown(ctx)
 }
@@ -240,6 +318,24 @@ func isTransient(err error) bool {
 	return false
 }
 
+// pendingReason classifies the error from an issuer probe into the closed
+// pending_reason value set. "not_initialized" is the authenticator saying its
+// JWKS is not fetched yet and "transient" a network or timeout failure; both
+// leave the issuer pending. "error" is anything else — an error raised at token
+// verification, which means the JWKS did load, so the issuer counts as
+// initialized and never reaches a pending record. It is kept as the explicit
+// default rather than an implicit one so the classification has no silent case.
+func (h *HealthCheck) pendingReason(err error) string {
+	switch {
+	case isNotInitialized(err):
+		return pendingNotInitialized
+	case isTransient(err):
+		return pendingTransient
+	default:
+		return pendingError
+	}
+}
+
 // Check reports readiness. It first requires the proxy to be serving, then
 // probes every issuer that has not yet been observed as initialized, logging
 // per-issuer transitions and any still-pending issuers. Once readiness latches
@@ -271,16 +367,19 @@ func (h *HealthCheck) Check() error {
 	h.mu.Unlock()
 
 	// Probe each not-yet-initialized issuer without holding the lock.
-	var newlyInitialized, pending []string
+	var newlyInitialized []string
+	var pending []pendingIssuer
 	for _, issuer := range toProbe {
 		_, _, err := h.oidcAuther.AuthenticateToken(ctx, issuer.FakeJWT)
 		// The issuer counts as initialized only once its authenticator reaches
 		// token verification. A "not initialized" signal (JWKS not fetched yet)
-		// or a transient network/timeout error both leave it pending; check
-		// "not initialized" first since it is the more specific signal.
-		if err != nil && (isNotInitialized(err) || isTransient(err)) {
-			pending = append(pending, issuer.IssuerURL)
-			continue
+		// or a transient network/timeout error both leave it pending; anything
+		// else was raised at verification, so the JWKS did load.
+		if err != nil {
+			if reason := h.pendingReason(err); reason != pendingError {
+				pending = append(pending, pendingIssuer{issuerURL: issuer.IssuerURL, reason: reason})
+				continue
+			}
 		}
 		newlyInitialized = append(newlyInitialized, issuer.IssuerURL)
 	}
@@ -289,18 +388,7 @@ func (h *HealthCheck) Check() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	for _, issuerURL := range newlyInitialized {
-		if h.initialized[issuerURL] {
-			continue
-		}
-		h.initialized[issuerURL] = true
-		klog.Infof("OIDC issuer initialized: %s (%d/%d ready)", issuerURL, len(h.initialized), len(h.issuers))
-	}
-
-	if len(pending) > 0 {
-		klog.Infof("readiness: %d/%d OIDC issuers initialized, pending: %v",
-			len(h.initialized), len(h.issuers), pending)
-	}
+	pending = h.recordProbeResults(ctx, newlyInitialized, pending)
 
 	if h.ready {
 		return nil
@@ -314,6 +402,76 @@ func (h *HealthCheck) Check() error {
 	}
 
 	h.ready = true
-	klog.V(4).Info("OIDC provider(s) initialized, marking ready.")
+	logging.Emit(ctx, h.readinessLogger, logging.EventReadinessProxyReady,
+		slog.Int("ready_issuers", len(h.initialized)),
+		slog.Int("total_issuers", len(h.issuers)),
+		slog.String("readiness_mode", ReadinessMode(h.requireAll)))
 	return nil
+}
+
+// recordProbeResults records the outcome of one probe round: it marks the newly
+// initialized issuers, publishes their records, and reports the pending set on
+// change. It returns the pending results still current, which readiness is
+// then evaluated against. A pending result for an issuer another check has
+// initialized in the meantime is stale (both checks snapshotted it as
+// uninitialized, the other answered first) and is dropped, so the newest record
+// for that issuer stays the initialized one and readiness is not held back by
+// it. The caller holds h.mu.
+func (h *HealthCheck) recordProbeResults(ctx context.Context, newlyInitialized []string, pending []pendingIssuer) []pendingIssuer {
+	for _, issuerURL := range newlyInitialized {
+		if h.initialized[issuerURL] {
+			continue
+		}
+		h.initialized[issuerURL] = true
+		logging.Emit(ctx, h.oidcLogger, logging.EventOIDCIssuerInitialized,
+			slog.String("issuer_name", IssuerName(issuerURL)),
+			slog.String("issuer_state", "initialized"),
+			slog.Int("ready_issuers", len(h.initialized)),
+			slog.Int("total_issuers", len(h.issuers)))
+	}
+
+	// Drop results made stale by a concurrent check that initialized the
+	// issuer between this check's snapshot and now.
+	pending = slices.DeleteFunc(pending, func(p pendingIssuer) bool {
+		return h.initialized[p.issuerURL]
+	})
+
+	// Report only on change, and record the new state either way so that a
+	// pending set which clears and later recurs is reported again. The reason
+	// is part of the state: an issuer moving from unreachable to still
+	// initializing is a change worth a record.
+	if key := pendingKey(pending); key != h.lastPending {
+		for _, p := range pending {
+			logging.Emit(ctx, h.oidcLogger, logging.EventOIDCIssuerPending,
+				slog.String("issuer_name", IssuerName(p.issuerURL)),
+				slog.String("issuer_state", "pending"),
+				slog.String("pending_reason", p.reason),
+				slog.Int("ready_issuers", len(h.initialized)),
+				slog.Int("total_issuers", len(h.issuers)))
+		}
+		h.lastPending = key
+	}
+
+	return pending
+}
+
+// pendingKey renders the pending set as a comparable string so an unchanged
+// set is not restated on every kubelet probe. The probe order follows the
+// configured issuer order, so no sort is needed.
+func pendingKey(pending []pendingIssuer) string {
+	parts := make([]string, len(pending))
+	for i, p := range pending {
+		parts[i] = p.issuerURL + "=" + p.reason
+	}
+	return strings.Join(parts, ",")
+}
+
+// ReadinessMode renders --readiness-require-all-issuers as the closed
+// readiness_mode value carried by the startup and readiness records. It lives
+// here because the probe is what the flag configures.
+func ReadinessMode(requireAll bool) string {
+	if requireAll {
+		return "all"
+	}
+	return "any"
 }
