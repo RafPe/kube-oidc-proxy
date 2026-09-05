@@ -135,8 +135,7 @@ kubectl create namespace kube-oidc-proxy
 kubectl apply -n kube-oidc-proxy -f kube-oidc-proxy.yaml
 ```
 
-The rendered objects carry no `metadata.namespace` of their own, so apply
-them into the namespace you rendered for: the ClusterRoleBinding names that
+Apply into the namespace you rendered for: the ClusterRoleBinding names that
 namespace for the ServiceAccount, and the two must agree.
 
 Wait for the pod to report ready. In multi-issuer configuration that means at
