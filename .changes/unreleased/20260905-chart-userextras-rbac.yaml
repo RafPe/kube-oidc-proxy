@@ -1,0 +1,2 @@
+kind: Fixed
+body: The Helm chart's ClusterRole now grants `impersonate` on `userextras/<key>` for every `claimMappings.extra[].key` declared in `authenticationConfig.content`, plus any keys listed in the new `rbac.userExtras` value. Previously an issuer that mapped extra claims had every request rejected with 403, because the API server authorizes each `Impersonate-Extra-<key>` header separately and the chart only granted a fixed set of keys. The chart's development baseline `appVersion` is 1.7.0.

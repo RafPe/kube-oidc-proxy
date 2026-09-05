@@ -31,3 +31,17 @@ rules:
   verbs:
   - "create"
   - "impersonate"
+{{- $extraKeys := include "kube-oidc-proxy.userExtraKeys" . | fromJsonArray }}
+{{- if $extraKeys }}
+# Extra user-info keys the proxy forwards as Impersonate-Extra-* headers:
+# every claimMappings.extra key in authenticationConfig.content plus
+# rbac.userExtras. Each must be granted or the API server rejects the request.
+- apiGroups:
+  - "authentication.k8s.io"
+  resources:
+  {{- range $extraKeys }}
+  - {{ printf "userextras/%s" . | quote }}
+  {{- end }}
+  verbs:
+  - "impersonate"
+{{- end }}

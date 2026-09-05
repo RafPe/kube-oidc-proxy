@@ -11,7 +11,7 @@ type: application
 # (vX.Y.Z); the values here are the development baseline. The Deployment
 # image tag defaults to `appVersion`, so the override also selects the image.
 version: 1.7.0
-appVersion: "1.6.0"
+appVersion: "1.7.0"
 home: https://github.com/rafpe/kube-oidc-proxy
 sources:
   - https://github.com/rafpe/kube-oidc-proxy
@@ -33,4 +33,4 @@ annotations:
       url: https://github.com/RafPe/kube-oidc-proxy/blob/main/SECURITY.md
   artifacthub.io/images: |
     - name: kube-oidc-proxy
-      image: ghcr.io/rafpe/kube-oidc-proxy:1.6.0
+      image: ghcr.io/rafpe/kube-oidc-proxy:1.7.0
