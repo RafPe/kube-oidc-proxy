@@ -1,6 +1,13 @@
 # Unreleased
 <!-- next-release -->
 
+## [1.7.0] - 2026-09-05
+
+- Security denials now appear at the default verbosity as `AuFail` records with a `reason`; the readiness transition is INFO; "issuers pending" is logged on change only; Kubernetes library output is JSON under `component=k8s`.
+- Operational log messages changed value. The access record's `msg` was `proxied request` or `rejected request` and is now `access decision` for both, with the outcome in the frozen `event` field (`AuSuccess`/`AuFail`); other records carry new `msg` text as well. Queries and alerts must key on `event_type` (and `event` for the access record), not on `msg`, which is descriptive and not part of the contract.
+- The access log no longer emits the original user's full extra-claims map under `outbound_extra`, and configured impersonation header values are no longer logged at any verbosity.
+- One JSON log stream with a per-request `request_id` (also sent upstream as `Audit-ID`), a closed `event_type` registry documented in docs/logging.md, and `--logging-format`.
+
 ## [1.6.1] - 2026-09-04
 
 - Helm chart now deploys the image matching its appVersion by default. Charts 1.2.0 through 1.6.0 shipped with a hardcoded `image.tag` of 1.1.0, so installs without an explicit `image.tag` override ran the 1.1.0 binary; the release pipeline now refuses to publish a chart whose default image tag differs from the release version.

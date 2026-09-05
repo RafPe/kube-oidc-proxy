@@ -1,2 +1,0 @@
-kind: Changed
-body: Security denials now appear at the default verbosity as `AuFail` records with a `reason`; the readiness transition is INFO; "issuers pending" is logged on change only; Kubernetes library output is JSON under `component=k8s`.
