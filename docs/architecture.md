@@ -64,14 +64,14 @@ Every request passes through the same pipeline:
 
 1. **Authenticate.** The bearer token is validated. If it fails OIDC validation
    and token passthrough is enabled, the proxy falls back to a `TokenReview`
-   against the API server (see [token passthrough](./configuration.md#token-passthrough)).
+   against the API server (see [token passthrough](./authentication.md#token-passthrough)).
    Review results are served from a bounded in-memory cache — see
    [Caching and API-server protection](./caching.md#tokenreview-result-cache).
 2. **Resolve the impersonation target.** If the inbound request also carries
    `Impersonate-*` headers (`kubectl --as`), the proxy runs a
    `SubjectAccessReview` to confirm the authenticated user may assume that
    identity before honouring it (see
-   [the impersonation model](./configuration.md#impersonation-model)). The
+   [the impersonation model](./authentication.md#impersonation-model)). The
    header value count is capped up front (over-cap requests are rejected with
    HTTP 431 before any review is sent), and decisions are served from a
    bounded in-memory cache — see
@@ -104,17 +104,16 @@ therefore accepted in either mode.
 
 ## Readiness semantics
 
-In multi-issuer mode, each issuer must fetch its JWKS before it can validate
-tokens. The `--readiness-require-all-issuers` flag
-(`readinessRequireAllIssuers` in the chart) controls how readiness relates to
-that initialization:
-
-- **`false` (default)** — the pod is Ready as soon as **at least one** issuer
-  initializes. A single IdP outage can't block a rollout for every other system;
-  still-pending issuers keep initializing in the background.
-- **`true`** — the pod is Ready only once **every** issuer has initialized.
-
-Configuration errors always fail startup, regardless of this flag.
+Each issuer must fetch its JWKS before it can validate tokens. By default the
+pod is Ready as soon as at least one issuer has, so one identity provider's
+outage cannot block a rollout for every other system; still-pending issuers
+keep initializing in the background and their tokens fail with 401 until they
+do. `--readiness-require-all-issuers` waits for every issuer instead.
+Configuration errors always fail startup, regardless of the flag. The details,
+the log records that show each issuer's state, and what happens when an issuer
+goes away after startup are in
+[multi-issuer: readiness](./multi-issuer.md#readiness) and
+[operations: availability and issuer outages](./operations.md#availability-and-issuer-outages).
 
 ## Diagrams
 
@@ -122,9 +121,8 @@ These [C4 model](https://c4model.com/) views zoom in from the system in its
 environment down to the request-handling components. For the runtime view of a
 single request, see [Request flow](#request-flow) above.
 
-The diagrams are generated from [`c4/workspace.dsl`](./c4/workspace.dsl)
-(Structurizr DSL) — edit the model there and re-render rather than editing the
-images by hand.
+The diagrams are generated from a Structurizr model; how to edit and
+re-render them is in [development](./development.md#architecture-diagrams).
 
 ### System context (C4 level 1)
 

@@ -8,7 +8,7 @@ file: `--logging-format` picks the encoding for the whole stream and `-v` picks
 how much of it you see.
 
 - [Record shape](#record-shape)
-- [Rules](#rules)
+- [Compatibility](#compatibility)
 - [Verbosity](#verbosity)
 - [Event registry](#event-registry)
 - [Field reference](#field-reference)
@@ -16,7 +16,6 @@ how much of it you see.
 - [Correlation](#correlation)
 - [Worked queries](#worked-queries)
 - [ECS mapping](#ecs-mapping)
-- [Versioning](#versioning)
 - [Redaction](#redaction)
 - [See also](#see-also)
 
@@ -52,7 +51,7 @@ apiserver filters) carry `component=k8s` and **no** `event_type`. That absence
 is the filter: `event_type` present means the proxy said it, `component=k8s`
 means a library did.
 
-## Rules
+## Compatibility
 
 Five rules govern the event set. They are what makes a saved query keep working
 across upgrades.
@@ -63,16 +62,35 @@ across upgrades.
 2. **Adding a value does not bump `schema_version`.** A query that matches one
    value is unaffected by the existence of a new one, so a new event is not a
    breaking change. `schema_version` moves only when field parsing breaks.
-3. **The registry is the source.** `pkg/logging/events.go` holds one entry per
-   event with its component, default level, mandatory fields and one-line
-   summary. The table below is generated from it by `make eventdoc`; CI fails
-   on a diff. Never hand-edit between the `events:begin` and `events:end`
-   markers.
+3. **The registry is the source.** One entry per event, with its component,
+   default level, mandatory fields and one-line summary, lives in the code and
+   generates the table below; CI fails on a diff. How to change it is in
+   [development: log contract](./development.md#log-contract).
 4. **Query on `event_type`, not `msg`.** `msg` is static human text and may be
    reworded. `event_type` is the machine contract.
 5. **`component=k8s` records have no `event_type`.** They come from Kubernetes
    libraries through the klog bridge, keep their own wording, and are excluded
    from every rule above.
+
+### Versioning
+
+What changes between releases, and what each kind of change means for a saved
+query:
+
+- **Adding an `event_type` value** is allowed in any release and does not bump
+  `schema_version`. A query for one value is unaffected by a new one.
+- **Renaming a value after it has shipped is breaking.** A record carries one
+  `event_type`, so there is no overlap window and emitting both names
+  double-counts. The recovery is: add the new value, stop the old one in the
+  same release, keep the old constant marked retired so the string is never
+  reused, publish an `event_type IN (old, new)` migration query, and announce it
+  in the changelog. At least one minor release of notice, one major for anything
+  under `request.*` or `authn.*`.
+- **Retiring a value because its code path was removed is not breaking.**
+  Queries return nothing instead of failing. Keep the constant marked retired.
+- **`schema_version` bumps only when field parsing breaks**: a field removed or
+  retyped, or a closed value set narrowed. Not for a new event, a new optional
+  field, or a widened value set.
 
 ## Verbosity
 
@@ -271,21 +289,22 @@ printing a second, unstructured line. Only a failure before the logger can be
 built, such as an unknown flag or an invalid `--logging-format`, is printed to
 stderr as plain text, because there is nothing else to report through yet.
 
-`audit.Shutdown` flushes the audit backend and **returns** the backend's error
-rather than swallowing it. It is registered as the `AuditBackend` pre-shutdown
-hook, so a flush the backend reports as failed emits `audit.flush.failed`,
-propagates out of `RunPreShutdownHooks` as `proxy.hook.failed`, and makes the
-process **exit non-zero**. A dropped audit event for a request this process
-already served is not a warning to be tidied away.
+On shutdown the audit backend is flushed before the process exits, and the
+outcome is logged. With the backends bundled from `k8s.io/apiserver` (`log`,
+and the buffered `webhook`) a lost flush is visible as a bridged
+`component=k8s` ERROR record, `audit.flush.completed` still follows with
+`duration_ms`, and the process exits `0`: those backends do not report an error
+from `Shutdown()`, because the upstream `audit.Backend` interface has no return
+value there, and the buffered backend logs a delivery failure through the
+Kubernetes error handler instead. So with a bundled backend, alert on the
+`component=k8s` ERROR, not on the exit status.
 
-The backends bundled from `k8s.io/apiserver` (`log`, and the buffered `webhook`)
-do not report an error from `Shutdown()`: the upstream `audit.Backend` interface
-has no return value there, and the buffered backend logs a delivery failure
-through the Kubernetes error handler instead. With those backends a lost flush
-is visible as a bridged `component=k8s` ERROR record, `audit.flush.completed`
-still follows with `duration_ms`, and the process exits `0`. The non-zero exit
-applies to a backend that implements the optional `ShutdownErr() error`
-extension, which none of the bundled ones do today.
+A backend that implements the optional `ShutdownErr() error` extension gets
+stricter handling: a flush it reports as failed emits `audit.flush.failed`,
+propagates out of the pre-shutdown hooks as `proxy.hook.failed`, and makes the
+process **exit non-zero**, on the grounds that a dropped audit event for a
+request this process already served is not a warning to be tidied away. None
+of the bundled backends implement the extension today.
 
 ## Correlation
 
@@ -380,26 +399,48 @@ index=kubernetes sourcetype=kube-oidc-proxy earliest=-1h
 | sort -count
 ```
 
-### Issuer pending
+### Issuer state
+
+An issuer's lifecycle is two record types: `oidc.issuer.pending`, emitted when
+the pending set or a pending reason changes, and `oidc.issuer.initialized`,
+emitted once its JWKS has loaded. Its current state is therefore the newest of
+the two per `issuer_name`, within one process; a query on pending records
+alone shows pending history and would miss the initialization that ended it.
 
 ```bash
 kubectl -n kube-oidc-proxy logs "$POD" \
-  | jq -r 'select(.event_type == "oidc.issuer.pending")
-           | "\(.issuer_name)\t\(.pending_reason)\t\(.ready_issuers)/\(.total_issuers)"'
+  | jq -rs 'map(select(.event_type == "oidc.issuer.pending" or .event_type == "oidc.issuer.initialized"))
+            | group_by(.issuer_name) | map(last)
+            | .[] | "\(.issuer_name)\t\(.issuer_state)\t\(.pending_reason // "-")\t\(.ready_issuers)/\(.total_issuers)"'
 ```
 
+In Loki a log query cannot keep only the newest line per issuer, so the
+line-level form below is the lifecycle history, newest first, not the current
+state; read the last line for each `issuer_name` and pod.
+
 ```logql
-{app="kube-oidc-proxy"} | json | event_type = "oidc.issuer.pending"
-  | line_format "{{.issuer_name}} {{.pending_reason}} {{.ready_issuers}}/{{.total_issuers}}"
+{app="kube-oidc-proxy"} | json | event_type =~ "oidc.issuer.(pending|initialized)"
+  | line_format "{{.issuer_name}} {{.issuer_state}} {{.pending_reason}} {{.ready_issuers}}/{{.total_issuers}}"
+```
+
+For the current state as a table, use the fact that an issuer never returns
+to pending within one process: every pod and issuer pair that has logged
+`oidc.issuer.initialized` is ready, and a configured issuer missing from the
+result is still pending.
+
+```logql
+sum by (pod, issuer_name) (
+  count_over_time({app="kube-oidc-proxy"} | json | event_type = "oidc.issuer.initialized" [$__range])
+)
 ```
 
 ```splunk
-index=kubernetes sourcetype=kube-oidc-proxy event_type="oidc.issuer.pending"
-| stats latest(pending_reason) AS pending_reason latest(_time) AS last_seen by issuer_name
+index=kubernetes sourcetype=kube-oidc-proxy event_type IN ("oidc.issuer.pending", "oidc.issuer.initialized")
+| stats latest(issuer_state) AS state latest(pending_reason) AS pending_reason latest(_time) AS last_seen by pod, issuer_name
 ```
 
-`oidc.issuer.pending` fires on a state change, not on every readiness scrape, so
-the newest record per `issuer_name` is the current state. See
+Group by pod as well as issuer when several replicas run: each process
+initializes its issuers independently. See
 [multi-issuer readiness](./multi-issuer.md#readiness).
 
 ### Every replica at once
@@ -486,30 +527,6 @@ This table is for whoever writes the ingest pipeline that copies them.
 | `outbound_groups` | `user.effective.roles` | |
 | `error_message` | `error.message` | |
 | `k8s_verb`, `k8s_resource`, `k8s_namespace`, … | — | no ECS equivalent; keep as custom fields under your own namespace |
-
-## Versioning
-
-- **Adding an `event_type` value** is allowed in any release and does not bump
-  `schema_version`. A query for one value is unaffected by a new one.
-- **Renaming a value after it has shipped is breaking.** A record carries one
-  `event_type`, so there is no overlap window and emitting both names
-  double-counts. The recovery is: add the new value, stop the old one in the
-  same release, keep the old constant marked retired so the string is never
-  reused, publish an `event_type IN (old, new)` migration query, and announce it
-  in the changelog. At least one minor release of notice, one major for anything
-  under `request.*` or `authn.*`.
-- **Retiring a value because its code path was removed is not breaking.**
-  Queries return nothing instead of failing. Keep the constant marked retired.
-- **`schema_version` bumps only when field parsing breaks**: a field removed or
-  retyped, or a closed value set narrowed. Not for a new event, a new optional
-  field, or a widened value set.
-
-`request.handler.failed` (component `request`, ERROR) and
-`proxy.startup.failed` (component `startup`, ERROR) were added to the registry
-during implementation, before the first release that ships `event_type`, under
-the append-only rule. They bring the set to 40. Because nothing had shipped, no
-consumer needed a migration; a value added after the first release follows the
-rules above instead.
 
 ## Redaction
 

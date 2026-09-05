@@ -1,26 +1,56 @@
 # Operations
 
-Security, troubleshooting, and testing the proxy locally.
+Running the proxy in production: the first checks when a request fails,
+security, troubleshooting, watching traffic, and the lifecycle procedures for
+upgrades, outages and sizing. Building and testing the proxy itself is in
+[development](./development.md).
 
+- [First checks](#first-checks)
 - [Security](#security)
+  - [Hardening checklist](#hardening-checklist)
 - [Troubleshooting](#troubleshooting)
   - [Reading the request log](#reading-the-request-log)
   - [Watching requests](#watching-requests)
   - [Turning up verbosity](#turning-up-verbosity)
-- [Development and testing](#development-and-testing)
-  - [Local dev cluster](#local-dev-cluster)
-  - [End-to-end tests](#end-to-end-tests)
-- [Local multi-issuer test: kind and GitHub Actions](#local-multi-issuer-test-kind-and-github-actions)
-  - [Prerequisites](#prerequisites)
-  - [1. Token-minting workflow (one-time)](#1-token-minting-workflow-one-time)
-  - [2. Build the image and create the cluster](#2-build-the-image-and-create-the-cluster)
-  - [3. Deploy the chart](#3-deploy-the-chart)
-  - [4. RBAC](#4-rbac)
-  - [5. Mint a token and fetch it (TTL ~5 min — move fast)](#5-mint-a-token-and-fetch-it-ttl-5-min--move-fast)
-  - [6. Test through the proxy](#6-test-through-the-proxy)
-  - [7. Access logs and cleanup](#7-access-logs-and-cleanup)
-  - [Adding the next system](#adding-the-next-system)
+- [Upgrade and rollback](#upgrade-and-rollback)
+- [Availability and issuer outages](#availability-and-issuer-outages)
+- [Capacity and sizing](#capacity-and-sizing)
 - [See also](#see-also)
+
+## First checks
+
+When a request through the proxy fails and you have five minutes, run these
+in order. Each one halves the search space.
+
+1. **Did the request reach the proxy?** Read every replica, not one pod:
+
+   ```bash
+   kubectl -n kube-oidc-proxy logs -l app.kubernetes.io/name=kube-oidc-proxy --since=10m --tail=-1 \
+     | jq -r 'select(.event_type == "request.access.decided")
+              | [.time, .event, .reason // "-", .inbound_user // "-", .http_method, .path] | @tsv'
+   ```
+
+   Nothing at all means the request never arrived: the load balancer,
+   ingress or certificate in front of the proxy answered instead. Bypass
+   them with a port-forward to the Service to prove the token and the
+   mappings are fine, then fix the path in front.
+
+2. **`AuFail`?** The proxy refused it and `reason` says why, from a
+   [closed vocabulary](./logging.md#reason-vocabularies): `unauthorized` is
+   the token itself (expired, wrong audience, failed validation rule),
+   `impersonation_denied` is a `kubectl --as` the caller may not perform.
+
+3. **`AuSuccess` but the client saw 403?** Authentication worked and the API
+   server refused the action. Join the access record with
+   `request.response.completed` to see the upstream status per request, then
+   read `kubectl ... -v 8` for the API server's message: an RBAC denial names
+   the mapped identity, a missing grant for the proxy's own ServiceAccount
+   names a `userextras/<key>` or `subjectaccessreviews`.
+
+4. **Still unclear?** Turn verbosity up to `1` and trace the request by its
+   ID; both are under [watching requests](#watching-requests).
+
+The [troubleshooting table](#troubleshooting) maps each symptom to its fix.
 
 ## Security
 
@@ -56,6 +86,25 @@ Security, troubleshooting, and testing the proxy locally.
   `--trusted-proxies` only to CIDRs of proxies you run directly in front of it —
   see [Trusted proxies and client IP](./configuration.md#trusted-proxies-and-client-ip).
 
+### Hardening checklist
+
+The bullets above as checks to run before, and periodically after, exposing
+the proxy. Each names what to look at.
+
+| Check | How |
+| --- | --- |
+| Only the platform team can change the proxy's Deployment, ClusterRole and ClusterRoleBinding | `kubectl auth can-i --list --as=<a typical user>` in the release namespace shows no write on them; the values file and RBAC live in reviewed Git history. |
+| Every issuer entry pins an audience specific to this proxy | No `audiences` value is shared with another system; for CI providers, validation rules pin numeric organisation or project IDs, not names ([integrations](./integrations.md)). |
+| Every issuer has its own username and groups prefix | No two `jwt:` entries produce identities that could collide ([multi-issuer](./multi-issuer.md#security-always-use-distinct-per-issuer-prefixes)). |
+| Nothing binds a role to a bare `system:authenticated` or to a prefix-less name | `kubectl get clusterrolebindings,rolebindings -A -o yaml \| grep -B2 'name: system:authenticated'` returns only the Kubernetes defaults. |
+| Impersonation grants (`kubectl --as`) are scoped with `resourceNames` | Any ClusterRole with `impersonate` on `users` or `groups` and no `resourceNames` is deliberate and documented ([inbound impersonation](./authentication.md#inbound-impersonation-kubectl---as)). |
+| Clients verify the proxy's certificate | No kubeconfig in use carries `insecure-skip-tls-verify`; the certificate covers the hostname clients use, on the ingress or the Service. |
+| The proxy verifies each issuer's certificate | Private CAs are inline (`certificateAuthority`, `oidc.caPEM`); the pod's egress to every issuer's JWKS is allowed by network policy and nothing else on that path is. |
+| Forwarded client IPs are trusted only from your own hops | `--trusted-proxies` is empty, or lists exactly the CIDRs of the ingress or load balancer in front ([trusted proxies](./configuration.md#trusted-proxies-and-client-ip)). |
+| Token passthrough is off unless understood | `tokenPassthrough.enabled: false`, or the audiences are constrained and the success TTL is deliberate ([caching](./caching.md#tokenreview-result-cache)). |
+| Audit data is handled as sensitive | Audit events and access records carry usernames, groups and `extra` values; the log pipeline they go to has the same access controls as the API server's audit log ([auditing](./auditing.md)). |
+| The pod security defaults are intact | `helm -n kube-oidc-proxy get values kube-oidc-proxy` shows no override of `podSecurityContext` or `securityContext`; file audit logs use an `emptyDir` rather than a writable root filesystem. |
+
 ## Troubleshooting
 
 | Symptom | Likely cause / fix |
@@ -77,8 +126,8 @@ Security, troubleshooting, and testing the proxy locally.
 | RBAC impersonation grant/revoke takes up to 10s to take effect through the proxy | Expected: impersonation `SubjectAccessReview` decisions are cached. A revoked grant keeps working for up to `--subject-access-review-cache-allow-ttl`; a new grant keeps failing for up to `--subject-access-review-cache-deny-ttl` (both default `10s`). Set either TTL to `0` to re-check that class on every request — see [the SAR decision cache](./caching.md#subjectaccessreview-decision-cache). |
 | TLS errors connecting to the proxy | The client's kubeconfig `certificate-authority` must trust the proxy's **serving** certificate (self-signed by the chart, your own Secret, or cert-manager). |
 | Trace one request end to end | Take `request_id` from any proxy record (the client also gets it back in the `Audit-ID` response header) and grep every proxy record for it; the same value is the kube-apiserver audit `auditID` — see [correlation](./logging.md#correlation). |
-| An issuer is stuck | `event_type=oidc.issuer.pending` names the issuer and a `pending_reason`; it is emitted on state change, so the newest record per issuer is current — see [worked queries](./logging.md#issuer-pending). |
-| Confirm which issuers loaded | `kubectl -n kube-oidc-proxy logs deploy/kube-oidc-proxy \| grep "configured OIDC issuers"`. |
+| An issuer is stuck | `event_type=oidc.issuer.pending` names the issuer and a `pending_reason`; it is emitted on state change, so the newest record per issuer is current — see [issuer state](./logging.md#issuer-state). |
+| Confirm which issuers loaded | `kubectl -n kube-oidc-proxy logs deploy/kube-oidc-proxy \| jq -r 'select(.event_type == "oidc.issuer.initialized") \| .issuer_name'` — one line per issuer whose JWKS loaded, in this pod. The current state of each issuer, pending or initialized, is the [issuer state query](./logging.md#issuer-state). |
 | A revoked passthrough token still works / a newly valid one is rejected | The TokenReview result cache. A revoked token passes for up to `--token-passthrough-cache-success-ttl`; a token that just became valid can be rejected for up to `--token-passthrough-cache-failure-ttl` (both default 10s). Set either flag to `0` to disable that side — see [the TokenReview cache](./caching.md#tokenreview-result-cache). |
 
 ### Reading the request log
@@ -412,9 +461,9 @@ kubectl --server=https://127.0.0.1:8443 --insecure-skip-tls-verify=true --token=
 ```
 
 `auth whoami` prints the identity exactly as the API server saw it: the mapped
-username, the groups (plus `system:authenticated`, which the API server adds
-itself) and every `extra` value. Add `-v 8` to see the raw status and body
-behind kubectl's summary messages.
+username, the groups (plus `system:authenticated`, which the proxy appends to
+every request it impersonates) and every `extra` value. Add `-v 8` to see the
+raw status and body behind kubectl's summary messages.
 
 ### Turning up verbosity
 
@@ -435,14 +484,19 @@ logging:
   verbosity: "1"
 ```
 
-Or as a temporary switch that rolls the pods; drop the override afterwards:
+Or as a temporary switch that rolls the pods. Pin the chart version you are
+running, so a debugging change does not also upgrade the chart:
 
 ```bash
 helm upgrade kube-oidc-proxy oci://ghcr.io/rafpe/charts/kube-oidc-proxy \
-  -n kube-oidc-proxy -f values.yaml --set logging.verbosity=1
+  --version <x.y.z> -n kube-oidc-proxy -f values.yaml --set logging.verbosity=1
 kubectl -n kube-oidc-proxy rollout status deploy/kube-oidc-proxy
 kubectl -n kube-oidc-proxy get deploy kube-oidc-proxy \
   -o jsonpath='{.spec.template.spec.containers[0].args}'
+
+# Back to the default when done: the same command without the override.
+helm upgrade kube-oidc-proxy oci://ghcr.io/rafpe/charts/kube-oidc-proxy \
+  --version <x.y.z> -n kube-oidc-proxy -f values.yaml
 ```
 
 Then read the DEBUG records around an access record, and anything the
@@ -458,7 +512,7 @@ Issuer state, in case a JWKS fetch is the problem rather than the token:
 
 ```bash
 kubectl -n kube-oidc-proxy logs -l app.kubernetes.io/name=kube-oidc-proxy --tail=-1 \
-  | jq -r 'select(.event_type | startswith("oidc.issuer."))
+  | jq -r 'select((.event_type // "") | startswith("oidc.issuer."))
            | [.time, .event_type, .issuer_name, .issuer_state // "-", .pending_reason // "-"] | @tsv'
 ```
 
@@ -466,242 +520,181 @@ kubectl -n kube-oidc-proxy logs -l app.kubernetes.io/name=kube-oidc-proxy --tail
 switch back to `json` before leaving it, since that is what log pipelines
 expect.
 
-## Development and testing
+## Upgrade and rollback
 
-Building `kube-oidc-proxy` requires Go 1.26 or higher.
+The proxy is stateless: every replica holds only what it fetched at startup
+(issuer discovery documents and signing keys) and short-lived review caches.
+An upgrade is therefore a rolling replacement, and a rollback is the same
+thing in the other direction. What needs care is around the edges.
 
-### Local dev cluster
-
-A few `make` targets spin up a kind cluster for quick testing:
-
-- `make dev_cluster_create` — create a kind cluster and build/load the proxy and
-  tooling images onto each node.
-- `make dev_cluster_deploy` — build, load, and deploy the proxy alongside a fake
-  OIDC issuer, reachable via a NodePort service. It prints a signed OIDC token
-  valid for the proxy, which you can use directly:
-
-  ```bash
-  curl -k https://<node-ip>:<nodeport> -H 'Authorization: bearer <token>'
-  ```
-
-  Set `KUBE_OIDC_PROXY_FAKE_APISERVER=true make dev_cluster_deploy` to also
-  deploy a fake API server that logs the headers and request body the proxy
-  sends — useful for inspecting impersonation output.
-- `make dev_cluster_destroy` — delete the test cluster.
-
-### End-to-end tests
-
-`make e2e` runs the Go end-to-end suite (`test/e2e/suite`) against a real
-Kubernetes cluster. It's hermetic: it builds the proxy and test-tool images from
-source, creates its own [kind](https://kind.sigs.k8s.io) cluster, loads the
-images, runs the suite, and tears the cluster down on exit (including on failure
-or interrupt). No pre-existing cluster is required.
-
-Prerequisites (all on `PATH`): `go`, `docker` (daemon running), `kind`,
-`kubectl`. Images are built for the host architecture, so the suite runs on both
-`amd64` and `arm64` (e.g. Apple Silicon).
+**Before.** Read the release notes for the versions you are crossing, with an
+eye on two contracts: chart values that changed meaning or default, and the
+[log compatibility rules](./logging.md#compatibility), so a saved query or
+alert is adjusted before, not after, the records change. Pin what you deploy:
 
 ```sh
-make e2e          # build images, spin up kind, run the suite, tear down
-make e2e-clean    # delete a leftover e2e kind cluster (safe if none exists)
+helm show chart oci://ghcr.io/rafpe/charts/kube-oidc-proxy --version <x.y.z> | grep -E '^(version|appVersion):'
 ```
 
-Useful overrides: `E2E_TIMEOUT` (Go test timeout, default `30m`) and
-`KUBE_OIDC_PROXY_K8S_VERSION`, which selects among the versions declared in
-`test/e2e/versions/kubernetes-versions.json` (default: the newest). Versions
-outside the manifest are refused — the manifest is the definition of what
-this commit supports. CI tests the newest declared version on every pull
-request and the full declared window on the twice-daily scheduled run.
+The chart's default image tag follows its `appVersion`, so pinning the chart
+version pins the image; set `image.tag` only to diverge on purpose.
 
-The suite runs in CI on every pull request and on pushes to `main`
-(`.github/workflows/e2e.yaml`). A companion workflow
-(`.github/workflows/e2e-oidc-gha.yaml`) proves the multi-issuer union
-authenticator against the **real** GitHub Actions OIDC issuer alongside a local
-Dex issuer. For a scripted multi-issuer demo, see [`../demo/README.md`](../demo/README.md).
+**During.** Upgrade with the values file, never `--reuse-values`, so that
+defaults added by the new chart apply:
 
-## Local multi-issuer test: kind and GitHub Actions
-
-This runs the proxy in a local [kind](https://kind.sigs.k8s.io/) cluster and
-authenticates with a **real GitHub Actions OIDC token**. GitHub only mints these
-tokens inside a workflow run, so the flow is:
-
-```text
-GitHub Actions (mint token, TTL ~5 min)
-        │  gh run download
-        ▼
-local terminal ── kubectl --token=... ──► kube-oidc-proxy (kind)
-                                              │ validates JWT against
-                                              │ token.actions.githubusercontent.com
-                                              ▼ impersonates mapped identity
-                                          kind API server ── RBAC decides
+```sh
+helm upgrade kube-oidc-proxy oci://ghcr.io/rafpe/charts/kube-oidc-proxy \
+  --version <x.y.z> -n kube-oidc-proxy -f values.yaml
+kubectl -n kube-oidc-proxy rollout status deploy/kube-oidc-proxy
 ```
 
-### Prerequisites
+With two or more replicas and the chart's PodDisruptionBudget enabled, the
+rollout keeps a replica serving throughout. Each new pod becomes ready once
+its first issuer's JWKS has loaded (or all of them, with
+`readinessRequireAllIssuers`), so a rollout is also a check that every issuer
+is still reachable from the cluster.
 
-- `docker`, `kind`, `helm`, `kubectl`, `gh` (authenticated: `gh auth status`).
-- Set these once per shell — every `gh` call needs an explicit `--repo`:
+**After.** Two smoke tests, with a real token, prove identity and
+authorization survived the upgrade:
 
-```bash
-export GH_SLUG="rafpe/kube-oidc-proxy"   # <owner>/<repo> hosting the mint workflow
-export BRANCH="master"
+```sh
+kubectl --server=https://<proxy> --token="$TOKEN" auth whoami          # the mapped identity, unchanged
+kubectl --server=https://<proxy> --token="$TOKEN" auth can-i --list     # the same permissions as before
 ```
 
-### 1. Token-minting workflow (one-time)
+Then confirm the new pods log the expected issuers as initialized and that
+the [request viewer](#watching-requests) shows `AuSuccess` rows with the
+upstream status you expect.
 
-You need a `workflow_dispatch` workflow in the repository that requests an ID
-token (`permissions: id-token: write`, then `core.getIDToken(<audience>)`)
-and uploads it as a short-lived artifact.
+**Rollback.** `helm rollback kube-oidc-proxy <revision> -n kube-oidc-proxy`
+restores the previous chart and values together; find the revision with
+`helm history`. Because the proxy holds no state, that is the whole procedure.
+The one thing Helm does not restore is anything you manage outside the chart:
+a ConfigMap holding an audit policy, a TLS Secret, RBAC bindings for mapped
+identities. Keep those in the same Git history as the values file so a
+rollback is one revert.
 
-> [!NOTE]
-> This repository's own [`.github/workflows/oidc.yaml`](../.github/workflows/oidc.yaml)
-> is a minimal example to copy from. The audience it requests
-> (`kube-oidc-proxy-kind-test`) is the one the proxy config in step 3 expects;
-> the two must match.
+## Availability and issuer outages
 
-> [!WARNING]
-> The artifact briefly holds a live token. It expires after ~5 minutes and only
-> grants what your **local test cluster's** RBAC allows, but treat it as a
-> secret all the same.
+Readiness describes the moment a pod starts serving; this section is about
+what happens afterwards, when an identity provider is slow, unreachable, or
+rotates its keys.
 
-### 2. Build the image and create the cluster
+- **At startup**, each issuer's discovery document and JWKS are fetched, with
+  retries. An issuer that cannot be reached stays *pending* and its tokens
+  fail with 401 until it initializes; other issuers are unaffected. By
+  default the pod is ready as soon as one issuer has initialized, so a
+  provider outage during a rollout does not block the other providers.
+  Readiness latches: once ready, a pod does not report unready again because
+  an issuer later fails.
+- **After startup, with the issuer unreachable**, tokens signed by keys the
+  proxy already holds keep verifying. Signature verification is local against
+  the cached JWKS; no request is made to the issuer for a token whose key ID
+  is known. Existing users and pipelines therefore keep working through an
+  identity-provider outage, for as long as their tokens are valid and the
+  provider does not rotate its keys.
+- **Key rotation during an outage** is the failure case. A token signed with
+  a key ID the proxy has not seen triggers a JWKS refresh; concurrent requests
+  for the same unknown key share one fetch. If the issuer cannot be reached,
+  that verification fails with 401 until it can. Providers rotate on schedules
+  of days to weeks, so this window is narrow but real; it is the reason to
+  alert on `authn.oidc.failed` rate rather than on issuer reachability alone.
+- **A replica restart during an outage** brings the startup rules back: the
+  new pod must fetch discovery and JWKS afresh, so it cannot initialize the
+  unreachable issuer and, with `readinessRequireAllIssuers: true`, does not
+  become ready at all. This is the argument for the default `false` on
+  clusters with more than one identity provider, and for a
+  PodDisruptionBudget: it stops voluntary disruption from replacing every
+  pod during an outage.
+- **Long-running requests** (`watch`, `logs -f`, `exec`) are held open by the
+  proxy for as long as the client keeps them; a pod being terminated drains
+  them within the termination grace period. Nothing about an issuer outage
+  cuts an established connection, since the token was verified when it was
+  opened.
 
-```bash
-docker build -t kube-oidc-proxy:test .
-kind create cluster --name oidc-test
-kind load docker-image kube-oidc-proxy:test --name oidc-test
+To see the state of each issuer in each pod at any time, use the
+[issuer state query](./logging.md#issuer-state).
+
+**A layout that survives the above.** The chart ships single-replica by
+default. For production, run more than one replica and keep them spread and
+protected during disruptions:
+
+```yaml
+replicaCount: 3
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: kube-oidc-proxy
+readinessRequireAllIssuers: false   # the default; stated here on purpose
 ```
 
-### 3. Deploy the chart
+The PodDisruptionBudget keeps node drains from taking every replica at once,
+which is exactly the moment a restart during an issuer outage would hurt;
+topology spread puts the replicas in different zones; and the readiness
+default means one provider's outage never blocks a rollout for the others.
 
-This uses the simple `sub`-as-username mapping. For CEL alternatives (readable
-usernames, `claimValidationRules`, numeric-ID hardening), see the
-[multi-issuer guide](./multi-issuer.md#github-actions).
+## Capacity and sizing
 
-```bash
-cat > /tmp/values-test.yaml <<'EOF'
-image:
-  repository: kube-oidc-proxy
-  tag: test
-  pullPolicy: Never
+There are no published baselines, because the numbers depend on your traffic
+shape more than on the proxy: a cluster whose only clients are pipelines
+running `kubectl apply` a few hundred times a day and one with fifty
+engineers holding `watch` streams open all day are different workloads. The
+chart deliberately ships `resources: {}`. What follows is how to measure,
+not what to set.
 
-authenticationConfig:
-  content: |
-    apiVersion: apiserver.config.k8s.io/v1
-    kind: AuthenticationConfiguration
-    jwt:
-    - issuer:
-        url: https://token.actions.githubusercontent.com
-        audiences: ["kube-oidc-proxy-kind-test"]
-      claimMappings:
-        # GitHub's newer sub is ID-embedded: repo:Owner@<owner_id>/repo@<repo_id>:ref:...
-        username:
-          claim: sub
-          prefix: "gha:"
-        # GitHub tokens carry no groups claim — CEL synthesizes one from
-        # repository_owner (case-sensitive: "RafPe" != "rafpe"):
-        groups:
-          expression: '["github:" + claims.repository_owner]'
-EOF
+**What costs what.** A request costs one signature verification (CPU, cheap)
+plus a proxied round trip; nothing is buffered, so memory per request is
+small and bounded. The exceptions are the streams: every open `watch`,
+`exec`, `portforward` or `logs -f` holds a connection and a goroutine for
+its whole life, so concurrent long-running requests, not requests per second,
+are the memory dimension. Review traffic is separate: `kubectl --as` costs
+one `SubjectAccessReview` per impersonation header value, and passthrough
+costs a `TokenReview`, both against the API server and both cached for a
+short TTL ([caching](./caching.md)). Log volume is at least two records per
+request at the default verbosity and several more at `-v=1`.
 
-helm install kube-oidc-proxy oci://ghcr.io/rafpe/charts/kube-oidc-proxy \
-  -n kube-oidc-proxy --create-namespace -f /tmp/values-test.yaml
-kubectl -n kube-oidc-proxy rollout status deploy/kube-oidc-proxy --timeout=180s
+**How to measure.** Run with requests set and no limits for a representative
+period, then read what the pods actually used:
 
-# The proxy lists its issuers at startup:
-kubectl -n kube-oidc-proxy logs deploy/kube-oidc-proxy | grep "configured OIDC issuers"
+```sh
+kubectl -n kube-oidc-proxy top pod -l app.kubernetes.io/name=kube-oidc-proxy
 ```
 
-To change config later, edit the values file and `helm upgrade kube-oidc-proxy
-./chart/kube-oidc-proxy -n kube-oidc-proxy -f /tmp/values-test.yaml` — the
-checksum annotation rolls the pods automatically.
+together with the request rate and the number of open streams from the log:
 
-### 4. RBAC
-
-Decode a token first (step 5) if you're unsure of your exact claims. With the
-default `sub` mapping and GitHub's ID-embedded subject format:
-
-```bash
-# Group binding — matches the CEL-synthesized group (mind the case!):
-kubectl create clusterrolebinding gha-owner-view \
-  --clusterrole=view --group="github:RafPe"
-
-# Exact-subject binding — GitHub's sub embeds owner/repo IDs:
-kubectl create clusterrolebinding gha-branch-view \
-  --clusterrole=view \
-  --user="gha:repo:RafPe@9809655/kube-oidc-proxy@1308696420:ref:refs/heads/master"
+```sh
+# requests per minute over the window
+kubectl -n kube-oidc-proxy logs -l app.kubernetes.io/name=kube-oidc-proxy --since=1h --tail=-1 \
+  | jq -r 'select(.event_type == "request.response.completed") | .time[0:16]' | sort | uniq -c
+# streams open right now: started but not yet completed. No --since here,
+# because the streams that cost memory are the ones open the longest
+kubectl -n kube-oidc-proxy logs -l app.kubernetes.io/name=kube-oidc-proxy --tail=-1 \
+  | jq -rs '(map(select(.event_type == "request.response.started") | .request_id))
+            - (map(select(.event_type == "request.response.completed") | .request_id))
+            | length'
 ```
 
-### 5. Mint a token and fetch it (TTL ~5 min — move fast)
-
-```bash
-gh workflow run oidc.yaml --repo "$GH_SLUG" --ref "$BRANCH"
-sleep 5
-RUN_ID=$(gh run list --repo "$GH_SLUG" --workflow=oidc.yaml -L1 \
-  --json databaseId -q '.[0].databaseId')
-gh run watch "$RUN_ID" --repo "$GH_SLUG"
-rm -rf /tmp/oidc && gh run download "$RUN_ID" --repo "$GH_SLUG" \
-  -n oidc-token -D /tmp/oidc
-TOKEN=$(cat /tmp/oidc/token.jwt)
-
-# Inspect the claims you are about to authenticate with:
-echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null \
-  | jq '{iss,aud,sub,repository,repository_owner,ref}'
-```
-
-### 6. Test through the proxy
-
-```bash
-kubectl -n kube-oidc-proxy port-forward svc/kube-oidc-proxy 8443:443 &
-sleep 3
-```
-
-Who does the cluster think you are?
-
-```bash
-kubectl --server=https://127.0.0.1:8443 --insecure-skip-tls-verify=true \
-  --token="$TOKEN" auth whoami
-```
-
-Expected: your prefixed username plus groups `[github:RafPe, system:authenticated]`.
-Then prove authorization scoping:
-
-```bash
-PROXY="--server=https://127.0.0.1:8443 --insecure-skip-tls-verify=true --token=$TOKEN"
-kubectl $PROXY get pods -A        # allowed  (view)
-kubectl $PROXY create ns nope     # forbidden (view cannot write)
-```
-
-If you get `401`, the token expired — rerun step 5. Steps 2–4 stay up.
-
-> `--insecure-skip-tls-verify` is acceptable only against this throwaway kind
-> cluster (the chart generated an ephemeral self-signed cert). Real deployments
-> set `tls.secretName`/cert-manager and ship the CA in kubeconfig.
-
-### 7. Access logs and cleanup
-
-```bash
-kubectl -n kube-oidc-proxy logs deploy/kube-oidc-proxy --tail=20   # request.access.decided: AuSuccess / AuFail
-kill %1
-kind delete cluster --name oidc-test
-```
-
-### Adding the next system
-
-A pure config change — no new deployments:
-
-1. Append another `jwt:` entry to `authenticationConfig.content` (its issuer
-   URL, its own audience, and a **distinct prefix**, e.g. `sys-a:` — never reuse
-   or omit prefixes across issuers).
-2. Add RBAC bindings for the new prefixed identities.
-3. `helm upgrade` — pods roll automatically; with the default readiness mode the
-   rollout completes even if the new issuer is temporarily unreachable (it's
-   logged as pending and starts working the moment its JWKS loads).
+Set requests to the observed steady state with headroom for the streams you
+expect at peak, and a memory limit well above it; a CPU limit is rarely
+useful for a proxy and can only add latency. Two replicas is the floor for
+availability; add replicas for open-stream capacity, not for request rate,
+which a single replica handles comfortably at the scale of a cluster's
+kubectl traffic.
 
 ## See also
 
-- [Multi-issuer authentication](./multi-issuer.md)
-- [Configuration reference](./configuration.md)
-- [Logging reference](./logging.md)
-- [Auditing](./auditing.md)
-- [Getting started](./getting-started.md)
-- [Architecture](./architecture.md)
+- [Getting started](./getting-started.md) — the install this page assumes.
+- [Logging reference](./logging.md) — every record and field the queries here
+  use.
+- [Auditing](./auditing.md) — the audit trail next to the log.
+- [Caching and API-server protection](./caching.md) — the TTLs behind the
+  revocation lag.
+- [Development](./development.md) — building, testing and the local kind
+  walkthrough.
+- [Architecture](./architecture.md) — request flow and readiness.
