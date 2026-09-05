@@ -319,10 +319,12 @@ fields @timestamp, verb, objectRef.resource, objectRef.namespace, objectRef.name
 
 and for one request, `| filter auditID = "<request_id>"`.
 
-The two events disagree on vocabulary in one place, on purpose: the proxy's
-access record says `decision=deny` where the API server's event says
-`authorization.k8s.io/decision=forbid`. See
-[correlation](./logging.md#correlation).
+The two events record different decisions. The proxy's `decision` says
+whether the request was admitted and forwarded; the API server's
+`authorization.k8s.io/decision` says whether the impersonated identity was
+allowed to perform the action. A proxy `allow` followed by an API server
+`forbid` is the normal shape of an RBAC denial, and a proxy `deny` has no
+API server event at all. See [correlation](./logging.md#correlation).
 
 ## See also
 

@@ -313,19 +313,24 @@ syntactically valid inbound value from an untrusted peer is kept as
 ingress, never authoritative. See
 [trusted proxies and client IP](./configuration.md#trusted-proxies-and-client-ip).
 
-Two vocabularies differ between the proxy and the API server, on purpose:
+Two decisions are recorded for a forwarded request, and they answer different
+questions:
 
-| Proxy | kube-apiserver audit | Meaning |
+| Field | Who decides | Question answered |
 | --- | --- | --- |
-| `decision=allow` | `authorization.k8s.io/decision=allow` | the request was authorized |
-| `decision=deny` | `authorization.k8s.io/decision=forbid` | the request was refused |
+| `decision` on the proxy's access record | the proxy | Was the request admitted: token verified and any `Impersonate-*` headers authorized? `allow` means it was forwarded. |
+| `authorization.k8s.io/decision` on the API server's audit event | the API server | Was the impersonated identity allowed to perform the action? `allow` or `forbid`. |
 
-**`decision=deny` equals `authorization.k8s.io/decision=forbid`.** The proxy
-keeps `deny` because `event=AuSuccess|AuFail` and `decision=allow|deny` are the
-frozen contract SIEM rules already key on. `event` names the outcome,
-`event_type` names the record shape; `AuSuccess` is only ever emitted with
-`decision=allow` and `AuFail` only with `decision=deny`, and a test enforces the
-pairing.
+`decision=allow` followed by an upstream `403` is a normal, healthy outcome:
+the proxy admitted the request and RBAC refused the action. The upstream
+result is `http_status` on `request.response.completed` and the annotation on
+the API server's event. `decision=deny` means the proxy refused the request
+itself, so no API server audit event exists for it, and `reason` says why.
+
+`event=AuSuccess|AuFail` and `decision=allow|deny` are the frozen contract SIEM
+rules already key on. `event` names the outcome, `event_type` names the record
+shape; `AuSuccess` is only ever emitted with `decision=allow` and `AuFail` only
+with `decision=deny`, and a test enforces the pairing.
 
 ## Worked queries
 
