@@ -63,7 +63,7 @@ The proxy embeds the API server's audit stack rather than reimplementing it.
    without its audit trail is worse than a proxy that is down.
 3. **Position in the request path.** A request passes, in order, through:
    request ID assignment, request-info resolution (verb, resource, namespace),
-   forwarding-header sanitization, the lifecycle filter, authentication,
+   the lifecycle filter, forwarding-header sanitization, authentication,
    impersonation, and finally the audit filter, which sits directly in front of
    the reverse proxy. Because the audit filter runs after authentication, the
    event's `user` is the mapped identity. Because request info was resolved
