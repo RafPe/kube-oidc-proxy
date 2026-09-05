@@ -112,7 +112,7 @@ that must be present beyond `time`, `level`, `msg`, `schema_version`,
 | `authn.oidc.failed` | `oidc` | DEBUG | `request_id`, `reason` | The OIDC authenticator rejected the token. The denial itself is INFO on request.access.decided. |
 | `authn.oidc.succeeded` | `oidc` | DEBUG | `request_id`, `issuer_name` | The OIDC authenticator accepted the token. Names the issuer that accepted it. |
 | `authn.token.missing` | `tokenreview` | DEBUG | `request_id` | No bearer token was presented on the TokenReview path. |
-| `authn.tokenreview.completed` | `tokenreview` | DEBUG | `request_id`, `authenticated` | A TokenReview answered. Carries duration_ms on a live call. |
+| `authn.tokenreview.completed` | `tokenreview` | DEBUG | `request_id`, `authenticated` | A live TokenReview answered, with duration_ms. A cache hit is reported by cache.tokenreview.lookup instead. |
 | `authn.tokenreview.failed` | `tokenreview` | ERROR | `request_id`, `reason`, `error_message` | The API server was unreachable or returned a status error. Carries reason=authentication_dependency_error. |
 | `authz.impersonation.resolved` | `sar` | DEBUG | `request_id`, `target_kind`, `target_name` | The whole impersonation sequence was allowed. A denial is request.access.decided with decision=deny and reason=impersonation_denied. |
 | `authz.sar.completed` | `sar` | DEBUG | `request_id`, `decision`, `duration_ms`, `request_coalesced`, `target_kind` | A live or shared SubjectAccessReview returned. Fires once per impersonation header value, so one request can emit several. |
@@ -186,7 +186,7 @@ If an alias is ever added it goes in this table with a status of `alias`.
 | `outbound_user`, `outbound_uid`, `outbound_groups`, `outbound_groups_omitted`, `outbound_extra`, `outbound_extra_omitted` | as the `inbound_*` fields | as the `inbound_*` fields | frozen (the caps are new) | `request.access.decided` when impersonating | compare with `inbound_*` to see who acted as whom |
 | `target_kind` | string | `user`, `group`, `uid`, `extra`, `serviceaccount`, `unknown` | new | `request.access.decided` on `impersonation_denied`, `authz.sar.completed`, `authz.impersonation.resolved` | replaces parsing the error text |
 | `target_name` | string | impersonation target, sanitized, max 256 chars | new | same as `target_kind` | |
-| `http_status` | int | HTTP status written to the client | new | `request.response.started`, `request.response.completed` | a `200` implied by the first `Write` is recorded as `200` |
+| `http_status` | int | HTTP status written to the client | new | `request.response.started`, `request.response.completed` | a `200` implied by the first `Write`, or by a handler that returned without writing, is recorded as `200`; `0` only when no response went out (`termination=hijacked` or `panic`) |
 | `time_to_headers_ms` | int | milliseconds from request start to `WriteHeader` | new | `request.response.started` | long-running requests only |
 | `duration_ms` | int | milliseconds from request start to handler return | new | `request.response.completed`, `authz.sar.completed`, `authn.tokenreview.completed` | |
 | `response_bytes` | int | bytes written to the client | new | `request.response.completed` | absent when the connection was hijacked |

@@ -178,8 +178,17 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 				term = classified.Termination
 			}
 
+			// A handler that returned without writing anything is answered
+			// with a 200 by net/http itself, so that is the status on the wire.
+			// Zero is kept only where no response went out: a hijacked
+			// connection, or a panic that made the server drop the connection.
+			status := rec.status
+			if !rec.wrote && !rec.hijacked && panicked == nil {
+				status = http.StatusOK
+			}
+
 			attrs := []slog.Attr{
-				slog.Int("http_status", rec.status),
+				slog.Int("http_status", status),
 				slog.Int64("duration_ms", time.Since(start).Milliseconds()),
 				slog.String("termination", term),
 			}

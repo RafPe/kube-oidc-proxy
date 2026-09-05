@@ -336,3 +336,19 @@ func TestPanicClassification(t *testing.T) {
 		})
 	}
 }
+
+// TestUnwrittenReturnRecordsTheImplicit200 pins that a handler which returns
+// without writing a header, a body or a flush is recorded with the 200 net/http
+// sends on its behalf, not with 0. A status of 0 is reserved for a response
+// that never went out at all: a hijacked connection or an aborted handler.
+func TestUnwrittenReturnRecordsTheImplicit200(t *testing.T) {
+	p := newTestProxy(t)
+	serveWith(t, p, func(http.ResponseWriter, *http.Request) {}, httptest.NewRequest(http.MethodGet, "/", nil))
+	rec := p.logs.Only(t, logging.EventRequestResponseCompleted)
+	if s, _ := rec.Int("http_status"); s != 200 {
+		t.Fatalf("http_status = %d, want 200", s)
+	}
+	if rec.String("termination") != "normal" {
+		t.Fatalf("termination = %q, want normal", rec.String("termination"))
+	}
+}
