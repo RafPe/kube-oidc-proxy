@@ -7,8 +7,8 @@ in front of a proxy, and how its events line up with the API server's audit log
 on the other side.
 
 - [Two audit trails, one ID](#two-audit-trails-one-id)
-- [How it is wired](#how-it-is-wired)
 - [Enabling it with the chart](#enabling-it-with-the-chart)
+- [How it is wired](#how-it-is-wired)
 - [Writing a policy](#writing-a-policy)
   - [Baseline](#baseline)
   - [More detail for one class of caller](#more-detail-for-one-class-of-caller)
@@ -44,44 +44,6 @@ Which trail answers which question:
 - **What did the token actually map to?** The proxy's log, whose `user` field
   is the mapped identity with its groups and extras, exactly as the proxy
   forwarded it.
-
-## How it is wired
-
-The proxy embeds the API server's audit stack rather than reimplementing it.
-
-1. **Flags.** The proxy registers kube-apiserver's own audit options, so every
-   `--audit-*` flag the API server accepts exists here, with one exception:
-   dynamic configuration (`--audit-dynamic-configuration`) is not supported.
-   Two backends are available. `--audit-log-path` writes one JSON object per
-   line to a file, or to stdout when the path is `-`. `--audit-webhook-config-file`
-   posts batches of events to an HTTP collector described by a kubeconfig.
-   Either backend needs `--audit-policy-file`; without a policy nothing is
-   recorded.
-2. **Startup.** The options build two things the request path needs: the audit
-   backend and a policy evaluator compiled from the policy file. A backend that
-   fails to start is a startup failure, on the grounds that a proxy serving
-   without its audit trail is worse than a proxy that is down.
-3. **Position in the request path.** A request passes, in order, through:
-   request ID assignment, request-info resolution (verb, resource, namespace),
-   the lifecycle filter, forwarding-header sanitization, authentication,
-   impersonation, and finally the audit filter, which sits directly in front of
-   the reverse proxy. Because the audit filter runs after authentication, the
-   event's `user` is the mapped identity. Because request info was resolved
-   early, the event carries a proper `objectRef` and Kubernetes verb
-   (`create`, not `post`) even for core-group paths under `/api`.
-4. **Failed authentication.** A 401 never reaches the main audit filter, so the
-   authentication handler wraps its error path in a second, shorter audit chain
-   that records the failed attempt against the anonymous user. Both chains use
-   the same policy.
-5. **Long-running requests.** `exec`, `attach`, `portforward`, `log`, `proxy`
-   and every watch are recorded twice, at `ResponseStarted` and
-   `ResponseComplete`, using kube-apiserver's own definition of long-running.
-   An hour-long `exec` therefore leaves a trace at its start, and still leaves
-   one if the proxy is stopped before the session ends.
-6. **Shutdown.** The backend is flushed as a pre-shutdown hook, and the result
-   is logged as `audit.flush.completed` or `audit.flush.failed`. A failed flush
-   means events for requests the process already served were dropped, so it is
-   never silent.
 
 ## Enabling it with the chart
 
@@ -132,10 +94,50 @@ Two operational notes:
   Deployment. Changing the ConfigMap alone does not: the policy is read once at
   startup, so restart the pods after editing it
   (`kubectl -n kube-oidc-proxy rollout restart deploy/kube-oidc-proxy`).
-- To write a file instead, add an `emptyDir` volume for the path, relax
-  `securityContext.readOnlyRootFilesystem`, and ship the file with a sidecar.
-  The webhook backend needs neither; it takes a kubeconfig pointing at the
+- To write a file instead, mount an `emptyDir` at the directory and point
+  `--audit-log-path` into it, then ship the file with a sidecar. The read-only
+  root filesystem can stay on: it applies to the container image's
+  filesystem, and a mounted volume is writable regardless. The webhook
+  backend needs no volume at all; it takes a kubeconfig pointing at the
   collector via `--audit-webhook-config-file`.
+
+## How it is wired
+
+The proxy embeds the API server's audit stack rather than reimplementing it.
+
+1. **Flags.** The proxy registers kube-apiserver's own audit options, so every
+   `--audit-*` flag the API server accepts exists here, with one exception:
+   dynamic configuration (`--audit-dynamic-configuration`) is not supported.
+   Two backends are available. `--audit-log-path` writes one JSON object per
+   line to a file, or to stdout when the path is `-`. `--audit-webhook-config-file`
+   posts batches of events to an HTTP collector described by a kubeconfig.
+   Either backend needs `--audit-policy-file`; without a policy nothing is
+   recorded.
+2. **Startup.** The options build two things the request path needs: the audit
+   backend and a policy evaluator compiled from the policy file. A backend that
+   fails to start is a startup failure, on the grounds that a proxy serving
+   without its audit trail is worse than a proxy that is down.
+3. **Position in the request path.** A request passes, in order, through:
+   request ID assignment, request-info resolution (verb, resource, namespace),
+   the lifecycle filter, forwarding-header sanitization, authentication,
+   impersonation, and finally the audit filter, which sits directly in front of
+   the reverse proxy. Because the audit filter runs after authentication, the
+   event's `user` is the mapped identity. Because request info was resolved
+   early, the event carries a proper `objectRef` and Kubernetes verb
+   (`create`, not `post`) even for core-group paths under `/api`.
+4. **Failed authentication.** A 401 never reaches the main audit filter, so the
+   authentication handler wraps its error path in a second, shorter audit chain
+   that records the failed attempt against the anonymous user. Both chains use
+   the same policy.
+5. **Long-running requests.** `exec`, `attach`, `portforward`, `log`, `proxy`
+   and every watch are recorded twice, at `ResponseStarted` and
+   `ResponseComplete`, using kube-apiserver's own definition of long-running.
+   An hour-long `exec` therefore leaves a trace at its start, and still leaves
+   one if the proxy is stopped before the session ends.
+6. **Shutdown.** The backend is flushed as a pre-shutdown hook, and the result
+   is logged as `audit.flush.completed` or `audit.flush.failed`. A failed flush
+   means events for requests the process already served were dropped, so it is
+   never silent.
 
 ## Writing a policy
 
@@ -227,7 +229,7 @@ rules:
 ```
 
 The group names are whatever your mappings produce; see the
-[multi-issuer recipes](./multi-issuer.md#examples).
+[integrations](./integrations.md).
 
 ### Sensitive resources
 

@@ -30,7 +30,7 @@ the proxy's memory without bound.
 
 ## TokenReview result cache
 
-Applies only with [`--token-passthrough`](./configuration.md#token-passthrough).
+Applies only with [`--token-passthrough`](./authentication.md#token-passthrough).
 When a bearer token fails OIDC validation, the proxy falls back to a
 `TokenReview` against the API server. Without a cache, every request carrying
 the same failing token — for example during an OIDC issuer outage — becomes its
@@ -75,7 +75,7 @@ flowchart LR
 
 When an inbound request carries `Impersonate-*` headers, the proxy verifies via
 `SubjectAccessReview` that the authenticated user may assume each requested
-value (see [inbound impersonation](./configuration.md#inbound-impersonation-kubectl---as)).
+value (see [inbound impersonation](./authentication.md#inbound-impersonation-kubectl---as)).
 RBAC grants change rarely, so without a cache most of these calls ask the API
 server the same question again and again:
 

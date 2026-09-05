@@ -352,9 +352,10 @@ podSecurityContext:
     type: RuntimeDefault
 
 # Container-level security context. Hardened by default.
-# readOnlyRootFilesystem assumes the proxy needs no writable rootfs. If you
-# enable a feature that writes locally (e.g. audit-log-path to a file), add an
-# emptyDir via extraVolumes/extraVolumeMounts and relax this.
+# readOnlyRootFilesystem applies to the image's filesystem only; mounted
+# volumes stay writable. If you enable a feature that writes locally (e.g.
+# audit-log-path to a file), mount an emptyDir at that path via
+# extraVolumes/extraVolumeMounts and leave this on.
 securityContext:
   allowPrivilegeEscalation: false
   readOnlyRootFilesystem: true

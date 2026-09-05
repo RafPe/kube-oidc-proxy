@@ -19,13 +19,8 @@ issuer in either mode.
 - [Prerequisites](#prerequisites)
 - [Install](#install)
 - [Values](#values)
-- [Single-issuer example](#single-issuer-example)
-- [Multi-issuer example](#multi-issuer-example)
-- [TLS](#tls)
-- [Ingress](#ingress)
-- [High availability](#high-availability)
+- [Examples](#examples)
 - [Security](#security)
-- [Testing the chart](#testing-the-chart)
 - [See also](#see-also)
 
 ## Prerequisites
@@ -134,12 +129,17 @@ Ignored when `authenticationConfig.content` is set.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `authenticationConfig.content` | string | `""` | YAML of an `AuthenticationConfiguration`. When set, `--authentication-config` is used and issuer-specific `--oidc-*` flags are omitted. |
-| `oidc.tlsClient.existingSecret` | string | `""` | Existing Secret containing the client certificate/key used for mTLS to every configured OIDC issuer. |
-| `oidc.tlsClient.certKey` | string | `"tls.crt"` | Certificate key in `oidc.tlsClient.existingSecret`. |
-| `oidc.tlsClient.keyKey` | string | `"tls.key"` | Private-key key in `oidc.tlsClient.existingSecret`. |
+| `authenticationConfig.content` | string | `""` | YAML of an `AuthenticationConfiguration`. When set, `--authentication-config` is used and issuer-specific `--oidc-*` flags are omitted. Format and recipes: [multi-issuer authentication](../../docs/multi-issuer.md), [integrations](../../docs/integrations.md). |
 | `readinessRequireAllIssuers` | bool | `false` | Require every issuer to initialize before the pod is ready. Default: ready once at least one initializes. |
 | `rbac.userExtras` | list | `[]` | Extra user-info keys the proxy's ServiceAccount may impersonate (`userextras/<key>`), in addition to every `claimMappings.extra[].key` in `authenticationConfig.content` and every key in `extraImpersonationHeaders.headers`, which the chart grants automatically. Only needed for keys clients send themselves as `Impersonate-Extra-*`. Lowercased. |
+
+### OIDC issuer mutual TLS (both modes)
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `oidc.tlsClient.existingSecret` | string | `""` | Existing Secret containing the client certificate/key used for mTLS to every configured OIDC issuer, in either mode. Projected Secret updates are picked up without a restart. |
+| `oidc.tlsClient.certKey` | string | `"tls.crt"` | Certificate key in `oidc.tlsClient.existingSecret`. |
+| `oidc.tlsClient.keyKey` | string | `"tls.key"` | Private-key key in `oidc.tlsClient.existingSecret`. |
 
 ### Token passthrough & impersonation
 
@@ -162,13 +162,22 @@ Ignored when `authenticationConfig.content` is set.
 | `logging.format` | string | `""` | Log output format (`--logging-format`): `json` or `text`. Empty renders no flag, leaving the binary default of `json`. |
 | `logging.verbosity` | int or `""` | `""` | Log verbosity (`--v`). `0` shows lifecycle, access records and warnings; `1` and above add request internals. Empty renders no flag, leaving the binary default of `0`, which also keeps the command line valid for an `image.tag` pinned to a release older than `--logging-format`. Rendered before `extraArgs`, so an `extraArgs` entry of the same flag still wins. |
 
-### Extra args, volumes & ingress
+### Extra args & volumes
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `extraArgs` | map | `{}` | Extra CLI flags passed as `--key=value`. |
+| `extraArgs` | map | `{}` | Extra CLI flags passed as `--key=value`, for anything without a value of its own, such as the audit flags ([auditing](../../docs/auditing.md#enabling-it-with-the-chart)). |
 | `extraVolumeMounts` | list | `{}` | Extra container volumeMounts. |
 | `extraVolumes` | list | `{}` | Extra pod volumes. |
+
+### Ingress
+
+The proxy only listens on TLS, so an ingress must re-encrypt to the pod, and it
+must not cut the long-lived streams `kubectl` uses; the annotations for
+ingress-nginx are in [getting started: expose it](../../docs/getting-started.md#3-expose-it).
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
 | `ingress.enabled` | bool | `false` | Create an Ingress. |
 | `ingress.annotations` | map | `{}` | Ingress annotations. |
 | `ingress.ingressClassName` | string | `nil` | IngressClass name for the Ingress. |
@@ -201,38 +210,23 @@ Ignored when `authenticationConfig.content` is set.
 | `podSecurityContext.runAsUser` | int | `1000` | UID to run as (required because the image sets no `USER`). |
 | `podSecurityContext.seccompProfile.type` | string | `RuntimeDefault` | Seccomp profile for the pod. |
 | `securityContext.allowPrivilegeEscalation` | bool | `false` | Disallow privilege escalation. |
-| `securityContext.readOnlyRootFilesystem` | bool | `true` | Mount the root filesystem read-only. Relax if you write locally (e.g. audit log to a file). |
+| `securityContext.readOnlyRootFilesystem` | bool | `true` | Mount the image's root filesystem read-only. Mounted volumes stay writable, so a file audit log only needs an `emptyDir`. |
 | `securityContext.capabilities.drop` | list | `[ALL]` | Linux capabilities dropped from the container. |
 
-## Single-issuer example
+## Examples
 
-```yaml
-oidc:
-  clientId: my-client
-  issuerUrl: https://accounts.google.com
-  usernameClaim: email
-  groupsClaim: groups
-  requiredClaims:
-    hd: example.com
-```
+The worked examples live with the guides that explain them: a single-issuer
+values file and a private-CA variant under
+[authentication: single-issuer with flags](../../docs/authentication.md#single-issuer-with-flags),
+serving TLS and an ingress in
+[getting started](../../docs/getting-started.md#3-expose-it), and a
+multi-replica layout with a PodDisruptionBudget and topology spread in
+[operations](../../docs/operations.md#availability-and-issuer-outages).
+The chart's own test fixtures under [`ci/`](./ci/) are complete values files
+for both configurations.
 
-If the issuer presents a certificate from a private CA, supply it inline:
-
-```yaml
-oidc:
-  clientId: my-client
-  issuerUrl: https://oidc.internal.example.com
-  usernameClaim: email
-  caPEM: |
-    -----BEGIN CERTIFICATE-----
-    ...
-    -----END CERTIFICATE-----
-```
-
-## Multi-issuer example
-
-Accept tokens from several identity providers by supplying a Kubernetes
-`AuthenticationConfiguration`. Each issuer's CA (if any) must be inline under
+Accepting tokens from several identity providers is a Kubernetes
+`AuthenticationConfiguration`; each issuer's CA (if any) must be inline under
 `issuer.certificateAuthority`.
 
 ```yaml
@@ -266,63 +260,6 @@ With `readinessRequireAllIssuers: false` (the default) the pod becomes ready as
 soon as at least one issuer initializes, so a single IdP outage cannot block a
 rollout for every other system. Set it to `true` to require all issuers.
 
-## TLS
-
-By default the chart generates a self-signed serving certificate. To provide
-your own, create a `kubernetes.io/tls` Secret and reference it:
-
-```yaml
-tls:
-  secretName: my-tls-secret-with-key-and-cert
-```
-
-Or have cert-manager issue it:
-
-```yaml
-tls:
-  certManager: true
-  selfSigned: true   # or false + issuerName: my-issuer
-```
-
-## Ingress
-
-```yaml
-ingress:
-  enabled: true
-  annotations:
-    kubernetes.io/ingress.class: traefik
-  hosts:
-    - host: oidc-proxy.example.com
-      paths:
-        - /
-```
-
-## High availability
-
-The chart ships single-replica by default. For production, run more than one
-replica and keep them spread and protected during disruptions:
-
-```yaml
-replicaCount: 3
-podDisruptionBudget:
-  enabled: true
-  minAvailable: 2
-topologySpreadConstraints:
-  - maxSkew: 1
-    topologyKey: topology.kubernetes.io/zone
-    whenUnsatisfiable: ScheduleAnyway
-    labelSelector:
-      matchLabels:
-        app.kubernetes.io/name: kube-oidc-proxy
-```
-
-- A `PodDisruptionBudget` keeps voluntary disruptions (node drains) from taking
-  the proxy fully offline.
-- `topologySpreadConstraints` (preferred) or soft pod `affinity` spread replicas
-  across zones/nodes.
-- In multi-issuer mode, consider `readinessRequireAllIssuers: false` (the
-  default) so a single IdP outage can't block a rollout.
-
 ## Security
 
 The chart runs the proxy with a **hardened SecurityContext by default**:
@@ -342,18 +279,10 @@ the grant cannot drift from the configuration. Keys that clients send
 themselves as `Impersonate-Extra-*` headers go in `rbac.userExtras`.
 
 If you enable a feature that writes to the local filesystem (e.g. an
-`audit-log-path` to a file), add an `emptyDir` via `extraVolumes` /
-`extraVolumeMounts` and relax `securityContext.readOnlyRootFilesystem`.
-
-## Testing the chart
-
-Committed fixtures under `ci/` cover both modes and are used by the
-`helm-chart` GitHub Actions workflow:
-
-```sh
-helm lint chart/kube-oidc-proxy -f chart/kube-oidc-proxy/ci/single-issuer-values.yaml
-helm template t chart/kube-oidc-proxy -f chart/kube-oidc-proxy/ci/multi-issuer-values.yaml
-```
+`audit-log-path` to a file), mount an `emptyDir` at that path via
+`extraVolumes` / `extraVolumeMounts`. `securityContext.readOnlyRootFilesystem`
+can stay `true`: it applies to the image's filesystem, and mounted volumes are
+writable regardless.
 
 ## See also
 

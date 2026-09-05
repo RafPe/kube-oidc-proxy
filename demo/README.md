@@ -1,7 +1,7 @@
 # kube-oidc-proxy multi-issuer demo
 
-A local, one-command demo that proves kube-oidc-proxy's headline feature:
-**multi-issuer authentication**. A single proxy is configured with a Kubernetes
+A local, one-command demo of kube-oidc-proxy's **multi-issuer
+authentication**. A single proxy is configured with a Kubernetes
 `AuthenticationConfiguration` that trusts **two** independent OIDC issuers, and
 tokens from *either* issuer authenticate through it and are impersonated to the
 Kubernetes API server as distinct users.
