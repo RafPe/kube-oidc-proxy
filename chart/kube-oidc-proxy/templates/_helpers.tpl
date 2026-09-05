@@ -43,3 +43,36 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
+
+{{/*
+Extra user-info keys the proxy must be allowed to impersonate.
+
+The API server authorizes every Impersonate-Extra-<key> header separately, as
+`impersonate` on `userextras/<key>` in authentication.k8s.io. A key the
+ServiceAccount is not granted fails the whole request with 403, so the
+ClusterRole has to name every key the proxy can emit. Two sources feed it:
+
+  1. `claimMappings.extra[].key` of every issuer in authenticationConfig.content,
+     read straight from that YAML so the grant cannot drift from the mapping;
+  2. `rbac.userExtras`, for keys that reach the proxy some other way.
+
+Returns a sorted, de-duplicated JSON array (helpers can only return strings).
+*/}}
+{{- define "kube-oidc-proxy.userExtraKeys" -}}
+{{- $keys := list -}}
+{{- with .Values.authenticationConfig.content -}}
+{{- $cfg := fromYaml . -}}
+{{- if hasKey $cfg "Error" -}}
+{{- fail (printf "authenticationConfig.content is not valid YAML: %s" (index $cfg "Error")) -}}
+{{- end -}}
+{{- range $issuer := (default (list) $cfg.jwt) -}}
+{{- range $extra := (default (list) (dig "claimMappings" "extra" (list) $issuer)) -}}
+{{- with $extra.key -}}{{- $keys = append $keys . -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- range (default (list) .Values.rbac.userExtras) -}}
+{{- $keys = append $keys (toString .) -}}
+{{- end -}}
+{{- $keys | uniq | sortAlpha | toJson -}}
+{{- end -}}

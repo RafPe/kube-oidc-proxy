@@ -141,6 +141,21 @@ authenticationConfig:
 # in single-issuer mode.
 readinessRequireAllIssuers: false
 
+# RBAC granted to the proxy's ServiceAccount.
+rbac:
+  # Extra user-info keys the proxy may impersonate, beyond the ones the chart
+  # always grants. The API server authorizes each Impersonate-Extra-<key>
+  # header as `impersonate` on `userextras/<key>`, and a key that is not
+  # granted fails the whole request with 403.
+  #
+  # Every `claimMappings.extra[].key` in authenticationConfig.content is
+  # granted automatically, so this list is only for keys that reach the proxy
+  # another way (e.g. a token-passthrough identity carrying its own extras).
+  # Example:
+  #   userExtras:
+  #     - example.com/team
+  userExtras: []
+
 # Token passthrough: forward the original bearer token to the API server for
 # requests whose token is not an OIDC token the proxy can verify.
 # https://github.com/rafpe/kube-oidc-proxy/blob/main/docs/configuration.md#token-passthrough

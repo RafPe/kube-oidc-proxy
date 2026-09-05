@@ -116,6 +116,7 @@ Ignored when `authenticationConfig.content` is set.
 | `oidc.tlsClient.certKey` | string | `"tls.crt"` | Certificate key in `oidc.tlsClient.existingSecret`. |
 | `oidc.tlsClient.keyKey` | string | `"tls.key"` | Private-key key in `oidc.tlsClient.existingSecret`. |
 | `readinessRequireAllIssuers` | bool | `false` | Require every issuer to initialize before the pod is ready. Default: ready once at least one initializes. |
+| `rbac.userExtras` | list | `[]` | Extra user-info keys the proxy's ServiceAccount may impersonate (`userextras/<key>`), in addition to every `claimMappings.extra[].key` found in `authenticationConfig.content`, which the chart grants automatically. Only needed for keys that reach the proxy another way. |
 
 ### Token passthrough & impersonation
 
@@ -306,6 +307,14 @@ dropped, no privilege escalation, and the `RuntimeDefault` seccomp profile. The
 proxy is a privileged component — its ServiceAccount can impersonate identities
 against the API server — so keep those defaults and restrict who can edit the
 Deployment and its RBAC. See [`../../docs/operations.md`](../../docs/operations.md#security).
+
+The API server authorizes each `Impersonate-Extra-<key>` header separately, as
+`impersonate` on `userextras/<key>`, and a key the ServiceAccount is not
+granted fails the whole request with 403. The chart's ClusterRole therefore
+grants every `claimMappings.extra[].key` declared in
+`authenticationConfig.content`, read from that YAML at render time so the grant
+cannot drift from the mapping. Keys that reach the proxy some other way go in
+`rbac.userExtras`.
 
 If you enable a feature that writes to the local filesystem (e.g. an
 `audit-log-path` to a file), add an `emptyDir` via `extraVolumes` /
