@@ -129,12 +129,13 @@ jobs:
           BOT_LOGIN: claude[bot]
         run: |
           set -euo pipefail
-          # BASE is the base branch tip, fetched as a single commit like HEAD,
-          # so `git diff BASE HEAD` is a two-dot diff of two trees. It differs
-          # from `gh pr diff` (merge-base) when the base has moved since the
-          # PR branched: the review is told to use `gh pr diff --name-only`
-          # for the file list and the two-dot diff for content.
-          base=$(gh pr view "${PR}" -R "${GITHUB_REPOSITORY}" --json baseRefOid --jq '.baseRefOid')
+          # BASE is the merge base of the PR with its base branch, so
+          # `git diff BASE HEAD` is the PR's own change (what `gh pr diff`
+          # shows) even after the base branch has moved on. Both endpoints are
+          # fetched as single commits; the main checkout is the current base
+          # for surrounding code.
+          refs=$(gh pr view "${PR}" -R "${GITHUB_REPOSITORY}" --json baseRefOid,headRefOid --jq '.baseRefOid + "..." + .headRefOid')
+          base=$(gh api "repos/${GITHUB_REPOSITORY}/compare/${refs}" --jq '.merge_base_commit.sha')
           git fetch --no-tags --depth=1 origin "${base}" "+refs/pull/${PR}/head:refs/remotes/pr/head"
           echo "base=${base}" >> "${GITHUB_OUTPUT}"
           echo "head=$(git rev-parse refs/remotes/pr/head)" >> "${GITHUB_OUTPUT}"
@@ -220,7 +221,7 @@ jobs:
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.issue.number }}
-            BASE COMMIT: ${{ steps.endpoints.outputs.base }}
+            BASE COMMIT: ${{ steps.endpoints.outputs.base }} (merge base with the base branch)
             HEAD COMMIT: ${{ steps.endpoints.outputs.head }} (also the ref pr/head)
             PREVIOUS REVIEW HEAD: ${{ steps.endpoints.outputs.previous || 'none (first review of this PR)' }}
             PREVIOUS REVIEW FILE: ${{ steps.endpoints.outputs.previous_file || 'none' }}
@@ -242,15 +243,13 @@ jobs:
             - Do the review yourself, in this session. Do not delegate to
               subagents or background agents; a verdict must rest on what you
               read here.
-            - Start with `gh pr diff PR --name-only` for the changed files and
-              `gh pr view` for the description. For a large PR, work area by
-              area: `git diff BASE HEAD -- <paths>` for each area, `git show
-              pr/head:<path>` to read a changed file in full, and the
+            - Start with `git diff --stat BASE HEAD` for the changed files and
+              `gh pr view` for the description. BASE is the merge base with the
+              base branch, so that diff is the PR's own change. For a large PR,
+              work area by area: `git diff BASE HEAD -- <paths>` for each area,
+              `git show pr/head:<path>` to read a changed file in full, and the
               checked-out main tree (Read, Grep, Glob) for the surrounding
-              code. BASE is the base branch tip, so a file the base changed
-              after the PR branched shows the base's change reversed; the
-              `--name-only` list from `gh pr diff` is the authority on what the
-              PR touches. Never pull the whole diff through one command.
+              code. Never pull the whole diff through one command.
             - Re-review (PREVIOUS REVIEW HEAD is a commit): you are continuing
               your own earlier review, not starting over. Read PREVIOUS REVIEW
               FILE first: it holds your last summary and every inline thread
@@ -313,12 +312,17 @@ jobs:
           HEAD: ${{ steps.endpoints.outputs.head }}
           BOT_LOGIN: claude[bot]
           OUTCOME: ${{ steps.review.outcome }}
+          # Only a summary posted after the triggering comment belongs to this
+          # run: a re-review of an unchanged head would otherwise find the
+          # previous run's marker and stay silent.
+          TRIGGERED_AT: ${{ github.event.comment.created_at }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           posted=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
-            | jq -s --arg bot "${BOT_LOGIN}" --arg head "${HEAD}" '
+            | jq -s --arg bot "${BOT_LOGIN}" --arg head "${HEAD}" --arg since "${TRIGGERED_AT}" '
                 add | map(select(.user.login == $bot and .user.type == "Bot"
+                                 and .created_at > $since
                                  and (.body | startswith("<!-- claude-review head=" + $head + " -->")))) | length')
           if [ "${posted}" != "0" ]; then exit 0; fi
           gh pr comment "${PR}" -R "${GITHUB_REPOSITORY}" --body "$(cat <<EOF
