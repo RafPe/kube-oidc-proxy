@@ -708,3 +708,28 @@ func TestReadinessServerFailedOnShutdownError(t *testing.T) {
 	close(release)
 	_ = s.Shutdown()
 }
+
+// TestStalePendingResultIsDroppedOnceInitialized pins the ordering guard for
+// concurrent checks. Two checks can snapshot the same issuer as uninitialized;
+// if the first records it initialized, the second still holds a pending result
+// that is now stale and must not be published after the initialized record,
+// nor hold readiness back.
+func TestStalePendingResultIsDroppedOnceInitialized(t *testing.T) {
+	root, cap := logtest.New(t, 0)
+	defer logtest.AssertRegistered(t, cap)
+	hc := newTestHealthCheckWithLogger(t, root, true, nil,
+		IssuerReadiness{IssuerURL: "https://a", FakeJWT: "jwt-a"})
+
+	hc.mu.Lock()
+	hc.initialized["https://a"] = true
+	pending := hc.recordProbeResults(context.Background(), nil,
+		[]pendingIssuer{{issuerURL: "https://a", reason: pendingNotInitialized}})
+	hc.mu.Unlock()
+
+	if len(pending) != 0 {
+		t.Fatalf("stale pending result kept: %v", pending)
+	}
+	if got := cap.ByEvent(logging.EventOIDCIssuerPending); len(got) != 0 {
+		t.Fatalf("pending published after initialized: %v", got)
+	}
+}

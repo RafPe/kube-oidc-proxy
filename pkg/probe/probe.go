@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -387,33 +388,7 @@ func (h *HealthCheck) Check() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	for _, issuerURL := range newlyInitialized {
-		if h.initialized[issuerURL] {
-			continue
-		}
-		h.initialized[issuerURL] = true
-		logging.Emit(ctx, h.oidcLogger, logging.EventOIDCIssuerInitialized,
-			slog.String("issuer_name", IssuerName(issuerURL)),
-			slog.String("issuer_state", "initialized"),
-			slog.Int("ready_issuers", len(h.initialized)),
-			slog.Int("total_issuers", len(h.issuers)))
-	}
-
-	// Report only on change, and record the new state either way so that a
-	// pending set which clears and later recurs is reported again. The reason
-	// is part of the state: an issuer moving from unreachable to still
-	// initializing is a change worth a record.
-	if key := pendingKey(pending); key != h.lastPending {
-		for _, p := range pending {
-			logging.Emit(ctx, h.oidcLogger, logging.EventOIDCIssuerPending,
-				slog.String("issuer_name", IssuerName(p.issuerURL)),
-				slog.String("issuer_state", "pending"),
-				slog.String("pending_reason", p.reason),
-				slog.Int("ready_issuers", len(h.initialized)),
-				slog.Int("total_issuers", len(h.issuers)))
-		}
-		h.lastPending = key
-	}
+	pending = h.recordProbeResults(ctx, newlyInitialized, pending)
 
 	if h.ready {
 		return nil
@@ -432,6 +407,52 @@ func (h *HealthCheck) Check() error {
 		slog.Int("total_issuers", len(h.issuers)),
 		slog.String("readiness_mode", ReadinessMode(h.requireAll)))
 	return nil
+}
+
+// recordProbeResults records the outcome of one probe round: it marks the newly
+// initialized issuers, publishes their records, and reports the pending set on
+// change. It returns the pending results still current, which readiness is
+// then evaluated against. A pending result for an issuer another check has
+// initialized in the meantime is stale (both checks snapshotted it as
+// uninitialized, the other answered first) and is dropped, so the newest record
+// for that issuer stays the initialized one and readiness is not held back by
+// it. The caller holds h.mu.
+func (h *HealthCheck) recordProbeResults(ctx context.Context, newlyInitialized []string, pending []pendingIssuer) []pendingIssuer {
+	for _, issuerURL := range newlyInitialized {
+		if h.initialized[issuerURL] {
+			continue
+		}
+		h.initialized[issuerURL] = true
+		logging.Emit(ctx, h.oidcLogger, logging.EventOIDCIssuerInitialized,
+			slog.String("issuer_name", IssuerName(issuerURL)),
+			slog.String("issuer_state", "initialized"),
+			slog.Int("ready_issuers", len(h.initialized)),
+			slog.Int("total_issuers", len(h.issuers)))
+	}
+
+	// Drop results made stale by a concurrent check that initialized the
+	// issuer between this check's snapshot and now.
+	pending = slices.DeleteFunc(pending, func(p pendingIssuer) bool {
+		return h.initialized[p.issuerURL]
+	})
+
+	// Report only on change, and record the new state either way so that a
+	// pending set which clears and later recurs is reported again. The reason
+	// is part of the state: an issuer moving from unreachable to still
+	// initializing is a change worth a record.
+	if key := pendingKey(pending); key != h.lastPending {
+		for _, p := range pending {
+			logging.Emit(ctx, h.oidcLogger, logging.EventOIDCIssuerPending,
+				slog.String("issuer_name", IssuerName(p.issuerURL)),
+				slog.String("issuer_state", "pending"),
+				slog.String("pending_reason", p.reason),
+				slog.Int("ready_issuers", len(h.initialized)),
+				slog.Int("total_issuers", len(h.issuers)))
+		}
+		h.lastPending = key
+	}
+
+	return pending
 }
 
 // pendingKey renders the pending set as a comparable string so an unchanged
