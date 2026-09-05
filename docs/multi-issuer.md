@@ -112,6 +112,159 @@ Notes:
   `workflow_ref` instead if you want the top-level workflow rather than the
   called/reusable one.
 
+#### Production mapping: trust tiers, audit extras, hard gates
+
+The recipes above show the mechanics. This one is a complete issuer entry for
+an organisation that lets many repositories deploy through one proxy. It is
+built on three ideas:
+
+1. **RBAC ORs its subjects.** A binding can list several groups, but any one
+   of them is enough. There is no way to say "repo X *and* a protected
+   branch". So every group must already encode its whole trust condition:
+   `gha:protected:my-org/my-repo`, not a bare `gha:protected` that any repo
+   could satisfy.
+2. **Groups are for RBAC; `extra` is for audit.** Things you would never bind
+   a role to (the triggering actor, the run ID, the commit SHA) still belong
+   in the audit log. `claimMappings.extra` puts them into `user.extra` of every
+   API-server audit event without growing the group list.
+3. **Pin numeric IDs, print names.** GitHub names (org, repo, actor) can be
+   renamed or re-registered; the numeric IDs cannot. Validation rules pin the
+   IDs. Name-based groups stay for readability, ID-based ones for bindings
+   that must survive a rename.
+
+```yaml
+- issuer:
+    url: https://token.actions.githubusercontent.com
+    audiences: ["kube-oidc-proxy.example.com"]
+  claimMappings:
+    username:
+      # Audit identity: gha:<org>/<repo>:<ref>. Bind RBAC to groups, not to
+      # this, except for one-off pinpoint grants.
+      expression: '"gha:" + claims.repository + ":" + claims.ref'
+    groups:
+      # Base groups every token gets, then conditional tiers a token only
+      # gets when it earned them. `cond ? [x] : []` adds x or nothing.
+      expression: >-
+        [
+          "gha:org:" + claims.repository_owner,
+          "gha:org-id:" + claims.repository_owner_id,
+          "gha:repo:" + claims.repository,
+          "gha:workflow:" + claims.job_workflow_ref
+        ]
+        + (claims.ref_protected == "true" ? ["gha:protected:" + claims.repository] : [])
+        + (claims.ref_type == "tag" ? ["gha:tag:" + claims.repository] : [])
+        + (has(claims.environment) ? ["gha:env:" + claims.repository + ":" + claims.environment] : [])
+    extra:
+      # Forwarded as Impersonate-Extra-* headers; visible in audit logs only.
+      - key: github.com/actor
+        valueExpression: claims.actor
+      - key: github.com/actor-id
+        valueExpression: claims.actor_id
+      - key: github.com/event
+        valueExpression: claims.event_name
+      - key: github.com/run-id
+        valueExpression: claims.run_id
+      - key: github.com/run-attempt
+        valueExpression: claims.run_attempt
+      - key: github.com/sha
+        valueExpression: claims.sha
+      - key: github.com/repository
+        valueExpression: claims.repository
+      - key: github.com/repository-id
+        valueExpression: claims.repository_id
+      - key: github.com/org-id
+        valueExpression: claims.repository_owner_id
+      - key: github.com/runner
+        valueExpression: claims.runner_environment
+  claimValidationRules:
+    # Hard gates: a token failing any of these is rejected before mapping.
+    - expression: 'claims.enterprise == "my-enterprise"'
+      message: "token not issued within the expected enterprise"
+    - expression: 'claims.enterprise_id == "2468"'
+      message: "token not issued within the expected enterprise (id mismatch)"
+    - expression: 'claims.repository_owner_id == "1234567"'
+      message: "token not issued for the expected organisation"
+    - expression: 'claims.repository_visibility != "public"'
+      message: "tokens from public repositories are not accepted"
+    # Optional: accept only your own runners.
+    # - expression: 'claims.runner_environment == "self-hosted"'
+    #   message: "only self-hosted runners may reach this cluster"
+  userValidationRules:
+    - expression: "!user.username.startsWith('system:')"
+      message: "username cannot use the system: prefix"
+    - expression: "user.groups.all(g, !g.startsWith('system:'))"
+      message: "groups cannot use the system: prefix"
+```
+
+The `enterprise` and `enterprise_id` claims exist only on GitHub Enterprise
+Cloud tokens; drop those two rules on a plain github.com organisation, or the
+missing claim makes the rule error and every token is rejected.
+
+**What a token maps to.** For a `workflow_dispatch` run on the unprotected
+`main` branch of `my-org/my-repo`, triggered by `octocat`, with no
+`environment:` in the job:
+
+| | |
+| --- | --- |
+| username | `gha:my-org/my-repo:refs/heads/main` |
+| groups | `gha:org:my-org` |
+| | `gha:org-id:1234567` |
+| | `gha:repo:my-org/my-repo` |
+| | `gha:workflow:my-org/my-repo/.github/workflows/deploy.yml@refs/heads/main` |
+| extra | `github.com/actor=octocat`, `github.com/actor-id=555`, `github.com/event=workflow_dispatch`, `github.com/run-id=…`, `github.com/sha=…`, … |
+
+A push from a protected branch into a job with `environment: prod`, calling a
+central reusable workflow, additionally yields `gha:protected:my-org/my-repo`
+and `gha:env:my-org/my-repo:prod`, and the workflow group becomes the reusable
+workflow's own ref (e.g. `…/platform-workflows/.github/workflows/deploy.yml@refs/tags/v3`).
+A release built from a tag yields `gha:tag:my-org/my-repo` instead.
+
+**Which tier to bind to what.**
+
+| Group | Means | Bind it to |
+| --- | --- | --- |
+| `gha:org:<org>` / `gha:org-id:<id>` | any repo in the org, any ref | read-only roles only (`view`) |
+| `gha:repo:<org>/<repo>` | any ref of one repo | that repo's own namespace, `edit` or a purpose-built role |
+| `gha:protected:<org>/<repo>` | ref is under a branch/tag protection rule or ruleset | deploy roles for shared or production namespaces |
+| `gha:env:<org>/<repo>:<env>` | job passed that environment's protection rules (reviewers, wait timer) | production deploys; strongest signal available |
+| `gha:tag:<org>/<repo>` | ref is a tag | release pipelines that cut from tags |
+| `gha:workflow:<ref>` | exact workflow file at exact ref | a platform-owned reusable deploy workflow: only jobs calling it get the role, whichever repo they live in |
+
+The environment group is repo-scoped on purpose: environment names are per
+repository, so an org-wide `gha:env:prod` would admit every repo's `prod`.
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gha-prod-deployers
+  namespace: payments
+subjects:
+- kind: Group
+  name: "gha:env:my-org/payments:prod"        # passed the prod environment gate
+  apiGroup: rbac.authorization.k8s.io
+- kind: Group
+  name: "gha:workflow:my-org/platform-workflows/.github/workflows/deploy.yml@refs/tags/v3"
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: edit
+  apiGroup: rbac.authorization.k8s.io
+```
+
+Notes:
+
+- The three conditional terms compare **strings**: GitHub emits
+  `"ref_protected": "false"` as text, so `== "true"` in quotes is correct
+  and a bare `== true` would never match.
+- `has(claims.environment)` is mandatory. Without the guard, every token that
+  lacks the claim makes the expression error and is rejected.
+- Claims left out on purpose: `jti`, `run_number`, `check_run_id`,
+  `workflow_sha` and `job_workflow_sha` add nothing over `run_id` and `sha`;
+  `base_ref`/`head_ref` are empty outside pull requests. `sub` is not used for
+  the username because GitHub is changing its format to embed numeric IDs,
+  which would silently change every binding.
+
 ### TeamCity ([teamcity-oidc-jwt](https://github.com/JetBrains/teamcity-oidc-jwt) plugin)
 
 The plugin serves unauthenticated discovery/JWKS under
