@@ -7,6 +7,24 @@ This is particularly useful on managed clusters (EKS, GKE, DOKS, ...) where
 apiserver flags cannot be changed and only a single (or no) native OIDC
 provider can be configured.
 
+- [Enabling](#enabling)
+- [Examples](#examples)
+  - [GitHub Actions](#github-actions)
+    - [Synthesizing several groups from one token](#synthesizing-several-groups-from-one-token)
+    - [Production mapping: trust tiers, audit extras, hard gates](#production-mapping-trust-tiers-audit-extras-hard-gates)
+  - [TeamCity](#teamcity-teamcity-oidc-jwt-plugin)
+  - [Google service accounts (workloads on GKE / GCE)](#google-service-accounts-workloads-on-gke--gce)
+  - [GKE workloads via the cluster's own issuer](#gke-workloads-via-the-clusters-own-issuer-per-serviceaccount-identity)
+  - [Internal / custom issuer with a private CA](#internal--custom-issuer-with-a-private-ca)
+  - [GitLab CI](#gitlab-ci)
+  - [RBAC for the mapped identities](#rbac-for-the-mapped-identities)
+- [Security: always use distinct per-issuer prefixes](#security-always-use-distinct-per-issuer-prefixes)
+- [Readiness](#readiness)
+  - [Issuer records in the log](#issuer-records-in-the-log)
+- [Helm](#helm)
+- [Notes](#notes)
+- [See also](#see-also)
+
 ## Enabling
 
 Pass `--authentication-config=/path/to/config.yaml`. This flag is mutually
