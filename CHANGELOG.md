@@ -1,6 +1,12 @@
 # Unreleased
 <!-- next-release -->
 
+## [1.7.1] - 2026-09-05
+
+- The Helm chart's ClusterRole now lets the proxy's ServiceAccount create `SubjectAccessReview`s. The proxy authorizes every inbound `Impersonate-*` header value with one before forwarding, so on a chart install every `kubectl --as` request failed with HTTP 500 and `reason=internal_error` (`authz.sar.failed` carried `cannot create resource "subjectaccessreviews"`). The end-to-end suite grants this in its own fixture, which is why it never surfaced there. Plain token requests were unaffected.
+- The Helm chart's ClusterRole now grants `impersonate` on `userextras/<key>` for every `claimMappings.extra[].key` declared in `authenticationConfig.content`, plus any keys listed in the new `rbac.userExtras` value. Previously an issuer that mapped extra claims had every request rejected with 403, because the API server authorizes each `Impersonate-Extra-<key>` header separately and the chart only granted a fixed set of keys. The chart's development baseline `appVersion` is 1.7.0.
+- Every namespaced object the Helm chart renders now carries `metadata.namespace` set to the release namespace. `helm install` was unaffected, but `helm template ... | kubectl apply -f` placed the Deployment, Service, ServiceAccount, Secrets and Ingress in the caller's current namespace while the ClusterRoleBinding still named the rendered one, so a proxy applied that way ran without its RBAC grants. Manifests rendered for GitOps now land in the namespace they were rendered for.
+
 ## [1.7.0] - 2026-09-05
 
 - Security denials now appear at the default verbosity as `AuFail` records with a `reason`; the readiness transition is INFO; "issuers pending" is logged on change only; Kubernetes library output is JSON under `component=k8s`.
