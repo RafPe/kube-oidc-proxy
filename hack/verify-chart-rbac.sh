@@ -29,6 +29,17 @@ out=$(render -f "$CHART/ci/multi-issuer-values.yaml" --set 'rbac.userExtras={git
 n=$(grep -c -- '"userextras/github.com/actor"' <<<"$out" || true)
 [ "$n" = "1" ] || { echo "duplicate key granted ${n} times, expected 1" >&2; exit 1; }
 
+# `helm upgrade --reuse-values` renders with the previous release's stored
+# values and does not merge this chart's defaults, so a release installed
+# before `rbac` existed renders with .Values.rbac nil. Nulling the key
+# reproduces that; the render must succeed and still grant the config's keys.
+out=$(render -f "$CHART/ci/multi-issuer-values.yaml" --set 'rbac=null') \
+  || { echo "render failed with rbac unset (--reuse-values from an older release)" >&2; exit 1; }
+grep -q -- '"userextras/github.com/actor"' <<<"$out" \
+  || { echo "config-declared key not granted when rbac is unset" >&2; exit 1; }
+! grep -q -- 'example.com/team' <<<"$out" \
+  || { echo "rbac.userExtras key granted although rbac is unset" >&2; exit 1; }
+
 # Malformed authenticationConfig.content must fail the render, not silently
 # grant nothing.
 if helm template kop "$CHART" --set 'authenticationConfig.content=jwt: [' >/dev/null 2>&1; then

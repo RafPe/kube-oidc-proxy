@@ -60,7 +60,14 @@ Returns a sorted, de-duplicated JSON array (helpers can only return strings).
 */}}
 {{- define "kube-oidc-proxy.userExtraKeys" -}}
 {{- $keys := list -}}
-{{- with .Values.authenticationConfig.content -}}
+{{/*
+Every lookup is wrapped in `with`: `helm upgrade --reuse-values` renders with
+the values stored by the previous release and does not merge this chart's
+defaults, so a key introduced after that release (rbac, and any future one)
+is nil rather than its default.
+*/}}
+{{- with .Values.authenticationConfig -}}
+{{- with .content -}}
 {{- $cfg := fromYaml . -}}
 {{- if hasKey $cfg "Error" -}}
 {{- fail (printf "authenticationConfig.content is not valid YAML: %s" (index $cfg "Error")) -}}
@@ -71,8 +78,11 @@ Returns a sorted, de-duplicated JSON array (helpers can only return strings).
 {{- end -}}
 {{- end -}}
 {{- end -}}
-{{- range (default (list) .Values.rbac.userExtras) -}}
+{{- end -}}
+{{- with .Values.rbac -}}
+{{- range (default (list) .userExtras) -}}
 {{- $keys = append $keys (toString .) -}}
+{{- end -}}
 {{- end -}}
 {{- $keys | uniq | sortAlpha | toJson -}}
 {{- end -}}
