@@ -462,8 +462,8 @@ kubectl --server=https://127.0.0.1:8443 --insecure-skip-tls-verify=true --token=
 
 `auth whoami` prints the identity exactly as the API server saw it: the mapped
 username, the groups (plus `system:authenticated`, which the proxy appends to
-every request it impersonates) and every `extra` value. Add `-v 8` to see the raw status and body
-behind kubectl's summary messages.
+every request it impersonates) and every `extra` value. Add `-v 8` to see the
+raw status and body behind kubectl's summary messages.
 
 ### Turning up verbosity
 
