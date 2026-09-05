@@ -7,6 +7,29 @@ via `extraArgs`. Flags are defined in [`../cmd/app/options/`](../cmd/app/options
 > **Multi-issuer is the headline feature.** Accepting tokens from several OIDC
 > issuers at once has its own guide: [multi-issuer authentication](./multi-issuer.md).
 
+- [CLI reference](#cli-reference)
+  - [Multi-issuer authentication](#multi-issuer-authentication)
+  - [Single-issuer OIDC](#single-issuer-oidc)
+  - [OIDC issuer mutual TLS](#oidc-issuer-mutual-tls)
+  - [Token passthrough & impersonation](#token-passthrough--impersonation)
+  - [Logging](#logging)
+  - [Serving / TLS & misc](#serving--tls--misc)
+- [Impersonation model](#impersonation-model)
+  - [Inbound impersonation (`kubectl --as`)](#inbound-impersonation-kubectl---as)
+  - [SubjectAccessReview caching and the header value cap](#subjectaccessreview-caching-and-the-header-value-cap)
+  - [Reserved `system:` identities](#reserved-system-identities)
+  - [Original-user audit headers](#original-user-audit-headers)
+- [Token passthrough](#token-passthrough)
+  - [TokenReview caching](#tokenreview-caching)
+- [No impersonation](#no-impersonation)
+- [Extra impersonation headers](#extra-impersonation-headers)
+- [Trusted proxies and client IP](#trusted-proxies-and-client-ip)
+  - [Resolution rules](#resolution-rules)
+  - [Default: trust nothing](#default-trust-nothing)
+  - [Deployment topology](#deployment-topology)
+- [Auditing](#auditing)
+- [See also](#see-also)
+
 ## CLI reference
 
 The proxy binary is `kube-oidc-proxy`. Its `--oidc-*` flags mirror the

@@ -2,6 +2,26 @@
 
 Security, troubleshooting, and testing the proxy locally.
 
+- [Security](#security)
+- [Troubleshooting](#troubleshooting)
+  - [Reading the request log](#reading-the-request-log)
+  - [Watching requests](#watching-requests)
+  - [Turning up verbosity](#turning-up-verbosity)
+- [Development and testing](#development-and-testing)
+  - [Local dev cluster](#local-dev-cluster)
+  - [End-to-end tests](#end-to-end-tests)
+- [Local multi-issuer test: kind and GitHub Actions](#local-multi-issuer-test-kind-and-github-actions)
+  - [Prerequisites](#prerequisites)
+  - [1. Token-minting workflow (one-time)](#1-token-minting-workflow-one-time)
+  - [2. Build the image and create the cluster](#2-build-the-image-and-create-the-cluster)
+  - [3. Deploy the chart](#3-deploy-the-chart)
+  - [4. RBAC](#4-rbac)
+  - [5. Mint a token and fetch it (TTL ~5 min — move fast)](#5-mint-a-token-and-fetch-it-ttl-5-min--move-fast)
+  - [6. Test through the proxy](#6-test-through-the-proxy)
+  - [7. Access logs and cleanup](#7-access-logs-and-cleanup)
+  - [Adding the next system](#adding-the-next-system)
+- [See also](#see-also)
+
 ## Security
 
 - **The proxy is a privileged component.** Its ServiceAccount can impersonate

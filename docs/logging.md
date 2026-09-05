@@ -12,12 +12,13 @@ how much of it you see.
 - [Verbosity](#verbosity)
 - [Event registry](#event-registry)
 - [Field reference](#field-reference)
-- [Shutdown and exit status](#shutdown-and-exit-status)
+- [Startup, shutdown and exit status](#startup-shutdown-and-exit-status)
 - [Correlation](#correlation)
 - [Worked queries](#worked-queries)
 - [ECS mapping](#ecs-mapping)
 - [Versioning](#versioning)
 - [Redaction](#redaction)
+- [See also](#see-also)
 
 ## Record shape
 

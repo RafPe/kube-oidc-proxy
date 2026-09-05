@@ -21,6 +21,13 @@ authentication and authorization: 10-second TTLs, definitive results only —
 caches of at most **8192 entries**, so client-influenced input can never grow
 the proxy's memory without bound.
 
+- [TokenReview result cache](#tokenreview-result-cache)
+- [SubjectAccessReview decision cache](#subjectaccessreview-decision-cache)
+- [Impersonation header value cap](#impersonation-header-value-cap)
+- [Observing the caches](#observing-the-caches)
+- [Tuning](#tuning)
+- [See also](#see-also)
+
 ## TokenReview result cache
 
 Applies only with [`--token-passthrough`](./configuration.md#token-passthrough).

@@ -11,6 +11,16 @@ Because the proxy performs authentication itself, you get OIDC login **without
 touching the API server's `--oidc-*` flags** — exactly the knobs you can't reach
 on a managed control plane (EKS, GKE, AKS, ...).
 
+- [Request flow](#request-flow)
+- [The auth → impersonate handler chain](#the-auth--impersonate-handler-chain)
+- [Multi-issuer union authenticator](#multi-issuer-union-authenticator)
+- [Readiness semantics](#readiness-semantics)
+- [Diagrams](#diagrams)
+  - [System context (C4 level 1)](#system-context-c4-level-1)
+  - [Containers (C4 level 2)](#containers-c4-level-2)
+  - [Handler-chain components (C4 level 3)](#handler-chain-components-c4-level-3)
+- [See also](#see-also)
+
 ## Request flow
 
 1. A client (`kubectl`) sends a request over HTTPS, carrying an OIDC **ID
