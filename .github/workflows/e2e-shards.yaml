@@ -86,12 +86,18 @@ jobs:
           rm -f ./kubectl
           kubectl version --client
 
+      # The suite deploys the proxy with the ClusterRole rendered from the
+      # chart, so it needs helm on PATH.
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+
       - name: Tool versions
         run: |
           go version
           docker version
           kubectl version --client
           kind version
+          helm version
 
       - name: Run e2e suite
         env:

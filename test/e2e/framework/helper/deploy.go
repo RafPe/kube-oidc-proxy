@@ -158,6 +158,15 @@ func (h *Helper) DeployProxyWithExtras(ns *corev1.Namespace, issuerURL *url.URL,
 	pTrue := true
 	pFalse := false
 
+	// The proxy's own permissions come from the Helm chart, rendered with the
+	// suite's values file, not from a copy kept here. A permission the proxy
+	// needs but the chart does not grant therefore fails the suite, which is
+	// the artefact operators install.
+	chartRules, err := ChartClusterRoleRules(h.cfg.RepoRoot, ChartRBACValuesFile)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	crole, err := h.KubeClient.RbacV1().ClusterRoles().Create(context.TODO(), &rbacv1.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: kind.ProxyImageName + "-",
@@ -172,23 +181,7 @@ func (h *Helper) DeployProxyWithExtras(ns *corev1.Namespace, issuerURL *url.URL,
 				},
 			},
 		},
-		Rules: []rbacv1.PolicyRule{
-			{
-				APIGroups: []string{""},
-				Resources: []string{"users", "groups", "serviceaccounts"},
-				Verbs:     []string{"impersonate"},
-			},
-			{
-				APIGroups: []string{"authentication.k8s.io"},
-				Resources: []string{"userextras/scopes", "tokenreviews", "uids", "userextras/originaluser.jetstack.io-user", "userextras/originaluser.jetstack.io-groups", "userextras/originaluser.jetstack.io-uid", "userextras/originaluser.jetstack.io-extra", "userextras/oktoimpersonateextra"},
-				Verbs:     []string{"impersonate", "create"},
-			},
-			{
-				APIGroups: []string{"authorization.k8s.io"},
-				Resources: []string{"subjectaccessreviews"},
-				Verbs:     []string{"create"},
-			},
-		},
+		Rules: chartRules,
 	}, metav1.CreateOptions{})
 	if err != nil {
 		return nil, nil, err

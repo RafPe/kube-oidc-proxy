@@ -498,8 +498,12 @@ images, runs the suite, and tears the cluster down on exit (including on failure
 or interrupt). No pre-existing cluster is required.
 
 Prerequisites (all on `PATH`): `go`, `docker` (daemon running), `kind`,
-`kubectl`. Images are built for the host architecture, so the suite runs on both
-`amd64` and `arm64` (e.g. Apple Silicon).
+`kubectl`, `helm`. Images are built for the host architecture, so the suite runs
+on both `amd64` and `arm64` (e.g. Apple Silicon). The suite deploys the proxy
+with the ClusterRole rendered from the Helm chart, not a copy of its own, so a
+permission the proxy needs but the chart does not grant fails the suite; a unit
+test in the framework checks the same thing against the list of extra keys the
+proxy code emits.
 
 ```sh
 make e2e          # build images, spin up kind, run the suite, tear down
