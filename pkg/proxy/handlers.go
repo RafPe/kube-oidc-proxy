@@ -414,14 +414,14 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 		if targetForContext != nil {
 			// add the original user's information as extra headers
 			// so they're recorded in the API server's audit log
-			extra["originaluser.jetstack.io-user"] = []string{userForContext.GetName()}
+			extra[accesslogging.ExtraKeyOriginalUser] = []string{userForContext.GetName()}
 
 			if origGroups := userForContext.GetGroups(); len(origGroups) > 0 {
-				extra["originaluser.jetstack.io-groups"] = slices.Clone(origGroups)
+				extra[accesslogging.ExtraKeyOriginalGroups] = slices.Clone(origGroups)
 			}
 
 			if userForContext.GetUID() != "" {
-				extra["originaluser.jetstack.io-uid"] = []string{userForContext.GetUID()}
+				extra[accesslogging.ExtraKeyOriginalUID] = []string{userForContext.GetUID()}
 			}
 
 			if len(userForContext.GetExtra()) > 0 {
@@ -430,7 +430,7 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 					p.handleError(rw, req, errJSONMarshal)
 					return
 				}
-				extra["originaluser.jetstack.io-extra"] = []string{string(jsonExtras)}
+				extra[accesslogging.ExtraKeyOriginalExtra] = []string{string(jsonExtras)}
 			}
 		}
 
