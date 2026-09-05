@@ -1,0 +1,2 @@
+kind: Fixed
+body: Every namespaced object the Helm chart renders now carries `metadata.namespace` set to the release namespace. `helm install` was unaffected, but `helm template ... | kubectl apply -f` placed the Deployment, Service, ServiceAccount, Secrets and Ingress in the caller's current namespace while the ClusterRoleBinding still named the rendered one, so a proxy applied that way ran without its RBAC grants. Manifests rendered for GitOps now land in the namespace they were rendered for.
