@@ -3,6 +3,13 @@
 Ordinary pull requests never publish a release. This repository uses the same
 review-gated release contract as the other RafPe Go projects.
 
+- [Release model](#release-model)
+- [Contributor metadata](#contributor-metadata)
+- [Cutting a release](#cutting-a-release)
+- [Recovery](#recovery)
+- [Repository setup](#repository-setup)
+- [Maintainer checks](#maintainer-checks)
+
 ## Release model
 
 | Concept | Contract |

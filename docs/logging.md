@@ -12,12 +12,13 @@ how much of it you see.
 - [Verbosity](#verbosity)
 - [Event registry](#event-registry)
 - [Field reference](#field-reference)
-- [Shutdown and exit status](#shutdown-and-exit-status)
+- [Startup, shutdown and exit status](#startup-shutdown-and-exit-status)
 - [Correlation](#correlation)
 - [Worked queries](#worked-queries)
 - [ECS mapping](#ecs-mapping)
 - [Versioning](#versioning)
 - [Redaction](#redaction)
+- [See also](#see-also)
 
 ## Record shape
 
@@ -312,19 +313,24 @@ syntactically valid inbound value from an untrusted peer is kept as
 ingress, never authoritative. See
 [trusted proxies and client IP](./configuration.md#trusted-proxies-and-client-ip).
 
-Two vocabularies differ between the proxy and the API server, on purpose:
+Two decisions are recorded for a forwarded request, and they answer different
+questions:
 
-| Proxy | kube-apiserver audit | Meaning |
+| Field | Who decides | Question answered |
 | --- | --- | --- |
-| `decision=allow` | `authorization.k8s.io/decision=allow` | the request was authorized |
-| `decision=deny` | `authorization.k8s.io/decision=forbid` | the request was refused |
+| `decision` on the proxy's access record | the proxy | Was the request admitted: token verified and any `Impersonate-*` headers authorized? `allow` means it was forwarded. |
+| `authorization.k8s.io/decision` on the API server's audit event | the API server | Was the impersonated identity allowed to perform the action? `allow` or `forbid`. |
 
-**`decision=deny` equals `authorization.k8s.io/decision=forbid`.** The proxy
-keeps `deny` because `event=AuSuccess|AuFail` and `decision=allow|deny` are the
-frozen contract SIEM rules already key on. `event` names the outcome,
-`event_type` names the record shape; `AuSuccess` is only ever emitted with
-`decision=allow` and `AuFail` only with `decision=deny`, and a test enforces the
-pairing.
+`decision=allow` followed by an upstream `403` is a normal, healthy outcome:
+the proxy admitted the request and RBAC refused the action. The upstream
+result is `http_status` on `request.response.completed` and the annotation on
+the API server's event. `decision=deny` means the proxy refused the request
+itself, so no API server audit event exists for it, and `reason` says why.
+
+`event=AuSuccess|AuFail` and `decision=allow|deny` are the frozen contract SIEM
+rules already key on. `event` names the outcome, `event_type` names the record
+shape; `AuSuccess` is only ever emitted with `decision=allow` and `AuFail` only
+with `decision=deny`, and a test enforces the pairing.
 
 ## Worked queries
 
@@ -395,6 +401,61 @@ index=kubernetes sourcetype=kube-oidc-proxy event_type="oidc.issuer.pending"
 `oidc.issuer.pending` fires on a state change, not on every readiness scrape, so
 the newest record per `issuer_name` is the current state. See
 [multi-issuer readiness](./multi-issuer.md#readiness).
+
+### Every replica at once
+
+`kubectl logs deploy/<name>` reads one pod. Select by label to merge all
+replicas, and lift the per-pod line cap kubectl applies to a selector:
+
+```bash
+kubectl -n kube-oidc-proxy logs -l app.kubernetes.io/name=kube-oidc-proxy \
+  --since=15m --tail=-1 --prefix
+```
+
+Loki and Splunk already see every pod; the equivalent there is a label or
+sourcetype match, which the queries above use.
+
+### One line per request
+
+An access decision and a terminal `request.response.completed` are two records
+of one request; a `kubectl --as` request at `-v=1` adds one `cache.sar.lookup`
+per impersonation header value. Grouping on `request_id` puts the decision, the
+upstream status and the cache outcome on the same line.
+
+```bash
+kubectl -n kube-oidc-proxy logs -l app.kubernetes.io/name=kube-oidc-proxy --since=15m --tail=-1 \
+  | jq -rs 'map(select(.request_id != null)) | group_by(.request_id)
+            | map((map(select(.event_type == "request.access.decided"))[0] // {}) as $a
+                  | (map(select(.event_type == "request.response.completed"))[0] // {}) as $r
+                  | (map(select(.event_type == "cache.sar.lookup") | .cache_result) | join(",")) as $c
+                  | select($a.time != null)
+                  | [$a.time, $a.event, ($a.reason // "-"), ($a.inbound_user // "-"),
+                     ($a.k8s_verb // "-"), ($a.k8s_api_group // ""), ($a.k8s_resource // "-"),
+                     ($a.k8s_namespace // "-"), (if $c == "" then "-" else $c end),
+                     (($r.http_status // "-") | tostring), $a.request_id] | @tsv)
+            | .[]'
+```
+
+```splunk
+index=kubernetes sourcetype=kube-oidc-proxy earliest=-15m request_id=*
+| stats earliest(_time) AS _time values(event) AS event values(reason) AS reason
+        values(inbound_user) AS user values(k8s_verb) AS verb
+        values(k8s_api_group) AS api_group values(k8s_resource) AS resource
+        values(k8s_namespace) AS namespace values(cache_result) AS cache
+        values(http_status) AS status by request_id
+| where isnotnull(event)
+| sort _time
+```
+
+`k8s_verb`, `k8s_api_group`, `k8s_resource` and `k8s_namespace` are the
+request-info dimensions, in the vocabulary RBAC rules use: `list` rather than
+`GET`, and the group separate from the resource with the core group empty.
+
+In LogQL there is no join across lines; filter on `request_id` for one request
+(above), or alert on `request.response.completed` with `http_status` and pull
+the decision by ID when a line needs explaining. A shell function that renders
+this as a table, with a worked example of what each row means, is in
+[operations: watching requests](./operations.md#watching-requests).
 
 ## ECS mapping
 

@@ -7,6 +7,18 @@ Service, ServiceAccount, and impersonation RBAC in a `kube-oidc-proxy`
 namespace. The [chart README](../chart/kube-oidc-proxy/README.md) is the full
 values reference.
 
+- [Prerequisites](#prerequisites)
+- [Install](#install)
+  - [1. From the OCI registry (recommended)](#1-from-the-oci-registry-recommended)
+  - [2. From a local checkout](#2-from-a-local-checkout)
+  - [3. As raw manifests](#3-as-raw-manifests)
+- [Choose an authentication mode](#choose-an-authentication-mode)
+  - [Single-issuer](#single-issuer)
+  - [Multi-issuer](#multi-issuer)
+- [Serving TLS](#serving-tls)
+- [Point kubectl at the proxy](#point-kubectl-at-the-proxy)
+- [Next steps](#next-steps)
+
 ## Prerequisites
 
 - A Kubernetes cluster and `kubectl`.

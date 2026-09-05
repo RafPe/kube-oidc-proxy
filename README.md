@@ -105,7 +105,9 @@ See [docs/architecture.md](./docs/architecture.md) for the full C4 model (system
 | All flags, impersonation, task recipes | [docs/configuration.md](./docs/configuration.md) |
 | Caching and API-server protection: TokenReview/SAR caches, header cap | [docs/caching.md](./docs/caching.md) |
 | How it works: request flow, union authenticator, readiness | [docs/architecture.md](./docs/architecture.md) |
-| Security, troubleshooting, request logs, local testing | [docs/operations.md](./docs/operations.md) |
+| Security, troubleshooting, watching requests, local testing | [docs/operations.md](./docs/operations.md) |
+| Structured log reference: records, fields, correlation, worked queries | [docs/logging.md](./docs/logging.md) |
+| Auditing: proxy audit log, policies, joining with the API server's audit log | [docs/auditing.md](./docs/auditing.md) |
 | All chart values | [chart/kube-oidc-proxy/README.md](./chart/kube-oidc-proxy/README.md) |
 | Multi-issuer demo | [demo/README.md](./demo/README.md) |
 | Release process and recovery | [docs/releases.md](./docs/releases.md) |

@@ -7,6 +7,25 @@ This is particularly useful on managed clusters (EKS, GKE, DOKS, ...) where
 apiserver flags cannot be changed and only a single (or no) native OIDC
 provider can be configured.
 
+- [Enabling](#enabling)
+- [Examples](#examples)
+  - [GitHub Actions](#github-actions)
+    - [What a token contains](#what-a-token-contains)
+    - [Minimal mapping](#minimal-mapping)
+    - [Production mapping: trust tiers, audit extras, hard gates](#production-mapping-trust-tiers-audit-extras-hard-gates)
+  - [TeamCity](#teamcity-teamcity-oidc-jwt-plugin)
+  - [Google service accounts (workloads on GKE / GCE)](#google-service-accounts-workloads-on-gke--gce)
+  - [GKE workloads via the cluster's own issuer](#gke-workloads-via-the-clusters-own-issuer-per-serviceaccount-identity)
+  - [Internal / custom issuer with a private CA](#internal--custom-issuer-with-a-private-ca)
+  - [GitLab CI](#gitlab-ci)
+  - [RBAC for the mapped identities](#rbac-for-the-mapped-identities)
+- [Security: always use distinct per-issuer prefixes](#security-always-use-distinct-per-issuer-prefixes)
+- [Readiness](#readiness)
+  - [Issuer records in the log](#issuer-records-in-the-log)
+- [Helm](#helm)
+- [Notes](#notes)
+- [See also](#see-also)
+
 ## Enabling
 
 Pass `--authentication-config=/path/to/config.yaml`. This flag is mutually
@@ -28,44 +47,85 @@ groups prefix (see [Security](#security-always-use-distinct-per-issuer-prefixes)
 
 ### GitHub Actions
 
-GitHub Actions tokens carry no groups claim, so CEL synthesizes one from
-`repository_owner`. Note that newer GitHub `sub` claims embed numeric IDs
-(`repo:Owner@<owner_id>/repo@<repo_id>:ref:...`) — decode a real token before
-writing bindings, or use the CEL username alternative for a stable, readable
-identity.
+GitHub mints an OIDC token for a workflow job on request
+(`permissions: id-token: write`, then `core.getIDToken('<audience>')` in
+`actions/github-script`, or the equivalent in your action of choice). The
+audience you pass must equal the issuer's `audiences` entry below. Tokens live
+about five minutes.
 
-```yaml
-- issuer:
-    url: https://token.actions.githubusercontent.com
-    audiences: ["kube-oidc-proxy.example.com"]
-  claimMappings:
-    username:
-      claim: sub
-      prefix: "gha:"
-    # Alternative: readable username independent of GitHub's sub format:
-    # username:
-    #   expression: '"gha:" + claims.repository + ":" + claims.ref'
-    groups:
-      expression: '["github:" + claims.repository_owner]'
-  claimValidationRules:
-  - expression: 'claims.repository_owner == "my-org"'
-    message: "only my-org tokens are accepted"
-  # Recommended hardening: pin numeric IDs so a recycled repo/owner name
-  # cannot inherit access:
-  # - expression: 'claims.repository_owner_id == "1234567"'
-  #   message: "token not issued for the expected account"
+#### What a token contains
+
+Decode one before writing mappings; the claims are the raw material and a few
+of them are not what their names suggest. A `workflow_dispatch` run on `main`
+of `my-org/my-repo` carries:
+
+```json
+{
+  "iss": "https://token.actions.githubusercontent.com",
+  "aud": "kube-oidc-proxy.example.com",
+  "sub": "repo:my-org/my-repo:ref:refs/heads/main",
+
+  "repository": "my-org/my-repo",
+  "repository_id": "7654321",
+  "repository_owner": "my-org",
+  "repository_owner_id": "1234567",
+  "repository_visibility": "internal",
+  "enterprise": "my-enterprise",
+  "enterprise_id": "2468",
+
+  "ref": "refs/heads/main",
+  "ref_type": "branch",
+  "ref_protected": "false",
+  "base_ref": "",
+  "head_ref": "",
+  "sha": "bcdb9add7ec52edf83c3a2df6869187302d2fc7b",
+
+  "workflow": "deploy",
+  "workflow_ref": "my-org/my-repo/.github/workflows/deploy.yml@refs/heads/main",
+  "workflow_sha": "bcdb9add7ec52edf83c3a2df6869187302d2fc7b",
+  "job_workflow_ref": "my-org/my-repo/.github/workflows/deploy.yml@refs/heads/main",
+  "job_workflow_sha": "bcdb9add7ec52edf83c3a2df6869187302d2fc7b",
+
+  "event_name": "workflow_dispatch",
+  "actor": "octocat",
+  "actor_id": "555",
+  "run_id": "33964329992",
+  "run_number": "1",
+  "run_attempt": "1",
+  "runner_environment": "github-hosted",
+  "check_run_id": "101301612960",
+  "jti": "f2f7364b-09a2-4422-8ef4-7b8e6c135597",
+  "iat": 1788608938, "nbf": 1788608638, "exp": 1788609238
+}
 ```
 
-Workflow side: `permissions: id-token: write`, then
-`core.getIDToken('kube-oidc-proxy.example.com')` (actions/github-script) —
-the audience argument must match `audiences` above.
+Things to notice:
 
-#### Synthesizing several groups from one token
+- **There is no groups claim.** Every group has to be synthesized with CEL.
+- **Every GitHub-specific value is a string**, including `ref_protected:
+  "false"` and every numeric ID; only the standard `iat`, `nbf` and `exp`
+  are numbers. Compare against `"true"` in quotes; a bare boolean never
+  matches.
+- **Names can be recycled, IDs cannot.** `repository_owner_id`,
+  `repository_id` and `enterprise_id` are the values to pin in validation
+  rules; the names are for reading.
+- **`sub` is not a stable format.** Newer GitHub tokens embed numeric IDs in it
+  (`repo:Owner@<owner_id>/repo@<repo_id>:ref:...`), so a username derived from
+  `sub` can change under existing bindings. Build the username from
+  `repository` and `ref` instead.
+- **`environment` is present only when the job declares one**, and
+  `enterprise`/`enterprise_id` only on GitHub Enterprise Cloud. Referencing an
+  absent claim makes the whole expression error and the token is rejected, so
+  guard optional claims with `has()`.
+- **Two workflow refs.** `job_workflow_ref` names the workflow file actually
+  running the job, which for a reusable workflow is the called one;
+  `workflow_ref` is the top-level caller. Pin `job_workflow_ref` when the
+  trust lives in a central reusable workflow.
 
-A groups `expression` may return a **list**, so one token can carry several
-groups cut along different axes — the owning org, the exact workflow, and the
-triggering actor. Bindings can then target whichever granularity they need
-(broad org-wide access, or a single workflow) without issuing more tokens.
+#### Minimal mapping
+
+A readable username, one group for the owning organisation, and the owner ID
+pinned. Enough for a first binding; the next section is what to grow it into.
 
 ```yaml
 - issuer:
@@ -73,44 +133,176 @@ triggering actor. Bindings can then target whichever granularity they need
     audiences: ["kube-oidc-proxy.example.com"]
   claimMappings:
     username:
-      claim: sub
-      prefix: "gha:"
+      expression: '"gha:" + claims.repository + ":" + claims.ref'
     groups:
-      # A list expression returns multiple groups from one token. Prefixes must
-      # live inside the expression (the `prefix:` field is only for `claim:`),
-      # so a shared `gha:` root keeps the three axes in one namespace.
+      expression: '["gha:org:" + claims.repository_owner]'
+  claimValidationRules:
+  - expression: 'claims.repository_owner_id == "1234567"'
+    message: "token not issued for the expected organisation"
+```
+
+The token above authenticates as user `gha:my-org/my-repo:refs/heads/main` in
+group `gha:org:my-org`. Prefixes must live inside the expression: the `prefix:`
+field only applies to the `claim:` form, and a shared `gha:` root keeps every
+group this issuer produces in one namespace.
+
+#### Production mapping: trust tiers, audit extras, hard gates
+
+The recipes above show the mechanics. This one is a complete issuer entry for
+an organisation that lets many repositories deploy through one proxy. It is
+built on three ideas:
+
+1. **RBAC ORs its subjects.** A binding can list several groups, but any one
+   of them is enough. There is no way to say "repo X *and* a protected
+   branch". So every group must already encode its whole trust condition:
+   `gha:protected:my-org/my-repo`, not a bare `gha:protected` that any repo
+   could satisfy.
+2. **Groups are for RBAC; `extra` is for audit.** Things you would never bind
+   a role to (the triggering actor, the run ID, the commit SHA) still belong
+   in the audit log. `claimMappings.extra` puts them into `user.extra` of every
+   API-server audit event without growing the group list.
+3. **Pin numeric IDs, print names.** GitHub names (org, repo, actor) can be
+   renamed or re-registered; the numeric IDs cannot. Validation rules pin the
+   IDs. Name-based groups stay for readability, ID-based ones for bindings
+   that must survive a rename.
+
+```yaml
+- issuer:
+    url: https://token.actions.githubusercontent.com
+    audiences: ["kube-oidc-proxy.example.com"]
+  claimMappings:
+    username:
+      # Audit identity: gha:<org>/<repo>:<ref>. Bind RBAC to groups, not to
+      # this, except for one-off pinpoint grants.
+      expression: '"gha:" + claims.repository + ":" + claims.ref'
+    groups:
+      # Base groups every token gets, then conditional tiers a token only
+      # gets when it earned them. `cond ? [x] : []` adds x or nothing.
       expression: >-
         [
           "gha:org:" + claims.repository_owner,
-          "gha:workflow:" + claims.job_workflow_ref,
-          "gha:actor:" + claims.actor
+          "gha:org-id:" + claims.repository_owner_id,
+          "gha:repo:" + claims.repository,
+          "gha:workflow:" + claims.job_workflow_ref
         ]
+        + (claims.ref_protected == "true" ? ["gha:protected:" + claims.repository] : [])
+        + (claims.ref_type == "tag" ? ["gha:tag:" + claims.repository] : [])
+        + (has(claims.environment) ? ["gha:env:" + claims.repository + ":" + claims.environment] : [])
+    extra:
+      # Forwarded as Impersonate-Extra-* headers; visible in audit logs only.
+      - key: github.com/actor
+        valueExpression: claims.actor
+      - key: github.com/actor-id
+        valueExpression: claims.actor_id
+      - key: github.com/event
+        valueExpression: claims.event_name
+      - key: github.com/run-id
+        valueExpression: claims.run_id
+      - key: github.com/run-attempt
+        valueExpression: claims.run_attempt
+      - key: github.com/sha
+        valueExpression: claims.sha
+      - key: github.com/repository
+        valueExpression: claims.repository
+      - key: github.com/repository-id
+        valueExpression: claims.repository_id
+      - key: github.com/org-id
+        valueExpression: claims.repository_owner_id
+      - key: github.com/runner
+        valueExpression: claims.runner_environment
   claimValidationRules:
-  - expression: 'claims.repository_owner == "my-org"'
-    message: "only my-org tokens are accepted"
+    # Hard gates: a token failing any of these is rejected before mapping.
+    - expression: 'claims.enterprise == "my-enterprise"'
+      message: "token not issued within the expected enterprise"
+    - expression: 'claims.enterprise_id == "2468"'
+      message: "token not issued within the expected enterprise (id mismatch)"
+    - expression: 'claims.repository_owner_id == "1234567"'
+      message: "token not issued for the expected organisation"
+    - expression: 'claims.repository_visibility != "public"'
+      message: "tokens from public repositories are not accepted"
+    # Optional: accept only your own runners.
+    # - expression: 'claims.runner_environment == "self-hosted"'
+    #   message: "only self-hosted runners may reach this cluster"
+  userValidationRules:
+    - expression: "!user.username.startsWith('system:')"
+      message: "username cannot use the system: prefix"
+    - expression: "user.groups.all(g, !g.startsWith('system:'))"
+      message: "groups cannot use the system: prefix"
 ```
 
-For the example claims `repository_owner: my-org`, `actor: octocat`, and
-`job_workflow_ref: my-org/deploy/.github/workflows/release.yml@refs/heads/main`,
-that token authenticates with the groups:
+The `enterprise` and `enterprise_id` claims exist only on GitHub Enterprise
+Cloud tokens; drop those two rules on a plain github.com organisation, or the
+missing claim makes the rule error and every token is rejected.
 
-- `gha:org:my-org`
-- `gha:workflow:my-org/deploy/.github/workflows/release.yml@refs/heads/main`
-- `gha:actor:octocat`
+**What a token maps to.** For a `workflow_dispatch` run on the unprotected
+`main` branch of `my-org/my-repo`, triggered by `octocat`, with no
+`environment:` in the job:
+
+| | |
+| --- | --- |
+| username | `gha:my-org/my-repo:refs/heads/main` |
+| groups | `gha:org:my-org` |
+| | `gha:org-id:1234567` |
+| | `gha:repo:my-org/my-repo` |
+| | `gha:workflow:my-org/my-repo/.github/workflows/deploy.yml@refs/heads/main` |
+| extra | `github.com/actor=octocat`, `github.com/actor-id=555`, `github.com/event=workflow_dispatch`, `github.com/run-id=…`, `github.com/sha=…`, … |
+
+A push from a protected branch into a job with `environment: prod`, calling a
+central reusable workflow, additionally yields `gha:protected:my-org/my-repo`
+and `gha:env:my-org/my-repo:prod`, and the workflow group becomes the reusable
+workflow's own ref (e.g. `…/platform-workflows/.github/workflows/deploy.yml@refs/tags/v3`).
+A release built from a tag yields `gha:tag:my-org/my-repo` instead.
+
+**Which tier to bind to what.**
+
+| Group | Means | Bind it to |
+| --- | --- | --- |
+| `gha:org:<org>` / `gha:org-id:<id>` | any repo in the org, any ref | read-only roles only (`view`) |
+| `gha:repo:<org>/<repo>` | any ref of one repo | that repo's own namespace, `edit` or a purpose-built role |
+| `gha:protected:<org>/<repo>` | ref is under a branch/tag protection rule or ruleset | deploy roles for shared or production namespaces |
+| `gha:env:<org>/<repo>:<env>` | job passed that environment's protection rules (reviewers, wait timer) | production deploys; strongest signal available |
+| `gha:tag:<org>/<repo>` | ref is a tag | release pipelines that cut from tags |
+| `gha:workflow:<ref>` | exact workflow file at exact ref | a platform-owned reusable deploy workflow: only jobs calling it get the role, whichever repo they live in |
+
+The environment group is repo-scoped on purpose: environment names are per
+repository, so an org-wide `gha:env:prod` would admit every repo's `prod`.
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gha-prod-deployers
+  namespace: payments
+subjects:
+- kind: Group
+  name: "gha:env:my-org/payments:prod"        # passed the prod environment gate
+  apiGroup: rbac.authorization.k8s.io
+- kind: Group
+  name: "gha:workflow:my-org/platform-workflows/.github/workflows/deploy.yml@refs/tags/v3"
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: edit
+  apiGroup: rbac.authorization.k8s.io
+```
 
 Notes:
 
-- Every claim referenced must be present or the expression errors and
-  authentication fails. `repository_owner`, `actor`, and `job_workflow_ref`
-  are always set on Actions tokens; guard optional claims (e.g. `environment`)
-  with `has(claims.environment) ? ["gha:env:" + claims.environment] : []` and
-  concatenate lists with `+`.
-- Each group is bound in RBAC by its **exact** string, colons included; the
-  whole value is one opaque group name, not a hierarchy Kubernetes interprets.
-- `job_workflow_ref` is high-cardinality — prefer it for narrow,
-  per-workflow bindings and use `gha:org:` for broad access. Use
-  `workflow_ref` instead if you want the top-level workflow rather than the
-  called/reusable one.
+- The three conditional terms compare **strings**: GitHub emits
+  `"ref_protected": "false"` as text, so `== "true"` in quotes is correct
+  and a bare `== true` would never match.
+- `has(claims.environment)` is mandatory. Without the guard, every token that
+  lacks the claim makes the expression error and is rejected.
+- Claims left out on purpose: `jti`, `run_number`, `check_run_id`,
+  `workflow_sha` and `job_workflow_sha` add nothing over `run_id` and `sha`;
+  `base_ref`/`head_ref` are empty outside pull requests. `sub` is not used for
+  the username because GitHub is changing its format to embed numeric IDs,
+  which would silently change every binding.
+- Each group is bound in RBAC by its **exact** string, colons and slashes
+  included; the whole value is one opaque group name, not a hierarchy
+  Kubernetes interprets.
+- `gha:workflow:` is high-cardinality: prefer it for narrow, per-workflow
+  bindings and use the org or repo tiers for broad access.
 
 ### TeamCity ([teamcity-oidc-jwt](https://github.com/JetBrains/teamcity-oidc-jwt) plugin)
 
@@ -261,7 +453,7 @@ subjects:
   name: "gke-prod-ns:payments"               # every SA in one GKE namespace
   apiGroup: rbac.authorization.k8s.io
 - kind: User
-  name: "gha:repo:my-org/platform-iac:ref:refs/heads/main"
+  name: "gha:my-org/platform-iac:refs/heads/main"   # one repo, main branch only
   apiGroup: rbac.authorization.k8s.io
 roleRef:
   kind: ClusterRole
@@ -340,10 +532,12 @@ authenticationConfig:
         audiences: ["kube-oidc-proxy.example.com"]
       claimMappings:
         username:
-          claim: sub
-          prefix: "gha:"
+          expression: '"gha:" + claims.repository + ":" + claims.ref'
         groups:
-          expression: '["github:" + claims.repository_owner]'
+          expression: '["gha:org:" + claims.repository_owner]'
+      claimValidationRules:
+      - expression: 'claims.repository_owner_id == "1234567"'
+        message: "token not issued for the expected organisation"
     - issuer:
         url: https://auth.internal.example.com
         audiences: ["kubernetes"]

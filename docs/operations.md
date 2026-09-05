@@ -2,6 +2,26 @@
 
 Security, troubleshooting, and testing the proxy locally.
 
+- [Security](#security)
+- [Troubleshooting](#troubleshooting)
+  - [Reading the request log](#reading-the-request-log)
+  - [Watching requests](#watching-requests)
+  - [Turning up verbosity](#turning-up-verbosity)
+- [Development and testing](#development-and-testing)
+  - [Local dev cluster](#local-dev-cluster)
+  - [End-to-end tests](#end-to-end-tests)
+- [Local multi-issuer test: kind and GitHub Actions](#local-multi-issuer-test-kind-and-github-actions)
+  - [Prerequisites](#prerequisites)
+  - [1. Token-minting workflow (one-time)](#1-token-minting-workflow-one-time)
+  - [2. Build the image and create the cluster](#2-build-the-image-and-create-the-cluster)
+  - [3. Deploy the chart](#3-deploy-the-chart)
+  - [4. RBAC](#4-rbac)
+  - [5. Mint a token and fetch it (TTL ~5 min — move fast)](#5-mint-a-token-and-fetch-it-ttl-5-min--move-fast)
+  - [6. Test through the proxy](#6-test-through-the-proxy)
+  - [7. Access logs and cleanup](#7-access-logs-and-cleanup)
+  - [Adding the next system](#adding-the-next-system)
+- [See also](#see-also)
+
 ## Security
 
 - **The proxy is a privileged component.** Its ServiceAccount can impersonate
@@ -44,7 +64,15 @@ Security, troubleshooting, and testing the proxy locally.
 | `authentication-config and --oidc-* flags are mutually exclusive` | You set both `authenticationConfig.content` and one or more `oidc.*` values. Pick one mode. |
 | `401 Unauthorized` from the proxy | The token failed OIDC validation — wrong `issuerUrl`/`clientId` (audience), expired token, unmet `requiredClaims`, or a signing algorithm not in `--oidc-signing-algs`. Look for an `AuFail` line with `reason=unauthorized` in the proxy logs (`event_type=request.access.decided`). |
 | `403 Forbidden` after a successful login | Authentication worked but RBAC denied the impersonated identity. Grant the mapped username/groups the appropriate roles. Watch for username **prefixes** (e.g. `google:alice@example.com`). |
-| `kubectl --as` fails through the proxy | The authenticated user isn't authorized to impersonate that identity (`SubjectAccessReview` denied), or the proxy's ServiceAccount lacks impersonation RBAC for a named `Impersonate-Extra-` key. The `AuFail` record carries `reason=impersonation_denied` with `target_kind` and `target_name`. |
+| `403 Forbidden` on **every** request from one issuer, right after `AuSuccess` | The API server refused the proxy's own ServiceAccount, not your identity: it authorizes each `Impersonate-Extra-<key>` header separately as `impersonate` on `userextras/<key>`, and an issuer that maps `claimMappings.extra` sends keys the ClusterRole may not name. The response body says which key (`cannot impersonate resource "userextras/..."`); see it with `kubectl ... -v 8`. The chart's ClusterRole grants every key declared in `authenticationConfig.content` and in `extraImpersonationHeaders.headers`; check the rendered ClusterRole for `userextras/<key>` lines, and if your chart version predates that or you install from raw manifests, grant them yourself — see [multi-issuer: Helm](./multi-issuer.md#helm). |
+| `kubectl auth whoami` says the API "is not enabled in the cluster or you do not have permission" | kubectl prints that for any non-2xx from the `selfsubjectreviews` endpoint, so it hides a 403 or a 404 from something in front of the proxy. Rerun with `-v 8` to see the real status and body, then follow the matching row here. |
+| `404 not found` with `Server: awselb/2.0`, or an ingress controller's default 404 page | The request never reached the proxy. A load balancer or ingress answered from its default action because no rule matched the `Host`. Compare against a hostname that is known to work on the same entrypoint, and check `kubectl get ingress` and `kubectl get endpoints` for the release. |
+| `x509: certificate is valid for ..., not <your-host>` | The TLS-terminating layer in front of the proxy served its default certificate because none covers your hostname. Add a certificate for the name (`ingress.tls` in the chart, or on the load balancer listener), or use a hostname the existing certificate covers. `--insecure-skip-tls-verify` is acceptable only while testing. |
+| `error: unknown flag: --logging-format` at pod start | The image is older than the chart: `--logging-format` arrived in 1.7.0. The chart defaults `image.tag` to its `appVersion`; a chart installed from a checkout whose `Chart.yaml` baseline lags the release deploys the older image. Set `image.tag` explicitly or update the baseline. |
+| Log queries return nothing although requests were made | With more than one replica, `kubectl logs deploy/<name>` reads a single pod. Select all of them with `-l app.kubernetes.io/name=kube-oidc-proxy` — see [watching requests](#watching-requests). |
+| A value set on a previous install "disappears" after `helm upgrade --reuse-values` | `--reuse-values` renders with the values stored by the last release and does not merge the new chart's defaults, so a key added in a newer chart is unset. Upgrade with `-f values.yaml` instead. |
+| `kubectl --as` fails through the proxy with `403` | The authenticated user isn't authorized to impersonate that identity (`SubjectAccessReview` denied), or the proxy's ServiceAccount lacks impersonation RBAC for a named `Impersonate-Extra-` key. The `AuFail` record carries `reason=impersonation_denied` with `target_kind` and `target_name`. |
+| `kubectl --as` fails through the proxy with `500`, `reason=internal_error` | The proxy could not *ask* whether impersonation is allowed: its ServiceAccount is not permitted to create `SubjectAccessReview`s. The `authz.sar.failed` record carries `reason=authorization_dependency_error` and the API server's message (`cannot create resource "subjectaccessreviews"`). Grant the proxy's ServiceAccount `create` on `subjectaccessreviews` in `authorization.k8s.io`; a chart whose ClusterRole predates that grant needs it added by hand. Plain token requests are unaffected, since they never trigger a review. |
 | `431 Request Header Fields Too Large` on `kubectl --as` | The request carried more impersonation header values (user + every group, uid and extra value) than the proxy accepts per request (default 64). Raise `--max-impersonation-header-values` (`maxImpersonationHeaderValues` in the chart) if the identity legitimately needs more — see [the header value cap](./caching.md#impersonation-header-value-cap). |
 | RBAC impersonation grant/revoke takes up to 10s to take effect through the proxy | Expected: impersonation `SubjectAccessReview` decisions are cached. A revoked grant keeps working for up to `--subject-access-review-cache-allow-ttl`; a new grant keeps failing for up to `--subject-access-review-cache-deny-ttl` (both default `10s`). Set either TTL to `0` to re-check that class on every request — see [the SAR decision cache](./caching.md#subjectaccessreview-decision-cache). |
 | TLS errors connecting to the proxy | The client's kubeconfig `certificate-authority` must trust the proxy's **serving** certificate (self-signed by the chart, your own Secret, or cert-manager). |
@@ -160,6 +188,284 @@ as a watch or `exec`, with `time_to_headers_ms`) and
 `http_status`, `duration_ms`, `response_bytes` and a classified `termination`).
 Join them to the access record on `request_id`.
 
+### Watching requests
+
+**Read every replica.** `kubectl logs deploy/<name>` picks one pod. With more
+than one replica, a request you just made may have landed on the other one, so
+select by label and let kubectl merge the streams:
+
+```bash
+kubectl -n kube-oidc-proxy logs -l app.kubernetes.io/name=kube-oidc-proxy \
+  --since=10m --tail=-1 --prefix \
+  | sed 's/^\[[^]]*\] //' \
+  | jq -r 'select(.event_type == "request.access.decided")
+           | [.time, .event, .reason // "-", .issuer_name // "-", .http_method, .path] | @tsv'
+```
+
+`--prefix` tags each line with its pod, and the `sed` strips that tag so `jq`
+sees plain JSON; drop both to keep the pod names. `--tail=-1` lifts the
+per-pod line cap kubectl applies when a selector matches several pods.
+
+**One line per request.** A request produces several records: the access
+decision, the terminal `request.response.completed` that carries the HTTP
+status, and, on a `kubectl --as` request at `-v=1`, one `cache.sar.lookup` per
+impersonation header value. Joining them on `request_id` gives one row per
+request with the upstream status and the cache outcome attached, which is the
+quickest way to tell an authentication problem from an authorization one, and
+to see whether the decision cache is doing its job:
+
+```bash
+# ~/.zshrc or a file you source
+kop-requests() {
+  # usage: kop-requests [since] [namespace]   e.g. kop-requests 30m
+  kubectl -n "${2:-kube-oidc-proxy}" logs -l app.kubernetes.io/name=kube-oidc-proxy \
+      --since="${1:-15m}" --tail=-1 --prefix --max-log-requests=20 \
+  | sed -E 's#^\[pod/([^/]+)/[^]]+\] \{#{"pod":"\1",#' \
+  | jq -rs '
+      map(select(.request_id != null))
+      | group_by(.request_id)
+      | map(
+          (map(select(.event_type == "request.access.decided"))[0] // {}) as $a
+          | (map(select(.event_type == "request.response.completed"))[0] // {}) as $r
+          # Cache consultations are separate DEBUG records (visible at -v=1),
+          # several per request; fold them into one hit/miss/bypass summary.
+          | (map(select(.event_type == "cache.sar.lookup" or .event_type == "cache.tokenreview.lookup")
+                 | .cache_result)
+             | if length == 0 then "-" else
+                 (group_by(.) | map("\(.[0]):\(length)") | join(",")) end) as $c
+          | select($a.time != null)
+          | [ $a.time[11:19], $a.pod[-5:], $a.event, ($a.reason // "-"),
+              # The authenticated user, plus who it acted as on a kubectl --as
+              # request. Impersonation is the only path the SAR cache serves.
+              (($a.inbound_user // "-") + (if $a.outbound_user then " as " + $a.outbound_user else "" end)),
+              ($a.issuer_name // "-"),
+              # Kubernetes verb and group/resource, as RBAC rules name them. A
+              # non-resource path (discovery, /healthz) has neither, so it
+              # shows the HTTP method and the path instead.
+              ($a.k8s_verb // ($a.http_method | ascii_downcase)),
+              (if $a.k8s_resource then
+                 (if ($a.k8s_api_group // "") == "" then $a.k8s_resource
+                  else $a.k8s_api_group + "/" + $a.k8s_resource end)
+               else ($a.path // "-") end),
+              ($a.k8s_namespace // "-"),
+              $c,
+              (($r.http_status // "-") | tostring), (($r.duration_ms // "-") | tostring),
+              $a.request_id[0:8] ]
+          | @tsv)
+      | .[]' \
+  | sort \
+  | { printf 'TIME\tPOD\tEVENT\tREASON\tUSER\tISSUER\tVERB\tRESOURCE\tNAMESPACE\tCACHE\tSTATUS\tMS\tRID\n'; cat; } \
+  | column -t -s $'\t'
+}
+```
+
+```text
+TIME      POD    EVENT      REASON        USER                                             ISSUER                               VERB    RESOURCE                                  NAMESPACE  CACHE   STATUS  MS   RID
+17:23:59  l5qhs  AuSuccess  -             gha:my-org/my-repo:refs/heads/main               token.actions.githubusercontent.com  create  authentication.k8s.io/selfsubjectreviews  -          -       403     298  9fd2e1f1
+17:44:42  snqkt  AuSuccess  -             gha:my-org/my-repo:refs/heads/main               token.actions.githubusercontent.com  create  authentication.k8s.io/selfsubjectreviews  -          -       201     117  3b1c0a77
+17:45:10  l5qhs  AuSuccess  -             google:alice@example.com                         accounts.google.com                  list    apps/deployments                          payments   -       200     88   5c9d2e40
+17:45:31  snqkt  AuSuccess  -             gha:my-org/my-repo:refs/heads/main               token.actions.githubusercontent.com  list    secrets                                   default    -       403     61   7e0f1a22
+17:52:03  l5qhs  AuFail     unauthorized  -                                                -                                    get     /api/v1/namespaces                        -          -       401     4    a1b2c3d4
+17:53:40  snqkt  AuSuccess  -             gha:my-org/my-repo:refs/heads/main as ci-viewer  token.actions.githubusercontent.com  list    namespaces                                -          miss:1  200     93   e5f6a7b8
+17:53:43  snqkt  AuSuccess  -             gha:my-org/my-repo:refs/heads/main as ci-viewer  token.actions.githubusercontent.com  list    namespaces                                -          hit:1   200     22   f00dbabe
+17:54:12  l5qhs  AuSuccess  -             google:alice@example.com                         accounts.google.com                  get     /apis                                     -          -       200     12   c0ffee00
+```
+
+Column notes:
+
+- `EVENT` is the frozen outcome, `AuSuccess` or `AuFail`; every row is a
+  `request.access.decided` record, so the event type itself is not repeated.
+- `VERB`, `RESOURCE` and `NAMESPACE` are the request-info dimensions the proxy
+  resolved (`k8s_verb`, `k8s_api_group`/`k8s_resource`, `k8s_namespace`), in
+  the same shape RBAC rules use: the verb is `list`, not `GET`, and the
+  resource is `apps/deployments` with the core group left bare. A path with no
+  resource behind it, such as discovery, falls back to the HTTP method and the
+  path.
+- `CACHE` counts the request's cache consultations by result. It is `-` for
+  plain token requests, which never touch a cache: the
+  [SubjectAccessReview decision cache](./caching.md#subjectaccessreview-decision-cache)
+  serves only `kubectl --as` requests and the TokenReview cache only
+  passthrough. Those records are DEBUG, so the column is empty below `-v=1`.
+
+How to read it:
+
+- **Row one:** the proxy accepted the token and the API server refused the
+  request with 403 before RBAC even applied. When this happens on every request
+  from an issuer, the proxy's ServiceAccount is missing an impersonation grant,
+  typically a `userextras/<key>` — see the troubleshooting table above.
+- **Row two:** the same call after the grant, 201. A working
+  `kubectl auth whoami` looks like this from the proxy's side.
+- **Row four:** a healthy 403. The identity is fine; the `view` role excludes
+  secrets. Authentication succeeded, authorization did not.
+- **Row five** never reached the API server. The proxy rejected it and
+  `REASON` says why, from the
+  [closed vocabulary](./logging.md#reason-vocabularies): an expired token is
+  `unauthorized`, with no user or issuer because no identity was established.
+  A `kubectl --as` the caller may not perform shows as `impersonation_denied`.
+- **Rows six and seven** are the same `kubectl --as ci-viewer` command run
+  twice within the allow TTL. The first consulted the cache, missed, and paid
+  for a live `SubjectAccessReview`; the second was answered from memory and
+  took a quarter of the time.
+
+The `POD` column is the last five characters of the pod name, `RID` the first
+eight of the request ID. That prefix is enough to pull every record for one
+request, on the proxy and in the API server's audit log where it is the
+`auditID`.
+
+**Every record, one per line.** The per-request table hides the records it
+joined. This second function shows them: one line per record, with the fixed
+columns every record has and a detail column assembled from whichever
+meaningful fields the record carries, so an access decision, a cache lookup
+and an issuer state change all read without a format per event type. With a
+request-ID prefix it traces one request; without, it streams the window.
+
+```bash
+# ~/.zshrc or a file you source
+kop-events() {
+  # usage: kop-events [since] [namespace] [rid-prefix]
+  #   kop-events 10m                      every record in the last 10 minutes
+  #   kop-events 1h kube-oidc-proxy 9fd2  every record of one request
+  kubectl -n "${2:-kube-oidc-proxy}" logs -l app.kubernetes.io/name=kube-oidc-proxy \
+      --since="${1:-15m}" --tail=-1 --prefix --max-log-requests=20 \
+  | sed -E 's#^\[pod/([^/]+)/[^]]+\] \{#{"pod":"\1",#' \
+  | jq -r --arg rid "${3:-}" '
+      select($rid == "" or ((.request_id // "") | startswith($rid)))
+      | [ (.time[11:19] + "." + (((.time[20:] | gsub("[^0-9]"; "")) + "000")[0:3])),
+          (.pod // "-")[-5:], .level, (.component // "-"), (.event_type // "-"),
+          ((.request_id // "-")[0:8]),
+          # Every meaningful field the record has, as key=value, in this order.
+          ([ "event", "reason", "decision", "cache_result", "authenticated",
+             "request_coalesced", "target_kind", "target_name",
+             "issuer_name", "issuer_state", "pending_reason", "ready_issuers",
+             "src_ip", "forwarded_for_untrusted", "auth_method",
+             "inbound_user", "outbound_user", "k8s_verb", "k8s_resource", "k8s_namespace",
+             "http_status", "duration_ms", "termination", "error_message" ] as $keys
+           | . as $rec
+           | [ $keys[] | select($rec[.] != null) | "\(.)=\($rec[.] | tostring)" ]
+           | if length == 0 then ($rec.msg // "-") else join(" ") end) ]
+      | @tsv' \
+  | sort \
+  | { printf 'TIME\tPOD\tLEVEL\tCOMPONENT\tEVENT_TYPE\tRID\tDETAIL\n'; cat; } \
+  | column -t -s $'\t'
+}
+```
+
+One `kubectl --as ci-viewer get namespaces` at `-v=1`, traced by its prefix:
+
+```text
+TIME          POD    LEVEL  COMPONENT  EVENT_TYPE                  RID       DETAIL
+17:53:40.000  snqkt  DEBUG  sar        cache.sar.lookup            e5f6a7b8  cache_result=miss
+17:53:40.040  snqkt  DEBUG  sar        authz.sar.completed         e5f6a7b8  decision=allow request_coalesced=false target_kind=user duration_ms=41
+17:53:40.050  snqkt  INFO   request    request.access.decided      e5f6a7b8  event=AuSuccess decision=allow issuer_name=token.actions.githubusercontent.com src_ip=10.89.165.80 auth_method=oidc inbound_user=gha:my-org/my-repo:refs/heads/main outbound_user=ci-viewer k8s_verb=list k8s_resource=namespaces
+17:53:40.090  snqkt  INFO   request    request.response.completed  e5f6a7b8  http_status=200 duration_ms=93 termination=normal
+```
+
+Read top to bottom: the cache was consulted and missed, a live
+`SubjectAccessReview` took 41 ms and allowed the impersonation, the access
+decision recorded who acted as whom from which address, and the upstream
+answered 200 in 93 ms end to end. The same command three seconds later shows
+`cache_result=hit decision=allow` and no `authz.sar.completed` line at all.
+
+Where the detail fields come from, so you know what to expect on each row:
+
+- `src_ip` and `forwarded_for_untrusted` appear on the access record only.
+  `src_ip` is the authoritative client address after the trusted-proxy rules;
+  the forwarded chain is shown as the client sent it and is never trusted —
+  see [trusted proxies](./configuration.md#trusted-proxies-and-client-ip).
+- `cache_result`, `decision`, `duration_ms` and `request_coalesced` come from
+  the cache and review records, which are DEBUG and need `-v=1`.
+- `issuer_state`, `pending_reason` and `ready_issuers` come from the
+  `oidc.issuer.*` lifecycle records, which have no request ID and show up
+  only in the window view.
+- A record with none of the listed fields falls back to its `msg`.
+
+The full list of fields per record is in the
+[logging field reference](./logging.md#field-reference).
+
+**Nothing shows up at all.** Then no request reached the proxy in that window.
+An expired token still produces an `AuFail`, so an empty result points at the
+path in front of the proxy rather than at the token. Check that anything
+arrived, and that the ingress still points at this release's Service:
+
+```bash
+kubectl -n kube-oidc-proxy logs -l app.kubernetes.io/name=kube-oidc-proxy --since=10m --tail=-1 \
+  | jq -r 'select(.component == "request") | [.time, .event_type, .http_status // "-"] | @tsv'
+kubectl -n kube-oidc-proxy get ingress,endpoints -l app.kubernetes.io/name=kube-oidc-proxy
+```
+
+Then repeat the request with a tail open in a second terminal, so the record
+appears the moment the request arrives:
+
+```bash
+kubectl -n kube-oidc-proxy logs -l app.kubernetes.io/name=kube-oidc-proxy -f --tail=0 \
+  | jq -c 'select(.component == "request")'
+```
+
+**Bypass the network in front.** A port-forward talks to the proxy Service
+directly, which separates token, mappings and RBAC from ingress, load balancer
+and certificate problems:
+
+```bash
+kubectl -n kube-oidc-proxy port-forward svc/kube-oidc-proxy 8443:443 &
+kubectl --server=https://127.0.0.1:8443 --insecure-skip-tls-verify=true --token="$TOKEN" auth whoami
+kubectl --server=https://127.0.0.1:8443 --insecure-skip-tls-verify=true --token="$TOKEN" get namespaces
+```
+
+`auth whoami` prints the identity exactly as the API server saw it: the mapped
+username, the groups (plus `system:authenticated`, which the API server adds
+itself) and every `extra` value. Add `-v 8` to see the raw status and body
+behind kubectl's summary messages.
+
+### Turning up verbosity
+
+`-v` is the single verbosity knob; the chart exposes it as `logging.verbosity`.
+At the default `0` every request already produces its access record with the
+denial `reason`, so start there. `1` adds DEBUG: the authentication path taken,
+cache hits and misses, the live `SubjectAccessReview`, the impersonation header
+names. Kubernetes library logging, including the OIDC authenticator's own
+detail, is bridged into the same stream at the same verbosity, so `4` and above
+surface its token-validation messages too. See
+[verbosity](./logging.md#verbosity) for what each level contains.
+
+Persistently, in the values file:
+
+```yaml
+logging:
+  format: json
+  verbosity: "1"
+```
+
+Or as a temporary switch that rolls the pods; drop the override afterwards:
+
+```bash
+helm upgrade kube-oidc-proxy oci://ghcr.io/rafpe/charts/kube-oidc-proxy \
+  -n kube-oidc-proxy -f values.yaml --set logging.verbosity=1
+kubectl -n kube-oidc-proxy rollout status deploy/kube-oidc-proxy
+kubectl -n kube-oidc-proxy get deploy kube-oidc-proxy \
+  -o jsonpath='{.spec.template.spec.containers[0].args}'
+```
+
+Then read the DEBUG records around an access record, and anything the
+Kubernetes libraries said:
+
+```bash
+kubectl -n kube-oidc-proxy logs -l app.kubernetes.io/name=kube-oidc-proxy --since=10m --tail=-1 \
+  | jq -r 'select(.level == "DEBUG" or .component == "k8s")
+           | [.time, .level, .component, .event_type // "-", .msg] | @tsv'
+```
+
+Issuer state, in case a JWKS fetch is the problem rather than the token:
+
+```bash
+kubectl -n kube-oidc-proxy logs -l app.kubernetes.io/name=kube-oidc-proxy --tail=-1 \
+  | jq -r 'select(.event_type | startswith("oidc.issuer."))
+           | [.time, .event_type, .issuer_name, .issuer_state // "-", .pending_reason // "-"] | @tsv'
+```
+
+`--logging-format=text` is easier on the eye while debugging interactively;
+switch back to `json` before leaving it, since that is what log pipelines
+expect.
+
 ## Development and testing
 
 Building `kube-oidc-proxy` requires Go 1.26 or higher.
@@ -242,31 +548,19 @@ export BRANCH="master"
 
 ### 1. Token-minting workflow (one-time)
 
-Commit `.github/workflows/oidc.yaml` and push:
+You need a `workflow_dispatch` workflow in the repository that requests an ID
+token (`permissions: id-token: write`, then `core.getIDToken(<audience>)`)
+and uploads it as a short-lived artifact.
 
-```yaml
-name: mint-oidc-token
-on: workflow_dispatch
-permissions:
-  id-token: write
-jobs:
-  mint:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/github-script@v7
-      with:
-        script: |
-          const t = await core.getIDToken('kube-oidc-proxy-kind-test')
-          require('fs').writeFileSync('token.jwt', t)
-    - uses: actions/upload-artifact@v4
-      with:
-        name: oidc-token
-        path: token.jwt
-        retention-days: 1
-```
+> [!NOTE]
+> This repository's own [`.github/workflows/oidc.yaml`](../.github/workflows/oidc.yaml)
+> is a minimal example to copy from. The audience it requests
+> (`kube-oidc-proxy-kind-test`) is the one the proxy config in step 3 expects;
+> the two must match.
 
-> ⚠️ The artifact briefly holds a live token. It expires after ~5 minutes and
-> only grants what your **local test cluster's** RBAC allows, but treat it as a
+> [!WARNING]
+> The artifact briefly holds a live token. It expires after ~5 minutes and only
+> grants what your **local test cluster's** RBAC allows, but treat it as a
 > secret all the same.
 
 ### 2. Build the image and create the cluster
@@ -407,5 +701,7 @@ A pure config change — no new deployments:
 
 - [Multi-issuer authentication](./multi-issuer.md)
 - [Configuration reference](./configuration.md)
+- [Logging reference](./logging.md)
+- [Auditing](./auditing.md)
 - [Getting started](./getting-started.md)
 - [Architecture](./architecture.md)

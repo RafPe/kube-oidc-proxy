@@ -7,6 +7,29 @@ via `extraArgs`. Flags are defined in [`../cmd/app/options/`](../cmd/app/options
 > **Multi-issuer is the headline feature.** Accepting tokens from several OIDC
 > issuers at once has its own guide: [multi-issuer authentication](./multi-issuer.md).
 
+- [CLI reference](#cli-reference)
+  - [Multi-issuer authentication](#multi-issuer-authentication)
+  - [Single-issuer OIDC](#single-issuer-oidc)
+  - [OIDC issuer mutual TLS](#oidc-issuer-mutual-tls)
+  - [Token passthrough & impersonation](#token-passthrough--impersonation)
+  - [Logging](#logging)
+  - [Serving / TLS & misc](#serving--tls--misc)
+- [Impersonation model](#impersonation-model)
+  - [Inbound impersonation (`kubectl --as`)](#inbound-impersonation-kubectl---as)
+  - [SubjectAccessReview caching and the header value cap](#subjectaccessreview-caching-and-the-header-value-cap)
+  - [Reserved `system:` identities](#reserved-system-identities)
+  - [Original-user audit headers](#original-user-audit-headers)
+- [Token passthrough](#token-passthrough)
+  - [TokenReview caching](#tokenreview-caching)
+- [No impersonation](#no-impersonation)
+- [Extra impersonation headers](#extra-impersonation-headers)
+- [Trusted proxies and client IP](#trusted-proxies-and-client-ip)
+  - [Resolution rules](#resolution-rules)
+  - [Default: trust nothing](#default-trust-nothing)
+  - [Deployment topology](#deployment-topology)
+- [Auditing](#auditing)
+- [See also](#see-also)
+
 ## CLI reference
 
 The proxy binary is `kube-oidc-proxy`. Its `--oidc-*` flags mirror the
@@ -112,10 +135,125 @@ server still authorizes the impersonated identity.
 ### Inbound impersonation (`kubectl --as`)
 
 The proxy also honours impersonation headers on **inbound** requests, so
-`kubectl --as` works through it. When a request carries impersonation headers,
-the proxy first checks — via `SubjectAccessReview` against the API server — that
-the authenticated user may assume that identity, then forwards the impersonated
-identity instead of the caller's own.
+`kubectl --as` works through it. Nobody can become anybody: an impersonating
+request is authorized twice, and both checks deny by default.
+
+1. **The proxy asks whether the caller may impersonate.** For every inbound
+   `Impersonate-*` header value it sends a `SubjectAccessReview` to the API
+   server asking whether the **authenticated** identity, the one the token
+   mapped to, holds the `impersonate` verb on that value. A single refused
+   value fails the whole request with `403` and
+   `reason=impersonation_denied`; nothing is forwarded. These are the
+   decisions the [SubjectAccessReview cache](./caching.md#subjectaccessreview-decision-cache)
+   remembers.
+2. **The API server authorizes the target.** The request is forwarded
+   impersonating the target identity, so RBAC applies to the target, not to
+   the caller. A target with no bindings can do nothing.
+
+Each header value is a separate authorization against a separate resource,
+which is what a grant has to name:
+
+| Header | Authorized as `impersonate` on |
+| --- | --- |
+| `Impersonate-User` | `users`, core API group |
+| `Impersonate-Group` | `groups`, core API group |
+| `Impersonate-Uid` | `uids`, `authentication.k8s.io` |
+| `Impersonate-Extra-<key>` | `userextras/<key>`, `authentication.k8s.io`; the key is lowercased first |
+
+kubectl sends only the headers you ask for, so `--as=<user>` alone sends one
+user header and needs only a `users` rule; `--as-group` adds a `groups` check
+per group. Grant impersonation as narrowly as the use case allows. A `users`
+rule with no `resourceNames` permits impersonating any user, `cluster-admin`
+holders included; with `resourceNames` it permits exactly the names listed.
+Note that the `system:` guard described below applies to the **authenticated**
+identity, not to impersonation targets: a binding that permits impersonating
+`system:masters` is honoured, on the assumption that it was granted on purpose.
+
+A minimal grant, letting one CI identity act as a fixed read-only user:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: impersonate-ci-viewer
+rules:
+- apiGroups: [""]
+  resources: ["users"]
+  resourceNames: ["ci-viewer"]        # this username only
+  verbs: ["impersonate"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ci-impersonate-ci-viewer
+subjects:
+- kind: Group
+  name: "gha:repo:my-org/my-repo"     # who may impersonate
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: impersonate-ci-viewer
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ci-viewer-view
+subjects:
+- kind: User
+  name: ci-viewer                     # what the target may do
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: view
+  apiGroup: rbac.authorization.k8s.io
+```
+
+With that in place, `kubectl --token=<ci token> --as=ci-viewer get pods` is
+allowed by the proxy and authorized by the API server as `ci-viewer`. Two
+consequences of the model are easy to miss:
+
+- **Nothing is hidden by impersonating.** The proxy's access record carries
+  the caller as `inbound_user` and the target as `outbound_user`, and the
+  API server's audit event carries the target as `impersonatedUser` next to
+  the [original-user headers](#original-user-audit-headers) naming the caller.
+- **Revocation lags by the cache TTL.** Removing an impersonation binding is
+  enforced through the proxy only once the cached allow expires, up to
+  `--subject-access-review-cache-allow-ttl`.
+
+**When `--as` is worth using.** For most callers it is not: an identity whose
+claim mappings already put it in the right groups has its permissions without
+an extra hop, and binding roles to those groups is the better default.
+Impersonation earns its place in a few situations:
+
+- **Testing RBAC without owning the identity.** Before a binding goes live,
+  an operator checks what it grants with
+  `kubectl auth can-i --list --as=<user>` or `--as-group=<group>`. No token
+  to obtain, and the answer is exact because the API server evaluates it for
+  that identity.
+- **Break-glass with a trail.** People hold a low-privilege identity day to
+  day and a narrow grant lets them impersonate an admin identity when needed.
+  Every such request is audited with the person in the original-user headers
+  and the admin identity as the target, so escalation is visible per request
+  instead of being a standing permission.
+- **A service acting on behalf of its callers.** A deployment portal or a
+  GitOps service authenticates once as itself and impersonates the requesting
+  user on each call. The API server enforces the caller's RBAC, not the
+  service's, so the service cannot be talked into doing what its caller
+  could not, and the audit log names the caller.
+- **Reduced privilege for one job.** A broadly privileged identity
+  impersonates a narrow one for a risky step. Requests a migration runner
+  makes as `payments-migrator`, bound in one namespace, are limited to that
+  namespace. This bounds what the script does through that path; it does not
+  bound what the credential could do if used directly.
+- **One credential, several roles.** A shared CI token maps to one identity,
+  and different pipelines impersonate different team users with their own
+  bindings. Access is partitioned by an RBAC rule rather than by minting more
+  credentials.
+
+Impersonation never exceeds the target's permissions and never hides who
+acted. Whether a `system:` target is reachable is decided by RBAC alone, as
+noted above.
 
 ### SubjectAccessReview caching and the header value cap
 
@@ -321,13 +459,16 @@ client IP. This is the safe default.
 ## Auditing
 
 The proxy exposes the same auditing options as the Kubernetes API server, except
-dynamic configuration (`--audit-dynamic-configuration` is **not** supported). See
-the [Kubernetes auditing docs](https://kubernetes.io/docs/tasks/debug-application-cluster/audit)
-to configure it. The proxy stamps every request with an `Audit-ID` that is also
-the `request_id` in its own log and the `auditID` in the kube-apiserver audit
-event, so the three streams join — see
-[correlation](./logging.md#correlation). For the proxy's own per-request stdout
-log, see [reading the request log](./operations.md#reading-the-request-log).
+dynamic configuration (`--audit-dynamic-configuration` is **not** supported).
+The proxy stamps every request with an `Audit-ID` that is also the `request_id`
+in its own log and the `auditID` in the kube-apiserver audit event, so the three
+streams join.
+
+[Auditing](./auditing.md) covers the rest: how the audit filters sit in the
+request path, enabling a stdout audit log with the chart, policy examples, and
+joining the proxy's events with the API server's audit log. For the proxy's own
+per-request stdout log, see
+[reading the request log](./operations.md#reading-the-request-log).
 
 ## See also
 
