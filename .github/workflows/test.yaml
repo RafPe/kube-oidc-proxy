@@ -53,14 +53,19 @@ jobs:
       - name: Verify event reference
         run: make verify_eventdoc && git diff --exit-code docs/logging.md
 
-      # e2e packages need Docker + kind and run in e2e.yaml; run unit tests for
-      # the maintained cmd/ and pkg/ packages here, plus the standalone test
-      # tools, which need no cluster.
+      # The e2e framework's unit tests render the chart's ClusterRole and check
+      # it grants every permission the proxy code needs.
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+
+      # The e2e suite needs Docker + kind and runs in e2e.yaml; run unit tests
+      # for the maintained cmd/ and pkg/ packages here, plus the standalone test
+      # tools and the e2e framework's own tests, which need no cluster.
       #
       # -tags logcheck compiles the required-attribute assertions into Emit, so
       # a record missing a mandatory field fails a test instead of shipping.
       - name: go test
-        run: go test -tags logcheck ./cmd/... ./pkg/... ./test/tools/... ./test/e2e/versions/...
+        run: go test -tags logcheck ./cmd/... ./pkg/... ./test/tools/... ./test/e2e/framework/... ./test/e2e/versions/...
 
       # e2e.yaml runs the suite as three label-filtered shards; an unlabelled
       # case would run in none of them. Cheap text check, no cluster needed.

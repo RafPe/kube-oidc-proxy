@@ -145,6 +145,23 @@ check_identity() { # <kubeconfig> <expected_user> <label>
   ok "authenticated + impersonated through the proxy as ${expected}"
 }
 
+check_impersonation() { # <kubeconfig> <caller> <label>
+  local kcfg="$1" caller="$2" label="$3" out
+  echo; echo "${BLUE}--- ${label}: kubectl --as through the proxy as \"${caller}\" ---${NC}"
+  # Allowed: the caller may impersonate ci-viewer, and ci-viewer may view.
+  # This needs the proxy's ServiceAccount to create SubjectAccessReviews; a
+  # chart that does not grant that fails here with a 500, not a 403.
+  out="$(kubectl --kubeconfig "${kcfg}" --as=ci-viewer get pods -A 2>&1)" \
+    || fail "${label}: '--as=ci-viewer get pods' failed (impersonation grant + view should allow it):\n${out}"
+  ok "--as=ci-viewer allowed: SubjectAccessReview created and granted"
+  # Refused by the proxy itself, before anything is forwarded: the caller has
+  # no grant for this target, so the review says no and the proxy answers 403.
+  out="$(kubectl --kubeconfig "${kcfg}" --as=nobody get pods -A 2>&1 || true)"
+  echo "${out}" | grep -q "is not allowed to impersonate user" \
+    || fail "${label}: '--as=nobody' was not refused by the proxy's impersonation check:\n${out}"
+  ok "--as=nobody refused by the proxy (403 impersonation_denied, not a 500)"
+}
+
 # --------------------------------------------------------------------------
 log "Preflight"
 for t in kind docker kubectl helm openssl jq curl go; do require_tool "$t"; done
@@ -219,6 +236,13 @@ jwt:
       username:
         claim: sub
         prefix: "gha:"
+      # An extra mapping makes every request carry Impersonate-Extra-<key>,
+      # which the API server authorizes as userextras/<key>. The request only
+      # succeeds if the chart's ClusterRole granted the key it read from this
+      # very configuration.
+      extra:
+        - key: github.com/repository
+          valueExpression: claims.repository
   - issuer:
       url: https://${DEX_NAME}.dex.svc.cluster.local:5556/dex
       audiences:
@@ -232,8 +256,11 @@ ${CA_INDENTED}
       groups:
         claim: groups
         prefix: "oidc-local:"
+      extra:
+        - key: example.com/email
+          valueExpression: claims.email
 EOF
-ok "authentication-config.yaml rendered (GHA issuer has no certificateAuthority)"
+ok "authentication-config.yaml rendered (GHA issuer has no certificateAuthority; both issuers map an extra)"
 
 log "Installing kube-oidc-proxy via Helm (multi-issuer, readinessRequireAllIssuers)"
 helm --kube-context "${CTX}" install "${PROXY_RELEASE}" "${CHART}" \
@@ -249,6 +276,17 @@ ok "proxy Ready -> BOTH issuers initialised (real GitHub Actions JWKS fetched)"
 log "Applying RBAC (view) for the impersonated identities"
 kubectl --context "${CTX}" create clusterrolebinding gha-e2e-local-view \
   --clusterrole=view --user="oidc-local:${DEX_USER}" >/dev/null
+
+# Inbound impersonation (kubectl --as): the proxy authorizes it with a
+# SubjectAccessReview it must be allowed to create, then forwards as the
+# target. A ClusterRole scoped to one target username, bound to each
+# identity under test; the target itself may only view.
+kubectl --context "${CTX}" create clusterrole gha-e2e-impersonate-ci-viewer \
+  --verb=impersonate --resource=users --resource-name=ci-viewer >/dev/null
+kubectl --context "${CTX}" create clusterrolebinding gha-e2e-ci-viewer-view \
+  --clusterrole=view --user=ci-viewer >/dev/null
+kubectl --context "${CTX}" create clusterrolebinding gha-e2e-local-impersonate \
+  --clusterrole=gha-e2e-impersonate-ci-viewer --user="oidc-local:${DEX_USER}" >/dev/null
 GHA_SUB=""
 if [ -n "${GHA_TOKEN_FILE}" ]; then
   GHA_TOKEN="$(cat "${GHA_TOKEN_FILE}")"
@@ -273,6 +311,8 @@ if [ -n "${GHA_TOKEN_FILE}" ]; then
   log "GitHub Actions token sub=${GHA_SUB}"
   kubectl --context "${CTX}" create clusterrolebinding gha-e2e-github-view \
     --clusterrole=view --user="gha:${GHA_SUB}" >/dev/null
+  kubectl --context "${CTX}" create clusterrolebinding gha-e2e-github-impersonate \
+    --clusterrole=gha-e2e-impersonate-ci-viewer --user="gha:${GHA_SUB}" >/dev/null
 fi
 ok "RBAC applied"
 
@@ -288,20 +328,26 @@ log "Port-forwarding the proxy"
 port_forward 8443 443 -n "${PROXY_NS}" "svc/${PROXY_RELEASE}"
 
 # ---- Assertion 1: local Dex issuer works through the multi-issuer proxy.
+# Every request carries the mapped extra, so a passing 'get pods' also proves
+# the chart granted userextras/example.com/email to the proxy's ServiceAccount.
 write_kubeconfig "${DEX_TOKEN}" "${GEN}/kubeconfig-local.yaml"
 check_identity "${GEN}/kubeconfig-local.yaml" "oidc-local:${DEX_USER}" "Local Dex issuer"
+check_impersonation "${GEN}/kubeconfig-local.yaml" "oidc-local:${DEX_USER}" "Local Dex issuer"
 
-# ---- Assertion 2 (CI only): the real GitHub Actions token authenticates.
+# ---- Assertion 2 (CI only): the real GitHub Actions token authenticates,
+# with its own extra (userextras/github.com/repository) and --as.
 if [ -n "${GHA_TOKEN_FILE}" ]; then
   log "Authenticating the real GitHub Actions token through the proxy"
   write_kubeconfig "${GHA_TOKEN}" "${GEN}/kubeconfig-gha.yaml"
   check_identity "${GEN}/kubeconfig-gha.yaml" "gha:${GHA_SUB}" "GitHub Actions issuer"
+  check_impersonation "${GEN}/kubeconfig-gha.yaml" "gha:${GHA_SUB}" "GitHub Actions issuer"
 fi
 
 stop_pf
 echo
 echo "${GREEN}SUCCESS:${NC} multi-issuer proxy verified."
 if [ -n "${GHA_TOKEN_FILE}" ]; then
-  echo "  - real GitHub Actions OIDC token impersonated as gha:${GHA_SUB}"
+  echo "  - real GitHub Actions OIDC token impersonated as gha:${GHA_SUB}, with extra github.com/repository"
 fi
-echo "  - local Dex token impersonated as oidc-local:${DEX_USER}"
+echo "  - local Dex token impersonated as oidc-local:${DEX_USER}, with extra example.com/email"
+echo "  - kubectl --as=ci-viewer allowed for both, --as=nobody refused by the proxy"

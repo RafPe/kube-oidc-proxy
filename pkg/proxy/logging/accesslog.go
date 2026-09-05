@@ -32,19 +32,47 @@ import (
 	proxycontext "github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
 )
 
+// Extra keys the proxy itself puts on an outbound impersonated request. They
+// are a runtime API contract: the API server authorizes each one as
+// `impersonate` on `userextras/<key>` (lowercased), so the chart's ClusterRole
+// must grant every key listed here, and a test holds the two together.
 const (
+	// UserHeaderClientIPKey carries the resolved client IP when
+	// --extra-user-header-client-ip is set.
 	UserHeaderClientIPKey = "Remote-Client-IP"
+
+	// The originaluser.jetstack.io-* keys carry the authenticated identity on a
+	// request that impersonates someone else (kubectl --as), so the API
+	// server's audit log records who really acted. Unchanged from upstream.
+	ExtraKeyOriginalUser   = "originaluser.jetstack.io-user"
+	ExtraKeyOriginalGroups = "originaluser.jetstack.io-groups"
+	ExtraKeyOriginalUID    = "originaluser.jetstack.io-uid"
+	ExtraKeyOriginalExtra  = "originaluser.jetstack.io-extra"
 )
+
+// FixedImpersonationExtraKeys lists every extra key the proxy can set on its
+// own, independent of claim mappings and operator-configured headers. The
+// chart grants exactly these, plus whatever the configuration declares.
+func FixedImpersonationExtraKeys() []string {
+	return []string{
+		UserHeaderClientIPKey,
+		ExtraKeyOriginalUser,
+		ExtraKeyOriginalGroups,
+		ExtraKeyOriginalUID,
+		ExtraKeyOriginalExtra,
+	}
+}
 
 // loggableExtraKeys is the allowlist of impersonation-extra keys that the proxy
 // sets itself and are safe to log. Everything else is authenticator-supplied
 // claim data and is counted, not logged, so arbitrary claims and credentials
-// never reach the log stream.
+// never reach the log stream. ExtraKeyOriginalExtra is deliberately absent: it
+// carries the original identity's whole extra map, which is claim data.
 var loggableExtraKeys = map[string]struct{}{
-	UserHeaderClientIPKey:             {},
-	"originaluser.jetstack.io-user":   {},
-	"originaluser.jetstack.io-groups": {},
-	"originaluser.jetstack.io-uid":    {},
+	UserHeaderClientIPKey:  {},
+	ExtraKeyOriginalUser:   {},
+	ExtraKeyOriginalGroups: {},
+	ExtraKeyOriginalUID:    {},
 }
 
 // AccessLogger writes the access record. It is an injected collaborator rather
