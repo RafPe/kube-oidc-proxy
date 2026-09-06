@@ -57,6 +57,12 @@ func (m *MiscOptions) Version() string {
 	return m.gitVersion
 }
 
+// Commit returns the git commit this binary was built from, for the build
+// information the metrics endpoint reports.
+func (m *MiscOptions) Commit() string {
+	return m.gitCommit
+}
+
 func (m *MiscOptions) PrintVersionAndExit() {
 	fmt.Printf("%s version: %#v\n", AppName,
 		apimachineryversion.Info{
