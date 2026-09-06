@@ -57,7 +57,7 @@ kubectl -n proxy get configmap kop-kube-oidc-proxy-dashboards -o name >/dev/null
 # shellcheck source=hack/metrics-demo/portforward.sh
 . hack/metrics-demo/portforward.sh
 trap pf_cleanup EXIT
-PROM=$(pf_start monitoring svc/kps-kube-prometheus-stack-prometheus 9090)
+pf_start PROM monitoring svc/kps-kube-prometheus-stack-prometheus 9090
 up=0
 for i in $(seq 1 40); do
   pf_check || exit 1
@@ -84,7 +84,8 @@ if [ -n "$(git status --porcelain)" ]; then
 else
   while read -r name _; do
     pf_check || exit 1
-    port=$(pf_start proxy "pod/$name" 9090 </dev/null)
+    pf_start port proxy "pod/$name" 9090 </dev/null
+    # shellcheck disable=SC2154  # pf_start assigns `port` with printf -v.
     info=$(curl -sf "http://127.0.0.1:$port/metrics" | grep '^kube_oidc_proxy_build_info' || true)
     [ -n "$info" ] || { echo "pod $name exposed no kube_oidc_proxy_build_info" >&2; exit 1; }
     case "$info" in

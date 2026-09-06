@@ -66,6 +66,12 @@ jobs:
       - name: Verify hand-authored diagrams
         run: bash hack/verify-diagrams.sh
 
+      # The kind demo's port-forward helper keeps the pids to kill in shell
+      # arrays, so it breaks silently if a caller ever puts pf_start back in a
+      # command substitution. Checked with a kubectl stub; no cluster needed.
+      - name: Verify metrics-demo port-forwards
+        run: bash hack/verify-portforward.sh
+
       # The e2e framework's unit tests render the chart's ClusterRole and check
       # it grants every permission the proxy code needs.
       - name: Set up Helm

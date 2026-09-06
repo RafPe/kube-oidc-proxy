@@ -10,6 +10,12 @@
 # pick a free one and announce it, so the announcement is both the port to use
 # and the signal that the listener is bound. Each forward is killed on exit and
 # checked for liveness before the results that depend on it are trusted.
+#
+# The port comes back through a caller-named variable rather than on stdout,
+# because the bookkeeping below only means anything in the caller's own shell:
+# `PROM=$(pf_start ...)` would append the pid and the log to arrays inside a
+# command-substitution subshell that exits at once, leaving the EXIT trap with
+# nothing to kill and pf_check with nothing to inspect.
 
 PF_PIDS=()
 PF_LOGS=()
@@ -24,31 +30,34 @@ pf_cleanup() {
   done
 }
 
-# pf_start <namespace> <target> <remote-port>; prints the local port it bound.
+# pf_start <outvar> <namespace> <target> <remote-port>; assigns the local port
+# it bound to <outvar> in the caller's shell. Every internal carries a pf_
+# prefix so that an output variable named after one of them - check.sh asks for
+# `port` - is not shadowed by a local and silently discarded.
 pf_start() {
-  local ns=$1 target=$2 remote=$3
-  local log port pid i
-  log=$(mktemp)
-  kubectl -n "$ns" port-forward "$target" ":$remote" >"$log" 2>&1 &
-  pid=$!
-  PF_PIDS+=("$pid")
-  PF_LOGS+=("$log")
-  PF_NAMES+=("$ns/$target:$remote")
+  local pf_out=$1 pf_ns=$2 pf_target=$3 pf_remote=$4
+  local pf_log pf_port pf_pid
+  pf_log=$(mktemp)
+  kubectl -n "$pf_ns" port-forward "$pf_target" ":$pf_remote" >"$pf_log" 2>&1 &
+  pf_pid=$!
+  PF_PIDS+=("$pf_pid")
+  PF_LOGS+=("$pf_log")
+  PF_NAMES+=("$pf_ns/$pf_target:$pf_remote")
 
-  port=""
+  pf_port=""
   for _ in $(seq 1 150); do
-    port=$(sed -n 's/^Forwarding from 127\.0\.0\.1:\([0-9]\{1,\}\) ->.*/\1/p' "$log" | head -1)
-    [ -n "$port" ] && break
-    kill -0 "$pid" 2>/dev/null || break
+    pf_port=$(sed -n 's/^Forwarding from 127\.0\.0\.1:\([0-9]\{1,\}\) ->.*/\1/p' "$pf_log" | head -1)
+    [ -n "$pf_port" ] && break
+    kill -0 "$pf_pid" 2>/dev/null || break
     sleep 0.2
   done
-  if [ -z "$port" ]; then
-    echo "port-forward to $ns/$target:$remote never announced a local port:" >&2
-    cat "$log" >&2
+  if [ -z "$pf_port" ]; then
+    echo "port-forward to $pf_ns/$pf_target:$pf_remote never announced a local port:" >&2
+    cat "$pf_log" >&2
     return 1
   fi
 
-  printf '%s\n' "$port"
+  printf -v "$pf_out" '%s' "$pf_port"
 }
 
 # pf_check fails if any forward has exited, so a query that returns nothing is

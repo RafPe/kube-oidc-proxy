@@ -17,8 +17,8 @@ mkdir -p docs/dashboards
 # shellcheck source=hack/metrics-demo/portforward.sh
 . hack/metrics-demo/portforward.sh
 trap pf_cleanup EXIT
-PROM=$(pf_start monitoring svc/kps-kube-prometheus-stack-prometheus 9090)
-GRAFANA=$(pf_start monitoring svc/kps-grafana 80)
+pf_start PROM monitoring svc/kps-kube-prometheus-stack-prometheus 9090
+pf_start GRAFANA monitoring svc/kps-grafana 80
 
 promq() {
   pf_check || return 1
