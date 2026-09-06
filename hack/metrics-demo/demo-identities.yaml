@@ -43,6 +43,13 @@ subjects:
   - apiGroup: rbac.authorization.k8s.io
     kind: User
     name: user@example.com
+  # The identity user@example.com is allowed to impersonate. It needs the same
+  # grant, or the proxy would authorize the impersonation and the API server
+  # would then refuse the impersonated request, which is a different outcome
+  # from the one the "impersonation allowed" traffic kind is meant to produce.
+  - apiGroup: rbac.authorization.k8s.io
+    kind: User
+    name: jjackson
   - kind: ServiceAccount
     name: demo-passthrough
     namespace: proxy

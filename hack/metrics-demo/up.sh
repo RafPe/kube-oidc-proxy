@@ -68,14 +68,11 @@ helm upgrade --install kps prometheus-community/kube-prometheus-stack \
   --version "$KPS_VERSION" -n monitoring --create-namespace \
   -f hack/metrics-demo/kube-prometheus-stack-values.yaml --wait --timeout 15m
 
-step "mock OIDC issuer in namespace proxy"
+step "mock OIDC issuer, and the proxy's serving certificate"
 kubectl create namespace proxy --dry-run=client -o yaml | kubectl apply -f -
-if [ -s "$STATE/issuer-url" ] && kubectl -n proxy get deploy "$ISSUER_IMAGE" >/dev/null 2>&1; then
-  echo "issuer already deployed at $(cat "$STATE/issuer-url")"
-else
-  kubectl -n proxy delete deploy,svc,secret,serviceaccount "$ISSUER_IMAGE" --ignore-not-found
-  go run ./hack/metrics-demo/issuer --state "$STATE" --namespace proxy
-fi
+# Idempotent: deploys the issuer only if it is not already there, and mints
+# the proxy's serving certificate only if its Secret does not already exist.
+go run ./hack/metrics-demo/issuer --state "$STATE" --namespace proxy
 
 step "kube-oidc-proxy from this chart, with metrics"
 helm upgrade --install kop ./chart/kube-oidc-proxy -n proxy \
@@ -86,10 +83,6 @@ helm upgrade --install kop ./chart/kube-oidc-proxy -n proxy \
   --set image.tag=demo \
   --set image.pullPolicy=Never \
   --wait --timeout 10m
-
-step "extract the proxy's serving certificate"
-kubectl -n proxy get secret kop-kube-oidc-proxy-tls \
-  -o jsonpath='{.data.tls\.crt}' | base64 -d > "$STATE/proxy-ca.pem"
 
 step "RBAC and workload for the demo identities"
 kubectl apply -f hack/metrics-demo/demo-identities.yaml
