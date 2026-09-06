@@ -308,6 +308,23 @@ metrics:
     additionalLabels: {}
     annotations: {}
     groups: []
+  # Grafana dashboards, shipped as one ConfigMap the Grafana sidecar loads
+  # (kube-prometheus-stack does this by default). Three variants answer
+  # different operator questions; see docs/metrics.md#dashboards.
+  dashboards:
+    enabled: false
+    # Namespace for the ConfigMap; empty uses the release namespace. Set it to
+    # Grafana's namespace when the sidecar only watches its own.
+    namespace: ""
+    # The label the sidecar selects on, and its value.
+    label: grafana_dashboard
+    labelValue: "1"
+    # Grafana folder, via the sidecar's folder annotation. Empty keeps the
+    # sidecar's default folder.
+    folder: ""
+    folderAnnotation: grafana_folder
+    labels: {}
+    annotations: {}
   # Reserved for a later release: TLS on the metrics listener and delegated
   # TokenReview/SubjectAccessReview authorization of scrapes. Any value other
   # than the defaults below fails to render until they are implemented.

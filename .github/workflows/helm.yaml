@@ -11,6 +11,7 @@ on:
       - 'hack/verify-chart-rbac.sh'
       - 'hack/verify-chart-namespace.sh'
       - 'hack/verify-chart-metrics.sh'
+      - 'hack/verify-chart-dashboards.sh'
   pull_request:
     paths:
       - 'chart/kube-oidc-proxy/**'
@@ -19,6 +20,7 @@ on:
       - 'hack/verify-chart-rbac.sh'
       - 'hack/verify-chart-namespace.sh'
       - 'hack/verify-chart-metrics.sh'
+      - 'hack/verify-chart-dashboards.sh'
 
 permissions:
   contents: read
@@ -62,6 +64,12 @@ jobs:
 
       - name: metrics values render the listener, the Service and the monitors
         run: bash hack/verify-chart-metrics.sh
+
+      # Needs git and network: the pinned dashboard-linter cannot be run with
+      # `go run <module>@<version>` because its go.mod carries a replace
+      # directive, so the script builds the pinned tag from a shallow clone.
+      - name: dashboards are valid, linted and rendered byte-for-byte
+        run: bash hack/verify-chart-dashboards.sh
 
       - name: logging values render as proxy flags
         run: bash hack/verify-chart-logging.sh

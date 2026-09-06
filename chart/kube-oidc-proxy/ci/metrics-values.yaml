@@ -16,6 +16,8 @@ metrics:
   prometheusRule:
     enabled: true
     groups: []
+  dashboards:
+    enabled: true
 networkPolicy:
   enabled: true
   metrics:

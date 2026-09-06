@@ -189,6 +189,11 @@ and health, never identities; see the [metrics reference](../../docs/metrics.md)
 | `metrics.podMonitor.interval` / `.scrapeTimeout` / `.path` / `.scheme` / `.honorLabels` / `.relabelings` / `.metricRelabelings` | | as ServiceMonitor | Endpoint settings; the PodMonitor has no `tlsConfig` or limit fields. |
 | `metrics.prometheusRule.enabled` / `.groups` | bool / list | `false` / `[]` | Optional PrometheusRule; `groups` is rendered as `spec.groups`. No default alerts ship. |
 | `metrics.prometheusRule.namespace` / `.additionalLabels` / `.annotations` | | `""` / `{}` / `{}` | Object metadata. |
+| `metrics.dashboards.enabled` | bool | `false` | Ship the three Grafana dashboards as a ConfigMap the Grafana sidecar loads. Requires `metrics.enabled`; without it the render fails rather than producing dashboards for a proxy that serves no metrics. |
+| `metrics.dashboards.namespace` | string | `""` | Namespace for the ConfigMap; empty uses the release namespace. Set it to Grafana's namespace when its sidecar only watches its own. |
+| `metrics.dashboards.label` / `.labelValue` | string | `grafana_dashboard` / `"1"` | The label the Grafana sidecar selects on, and its value. |
+| `metrics.dashboards.folder` / `.folderAnnotation` | string | `""` / `grafana_folder` | Grafana folder for the dashboards, set through the sidecar's folder annotation. Empty keeps the sidecar's default folder. |
+| `metrics.dashboards.labels` / `.annotations` | map | `{}` | Added to the dashboards ConfigMap. |
 | `metrics.tls.enabled`, `metrics.authentication.mode` | | `false`, `none` | Reserved for a later release; any other value fails to render. |
 | `networkPolicy.enabled` | bool | `false` | Render a NetworkPolicy admitting only `networkPolicy.metrics.from` to the metrics port, plus the rules in `networkPolicy.additionalIngress`. NetworkPolicies are additive: another policy selecting the proxy pods that already admits the metrics port cannot be narrowed by this one. |
 | `networkPolicy.metrics.from` | list | `[]` | NetworkPolicy ingress peers allowed to scrape; required when enabled. |
