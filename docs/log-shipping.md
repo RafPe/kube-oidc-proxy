@@ -177,8 +177,12 @@ additionalFilters: |
       Emitter_Name          oidc_proxy_audit
       Emitter_Storage.type  filesystem
 
-# Leave the chart's built-in kinesis outputs off: they match `*` and cannot
-# split the two record kinds.
+# The chart enables `cloudWatchLogs` by default. Left on, it adds a third
+# output matching `*` that ships both record kinds to CloudWatch in
+# `us-east-1` as well. Turn it off with the two kinesis outputs, which match
+# `*` too and cannot split the two record kinds.
+cloudWatchLogs:
+  enabled: false
 kinesis:
   enabled: false
 kinesis_streams:
@@ -189,7 +193,6 @@ additionalOutputs: |
       Match                     audit.*
       region                    eu-west-1
       stream                    kube-oidc-proxy-audit
-      log_key                   data
       storage.total_limit_size  1G
 
   [OUTPUT]
@@ -197,7 +200,6 @@ additionalOutputs: |
       Match                     kube.*
       region                    eu-west-1
       stream                    kube-oidc-proxy-logs
-      log_key                   data
       storage.total_limit_size  1G
 
 # Filesystem buffering needs a path; /var/log is a hostPath the chart already
@@ -217,9 +219,13 @@ service:
     storage.backlog.mem_limit 20M
 ```
 
-`log_key data` sends only the parsed proxy record, so what lands in Kinesis is
-byte-for-byte the JSON the proxy wrote. Drop that line if you want the
-`kubernetes` block (pod name, node, labels) wrapped around it instead.
+Each Kinesis record is one JSON object: the proxy's own record under `data`,
+wrapped in what the agent knows about the pod. Do **not** reach for
+`log_key data` to strip the wrapper. The `kinesis_streams` output serialises the
+selected value and then drops its outer delimiter, so `log_key data` puts
+`"kind":"Event",…` on the stream with no enclosing braces, and `log_key log`
+puts an unquoted, still-escaped string there. Neither is parseable JSON.
+Verified against aws-for-fluent-bit 3.2.1 (Fluent Bit 4.2.2).
 
 The path glob relies on the kubelet's file naming,
 `<pod>_<namespace>_<container>-<id>.log`, and on the proxy running in the
@@ -236,9 +242,12 @@ both if yours differ.
      curl -s localhost:2020/api/v1/metrics | jq '.output'
    ```
 
-   `kinesis_streams.0` and `.1` should show `proc_records` climbing and
-   `errors` at zero. An `AccessDeniedException` here is the IAM role or the
-   trust policy.
+   `kinesis_streams.0` and `.1` should show `proc_records` climbing, with
+   `dropped_records` and `retries_failed` at zero. Watch those two, not
+   `errors`: a misconfigured output drops every record while `errors` stays at
+   `0`, and the chart's health check does not restart the pod for it. An
+   `AccessDeniedException` in the agent's log is the IAM role or the trust
+   policy.
 
 2. Make one request through the proxy and read it back from the audit stream:
 
@@ -250,22 +259,30 @@ both if yours differ.
      --shard-id "$SHARD" --shard-iterator-type TRIM_HORIZON \
      --query ShardIterator --output text)
    aws kinesis get-records --shard-iterator "$IT" --output json \
-     | jq -r '.Records[].Data | @base64d' | jq -c 'select(.kind == "Event") | {auditID, stage, verb, user: .user.username}'
+     | jq -r '.Records[].Data | @base64d' \
+     | jq -c 'select(.data.kind == "Event") | {auditID: .data.auditID, stage: .data.stage, verb: .data.verb, user: .data.user.username}'
    ```
 
    With `omitStages: ["RequestReceived"]` in the policy you get one
    `ResponseComplete` event per request; without it, two.
 
 3. Read the matching log record from the other stream the same way and join
-   on `request_id == auditID`.
+   on `.data.request_id == .data.auditID`.
 
 ## Sharp edges
 
-- **`Buffer_Max_Size` must be raised.** Fluent Bit's tail input defaults it
-  to 32k, and a line longer than that removes the whole file from monitoring
-  unless `Skip_Long_Lines` is on. `RequestResponse`-level audit events exceed
-  32k routinely. The recipe sets `1M` and `Skip_Long_Lines On`; check the size
-  of your largest events if the policy records bodies.
+- **`Buffer_Max_Size` is cheap insurance, not a fix for a problem you have.**
+  Fluent Bit's tail input defaults it to 32768 bytes, and a physical line longer
+  than that removes the whole file from monitoring unless `Skip_Long_Lines` is
+  on. Two things stop that firing here. The container runtime writes CRI-format
+  log files and splits long output into ~16 KB chunks that `multiline.parser
+  cri` reassembles, so the tail input never sees an over-long physical line; and
+  the proxy's audit events are small at every level, because a reverse proxy
+  never records request or response bodies (see [auditing](./auditing.md)). The
+  recipe still sets `1M` and `Skip_Long_Lines On` because they cost nothing.
+  Note that Fluent Bit reads `k` and `M` as 1000 and 1000000, so `1M` is a
+  million bytes — and `Buffer_Max_Size 32k` is 32000, below the default
+  `Buffer_Chunk_Size` of 32768, which makes the tail input refuse to start.
 - **The kubelet's rotated files are the only buffer before the agent.** With
   the upstream defaults (`containerLogMaxSize: 10Mi`, `containerLogMaxFiles: 5`)
   a container keeps about 50Mi of history on the node. A policy that records
@@ -298,13 +315,14 @@ both if yours differ.
 
 ## Reading the streams
 
-Each record in `kube-oidc-proxy-logs` is one proxy record as documented in
-the [logging reference](./logging.md#record-shape); each record in
-`kube-oidc-proxy-audit` is one `audit.k8s.io/v1` Event as documented in
-[reading the events](./auditing.md#reading-the-events). Nothing is renamed on
-the way, so the [worked queries](./logging.md#worked-queries) and the
-[ECS mapping](./logging.md#ecs-mapping) apply unchanged to whatever consumes
-the stream.
+Each record in `kube-oidc-proxy-logs` carries one proxy record as documented in
+the [logging reference](./logging.md#record-shape) under `data`; each record in
+`kube-oidc-proxy-audit` carries one `audit.k8s.io/v1` Event as documented in
+[reading the events](./auditing.md#reading-the-events), also under `data`. The
+agent adds the wrapper (`kubernetes`, `time`, `stream`, `_p`) but renames
+nothing inside it, so the [worked queries](./logging.md#worked-queries) and the
+[ECS mapping](./logging.md#ecs-mapping) apply to whatever consumes the stream
+with a `data.` prefix.
 
 ## Several clusters
 
@@ -339,16 +357,19 @@ additionalFilters: |
       Emitter_Storage.type  filesystem
 ```
 
-`record_modifier` adds top-level keys, and `log_key data` in the outputs above
-sends only the proxy's own JSON, so with several clusters drop `log_key` from
-both outputs and ship the whole record. Kinesis then receives the proxy record
-under `data`, wrapped in what the agent knows:
+`record_modifier` adds top-level keys, and the outputs above already ship the
+whole record, so the two new keys travel with it. Kinesis receives the proxy
+record under `data`, wrapped in what the agent knows:
 
 ```json
 {"cluster":"prod-eu-1","environment":"prod",
+ "time":"2026-01-01T00:00:00.000000000Z","stream":"stdout","_p":"F",
  "kubernetes":{"namespace_name":"kube-oidc-proxy","pod_name":"kube-oidc-proxy-7c9d…","host":"ip-10-42-1-3.eu-west-1.compute.internal"},
  "data":{"event_type":"request.access.decided","request_id":"7f1a9c1e-…","decision":"allow"}}
 ```
+
+`time`, `stream` and `_p` come from the tail input and the CRI parser; ignore
+them or drop them with a `record_modifier` `Remove_key`.
 
 Consumers read the proxy fields under `data.` and get the pod and node for
 free. Every query on the [logging reference](./logging.md#worked-queries)
