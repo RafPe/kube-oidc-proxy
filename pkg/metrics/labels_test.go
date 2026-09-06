@@ -181,4 +181,49 @@ func TestProjectionsNeverPassAnUnknownValue(t *testing.T) {
 	if projectReason("") != "" {
 		t.Errorf("projectReason must keep the empty reason of an allow")
 	}
+	// The five typed projections the review, cache, auth and audit collectors
+	// use hold the same property against a value outside their own type set.
+	for _, v := range hostile {
+		if got := projectAuthOutcome(AuthOutcome(v)); got != "other" {
+			t.Errorf("projectAuthOutcome(%q) = %q", v, got)
+		}
+		if got := projectReview(Review(v)); got != "other" {
+			t.Errorf("projectReview(%q) = %q", v, got)
+		}
+		if got := projectReviewOutcome(ReviewOutcome(v)); got != "other" {
+			t.Errorf("projectReviewOutcome(%q) = %q", v, got)
+		}
+		if got := projectCacheResult(CacheResult(v)); got != "other" {
+			t.Errorf("projectCacheResult(%q) = %q", v, got)
+		}
+		if got := projectAuditOperation(AuditOperation(v)); got != "other" {
+			t.Errorf("projectAuditOperation(%q) = %q", v, got)
+		}
+	}
+	// Their documented values pass through unchanged.
+	for _, v := range []AuthOutcome{AuthAccepted, AuthRejected, AuthError} {
+		if projectAuthOutcome(v) != string(v) {
+			t.Errorf("projectAuthOutcome(%q) altered a documented value", v)
+		}
+	}
+	for _, v := range []Review{ReviewTokenReview, ReviewSAR} {
+		if projectReview(v) != string(v) {
+			t.Errorf("projectReview(%q) altered a documented value", v)
+		}
+	}
+	for _, v := range []ReviewOutcome{ReviewAllow, ReviewDeny, ReviewTimeout, ReviewCanceled, ReviewError} {
+		if projectReviewOutcome(v) != string(v) {
+			t.Errorf("projectReviewOutcome(%q) altered a documented value", v)
+		}
+	}
+	for _, v := range []CacheResult{CacheHit, CacheMiss, CacheBypass} {
+		if projectCacheResult(v) != string(v) {
+			t.Errorf("projectCacheResult(%q) altered a documented value", v)
+		}
+	}
+	for _, v := range []AuditOperation{AuditRun, AuditShutdown} {
+		if projectAuditOperation(v) != string(v) {
+			t.Errorf("projectAuditOperation(%q) altered a documented value", v)
+		}
+	}
 }

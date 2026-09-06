@@ -96,6 +96,8 @@ func (s *Server) Start(ctx context.Context) error {
 	// One goroutine owns shutdown and the terminal error. Shutdown makes
 	// Serve return at once; net/http requires waiting for Shutdown itself,
 	// which is why done is closed here and not when Serve returns.
+	//
+	//nolint:gosec // G118: this goroutine runs because ctx was cancelled; a context derived from it would be dead on arrival and Shutdown would not drain in-flight scrapes (TestServerWaitDrainsAnActiveScrape pins this).
 	go func() {
 		defer close(s.done)
 
