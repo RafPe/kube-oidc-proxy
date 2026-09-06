@@ -26,6 +26,41 @@ type RequestObservation struct {
 	Hijacked bool
 }
 
-func (r *Recorder) RequestStarted()                               {}
-func (r *Recorder) LongRunningEstablished(verb Verb, scope Scope) {}
-func (r *Recorder) RequestFinished(o RequestObservation)          {}
+// RequestStarted marks a request entering the handler chain. Called before
+// the handler runs, so a panicking handler still reaches RequestFinished and
+// the gauge cannot leak.
+func (r *Recorder) RequestStarted() {
+	if r == nil {
+		return
+	}
+	r.requestsInFlight.Inc()
+}
+
+// LongRunningEstablished marks a long-running request whose response has
+// begun: its headers went out, or its connection was hijacked for an
+// upgrade. Only then is a stream open; a watch refused with 401 never was.
+func (r *Recorder) LongRunningEstablished(verb Verb, scope Scope) {
+	if r == nil {
+		return
+	}
+	r.longRunningRequests.WithLabelValues(projectVerb(verb), projectScope(scope)).Inc()
+}
+
+// RequestFinished records the end of a request: the in-flight gauge, the
+// long-running gauge when it was established, the completed-request counter,
+// and the latency histogram for short requests only.
+func (r *Recorder) RequestFinished(o RequestObservation) {
+	if r == nil {
+		return
+	}
+	verb, scope := projectVerb(o.Verb), projectScope(o.Scope)
+
+	r.requestsInFlight.Dec()
+	if o.Established {
+		r.longRunningRequests.WithLabelValues(verb, scope).Dec()
+	}
+	r.requestsTotal.WithLabelValues(verb, scope, CodeFor(o.Status), projectTermination(o.Termination)).Inc()
+	if !o.LongRunning && !o.Hijacked {
+		r.requestDuration.WithLabelValues(verb, scope).Observe(o.Duration.Seconds())
+	}
+}
