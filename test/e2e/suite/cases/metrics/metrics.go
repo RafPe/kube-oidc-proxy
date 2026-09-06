@@ -18,6 +18,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/rest"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
@@ -109,13 +110,17 @@ var _ = framework.CasesDescribe("Metrics", Label("shard-a"), func() {
 
 	It("counts an allowed list and a rejected token with closed-set labels", func() {
 		grantPods(f, defaultUsername, "get", "list", "watch")
+		// Built before the poll: validToken and NewProxyRestConfig both assert,
+		// and an assertion inside the callback would fail the spec on the first
+		// attempt instead of being retried.
+		token, config := validToken(f), f.NewProxyRestConfig()
 		// RBAC propagation is asynchronous: the RoleBinding is not visible to
 		// the API server's authorizer the instant Create returns, so the first
 		// list can still be a 403. Poll until the grant lands.
 		Eventually(func() (int, error) {
-			return listPods(f, validToken(f))
+			return listPods(f, token, config)
 		}, 20*time.Second, time.Second).Should(Equal(http.StatusOK))
-		code, err := listPods(f, "eyJ.invalid.token")
+		code, err := listPods(f, "eyJ.invalid.token", config)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(code).To(Equal(http.StatusUnauthorized))
 
@@ -135,10 +140,11 @@ var _ = framework.CasesDescribe("Metrics", Label("shard-a"), func() {
 
 	It("gauges an open watch and releases it, without timing it", func() {
 		grantPods(f, defaultUsername, "get", "list", "watch")
+		token, config := validToken(f), f.NewProxyRestConfig()
 		// RBAC propagation is not synchronous either: open the watch only
 		// once a list with the same grant succeeds.
 		Eventually(func() (int, error) {
-			return listPods(f, validToken(f))
+			return listPods(f, token, config)
 		}, 20*time.Second, time.Second).Should(Equal(http.StatusOK))
 
 		w, err := f.ProxyClient.CoreV1().Pods(f.Namespace.Name).Watch(context.TODO(), metav1.ListOptions{})
@@ -311,9 +317,11 @@ func validToken(f *framework.Framework) string {
 // listPods lists the namespace's pods through the proxy and returns the status
 // code. Transport errors are returned rather than asserted, so a caller inside
 // Eventually retries on them instead of failing the spec on the first attempt
-// (the same split as scrapeRaw and mustSamples above).
-func listPods(f *framework.Framework, token string) (int, error) {
-	config := f.NewProxyRestConfig()
+// (the same split as scrapeRaw and mustSamples above). The token and the rest
+// config are built by the caller before the poll starts: both come from
+// helpers that assert, and an assertion inside an Eventually callback aborts
+// the spec on the first attempt rather than being retried.
+func listPods(f *framework.Framework, token string, config *rest.Config) (int, error) {
 	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/api/v1/namespaces/%s/pods", config.Host, f.Namespace.Name), nil)
 	if err != nil {
 		return 0, err
