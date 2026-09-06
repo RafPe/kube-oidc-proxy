@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -499,5 +500,51 @@ func TestStartupFailureAfterLoggerIsReportedAsARecord(t *testing.T) {
 	msg, _ := rec["error_message"].(string)
 	if !strings.Contains(msg, "missing-kubeconfig") {
 		t.Errorf("error_message = %q, want the underlying cause", msg)
+	}
+}
+
+// TestMetricsBindFailureIsReportedAtStartup pins two things: the metrics
+// listener binds before anything that needs a cluster, and a port already in
+// use is a startup failure on the log stream rather than a crash later.
+func TestMetricsBindFailureIsReportedAtStartup(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	var out bytes.Buffer
+	opts := options.New()
+	cmd := buildRunCommand(opts, &out)
+	opts.AddFlags(cmd)
+	cmd.SetArgs([]string{
+		"--oidc-issuer-url=https://issuer.example.com",
+		"--oidc-client-id=kube-oidc-proxy",
+		"--metrics-bind-address=" + ln.Addr().String(),
+		"--kubeconfig=" + filepath.Join(t.TempDir(), "missing-kubeconfig"),
+	})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+
+	if err := cmd.Execute(); !errors.Is(err, ErrReported) {
+		t.Fatalf("Execute() error = %v, want ErrReported", err)
+	}
+
+	var failure map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("non-JSON line on the log stream: %q", line)
+		}
+		if rec["event_type"] == string(logging.EventProxyStartupFailed) {
+			failure = rec
+		}
+	}
+	if failure == nil {
+		t.Fatalf("no proxy.startup.failed record:\n%s", out.String())
+	}
+	msg, _ := failure["error_message"].(string)
+	if !strings.Contains(msg, "metrics listener") || strings.Contains(msg, "missing-kubeconfig") {
+		t.Fatalf("error_message = %q, want the metrics bind failure, reported before the kubeconfig is read", msg)
 	}
 }

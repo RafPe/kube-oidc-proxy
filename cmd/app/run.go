@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -35,6 +36,7 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/probe"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
@@ -221,6 +223,49 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 			// with Go's default behaviour.
 			stopCh := signals.Handler(logging.ForComponent(root, logging.ComponentShutdown))
 
+			// Derive a context cancelled when the app stop signal fires, giving the
+			// metrics and readiness servers an explicit shutdown path.
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() {
+				select {
+				case <-stopCh:
+					cancel()
+				case <-ctx.Done():
+				}
+			}()
+
+			// The metrics listener has no dependencies, so it starts first: a
+			// port-in-use failure is then the first thing reported, and a scrape
+			// that arrives before readiness sees build_info and the runtime
+			// collectors, as it does on any Kubernetes component. recorder stays
+			// nil when metrics are disabled; every collaborator treats a nil
+			// recorder as a no-op.
+			var recorder *metrics.Recorder
+			var metricsServer *metrics.Server
+			if opts.Metrics.Enabled() {
+				recorder, err = metrics.New(metrics.BuildInfo{
+					Version:   opts.Misc.Version(),
+					Revision:  opts.Misc.Commit(),
+					GoVersion: runtime.Version(),
+				})
+				if err != nil {
+					return fail(err)
+				}
+				metricsServer = metrics.NewServer(opts.Metrics.BindAddress, recorder,
+					logging.ForComponent(root, logging.ComponentMetrics))
+				if err := metricsServer.Start(ctx); err != nil {
+					return fail(err)
+				}
+				defer func() {
+					cancel()
+					// Reported as metrics.server.failed by the server itself;
+					// on a startup failure the exit status already says so.
+					_ = metricsServer.Wait()
+				}()
+			}
+			_ = recorder
+
 			if err := checkReservedIdentityPrefixes(opts); err != nil {
 				return fail(err)
 			}
@@ -350,18 +395,6 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 				})
 			}
 
-			// Derive a context cancelled when the app stop signal fires, giving the
-			// readiness server an explicit shutdown path.
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			go func() {
-				select {
-				case <-stopCh:
-					cancel()
-				case <-ctx.Done():
-				}
-			}()
-
 			// Start readiness probe with an explicit lifecycle. Start binds
 			// synchronously so a port-in-use failure surfaces here at startup.
 			probeServer := probe.NewServer(strconv.Itoa(opts.App.ReadinessProbePort),
@@ -397,12 +430,16 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 			logging.Emit(context.Background(), serverLogger, logging.EventProxyServerStopped,
 				slog.Int64("duration_ms", time.Since(servingSince).Milliseconds()))
 
-			// Stop the readiness server and wait for its listener to be released.
+			// Stop the readiness and metrics servers and wait for their
+			// listeners to be released. Errors are collected, not returned:
+			// the pre-shutdown hooks below flush the audit backend and must run
+			// whatever the listeners reported.
 			shutdownSince := time.Now()
 			cancel()
-			if err := probeServer.Wait(); err != nil {
-				// The readiness server reported readiness.server.failed itself.
-				return fmt.Errorf("%w: %w", ErrReported, err)
+			probeErr := probeServer.Wait() // reported readiness.server.failed itself
+			var metricsErr error
+			if metricsServer != nil {
+				metricsErr = metricsServer.Wait() // reported metrics.server.failed itself
 			}
 
 			hooksErr := p.RunPreShutdownHooks()
@@ -413,9 +450,9 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 				logging.EventProxyShutdownCompleted,
 				slog.Int64("duration_ms", time.Since(shutdownSince).Milliseconds()))
 
-			if hooksErr != nil {
-				// Each failing hook reported proxy.hook.failed itself.
-				return fmt.Errorf("%w: %w", ErrReported, hooksErr)
+			if err := errors.Join(probeErr, metricsErr, hooksErr); err != nil {
+				// Each failure was reported on the stream by its owner.
+				return fmt.Errorf("%w: %w", ErrReported, err)
 			}
 			return nil
 		},

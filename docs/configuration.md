@@ -116,6 +116,7 @@ registry, the level policy and worked queries.
 | `--tls-cert-file` / `--tls-private-key-file` | — | Serving certificate and key. |
 | `--bind-address` | `0.0.0.0` | Address to serve on. |
 | `--readiness-probe-port` / `-P` | `8080` | Port exposing the `/ready` readiness probe. |
+| `--metrics-bind-address` | — (disabled) | `host:port` of the Prometheus metrics listener, plain HTTP, `GET /metrics` only. Empty or `0` disables it; port `0` (`:0`) is rejected because the chart and a ServiceMonitor must know the port. Rendered by the chart from `metrics.enabled` / `metrics.port`. Must differ from `--secure-port` and `--readiness-probe-port`. Diverges deliberately from `--readiness-probe-port`'s port-only shape: an address expresses "disabled" and a loopback bind in one value. See [capacity and sizing](./operations.md#capacity-and-sizing) for what the endpoint costs; the metrics reference lands with the metric catalogue. |
 | `--flush-interval` | `50ms` | Interval to flush request bodies (streaming requests flush immediately). |
 | `--kube-client-qps` / `--kube-client-burst` | — | Throttling for the proxy's own API-server client. |
 | `--version` | — | Print version information and exit. |
