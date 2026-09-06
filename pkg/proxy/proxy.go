@@ -231,6 +231,7 @@ func New(deps Dependencies) (*Proxy, error) {
 	if err != nil {
 		return nil, err
 	}
+	auditor.WithMetrics(deps.Metrics)
 
 	// One request-component logger serves both the access record and every
 	// other record the request path emits, so they share a destination and a
