@@ -264,7 +264,6 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 					_ = metricsServer.Wait()
 				}()
 			}
-			_ = recorder
 
 			if err := checkReservedIdentityPrefixes(opts); err != nil {
 				return fail(err)
@@ -370,6 +369,7 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 				SubjectAccessReviewer: subjectAccessReviewer,
 				SecureServingInfo:     secureServingInfo,
 				Config:                proxyConfig,
+				Metrics:               recorder,
 			})
 			if err != nil {
 				return fail(err)
