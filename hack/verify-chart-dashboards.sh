@@ -53,6 +53,14 @@ for f in "$CHART"/dashboards/*.json; do
   # digit, so a "$" followed by a digit is always an unbraced group reference.
   jq -e '[.. | objects | select(has("expr")) | select(.expr | test("label_replace\\(")) | select(.expr | test("\\$[0-9]"))] | length == 0' "$f" >/dev/null \
     || { echo "$f: a label_replace replacement uses an unbraced \$<digit>; write \${1} so Go expands the capture group" >&2; exit 1; }
+  # A panel that must read zero rather than "No data" ends its query with a
+  # `vector(0)` fallback. `vector(0)` carries no labels, so a legendFormat that
+  # only interpolates labels renders as a blank row (Grafana shows "Value" when
+  # the format is empty). Either the legend is a literal name, or the zero
+  # branch is wrapped in a label_replace that gives it every label the legend
+  # interpolates.
+  jq -e '[.. | objects | select(has("expr")) | select(.expr | test("vector\\(0\\)")) | . as $t | (($t.legendFormat // "")) as $lf | select(($lf | length) == 0 or ([$lf | scan("\\{\\{ *([A-Za-z_][A-Za-z0-9_]*) *\\}\\}")] | flatten | map(. as $n | select($t.expr | test("label_replace\\(.*\"" + $n + "\"") | not)) | length > 0))] | length == 0' "$f" >/dev/null \
+    || { echo "$f: a vector(0) fallback has no legendFormat, or one naming labels the zero branch does not carry; use a literal legend or wrap vector(0) in label_replace" >&2; exit 1; }
 done
 
 # `lint` takes one dashboard per invocation, so run it per file.

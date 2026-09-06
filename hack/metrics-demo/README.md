@@ -116,10 +116,15 @@ and logs each of them separately.
 answers, so the proxy's exchange completes normally and its `termination` is
 `normal`. Nothing in the demo makes the hop to the API server fail, so the
 overview's "Upstream failures/s" panel reads a flat zero, which is the healthy
-reading. That panel and four others end their query with `or vector(0)` for
-exactly this reason: a counter child that has never been incremented has no
-series at all, and a panel that says "No data" where it should say zero is a
-panel an operator learns to ignore.
+reading. That panel and four others fall back to `vector(0)` for exactly this
+reason: a counter child that has never been incremented has no series at all,
+and a panel that says "No data" where it should say zero is a panel an operator
+learns to ignore. The two that group by a label write the fallback as
+`or on() label_replace(vector(0), ...)`: `on()` keeps the zero out of the panel
+once real series exist (a bare `or vector(0)` draws the unlabelled zero
+*alongside* them, because an empty label set never matches a grouped one), and
+the `label_replace` names it, so the legend reads `none` rather than a blank
+row or Grafana's placeholder `Value`.
 
 ## What each file is
 

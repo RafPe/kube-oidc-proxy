@@ -855,7 +855,7 @@
     {
       "type": "timeseries",
       "title": "Responses by code class",
-      "description": "Completed requests per second grouped into 1xx-5xx by rewriting the code label. 4xx is the client's problem (bad token, forbidden), 5xx is the proxy's or the API server's. Stacked, so the band widths are the mix.",
+      "description": "Completed requests per second grouped into 1xx-5xx by rewriting the code label. 4xx is the client's problem (bad token, forbidden), 5xx is the proxy's or the API server's. Requests that never carried an HTTP status code land in 'none': a hijacked connection (exec, attach, portforward) and a watch or log stream the client cancelled, both of which the proxy records as code 'none'. Stacked, so the band widths are the mix.",
       "datasource": {
         "uid": "${datasource}"
       },
@@ -931,7 +931,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (class) (label_replace(rate(kube_oidc_proxy_requests_total{namespace=\"$namespace\",pod=~\"$pod\"}[$__rate_interval]), \"class\", \"${1}xx\", \"code\", \"(\\\\d)\\\\d\\\\d\"))",
+          "expr": "sum by (class) (label_replace(label_replace(rate(kube_oidc_proxy_requests_total{namespace=\"$namespace\",pod=~\"$pod\"}[$__rate_interval]), \"class\", \"${1}xx\", \"code\", \"(\\\\d)\\\\d\\\\d\"), \"class\", \"none\", \"class\", \"^$\"))",
           "legendFormat": "{{class}}",
           "range": true,
           "refId": "A"
@@ -948,7 +948,7 @@
     {
       "type": "timeseries",
       "title": "Upstream failures/s",
-      "description": "Requests that ended because the connection to the API server timed out, was reset, or the proxy could not complete the exchange. Healthy is a flat zero; anything else is a dependency problem, not a client one. Reads 0 rather than 'No data' when no request has ever failed this way.",
+      "description": "Requests that ended because the connection to the API server timed out, was reset, or the proxy could not complete the exchange. Healthy is a flat zero; anything else is a dependency problem, not a client one. Reads 0 rather than 'No data' when no request has ever failed this way, drawn as a single line named 'none' that disappears as soon as a real termination has something to report.",
       "datasource": {
         "uid": "${datasource}"
       },
@@ -1028,7 +1028,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (termination) (rate(kube_oidc_proxy_requests_total{namespace=\"$namespace\",pod=~\"$pod\",termination=~\"upstream_timeout|upstream_reset|proxy_error\"}[$__rate_interval])) or vector(0)",
+          "expr": "sum by (termination) (rate(kube_oidc_proxy_requests_total{namespace=\"$namespace\",pod=~\"$pod\",termination=~\"upstream_timeout|upstream_reset|proxy_error\"}[$__rate_interval])) or on() label_replace(vector(0), \"termination\", \"none\", \"\", \"\")",
           "legendFormat": "{{termination}}",
           "range": true,
           "refId": "A"

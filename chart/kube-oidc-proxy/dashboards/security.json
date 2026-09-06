@@ -757,7 +757,7 @@
     {
       "type": "timeseries",
       "title": "Review errors and timeouts/s",
-      "description": "TokenReview and SubjectAccessReview calls that returned no decision, by review and outcome. These fail the request the same way a denial does, but the cause is the dependency, not the client's permissions. Healthy is a flat zero; reads 0, not 'No data'.",
+      "description": "TokenReview and SubjectAccessReview calls that returned no decision, by review and outcome. These fail the request the same way a denial does, but the cause is the dependency, not the client's permissions. Healthy is a flat zero; reads 0, not 'No data', drawn as a single line named 'none none' that disappears as soon as a real review and outcome pair has something to report.",
       "datasource": {
         "uid": "${datasource}"
       },
@@ -837,7 +837,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (review, outcome) (rate(kube_oidc_proxy_review_requests_total{namespace=\"$namespace\",pod=~\"$pod\",outcome=~\"timeout|canceled|error\"}[$__rate_interval])) or vector(0)",
+          "expr": "sum by (review, outcome) (rate(kube_oidc_proxy_review_requests_total{namespace=\"$namespace\",pod=~\"$pod\",outcome=~\"timeout|canceled|error\"}[$__rate_interval])) or on() label_replace(label_replace(vector(0), \"review\", \"none\", \"\", \"\"), \"outcome\", \"none\", \"\", \"\")",
           "legendFormat": "{{review}} {{outcome}}",
           "range": true,
           "refId": "A"
