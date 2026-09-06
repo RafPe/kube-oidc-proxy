@@ -19,3 +19,9 @@ func NewHelper(cfg *config.Config) *Helper {
 		cfg: cfg,
 	}
 }
+
+// RepoRoot is the repository checkout the suite runs from, for helpers that
+// render the chart.
+func (h *Helper) RepoRoot() string {
+	return h.cfg.RepoRoot
+}

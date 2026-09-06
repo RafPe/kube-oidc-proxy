@@ -38,6 +38,9 @@ type Framework struct {
 	BeforeProxyDeploy func()
 	ExtraProxyVolumes []corev1.Volume
 	ExtraProxyArgs    []string
+	// ExtraProxyExtras, if set, adds volumes, mounts, sidecars and ports to
+	// the proxy pod the framework deploys.
+	ExtraProxyExtras *helper.ProxyExtras
 
 	config *config.Config
 	helper *helper.Helper
@@ -122,8 +125,8 @@ func (f *Framework) BeforeEach() {
 	}
 
 	By("Deploying kube-oidc-proxy")
-	proxyKeyBundle, proxyURL, err := f.helper.DeployProxy(f.Namespace,
-		issuerURL, clientID, issuerKeyBundle, f.ExtraProxyVolumes, f.ExtraProxyArgs...)
+	proxyKeyBundle, proxyURL, err := f.helper.DeployProxyWithExtras(f.Namespace,
+		issuerURL, clientID, issuerKeyBundle, f.ExtraProxyVolumes, f.ExtraProxyExtras, f.ExtraProxyArgs...)
 	Expect(err).NotTo(HaveOccurred())
 
 	f.proxyURL, f.proxyKeyBundle = proxyURL, proxyKeyBundle
