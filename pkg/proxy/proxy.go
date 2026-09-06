@@ -436,7 +436,7 @@ func (p *Proxy) RoundTrip(req *http.Request) (*http.Response, error) {
 	if context.NoImpersonation(req) {
 		token := context.BearerToken(req)
 		req.Header.Add("Authorization", token)
-		p.access.LogDecision(req, accesslogging.Decision{
+		p.recordDecision(req, accesslogging.Decision{
 			Allowed:    true,
 			AuthMethod: authMethodFrom(req),
 			Inbound:    userFromContext(req),
@@ -455,7 +455,7 @@ func (p *Proxy) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	// Record the admitted request. Written before the upstream call so a watch
 	// or exec that runs for hours still produces its access record immediately.
-	p.access.LogDecision(req, accesslogging.Decision{
+	p.recordDecision(req, accesslogging.Decision{
 		Allowed:    true,
 		AuthMethod: authMethodFrom(req),
 		Inbound:    *impersonationConf.InboundUser,
@@ -472,6 +472,7 @@ func (p *Proxy) reviewToken(rw http.ResponseWriter, req *http.Request) bool {
 	bearer, found := utiltoken.ParseFromRequest(req)
 	if !found {
 		logging.Emit(ctx, componentLogger(p.tokenReviewLog), logging.EventAuthnTokenMissing)
+		p.metrics.AuthenticationAttempt(authMethodTokenReview, metrics.AuthRejected)
 		return false
 	}
 
@@ -481,6 +482,7 @@ func (p *Proxy) reviewToken(rw http.ResponseWriter, req *http.Request) bool {
 		// verdict on the token: the caller fails closed.
 		logging.Emit(ctx, componentLogger(p.tokenReviewLog), logging.EventAuthnTokenReviewFailed,
 			slog.String("reason", reasonAuthenticationDependencyError), logging.ErrAttr(err))
+		p.metrics.AuthenticationAttempt(authMethodTokenReview, metrics.AuthError)
 		return false
 	}
 
@@ -488,7 +490,20 @@ func (p *Proxy) reviewToken(rw http.ResponseWriter, req *http.Request) bool {
 	// TokenReview emits authn.tokenreview.completed with its duration, a cache
 	// hit emits cache.tokenreview.lookup with the cached verdict. A rejection
 	// is such an answer, not a failure, so nothing more is recorded here.
+	if ok {
+		p.metrics.AuthenticationAttempt(authMethodTokenReview, metrics.AuthAccepted)
+	} else {
+		p.metrics.AuthenticationAttempt(authMethodTokenReview, metrics.AuthRejected)
+	}
 	return ok
+}
+
+// recordDecision writes the one access record a request produces and counts
+// it. Every decision goes through here, so the metric and the record can
+// never disagree about what was decided.
+func (p *Proxy) recordDecision(req *http.Request, d accesslogging.Decision) {
+	p.access.LogDecision(req, d)
+	p.metrics.AccessDecision(d.AuthMethod, d.Allowed, d.Reason)
 }
 
 func (p *Proxy) roundTripperForRestConfig(config *rest.Config) (http.RoundTripper, error) {
