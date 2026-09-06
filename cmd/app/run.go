@@ -158,6 +158,20 @@ func issuerNames(issuerURLs []string) []string {
 	return names
 }
 
+// duplicateIssuerName reports the first issuer name two configured issuer
+// URLs map onto, if any. Names are hosts (see probe.IssuerName), so issuers
+// that differ only by path collide.
+func duplicateIssuerName(issuerURLs []string) (string, bool) {
+	seen := make(map[string]struct{}, len(issuerURLs))
+	for _, name := range issuerNames(issuerURLs) {
+		if _, ok := seen[name]; ok {
+			return name, true
+		}
+		seen[name] = struct{}{}
+	}
+	return "", false
+}
+
 // ErrReported marks an error that was already emitted on the log stream. main
 // exits non-zero on it without printing it again, so a failure after the
 // logger exists never adds an unstructured line beside the JSON records.
@@ -403,6 +417,7 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 				issuerProbes, opts.App.ReadinessRequireAllIssuers,
 				p.OIDCTokenAuthenticator(),
 				root)
+			probeServer.WithMetrics(recorder)
 			if err := probeServer.Start(ctx); err != nil {
 				return fail(err)
 			}
@@ -577,15 +592,25 @@ func buildUnionAuther(opts *options.Options, oidcLogger *slog.Logger) (authentic
 		return nil, nil, err
 	}
 
-	authers := make([]authenticator.Token, 0, len(authCfg.JWT))
+	// Issuers are named by host in every record and every metric series. Two
+	// issuers on one host with different paths would share a name, and a
+	// per-issuer gauge cannot tell them apart, so the configuration is refused
+	// here, before any authenticator is built or any issuer is reported.
 	issuerURLs := make([]string, 0, len(authCfg.JWT))
+	for _, jwtEntry := range authCfg.JWT {
+		issuerURLs = append(issuerURLs, jwtEntry.Issuer.URL)
+	}
+	if name, dup := duplicateIssuerName(issuerURLs); dup {
+		return nil, nil, fmt.Errorf("two configured issuers share the name %q; issuers must differ by host", name)
+	}
+
+	authers := make([]authenticator.Token, 0, len(authCfg.JWT))
 	for _, jwtEntry := range authCfg.JWT {
 		auther, err := oidcAutherFromJWT(jwtEntry, compiler, oidc.AllValidSigningAlgorithms(), opts.OIDCAuthentication)
 		if err != nil {
 			return nil, nil, fmt.Errorf("building authenticator for issuer %q: %w", jwtEntry.Issuer.URL, err)
 		}
 		authers = append(authers, proxy.WithIssuerName(issuerNameFor(jwtEntry), auther))
-		issuerURLs = append(issuerURLs, jwtEntry.Issuer.URL)
 	}
 
 	logIssuersConfigured(oidcLogger, issuerNames(issuerURLs))

@@ -548,3 +548,59 @@ func TestMetricsBindFailureIsReportedAtStartup(t *testing.T) {
 		t.Fatalf("error_message = %q, want the metrics bind failure, reported before the kubeconfig is read", msg)
 	}
 }
+
+// TestBuildTokenAutherRefusesIssuersSharingAHost pins the placement: the
+// configuration is refused by buildTokenAuther itself, before it constructs
+// any authenticator.
+func TestBuildTokenAutherRefusesIssuersSharingAHost(t *testing.T) {
+	config := filepath.Join(t.TempDir(), "auth.yaml")
+	content := `apiVersion: apiserver.config.k8s.io/v1beta1
+kind: AuthenticationConfiguration
+jwt:
+  - issuer:
+      url: https://idp.example.com/realms/a
+      audiences:
+        - a
+    claimMappings:
+      username:
+        claim: email
+        prefix: ""
+  - issuer:
+      url: https://idp.example.com/realms/b
+      audiences:
+        - b
+    claimMappings:
+      username:
+        claim: email
+        prefix: ""
+`
+	if err := os.WriteFile(config, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opts := options.New()
+	opts.AuthenticationConfig.ConfigFile = config
+	_, _, err := buildTokenAuther(opts, slog.New(slog.DiscardHandler), slog.New(slog.DiscardHandler))
+	if err == nil || !strings.Contains(err.Error(), "share the name \"idp.example.com\"") {
+		t.Fatalf("buildTokenAuther = %v, want the shared-host refusal", err)
+	}
+}
+
+func TestDuplicateIssuerNameIsRefused(t *testing.T) {
+	tests := map[string]struct {
+		urls    []string
+		wantDup string
+	}{
+		"distinct hosts":         {[]string{"https://a.example.com", "https://b.example.com"}, ""},
+		"same host, other paths": {[]string{"https://idp.example.com/realms/a", "https://idp.example.com/realms/b"}, "idp.example.com"},
+		"single issuer":          {[]string{"https://idp.example.com/realms/a"}, ""},
+		"two unparsable":         {[]string{"::", "::"}, "unknown"},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			dup, ok := duplicateIssuerName(tc.urls)
+			if ok != (tc.wantDup != "") || dup != tc.wantDup {
+				t.Fatalf("duplicateIssuerName(%v) = %q, %v; want %q", tc.urls, dup, ok, tc.wantDup)
+			}
+		})
+	}
+}
