@@ -25,10 +25,10 @@ metadata:
 spec:
   type: ClusterIP
   ports:
-    - port: {{ dig "port" 9090 $metrics }}
-      targetPort: {{ dig "portName" "metrics" $metrics }}
+    - port: {{ include "kube-oidc-proxy.metricsPort" $ }}
+      targetPort: {{ include "kube-oidc-proxy.metricsPortName" $ }}
       protocol: TCP
-      name: {{ dig "portName" "metrics" $metrics }}
+      name: {{ include "kube-oidc-proxy.metricsPortName" $ }}
   selector:
     app.kubernetes.io/name: {{ include "kube-oidc-proxy.name" . }}
     app.kubernetes.io/instance: {{ .Release.Name }}

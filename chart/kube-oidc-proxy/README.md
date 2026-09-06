@@ -173,8 +173,8 @@ and health, never identities; see the [metrics reference](../../docs/metrics.md)
 | --- | --- | --- | --- |
 | `metrics.enabled` | bool | `false` | Serve Prometheus metrics on a dedicated listener. Leaves the command line unchanged when false, so an older pinned `image.tag` still starts. |
 | `metrics.bindAddress` | string | `""` | `--metrics-bind-address`; empty derives `0.0.0.0:<metrics.port>`. |
-| `metrics.port` | int | `9090` | Container and Service port. Must differ from 8443 and 8080. |
-| `metrics.portName` | string | `metrics` | Name of the container and Service port the ServiceMonitor references. |
+| `metrics.port` | int | `9090` | Container and Service port. Must be a whole number between 1 and 65535 and differ from 8443 and 8080; a fractional or non-numeric value fails to render. |
+| `metrics.portName` | string | `metrics` | Name of the container and Service port the ServiceMonitor references. A valid `IANA_SVC_NAME`, as Kubernetes requires: 1-15 lowercase alphanumerics and dashes, at least one letter, no leading or trailing dash and no consecutive dashes. |
 | `metrics.service.labels` / `.annotations` | map | `{}` | Added to the metrics Service. |
 | `metrics.serviceMonitor.enabled` | bool | `false` | Render a `monitoring.coreos.com/v1` ServiceMonitor selecting the metrics Service. Needs the Prometheus Operator CRDs. |
 | `metrics.serviceMonitor.namespace` | string | `""` | Namespace for the ServiceMonitor; empty uses the release namespace. |
@@ -183,7 +183,7 @@ and health, never identities; see the [metrics reference](../../docs/metrics.md)
 | `metrics.serviceMonitor.path` / `.scheme` / `.honorLabels` | | `/metrics` / `http` / `false` | Endpoint settings. |
 | `metrics.serviceMonitor.jobLabel` / `.targetLabels` / `.podTargetLabels` | | `""` / `[]` / `[]` | Passed through to the spec. |
 | `metrics.serviceMonitor.relabelings` / `.metricRelabelings` / `.tlsConfig` | | `[]` / `[]` / `{}` | Passed through to the endpoint. |
-| `metrics.serviceMonitor.sampleLimit` / `.targetLimit` / `.labelLimit` | int | `0` | Per-scrape limits protecting Prometheus; 0 omits. |
+| `metrics.serviceMonitor.sampleLimit` / `.targetLimit` / `.labelLimit` | int | `0` | Per-scrape limits protecting Prometheus; 0 omits the field. A negative value fails to render rather than reaching Prometheus. |
 | `metrics.podMonitor.enabled` | bool | `false` | PodMonitor alternative that scrapes the pods directly. Mutually exclusive with the ServiceMonitor. |
 | `metrics.podMonitor.namespace` / `.additionalLabels` / `.annotations` | | `""` / `{}` / `{}` | Object metadata, as for the ServiceMonitor. |
 | `metrics.podMonitor.interval` / `.scrapeTimeout` / `.path` / `.scheme` / `.honorLabels` / `.relabelings` / `.metricRelabelings` | | as ServiceMonitor | Endpoint settings; the PodMonitor has no `tlsConfig` or limit fields. |

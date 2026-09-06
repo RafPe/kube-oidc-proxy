@@ -8,22 +8,16 @@
 {{- if ne (toString (dig "authentication" "mode" "none" $metrics)) "none" }}
 {{- fail "metrics.authentication.mode is reserved for a later release and must stay \"none\"" }}
 {{- end }}
-{{- $metricsPort := int (dig "port" 9090 $metrics) }}
-{{- if or (lt $metricsPort 1) (gt $metricsPort 65535) }}
-{{- fail "metrics.port must be between 1 and 65535" }}
-{{- end }}
-{{- if or (eq $metricsPort 8443) (eq $metricsPort 8080) }}
-{{- fail "metrics.port must differ from 8443 (the secure port) and 8080 (the readiness port)" }}
-{{- end }}
+{{/* Validated and cast once in _helpers.tpl so every template that carries
+     the port or its name agrees with this one. */}}
+{{- $metricsPort := int (include "kube-oidc-proxy.metricsPort" $) }}
+{{- $metricsPortName := include "kube-oidc-proxy.metricsPortName" $ }}
 {{- $metricsBind := toString (dig "bindAddress" "" $metrics) }}
 {{- if and (dig "enabled" false $metrics) (eq $metricsBind "0") }}
 {{- fail "metrics.bindAddress=\"0\" disables the listener in the binary; set metrics.enabled=false instead" }}
 {{- end }}
 {{- if and $metricsBind (not (hasSuffix (printf ":%d" $metricsPort) $metricsBind)) }}
 {{- fail (printf "metrics.bindAddress %q must end with :%d, the port the Service and monitors target" $metricsBind $metricsPort) }}
-{{- end }}
-{{- if not (regexMatch "^[a-z]([-a-z0-9]{0,13}[a-z0-9])?$" (toString (dig "portName" "metrics" $metrics))) }}
-{{- fail "metrics.portName must be a valid IANA_SVC_NAME: 1-15 lowercase alphanumerics or dashes, starting with a letter" }}
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment
@@ -81,7 +75,7 @@ spec:
         - containerPort: 8080
         {{- if dig "enabled" false $metrics }}
         - containerPort: {{ $metricsPort }}
-          name: {{ dig "portName" "metrics" $metrics }}
+          name: {{ $metricsPortName }}
         {{- end }}
         readinessProbe:
           httpGet:

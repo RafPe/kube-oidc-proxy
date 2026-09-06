@@ -10,6 +10,21 @@
 {{- if and $smEnabled (dig "podMonitor" "enabled" false $m) -}}
 {{- fail "metrics.serviceMonitor.enabled and metrics.podMonitor.enabled are mutually exclusive" -}}
 {{- end -}}
+{{- /* The limits are cast and range-checked here rather than emitted through
+     `with`, which passes a negative value straight to Prometheus and treats 0
+     and "" alike. 0 means "no limit" and omits the field. */ -}}
+{{- $sampleLimit := int (dig "sampleLimit" 0 $sm) -}}
+{{- if lt $sampleLimit 0 -}}
+{{- fail "metrics.serviceMonitor.sampleLimit must be >= 0" -}}
+{{- end -}}
+{{- $targetLimit := int (dig "targetLimit" 0 $sm) -}}
+{{- if lt $targetLimit 0 -}}
+{{- fail "metrics.serviceMonitor.targetLimit must be >= 0" -}}
+{{- end -}}
+{{- $labelLimit := int (dig "labelLimit" 0 $sm) -}}
+{{- if lt $labelLimit 0 -}}
+{{- fail "metrics.serviceMonitor.labelLimit must be >= 0" -}}
+{{- end -}}
 {{- if and $enabled $smEnabled }}
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
@@ -45,19 +60,19 @@ spec:
   podTargetLabels:
     {{- toYaml . | nindent 4 }}
   {{- end }}
-  {{- with $sm.sampleLimit }}
-  sampleLimit: {{ . }}
+  {{- if gt $sampleLimit 0 }}
+  sampleLimit: {{ $sampleLimit }}
   {{- end }}
-  {{- with $sm.targetLimit }}
-  targetLimit: {{ . }}
+  {{- if gt $targetLimit 0 }}
+  targetLimit: {{ $targetLimit }}
   {{- end }}
-  {{- with $sm.labelLimit }}
-  labelLimit: {{ . }}
+  {{- if gt $labelLimit 0 }}
+  labelLimit: {{ $labelLimit }}
   {{- end }}
   endpoints:
     # `port` names a Service port, not a container port: it must match
     # metrics.portName as rendered onto the metrics Service.
-    - port: {{ dig "portName" "metrics" $m }}
+    - port: {{ include "kube-oidc-proxy.metricsPortName" $ }}
       path: {{ $sm.path | default "/metrics" }}
       scheme: {{ $sm.scheme | default "http" }}
       honorLabels: {{ $sm.honorLabels | default false }}

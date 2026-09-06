@@ -34,6 +34,10 @@ svc=$(render --set metrics.enabled=true --show-only templates/service-metrics.ya
 [ "$(yq -r '.spec.type' <<<"$svc")" = "ClusterIP" ] || { echo "metrics Service must be ClusterIP" >&2; exit 1; }
 [ "$(yq -r '.spec.ports[0].name' <<<"$svc")" = "metrics" ] || { echo "metrics Service port is not named metrics" >&2; exit 1; }
 [ "$(yq -r '.spec.ports[0].port' <<<"$svc")" = "$container_port" ] || { echo "Service port and container port differ" >&2; exit 1; }
+# The port is computed once by the metricsPort helper and included as a string;
+# a stray newline in that define would render a null or a non-integer scalar
+# here, which `yq` reports as a type rather than a value mismatch.
+[ "$(yq -r '.spec.ports[0].port | type' <<<"$svc")" = "!!int" ] || { echo "Service port is not an integer scalar" >&2; exit 1; }
 [ "$(yq -r '.spec.ports[0].targetPort' <<<"$svc")" = "metrics" ] || { echo "Service targetPort must reference the named port" >&2; exit 1; }
 [ "$(yq -r '.metadata.labels["app.kubernetes.io/component"]' <<<"$svc")" = "metrics" ] || { echo "metrics Service lacks the component label" >&2; exit 1; }
 ! grep -q 'name: metrics' <<<"$(render --set metrics.enabled=true --show-only templates/service.yaml)" || { echo "metrics port leaked onto the main Service" >&2; exit 1; }
@@ -60,6 +64,19 @@ render --set metrics=null --set networkPolicy=null >/dev/null || { echo "render 
 ! render --set metrics.enabled=true --set metrics.bindAddress=0 >/dev/null 2>&1 || { echo "metrics.bindAddress=0 must fail to render" >&2; exit 1; }
 ! render --set metrics.enabled=true --set metrics.bindAddress=0.0.0.0:9091 >/dev/null 2>&1 || { echo "bindAddress on another port must fail to render" >&2; exit 1; }
 ! render --set metrics.enabled=true --set metrics.portName=Metrics_Port >/dev/null 2>&1 || { echo "invalid metrics.portName must fail to render" >&2; exit 1; }
+# A fractional port passes `int` in the Deployment but reaches the Service as
+# 9090.5; a non-numeric one casts to 0. Both must be refused as non-integers,
+# with that message rather than the range message.
+# `render` fails here, so its output is captured before grepping: piping it
+# straight into grep would trip `set -o pipefail` on helm's own exit code.
+err=$(render --set metrics.enabled=true --set-json 'metrics.port=9090.5' 2>&1 || true)
+grep -q 'metrics.port must be an integer' <<<"$err" || { echo "fractional metrics.port must fail as a non-integer" >&2; exit 1; }
+err=$(render --set metrics.enabled=true --set-string metrics.port=abc 2>&1 || true)
+grep -q 'metrics.port must be an integer' <<<"$err" || { echo "non-numeric metrics.port must fail as a non-integer" >&2; exit 1; }
+# Kubernetes IsValidPortName rejects consecutive dashes and names over 15
+# characters; the chart must refuse both at render time.
+! render --set metrics.enabled=true --set metrics.portName=a--b >/dev/null 2>&1 || { echo "metrics.portName=a--b must fail to render" >&2; exit 1; }
+! render --set metrics.enabled=true --set metrics.portName=abcdefghijklmnop >/dev/null 2>&1 || { echo "a 16-character metrics.portName must fail to render" >&2; exit 1; }
 
 # 4d. A non-default port and name agree everywhere.
 out=$(render --set metrics.enabled=true --set metrics.port=9191 --set metrics.portName=observe)
@@ -68,6 +85,11 @@ grep -q -- '"--metrics-bind-address=0.0.0.0:9191"' <<<"$out" || { echo "non-defa
   || { echo "non-default named container port missing" >&2; exit 1; }
 [ "$(render --set metrics.enabled=true --set metrics.port=9191 --set metrics.portName=observe --show-only templates/service-metrics.yaml | yq -r '.spec.ports[0].targetPort')" = "observe" ] \
   || { echo "non-default Service targetPort missing" >&2; exit 1; }
+[ "$(render --set metrics.enabled=true --set metrics.port=9191 --set metrics.portName=observe --show-only templates/service-metrics.yaml | yq -r '.spec.ports[0].port')" = "9191" ] \
+  || { echo "non-default Service port missing" >&2; exit 1; }
+[ "$(render --set metrics.enabled=true --set metrics.port=9191 --set metrics.portName=observe --set metrics.serviceMonitor.enabled=true --show-only templates/servicemonitor.yaml | yq -r '.spec.endpoints[0].port')" = "observe" ] \
+  || { echo "non-default ServiceMonitor endpoint port missing" >&2; exit 1; }
+
 
 # 4e. Operator labels on the metrics Service cannot override the selector labels.
 svc_labels=$(render --set metrics.enabled=true --set 'metrics.service.labels.app\.kubernetes\.io/component=other' --set 'metrics.service.labels.team=platform' --show-only templates/service-metrics.yaml)
@@ -88,8 +110,17 @@ sm=$(render --set metrics.enabled=true --set metrics.serviceMonitor.enabled=true
 [ "$(yq -r '.spec.endpoints[0].interval | type' <<<"$sm")" = "!!str" ] || { echo "interval must be a string" >&2; exit 1; }
 [ "$(yq -r '.spec.sampleLimit' <<<"$sm")" = "5000" ] || { echo "sampleLimit not rendered" >&2; exit 1; }
 [ "$(yq -r '.spec.selector.matchLabels["app.kubernetes.io/component"]' <<<"$sm")" = "metrics" ] || { echo "ServiceMonitor must select the metrics Service by component" >&2; exit 1; }
-! grep -q 'sampleLimit' <<<"$(render --set metrics.enabled=true --set metrics.serviceMonitor.enabled=true --show-only templates/servicemonitor.yaml)" \
-  || { echo "sampleLimit rendered at 0" >&2; exit 1; }
+for limit in sampleLimit targetLimit labelLimit; do
+  ! grep -q "$limit" <<<"$(render --set metrics.enabled=true --set metrics.serviceMonitor.enabled=true --show-only templates/servicemonitor.yaml)" \
+    || { echo "$limit rendered at 0" >&2; exit 1; }
+  [ "$(render --set metrics.enabled=true --set metrics.serviceMonitor.enabled=true --set "metrics.serviceMonitor.$limit=100" --show-only templates/servicemonitor.yaml | yq -r ".spec.$limit")" = "100" ] \
+    || { echo "$limit not rendered at 100" >&2; exit 1; }
+  # Prometheus rejects a negative limit; `with` used to pass it straight through.
+  ! render --set metrics.enabled=true --set metrics.serviceMonitor.enabled=true --set "metrics.serviceMonitor.$limit=-1" >/dev/null 2>&1 \
+    || { echo "negative $limit must fail to render" >&2; exit 1; }
+  err=$(render --set metrics.enabled=true --set metrics.serviceMonitor.enabled=true --set "metrics.serviceMonitor.$limit=-1" 2>&1 || true)
+  grep -q "metrics.serviceMonitor.$limit must be >= 0" <<<"$err" || { echo "negative $limit must fail to render with its own message" >&2; exit 1; }
+done
 
 # 7. Exclusions and prerequisites fail loudly.
 ! render --set metrics.serviceMonitor.enabled=true >/dev/null 2>&1 || { echo "serviceMonitor without metrics.enabled must fail" >&2; exit 1; }

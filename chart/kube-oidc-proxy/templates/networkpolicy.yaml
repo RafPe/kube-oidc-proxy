@@ -30,7 +30,7 @@ spec:
     - Ingress
   ingress:
     - ports:
-        - port: {{ dig "portName" "metrics" $m }}
+        - port: {{ include "kube-oidc-proxy.metricsPortName" $ }}
           protocol: TCP
       from:
         {{- toYaml $from | nindent 8 }}

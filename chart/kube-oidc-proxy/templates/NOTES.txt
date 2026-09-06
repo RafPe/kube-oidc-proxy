@@ -16,7 +16,7 @@ The proxy serves the impersonating Kubernetes API endpoint over HTTPS on
 container port 8443 and a readiness endpoint on 8080 (path /ready).
 {{- $metrics := .Values.metrics | default dict }}
 {{- if dig "enabled" false $metrics }}
-Prometheus metrics are served over plain HTTP on container port {{ dig "port" 9090 $metrics }}
+Prometheus metrics are served over plain HTTP on container port {{ include "kube-oidc-proxy.metricsPort" $ }}
 (path /metrics) through the Service {{ include "kube-oidc-proxy.metricsServiceName" . }}.
 {{- if not (dig "enabled" false (.Values.networkPolicy | default dict)) }}
 Nothing restricts who can scrape it; set networkPolicy.enabled and networkPolicy.metrics.from.

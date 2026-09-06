@@ -29,7 +29,7 @@ spec:
     matchNames:
       - {{ .Release.Namespace }}
   podMetricsEndpoints:
-    - port: {{ dig "portName" "metrics" $m }}
+    - port: {{ include "kube-oidc-proxy.metricsPortName" $ }}
       path: {{ $pm.path | default "/metrics" }}
       scheme: {{ $pm.scheme | default "http" }}
       honorLabels: {{ $pm.honorLabels | default false }}

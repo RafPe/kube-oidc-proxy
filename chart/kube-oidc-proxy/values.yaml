@@ -245,10 +245,14 @@ metrics:
   # Listener address passed as --metrics-bind-address. Empty derives
   # "0.0.0.0:<metrics.port>". Set "127.0.0.1:<port>" when a sidecar scrapes.
   bindAddress: ""
-  # Container port and Service port. Must differ from 8443 and 8080.
+  # Container port and Service port. A whole number between 1 and 65535 that
+  # differs from 8443 and 8080; a fractional or non-numeric value fails to
+  # render rather than reaching only some of the objects.
   port: 9090
   # Name of the container and Service port. A ServiceMonitor references the
-  # Service port by this name, so it is part of the scrape contract.
+  # Service port by this name, so it is part of the scrape contract. Must be a
+  # valid IANA_SVC_NAME: 1-15 lowercase alphanumerics and dashes, at least one
+  # letter, no leading or trailing dash and no consecutive dashes.
   portName: metrics
   service:
     labels: {}
@@ -276,7 +280,8 @@ metrics:
     relabelings: []
     metricRelabelings: []
     tlsConfig: {}
-    # Per-scrape limits protecting Prometheus from this target; 0 omits.
+    # Per-scrape limits protecting Prometheus from this target; 0 omits the
+    # field. A negative value fails to render.
     sampleLimit: 0
     targetLimit: 0
     labelLimit: 0
