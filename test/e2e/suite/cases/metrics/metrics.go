@@ -37,10 +37,6 @@ const (
 	metricReady         = "kube_oidc_proxy_ready"
 )
 
-var knownVerbs = map[string]bool{"get": true, "list": true, "watch": true, "create": true, "update": true, "patch": true,
-	"delete": true, "deletecollection": true, "proxy": true, "connect": true, "other": true}
-var knownScopes = map[string]bool{"cluster": true, "namespace": true, "resource": true, "none": true}
-
 var _ = framework.CasesDescribe("Metrics", Label("shard-a"), func() {
 	f := framework.NewDefaultFramework("metrics")
 
@@ -112,8 +108,15 @@ var _ = framework.CasesDescribe("Metrics", Label("shard-a"), func() {
 
 	It("counts an allowed list and a rejected token with closed-set labels", func() {
 		grantPods(f, defaultUsername, "get", "list", "watch")
-		Expect(doRequest(f, validToken(f)).StatusCode).To(Equal(http.StatusOK))
-		Expect(doRequest(f, "eyJ.invalid.token").StatusCode).To(Equal(http.StatusUnauthorized))
+		// RBAC propagation is asynchronous: the RoleBinding is not visible to
+		// the API server's authorizer the instant Create returns, so the first
+		// list can still be a 403. Poll until the grant lands.
+		Eventually(func() (int, error) {
+			return listPods(f, validToken(f))
+		}, 20*time.Second, time.Second).Should(Equal(http.StatusOK))
+		code, err := listPods(f, "eyJ.invalid.token")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(code).To(Equal(http.StatusUnauthorized))
 
 		Eventually(func() (float64, error) {
 			return sampleValue(f, surface, metricRequestsTotal,
@@ -133,8 +136,8 @@ var _ = framework.CasesDescribe("Metrics", Label("shard-a"), func() {
 		grantPods(f, defaultUsername, "get", "list", "watch")
 		// RBAC propagation is not synchronous either: open the watch only
 		// once a list with the same grant succeeds.
-		Eventually(func() int {
-			return doRequest(f, validToken(f)).StatusCode
+		Eventually(func() (int, error) {
+			return listPods(f, validToken(f))
 		}, 20*time.Second, time.Second).Should(Equal(http.StatusOK))
 
 		w, err := f.ProxyClient.CoreV1().Pods(f.Namespace.Name).Watch(context.TODO(), metav1.ListOptions{})
@@ -175,10 +178,10 @@ var _ = framework.CasesDescribe("Metrics", Label("shard-a"), func() {
 
 		samples := mustSamples(f, surface)
 		for _, v := range helper.LabelValuesOf(samples, metricRequestsTotal, "k8s_verb") {
-			Expect(knownVerbs).To(HaveKey(v), "k8s_verb leaked %q", v)
+			Expect(isKnownVerb(v)).To(BeTrue(), "k8s_verb leaked %q", v)
 		}
 		for _, v := range helper.LabelValuesOf(samples, metricRequestsTotal, "scope") {
-			Expect(knownScopes).To(HaveKey(v), "scope leaked %q", v)
+			Expect(isKnownScope(v)).To(BeTrue(), "scope leaked %q", v)
 		}
 		for _, s := range samples {
 			for k, v := range s.Labels {
@@ -188,6 +191,27 @@ var _ = framework.CasesDescribe("Metrics", Label("shard-a"), func() {
 		}
 	})
 })
+
+// isKnownVerb and isKnownScope are the closed label sets of pkg/metrics,
+// repeated here as switches rather than package-level maps: a map var is
+// mutable state a linter cannot tell from a constant table, which the metrics
+// packages avoid throughout.
+func isKnownVerb(v string) bool {
+	switch v {
+	case "get", "list", "watch", "create", "update", "patch",
+		"delete", "deletecollection", "proxy", "connect", "other":
+		return true
+	}
+	return false
+}
+
+func isKnownScope(v string) bool {
+	switch v {
+	case "cluster", "namespace", "resource", "none":
+		return true
+	}
+	return false
+}
 
 // metricsServiceName mirrors the chart's <fullname>-metrics naming for the
 // suite's own Deployment name.
@@ -245,16 +269,24 @@ func validToken(f *framework.Framework) string {
 	return signed
 }
 
-func doRequest(f *framework.Framework, token string) *http.Response {
+// listPods lists the namespace's pods through the proxy and returns the status
+// code. Transport errors are returned rather than asserted, so a caller inside
+// Eventually retries on them instead of failing the spec on the first attempt
+// (the same split as scrapeRaw and mustSamples above).
+func listPods(f *framework.Framework, token string) (int, error) {
 	config := f.NewProxyRestConfig()
 	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/api/v1/namespaces/%s/pods", config.Host, f.Namespace.Name), nil)
-	Expect(err).NotTo(HaveOccurred())
+	if err != nil {
+		return 0, err
+	}
 	req.Header.Set("Authorization", "bearer "+token)
 	resp, err := (&http.Client{Transport: config.Transport}).Do(req)
-	Expect(err).NotTo(HaveOccurred())
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
-	Expect(resp.Body.Close()).To(Succeed())
-	return resp
+	return resp.StatusCode, nil
 }
 
 func grantPods(f *framework.Framework, username string, verbs ...string) {
