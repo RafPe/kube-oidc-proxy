@@ -1,0 +1,49 @@
+# Copyright Jetstack Ltd. See LICENSE for details.
+#
+# kube-prometheus-stack for the metrics demo (hack/metrics-demo/up.sh). Tuned
+# for a single-node kind cluster on a laptop, not for production.
+
+# Prometheus must pick up the ServiceMonitor and PodMonitor the chart renders
+# without them carrying a release label: with the "NilUsesHelmValues" defaults
+# the operator narrows the selector to its own release and silently discovers
+# nothing, which reads as "the proxy exposes no metrics".
+prometheus:
+  prometheusSpec:
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    scrapeInterval: 15s
+    retention: 6h
+    resources:
+      requests:
+        cpu: 100m
+        memory: 400Mi
+
+grafana:
+  # The demo renders dashboards through Grafana's HTTP API with no login, and
+  # the screenshots in docs/dashboards are produced by the image renderer.
+  grafana.ini:
+    auth.anonymous:
+      enabled: true
+      org_role: Viewer
+    users:
+      viewers_can_edit: false
+  imageRenderer:
+    enabled: true
+  # The dashboards ConfigMap lives in the proxy's namespace, not Grafana's.
+  sidecar:
+    dashboards:
+      enabled: true
+      searchNamespace: ALL
+      label: grafana_dashboard
+      labelValue: "1"
+      folderAnnotation: grafana_folder
+      provider:
+        foldersFromFilesStructure: true
+  # Only this chart's dashboards, so a screenshot cannot be of someone else's.
+  defaultDashboardsEnabled: false
+
+# Nothing alerts in the demo; Alertmanager is weight the kind node does not
+# need to carry.
+alertmanager:
+  enabled: false
