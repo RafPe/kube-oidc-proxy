@@ -277,9 +277,12 @@ both if yours differ.
   on. Two things stop that firing here. The container runtime writes CRI-format
   log files and splits long output into ~16 KB chunks that `multiline.parser
   cri` reassembles, so the tail input never sees an over-long physical line; and
-  the proxy's audit events are small at every level, because a reverse proxy
-  never records request or response bodies (see [auditing](./auditing.md)). The
-  recipe still sets `1M` and `Skip_Long_Lines On` because they cost nothing.
+  the proxy's audit events stay small at every level, because it installs
+  kube-apiserver's audit filter with no resource handler behind it to call
+  `LogRequestObject`/`LogResponseObject`: a `RequestResponse` rule over a
+  64 KB ConfigMap produces a ~640-byte event with no body, on a `create` as
+  much as on a `get` (see [auditing](./auditing.md)). The recipe still sets
+  `1M` and `Skip_Long_Lines On` because they cost nothing.
   Note that Fluent Bit reads `k` and `M` as 1000 and 1000000, so `1M` is a
   million bytes — and `Buffer_Max_Size 32k` is 32000, below the default
   `Buffer_Chunk_Size` of 32768, which makes the tail input refuse to start.
@@ -302,9 +305,9 @@ both if yours differ.
   `(data.auditID, data.stage, data.stageTimestamp)` rather than by arrival.
 - **Delivery is at-least-once.** A batch that partially succeeds is retried
   whole, so duplicates happen under throttling. Deduplicate audit events on
-  `(data.auditID, data.stage)`, never on `auditID` alone: a long-running request
-  legitimately emits `ResponseStarted` and `ResponseComplete` under one ID. If
-  the same stream also receives the kube-apiserver's audit log, add the
+  `(data.auditID, data.stage)`, never on `data.auditID` alone: a long-running
+  request legitimately emits `ResponseStarted` and `ResponseComplete` under one
+  ID. If the same stream also receives the kube-apiserver's audit log, add the
   producer to the key, because the API server's event for the same request
   carries the same `auditID` and stage names.
 - **The agent reads every file its path matches.** With the scoped path above
