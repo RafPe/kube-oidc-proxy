@@ -352,3 +352,44 @@ func TestUnwrittenReturnRecordsTheImplicit200(t *testing.T) {
 		t.Fatalf("termination = %q, want normal", rec.String("termination"))
 	}
 }
+
+// TestInformationalStatusIsNotLatched pins that a 1xx header written before the
+// final status -- which httputil.ReverseProxy does for every 1xx the upstream
+// sends -- is forwarded but does not become the recorded status.
+func TestInformationalStatusIsNotLatched(t *testing.T) {
+	p := newTestProxy(t)
+	// The chain is driven over fakeRW rather than through serveWith, as
+	// TestHijackedMarksTerminationAndOmitsBytes is. httptest.ResponseRecorder
+	// latches the first WriteHeader it sees, and having latched an
+	// informational 103 it then refuses the body -- its Write returns 0 and
+	// "status code does not allow body" -- so response_bytes could never be 4
+	// there however the proxy behaves. fakeRW forwards every write, as a real
+	// net/http server does after a 1xx.
+	rw := newFakeRW()
+	p.withRequestID(p.withRequestLifecycle(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusEarlyHints)
+		w.WriteHeader(http.StatusProcessing)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("body"))
+	}))).ServeHTTP(rw, httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil))
+	rec := p.logs.Only(t, logging.EventRequestResponseCompleted)
+	if s, _ := rec.Int("http_status"); s != http.StatusOK {
+		t.Fatalf("http_status = %d, want 200: a 1xx must not be latched", s)
+	}
+	if b, _ := rec.Int("response_bytes"); b != 4 {
+		t.Fatalf("response_bytes = %d, want 4", b)
+	}
+}
+
+// TestSwitchingProtocolsIsLatched pins the one 1xx that is a final status: 101
+// ends the HTTP exchange, so it is recorded like any other final code.
+func TestSwitchingProtocolsIsLatched(t *testing.T) {
+	p := newTestProxy(t)
+	rw := newFakeRW()
+	p.withRequestID(p.withRequestLifecycle(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusSwitchingProtocols)
+	}))).ServeHTTP(rw, httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil))
+	if s, _ := p.logs.Only(t, logging.EventRequestResponseCompleted).Int("http_status"); s != http.StatusSwitchingProtocols {
+		t.Fatalf("http_status = %d, want 101", s)
+	}
+}
