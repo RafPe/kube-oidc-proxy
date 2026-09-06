@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 420" width="1100" height="420" role="img" aria-labelledby="t">
+  <title id="t">Where kube-oidc-proxy's metrics attach: a request passes through the handler chain, the lifecycle filter is the one observation point, the review clients, probe and audit report to the same Recorder, which serves a private registry through a dedicated listener</title>
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1B2320"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1100" height="420" fill="#FFFFFF"/>
+  <g font-family="IBM Plex Sans, Helvetica, Arial, sans-serif" font-size="12" fill="#1B2320">
+    <rect x="20" y="40" width="110" height="44" rx="4" fill="none" stroke="#1B2320"/>
+    <text x="75" y="58" text-anchor="middle" font-weight="600">kubectl</text>
+    <text x="75" y="74" text-anchor="middle" font-size="11" fill="#5D6A64">bearer token</text>
+    <line x1="130" y1="62" x2="170" y2="62" stroke="#1B2320" marker-end="url(#arr)"/>
+    <text x="150" y="52" text-anchor="middle" font-size="11" fill="#5D6A64">:8443 TLS</text>
+
+    <rect x="172" y="20" width="540" height="150" rx="6" fill="none" stroke="#1B2320" stroke-opacity=".35"/>
+    <text x="184" y="38" font-size="11" fill="#5D6A64">handler chain (outermost first)</text>
+    <rect x="184" y="48" width="90" height="34" rx="3" fill="none" stroke="#1B2320"/>
+    <text x="229" y="69" text-anchor="middle" font-size="11">requestID</text>
+    <rect x="282" y="48" width="90" height="34" rx="3" fill="none" stroke="#1B2320"/>
+    <text x="327" y="65" text-anchor="middle" font-size="11">RequestInfo</text>
+    <text x="327" y="77" text-anchor="middle" font-size="10" fill="#5D6A64">verb, scope</text>
+    <rect x="380" y="46" width="104" height="38" rx="3" fill="#DDEEEC" stroke="#0F6E68" stroke-width="1.5"/>
+    <text x="432" y="64" text-anchor="middle" font-size="11" font-weight="600">lifecycle</text>
+    <text x="432" y="77" text-anchor="middle" font-size="10">defer = 1 observation</text>
+    <rect x="492" y="48" width="66" height="34" rx="3" fill="none" stroke="#1B2320"/>
+    <text x="525" y="69" text-anchor="middle" font-size="11">authn</text>
+    <rect x="566" y="48" width="66" height="34" rx="3" fill="none" stroke="#1B2320"/>
+    <text x="599" y="69" text-anchor="middle" font-size="11">imperson.</text>
+    <rect x="640" y="48" width="64" height="34" rx="3" fill="none" stroke="#1B2320"/>
+    <text x="672" y="65" text-anchor="middle" font-size="11">reverse</text>
+    <text x="672" y="77" text-anchor="middle" font-size="11">proxy</text>
+    <rect x="492" y="110" width="66" height="44" rx="3" fill="none" stroke="#1B2320"/>
+    <text x="525" y="128" text-anchor="middle" font-size="11">Token</text>
+    <text x="525" y="141" text-anchor="middle" font-size="11">Review</text>
+    <rect x="566" y="110" width="66" height="44" rx="3" fill="none" stroke="#1B2320"/>
+    <text x="599" y="128" text-anchor="middle" font-size="11">SAR +</text>
+    <text x="599" y="141" text-anchor="middle" font-size="11">cache</text>
+    <rect x="640" y="110" width="64" height="44" rx="3" fill="none" stroke="#1B2320"/>
+    <text x="672" y="128" text-anchor="middle" font-size="11">audit</text>
+    <text x="672" y="141" text-anchor="middle" font-size="11">backend</text>
+    <line x1="525" y1="82" x2="525" y2="108" stroke="#1B2320" stroke-opacity=".5"/>
+    <line x1="599" y1="82" x2="599" y2="108" stroke="#1B2320" stroke-opacity=".5"/>
+    <line x1="672" y1="82" x2="672" y2="108" stroke="#1B2320" stroke-opacity=".5"/>
+    <line x1="712" y1="62" x2="760" y2="62" stroke="#1B2320" marker-end="url(#arr)"/>
+    <rect x="762" y="40" width="110" height="44" rx="4" fill="none" stroke="#1B2320"/>
+    <text x="817" y="58" text-anchor="middle" font-weight="600">kube-apiserver</text>
+    <text x="817" y="74" text-anchor="middle" font-size="11" fill="#5D6A64">impersonated</text>
+
+    <rect x="184" y="110" width="90" height="44" rx="3" fill="none" stroke="#1B2320"/>
+    <text x="229" y="128" text-anchor="middle" font-size="11">probe</text>
+    <text x="229" y="141" text-anchor="middle" font-size="10" fill="#5D6A64">/ready :8080</text>
+
+    <rect x="330" y="230" width="240" height="70" rx="6" fill="#DDEEEC" stroke="#0F6E68" stroke-width="1.5"/>
+    <text x="450" y="254" text-anchor="middle" font-weight="600">metrics.Recorder</text>
+    <text x="450" y="270" text-anchor="middle" font-size="11">private prometheus.Registry</text>
+    <text x="450" y="285" text-anchor="middle" font-size="11">every label → closed set → other</text>
+
+    <line x1="432" y1="84" x2="432" y2="228" stroke="#0F6E68" stroke-width="1.5" marker-end="url(#arr)"/>
+    <text x="440" y="200" font-size="11">RequestStarted / LongRunningEstablished / RequestFinished</text>
+    <line x1="525" y1="154" x2="470" y2="228" stroke="#1B2320" marker-end="url(#arr)"/>
+    <text x="470" y="176" font-size="11" fill="#5D6A64">AuthenticationAttempt · ReviewRequest · CacheLookup</text>
+    <line x1="599" y1="154" x2="500" y2="228" stroke="#1B2320" marker-end="url(#arr)"/>
+    <line x1="672" y1="154" x2="540" y2="228" stroke="#1B2320" marker-end="url(#arr)"/>
+    <text x="600" y="205" font-size="11" fill="#5D6A64">AuditBackendFailure</text>
+    <line x1="229" y1="154" x2="360" y2="228" stroke="#1B2320" marker-end="url(#arr)"/>
+    <text x="196" y="200" font-size="11" fill="#5D6A64">SetIssuerInitialized · SetReady</text>
+
+    <line x1="570" y1="265" x2="640" y2="265" stroke="#1B2320" marker-end="url(#arr)"/>
+    <text x="605" y="256" text-anchor="middle" font-size="11" fill="#5D6A64">Gatherer</text>
+    <rect x="642" y="235" width="170" height="60" rx="4" fill="none" stroke="#1B2320"/>
+    <text x="727" y="256" text-anchor="middle" font-weight="600">metrics.Server</text>
+    <text x="727" y="271" text-anchor="middle" font-size="11" fill="#5D6A64">GET /metrics only · 3 in flight</text>
+    <text x="727" y="285" text-anchor="middle" font-size="11" fill="#5D6A64">off unless --metrics-bind-address</text>
+    <line x1="812" y1="265" x2="880" y2="265" stroke="#1B2320" marker-end="url(#arr)"/>
+    <text x="846" y="256" text-anchor="middle" font-size="11" fill="#5D6A64">:9090 HTTP</text>
+    <rect x="882" y="235" width="120" height="60" rx="4" fill="none" stroke="#1B2320"/>
+    <text x="942" y="260" text-anchor="middle" font-weight="600">Prometheus</text>
+    <text x="942" y="278" text-anchor="middle" font-size="11" fill="#5D6A64">via ServiceMonitor</text>
+
+    <text x="20" y="340" font-size="11" fill="#5D6A64">run.go builds the Recorder before the cluster client and injects it: proxy.Dependencies.Metrics,</text>
+    <text x="20" y="356" font-size="11" fill="#5D6A64">tokenreview.WithMetrics, subjectaccessreview.WithMetrics, probe.WithMetrics, audit.WithMetrics. A nil Recorder is a no-op everywhere.</text>
+    <text x="20" y="390" font-size="11" fill="#5D6A64">Go's ReverseProxy hijacks before writing the 101 for exec/attach, so the recorder gets an onHijack hook: a stream is established on the first success header or on hijack.</text>
+  </g>
+</svg>

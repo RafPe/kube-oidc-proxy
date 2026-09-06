@@ -8,6 +8,7 @@ any other method on that path is `405` with an `Allow` header and every other
 path is `404` — no pprof, no index, no reset.
 
 - [What the endpoint reveals](#what-the-endpoint-reveals)
+- [Where the metrics attach](#where-the-metrics-attach)
 - [Catalogue](#catalogue)
 - [Label values](#label-values)
 - [Buckets](#buckets)
@@ -30,6 +31,27 @@ access controls.
 
 The `go_*` and `process_*` families come from the Prometheus client library
 and are documented by it; the proxy passes them through unchanged.
+
+## Where the metrics attach
+
+![Where the metrics attach — one observation point in the handler chain, every collaborator reporting to one injected recorder, served by a dedicated listener](./diagrams/metrics-data-flow.svg)
+
+The whole request side is observed in one function: the deferred block of the
+lifecycle filter (`pkg/proxy/lifecycle.go`), which already classifies status,
+termination, hijack and panic once per request. The metric and the
+`request.response.completed` record therefore carry the same values by
+construction. Everything else reports through the same recorder, which is nil,
+and a no-op, when metrics are off.
+
+| Family | Observed at | Hook |
+| --- | --- | --- |
+| `requests_total`, `request_duration_seconds`, `requests_in_flight`, `long_running_requests` | the lifecycle filter's deferred block | `RequestStarted`, `LongRunningEstablished` (first success header, or hijack), `RequestFinished` |
+| `authentication_attempts_total` | the authentication filter and the TokenReview fallback | `AuthenticationAttempt` |
+| `access_decisions_total` | wherever the one access record is written | `AccessDecision`, through `recordDecision` |
+| `review_requests_total`, `review_request_duration_seconds` | the single `Create` call of each review client | `ReviewRequest` |
+| `cache_lookups_total` | the two review caches | `CacheLookup` |
+| `oidc_issuer_initialized`, `ready` | the readiness probe's state transitions | `SetIssuerInitialized`, `SetReady` |
+| `audit_backend_failures_total` | the audit backend's start and shutdown | `AuditBackendFailure` |
 
 ## Catalogue
 

@@ -150,6 +150,15 @@ maps to a handler in `pkg/proxy`.
 
 ![Components — kube-oidc-proxy](./c4/diagrams/structurizr-Components.png)
 
+### Metrics data flow
+
+Where the optional Prometheus metrics attach to the components above: one
+observation point in the handler chain, every collaborator reporting to one
+injected recorder, served by its own listener. Hand-authored, not part of the
+Structurizr model; the operator view is in the [metrics reference](./metrics.md#where-the-metrics-attach).
+
+![Metrics data flow — kube-oidc-proxy](./diagrams/metrics-data-flow.svg)
+
 ## See also
 
 - [Multi-issuer authentication](./multi-issuer.md)
@@ -157,3 +166,4 @@ maps to a handler in `pkg/proxy`.
 - [Configuration reference](./configuration.md)
 - [Caching and API-server protection](./caching.md)
 - [Operations: security](./operations.md#security)
+- [Metrics reference](./metrics.md)

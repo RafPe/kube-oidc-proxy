@@ -288,6 +288,10 @@ The C4 diagrams under [`docs/c4/`](./c4/) are generated from
 [`workspace.dsl`](./c4/workspace.dsl) with Structurizr; edit the DSL, not the
 PNGs. [Architecture](./architecture.md#diagrams) shows them.
 
+`docs/diagrams/*.svg` are hand-authored inline SVGs (literal colours, a
+`<title>`, no CSS variables, so GitHub renders them in both themes);
+`hack/verify-diagrams.sh` checks them and CI runs it.
+
 ## See also
 
 - [Operations](./operations.md) — running the proxy in production.

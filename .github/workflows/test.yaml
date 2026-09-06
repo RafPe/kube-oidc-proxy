@@ -63,6 +63,9 @@ jobs:
       - name: Verify metric reference
         run: make verify_metricdoc && git diff --exit-code docs/metrics.md
 
+      - name: Verify hand-authored diagrams
+        run: bash hack/verify-diagrams.sh
+
       # The e2e framework's unit tests render the chart's ClusterRole and check
       # it grants every permission the proxy code needs.
       - name: Set up Helm
