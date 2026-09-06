@@ -30,8 +30,8 @@ event-specific field:
 | `level` | string | `ERROR`, `WARN`, `INFO`, `DEBUG` | `slog` default |
 | `msg` | string | static text per event, never interpolated | query on `event_type`, not `msg` |
 | `schema_version` | int | `1` | bumped only on a breaking field change |
-| `component` | string | `startup`, `server`, `oidc`, `readiness`, `request`, `tokenreview`, `sar`, `audit`, `upstream`, `shutdown`, `k8s` | which subsystem spoke; `k8s` marks bridged library output |
-| `event_type` | string | `<domain>.<object>.<action>`, one of the 40 registered values | absent on `component=k8s` records |
+| `component` | string | `startup`, `server`, `oidc`, `readiness`, `request`, `tokenreview`, `sar`, `audit`, `upstream`, `shutdown`, `metrics`, `k8s` | which subsystem spoke; `k8s` marks bridged library output |
+| `event_type` | string | `<domain>.<object>.<action>`, one of the 43 registered values | absent on `component=k8s` records |
 
 An access decision looks like this (line-wrapped here, one line in the stream):
 
@@ -117,7 +117,7 @@ Both flags are documented in the
 
 ## Event registry
 
-40 registered values, generated from the registry. "Required" lists the fields
+43 registered values, generated from the registry. "Required" lists the fields
 that must be present beyond `time`, `level`, `msg`, `schema_version`,
 `component` and `event_type`; conditional fields are described in the summary.
 
