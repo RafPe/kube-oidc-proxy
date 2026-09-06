@@ -2,6 +2,7 @@
 package metrics
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -63,8 +64,15 @@ func findGoMod(t *testing.T) string {
 	}
 	for {
 		path := filepath.Join(dir, "go.mod")
-		if _, err := os.Stat(path); err == nil {
+		// A Stat failure other than "no such file" is a broken filesystem or a
+		// permission problem, not a directory to walk past: report it rather
+		// than climbing to the root and blaming a missing go.mod.
+		_, err := os.Stat(path)
+		switch {
+		case err == nil:
 			return path
+		case !errors.Is(err, os.ErrNotExist):
+			t.Fatalf("stat %s: %v", path, err)
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {

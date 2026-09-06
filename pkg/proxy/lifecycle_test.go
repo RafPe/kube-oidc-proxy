@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"go.uber.org/mock/gomock"
@@ -370,8 +371,16 @@ func TestInformationalStatusIsNotLatched(t *testing.T) {
 		w.WriteHeader(http.StatusEarlyHints)
 		w.WriteHeader(http.StatusProcessing)
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("body"))
+		w.WriteHeader(http.StatusInternalServerError) // a second final status is ignored
+		if _, err := w.Write([]byte("body")); err != nil {
+			t.Fatal(err)
+		}
 	}))).ServeHTTP(rw, httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil))
+	// Every informational status is forwarded to the underlying writer, in
+	// order, and exactly one final status follows them.
+	if got, want := rw.header.Values("StatusCode"), []string{"103", "102", "200"}; !slices.Equal(got, want) {
+		t.Fatalf("forwarded statuses = %v, want %v", got, want)
+	}
 	rec := p.logs.Only(t, logging.EventRequestResponseCompleted)
 	if s, _ := rec.Int("http_status"); s != http.StatusOK {
 		t.Fatalf("http_status = %d, want 200: a 1xx must not be latched", s)
