@@ -116,7 +116,7 @@
             "lastNotNull"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true
         },
         "tooltip": {
@@ -209,7 +209,7 @@
             "lastNotNull"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true
         },
         "tooltip": {
@@ -382,7 +382,7 @@
             "lastNotNull"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true
         },
         "tooltip": {
@@ -656,7 +656,7 @@
             "lastNotNull"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true
         },
         "tooltip": {
@@ -757,7 +757,7 @@
     {
       "type": "timeseries",
       "title": "Review errors and timeouts/s",
-      "description": "TokenReview and SubjectAccessReview calls that returned no decision, by review and outcome. These fail the request the same way a denial does, but the cause is the dependency, not the client's permissions. Healthy is a flat zero; reads 0, not 'No data', drawn as a single line named 'none none' that disappears as soon as a real review and outcome pair has something to report.",
+      "description": "TokenReview and SubjectAccessReview calls that returned no decision - timed out, cancelled, or errored - summed into one line named 'errors and timeouts'. These fail the request the same way a denial does, but the cause is the dependency, not the client's permissions. Healthy is a flat zero, and it reads 0 rather than 'No data'. Which review and which outcome is one panel away: 'SubjectAccessReview decisions/s' splits the SAR outcomes and 'TokenReview dependency errors/s' carries the TokenReview side.",
       "datasource": {
         "uid": "${datasource}"
       },
@@ -823,7 +823,7 @@
             "lastNotNull"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true
         },
         "tooltip": {
@@ -837,8 +837,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (review, outcome) (rate(kube_oidc_proxy_review_requests_total{namespace=\"$namespace\",pod=~\"$pod\",outcome=~\"timeout|canceled|error\"}[$__rate_interval])) or on() label_replace(label_replace(vector(0), \"review\", \"none\", \"\", \"\"), \"outcome\", \"none\", \"\", \"\")",
-          "legendFormat": "{{review}} {{outcome}}",
+          "expr": "sum(rate(kube_oidc_proxy_review_requests_total{namespace=\"$namespace\",pod=~\"$pod\",outcome=~\"timeout|canceled|error\"}[$__rate_interval])) or vector(0)",
+          "legendFormat": "errors and timeouts",
           "range": true,
           "refId": "A"
         }

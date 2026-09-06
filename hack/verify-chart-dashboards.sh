@@ -61,6 +61,14 @@ for f in "$CHART"/dashboards/*.json; do
   # interpolates.
   jq -e '[.. | objects | select(has("expr")) | select(.expr | test("vector\\(0\\)")) | . as $t | (($t.legendFormat // "")) as $lf | select(($lf | length) == 0 or ([$lf | scan("\\{\\{ *([A-Za-z_][A-Za-z0-9_]*) *\\}\\}")] | flatten | map(. as $n | select($t.expr | test("label_replace\\(.*\"" + $n + "\"") | not)) | length > 0))] | length == 0' "$f" >/dev/null \
     || { echo "$f: a vector(0) fallback has no legendFormat, or one naming labels the zero branch does not carry; use a literal legend or wrap vector(0) in label_replace" >&2; exit 1; }
+  # A stat that answers "what is the state now" must query instantly. A range
+  # query makes Grafana's stat reduce every series that had a sample anywhere
+  # in the window, so after a rollout the build identity of the pods that are
+  # gone is listed beside the one that is running for the whole window. Every
+  # query over kube_oidc_proxy_build_info reports identity, never a rate, so
+  # every one of them is instant.
+  jq -e '[.. | objects | select(has("expr")) | select(.expr | test("kube_oidc_proxy_build_info")) | select(.instant != true)] | length == 0' "$f" >/dev/null \
+    || { echo "$f: a query over kube_oidc_proxy_build_info is not instant; set \"instant\": true and \"range\": false so a rolled-out pod's identity does not linger for the whole window" >&2; exit 1; }
 done
 
 # `lint` takes one dashboard per invocation, so run it per file.

@@ -104,8 +104,9 @@
           },
           "editorMode": "code",
           "expr": "sum(kube_oidc_proxy_ready{namespace=\"$namespace\",pod=~\"$pod\"})",
+          "instant": true,
           "legendFormat": "ready",
-          "range": true,
+          "range": false,
           "refId": "A"
         },
         {
@@ -114,8 +115,9 @@
           },
           "editorMode": "code",
           "expr": "count(kube_oidc_proxy_build_info{namespace=\"$namespace\",pod=~\"$pod\"})",
+          "instant": true,
           "legendFormat": "replicas",
-          "range": true,
+          "range": false,
           "refId": "B"
         }
       ],
@@ -181,8 +183,9 @@
           },
           "editorMode": "code",
           "expr": "sum(kube_oidc_proxy_oidc_issuer_initialized{namespace=\"$namespace\",pod=~\"$pod\"}) / count(kube_oidc_proxy_oidc_issuer_initialized{namespace=\"$namespace\",pod=~\"$pod\"})",
+          "instant": true,
           "legendFormat": "initialized",
-          "range": true,
+          "range": false,
           "refId": "A"
         }
       ],
@@ -243,8 +246,9 @@
           },
           "editorMode": "code",
           "expr": "kube_oidc_proxy_build_info{namespace=\"$namespace\",pod=~\"$pod\"}",
+          "instant": true,
           "legendFormat": "{{version}}",
-          "range": true,
+          "range": false,
           "refId": "A"
         }
       ],
@@ -309,8 +313,9 @@
           },
           "editorMode": "code",
           "expr": "sum(increase(promhttp_metric_handler_errors_total{namespace=\"$namespace\",pod=~\"$pod\"}[$__rate_interval]))",
+          "instant": true,
           "legendFormat": "errors",
-          "range": true,
+          "range": false,
           "refId": "A"
         }
       ],
@@ -401,7 +406,7 @@
             "lastNotNull"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true
         },
         "tooltip": {
@@ -740,7 +745,7 @@
             "lastNotNull"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true
         },
         "tooltip": {
@@ -917,7 +922,7 @@
             "lastNotNull"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true
         },
         "tooltip": {
@@ -948,7 +953,7 @@
     {
       "type": "timeseries",
       "title": "Upstream failures/s",
-      "description": "Requests that ended because the connection to the API server timed out, was reset, or the proxy could not complete the exchange. Healthy is a flat zero; anything else is a dependency problem, not a client one. Reads 0 rather than 'No data' when no request has ever failed this way, drawn as a single line named 'none' that disappears as soon as a real termination has something to report.",
+      "description": "Requests that ended because the connection to the API server timed out, was reset, or the proxy could not complete the exchange (terminations upstream_timeout, upstream_reset and proxy_error), summed into one line named 'failures'. Healthy is a flat zero; anything else is a dependency problem, not a client one. Reads 0 rather than 'No data' when no request has ever failed this way; query the termination label directly when you need to know which of the three it was.",
       "datasource": {
         "uid": "${datasource}"
       },
@@ -1028,8 +1033,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (termination) (rate(kube_oidc_proxy_requests_total{namespace=\"$namespace\",pod=~\"$pod\",termination=~\"upstream_timeout|upstream_reset|proxy_error\"}[$__rate_interval])) or on() label_replace(vector(0), \"termination\", \"none\", \"\", \"\")",
-          "legendFormat": "{{termination}}",
+          "expr": "sum(rate(kube_oidc_proxy_requests_total{namespace=\"$namespace\",pod=~\"$pod\",termination=~\"upstream_timeout|upstream_reset|proxy_error\"}[$__rate_interval])) or vector(0)",
+          "legendFormat": "failures",
           "range": true,
           "refId": "A"
         }
