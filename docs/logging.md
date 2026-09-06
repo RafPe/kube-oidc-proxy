@@ -562,4 +562,6 @@ This table is for whoever writes the ingest pipeline that copies them.
   `cache.tokenreview.lookup` and `authz.sar.completed`.
 - [Multi-issuer](./multi-issuer.md#readiness) — `oidc.issuer.*` and
   `issuer_name`.
+- [Metrics](./metrics.md) — the same vocabularies as counters and histograms;
+  denial *rates* live there.
 - [CONTRIBUTING](../CONTRIBUTING.md#logging) — how to add an event.

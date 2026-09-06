@@ -681,6 +681,11 @@ kubectl -n kube-oidc-proxy logs -l app.kubernetes.io/name=kube-oidc-proxy --tail
             | length'
 ```
 
+With metrics enabled the same two numbers are
+`rate(kube_oidc_proxy_requests_total[5m])` and
+`sum(kube_oidc_proxy_long_running_requests)`; see
+[metrics](./metrics.md#worked-queries).
+
 Set requests to the observed steady state with headroom for the streams you
 expect at peak, and a memory limit well above it; a CPU limit is rarely
 useful for a proxy and can only add latency. Two replicas is the floor for
@@ -699,3 +704,4 @@ kubectl traffic.
 - [Development](./development.md) — building, testing and the local kind
   walkthrough.
 - [Architecture](./architecture.md) — request flow and readiness.
+- [Metrics](./metrics.md) — the Prometheus endpoint and its contract.

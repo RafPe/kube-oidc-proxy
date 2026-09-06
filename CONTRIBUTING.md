@@ -63,6 +63,27 @@ requires it and whose caller did not pass it. A test that needs a request id
 uses `logging.WithRequestID(ctx, "...")`, not `root.With("request_id", "...")` —
 a bound attribute bypasses the registry check and duplicates the key.
 
+### Adding a metric
+
+Every family the proxy exports is one entry in the catalogue in
+`pkg/metrics/catalogue.go`; the collector is built from that entry and
+`docs/metrics.md` is generated from it, so the two cannot drift. To add one:
+
+1. **Add the catalogue entry**: name under `kube_oidc_proxy_`, type, label
+   names, stability (`ALPHA` for a new family) and a one-line help.
+2. **Add the collector field and its observation method** on `Recorder`.
+   The method is nil-safe and passes every label value through a projection
+   in `labels.go`; a new label needs a new closed set there. Never label by
+   anything a client controls.
+3. **Exercise it** in `exerciseEverything` in `catalogue_test.go`, so the
+   contract test sees it, and assert on it with `metricstest`.
+4. **Run `make metricdoc`** and commit `docs/metrics.md`. CI's
+   `verify_metricdoc` step fails on a stale table (`make verify` regenerates
+   first, so run the check directly: `make verify_metricdoc`).
+5. **Add a changelog fragment.** A new family or label value is append-only;
+   renaming or relabelling a `[STABLE]` family is a breaking change and ships
+   as a new family instead.
+
 ### Level policy
 
 ERROR means the process cannot serve correctly: the audit backend failed to

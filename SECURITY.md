@@ -59,6 +59,12 @@ Please include:
 - attacks that require an already-compromised cluster, node, or the proxy's
   own ServiceAccount credentials.
 
+The optional metrics endpoint (`--metrics-bind-address`) is an unauthenticated
+plain-HTTP read surface when enabled. It exposes traffic shape and health only,
+never identities, and every label value is drawn from a closed set so a client
+cannot grow the series set. Restrict it with a NetworkPolicy; it is not a place
+to look for per-user activity, which is in the audit log.
+
 ## Dependency & supply-chain security
 
 Dependency CVEs are surfaced automatically by **Dependabot** and by
