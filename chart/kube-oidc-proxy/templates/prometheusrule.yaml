@@ -1,0 +1,26 @@
+{{- $m := .Values.metrics | default dict -}}
+{{- $pr := dig "prometheusRule" dict $m -}}
+{{- $enabled := dig "enabled" false $m -}}
+{{- $prEnabled := dig "enabled" false $pr -}}
+{{- if and $prEnabled (not $enabled) -}}
+{{- fail "metrics.prometheusRule.enabled requires metrics.enabled" -}}
+{{- end -}}
+{{- if and $enabled $prEnabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "kube-oidc-proxy.fullname" . }}
+  namespace: {{ $pr.namespace | default .Release.Namespace }}
+  labels:
+{{ include "kube-oidc-proxy.labels" . | indent 4 }}
+    {{- with $pr.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with $pr.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  groups:
+    {{- toYaml ($pr.groups | default list) | nindent 4 }}
+{{- end }}

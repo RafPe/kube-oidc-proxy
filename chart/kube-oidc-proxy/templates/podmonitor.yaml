@@ -1,0 +1,50 @@
+{{- $m := .Values.metrics | default dict -}}
+{{- $pm := dig "podMonitor" dict $m -}}
+{{- $enabled := dig "enabled" false $m -}}
+{{- $pmEnabled := dig "enabled" false $pm -}}
+{{- if and $pmEnabled (not $enabled) -}}
+{{- fail "metrics.podMonitor.enabled requires metrics.enabled" -}}
+{{- end -}}
+{{- if and $enabled $pmEnabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ include "kube-oidc-proxy.fullname" . }}
+  namespace: {{ $pm.namespace | default .Release.Namespace }}
+  labels:
+{{ include "kube-oidc-proxy.labels" . | indent 4 }}
+    {{- with $pm.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with $pm.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "kube-oidc-proxy.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  podMetricsEndpoints:
+    - port: {{ dig "portName" "metrics" $m }}
+      path: {{ $pm.path | default "/metrics" }}
+      scheme: {{ $pm.scheme | default "http" }}
+      honorLabels: {{ $pm.honorLabels | default false }}
+      {{- with $pm.interval }}
+      interval: {{ . | quote }}
+      {{- end }}
+      {{- with $pm.scrapeTimeout }}
+      scrapeTimeout: {{ . | quote }}
+      {{- end }}
+      {{- with $pm.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $pm.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

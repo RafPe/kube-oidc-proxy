@@ -1,0 +1,82 @@
+{{- /* dig with defaults: on `helm upgrade --reuse-values` from a release
+     without the metrics key, $m is an empty dict and nothing renders. */ -}}
+{{- $m := .Values.metrics | default dict -}}
+{{- $sm := dig "serviceMonitor" dict $m -}}
+{{- $enabled := dig "enabled" false $m -}}
+{{- $smEnabled := dig "enabled" false $sm -}}
+{{- if and $smEnabled (not $enabled) -}}
+{{- fail "metrics.serviceMonitor.enabled requires metrics.enabled" -}}
+{{- end -}}
+{{- if and $smEnabled (dig "podMonitor" "enabled" false $m) -}}
+{{- fail "metrics.serviceMonitor.enabled and metrics.podMonitor.enabled are mutually exclusive" -}}
+{{- end -}}
+{{- if and $enabled $smEnabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "kube-oidc-proxy.fullname" . }}
+  namespace: {{ $sm.namespace | default .Release.Namespace }}
+  labels:
+{{ include "kube-oidc-proxy.labels" . | indent 4 }}
+    {{- with $sm.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with $sm.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with $sm.jobLabel }}
+  jobLabel: {{ . | quote }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "kube-oidc-proxy.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: metrics
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  {{- with $sm.targetLabels }}
+  targetLabels:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with $sm.podTargetLabels }}
+  podTargetLabels:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with $sm.sampleLimit }}
+  sampleLimit: {{ . }}
+  {{- end }}
+  {{- with $sm.targetLimit }}
+  targetLimit: {{ . }}
+  {{- end }}
+  {{- with $sm.labelLimit }}
+  labelLimit: {{ . }}
+  {{- end }}
+  endpoints:
+    # `port` names a Service port, not a container port: it must match
+    # metrics.portName as rendered onto the metrics Service.
+    - port: {{ dig "portName" "metrics" $m }}
+      path: {{ $sm.path | default "/metrics" }}
+      scheme: {{ $sm.scheme | default "http" }}
+      honorLabels: {{ $sm.honorLabels | default false }}
+      {{- with $sm.interval }}
+      interval: {{ . | quote }}
+      {{- end }}
+      {{- with $sm.scrapeTimeout }}
+      scrapeTimeout: {{ . | quote }}
+      {{- end }}
+      {{- with $sm.tlsConfig }}
+      tlsConfig:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $sm.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $sm.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

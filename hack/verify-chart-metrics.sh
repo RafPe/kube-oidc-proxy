@@ -78,4 +78,54 @@ svc_labels=$(render --set metrics.enabled=true --set 'metrics.service.labels.app
 render --set metrics.enabled=true --set extraArgs.v=5 --show-only templates/deployment.yaml | grep -q -- '"--v=5"' \
   || { echo "extraArgs did not render after the metrics block" >&2; exit 1; }
 
+# 6. ServiceMonitor references the Service port by name; durations are quoted.
+sm=$(render --set metrics.enabled=true --set metrics.serviceMonitor.enabled=true \
+  --set metrics.serviceMonitor.interval=30s --set metrics.serviceMonitor.sampleLimit=5000 \
+  --show-only templates/servicemonitor.yaml)
+[ "$(yq -r '.kind' <<<"$sm")" = "ServiceMonitor" ] || { echo "ServiceMonitor did not render" >&2; exit 1; }
+[ "$(yq -r '.spec.endpoints[0].port' <<<"$sm")" = "$port_name" ] || { echo "ServiceMonitor endpoint port != Service port name" >&2; exit 1; }
+[ "$(yq -r '.spec.endpoints[0].interval' <<<"$sm")" = "30s" ] || { echo "interval not rendered" >&2; exit 1; }
+[ "$(yq -r '.spec.endpoints[0].interval | type' <<<"$sm")" = "!!str" ] || { echo "interval must be a string" >&2; exit 1; }
+[ "$(yq -r '.spec.sampleLimit' <<<"$sm")" = "5000" ] || { echo "sampleLimit not rendered" >&2; exit 1; }
+[ "$(yq -r '.spec.selector.matchLabels["app.kubernetes.io/component"]' <<<"$sm")" = "metrics" ] || { echo "ServiceMonitor must select the metrics Service by component" >&2; exit 1; }
+! grep -q 'sampleLimit' <<<"$(render --set metrics.enabled=true --set metrics.serviceMonitor.enabled=true --show-only templates/servicemonitor.yaml)" \
+  || { echo "sampleLimit rendered at 0" >&2; exit 1; }
+
+# 7. Exclusions and prerequisites fail loudly.
+! render --set metrics.serviceMonitor.enabled=true >/dev/null 2>&1 || { echo "serviceMonitor without metrics.enabled must fail" >&2; exit 1; }
+! render --set metrics.enabled=true --set metrics.serviceMonitor.enabled=true --set metrics.podMonitor.enabled=true >/dev/null 2>&1 \
+  || { echo "both monitors enabled must fail" >&2; exit 1; }
+
+# 8. PodMonitor targets the named pod port.
+pm=$(render --set metrics.enabled=true --set metrics.podMonitor.enabled=true --show-only templates/podmonitor.yaml)
+[ "$(yq -r '.spec.podMetricsEndpoints[0].port' <<<"$pm")" = "$port_name" ] || { echo "PodMonitor port != container port name" >&2; exit 1; }
+
+# 9. PrometheusRule renders the groups verbatim and nothing by default.
+pr=$(render --set metrics.enabled=true --set metrics.prometheusRule.enabled=true --show-only templates/prometheusrule.yaml)
+[ "$(yq -r '.kind' <<<"$pr")" = "PrometheusRule" ] || { echo "PrometheusRule did not render" >&2; exit 1; }
+[ "$(yq -r '.spec.groups | length' <<<"$pr")" = "0" ] || { echo "PrometheusRule shipped default groups" >&2; exit 1; }
+
+# 10. NetworkPolicy requires peers, admits them to the metrics port only, and
+#     keeps the proxy and readiness ports open.
+! render --set metrics.enabled=true --set networkPolicy.enabled=true >/dev/null 2>&1 || { echo "networkPolicy without from must fail" >&2; exit 1; }
+np=$(render --set metrics.enabled=true --set networkPolicy.enabled=true \
+  --set 'networkPolicy.metrics.from[0].namespaceSelector.matchLabels.kubernetes\.io/metadata\.name=monitoring' \
+  --show-only templates/networkpolicy.yaml)
+[ "$(yq -r '.spec.ingress[0].ports[0].port' <<<"$np")" = "$port_name" ] || { echo "NetworkPolicy first rule must cover the metrics port" >&2; exit 1; }
+[ "$(yq -r '.spec.ingress[0].from | length' <<<"$np")" = "1" ] || { echo "NetworkPolicy peers not rendered" >&2; exit 1; }
+[ "$(yq -r '[.spec.ingress[1].ports[].port | tostring] | sort | join(",")' <<<"$np")" = "8080,8443" ] || { echo "NetworkPolicy must keep 8443 and 8080 open to every peer" >&2; exit 1; }
+[ "$(yq -r '.spec.ingress[1] | has("from")' <<<"$np")" = "false" ] || { echo "proxy/readiness rule must have no from restriction" >&2; exit 1; }
+np_narrow=$(render --set metrics.enabled=true --set networkPolicy.enabled=true --set networkPolicy.additionalIngress=null \
+  --set 'networkPolicy.metrics.from[0].namespaceSelector.matchLabels.kubernetes\.io/metadata\.name=monitoring' \
+  --show-only templates/networkpolicy.yaml)
+[ "$(yq -r '.spec.ingress | length' <<<"$np_narrow")" = "1" ] || { echo "additionalIngress=[] must render only the metrics rule" >&2; exit 1; }
+
+# 11. The ServiceMonitor selector matches the metrics Service labels exactly.
+svc_json=$(render --set metrics.enabled=true --show-only templates/service-metrics.yaml | yq -o=json '.metadata.labels')
+sm_json=$(render --set metrics.enabled=true --set metrics.serviceMonitor.enabled=true --show-only templates/servicemonitor.yaml | yq -o=json '.spec.selector.matchLabels')
+for key in $(yq -r 'keys[]' <<<"$sm_json"); do
+  [ "$(yq -r ".[\"$key\"]" <<<"$sm_json")" = "$(yq -r ".[\"$key\"]" <<<"$svc_json")" ] \
+    || { echo "ServiceMonitor selector $key does not match the metrics Service label" >&2; exit 1; }
+done
+
 echo "chart metrics values: ok"
