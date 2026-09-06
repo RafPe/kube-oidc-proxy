@@ -42,13 +42,32 @@ screenshots were taken against exactly these.
 
 | Command | What it does | What it leaves behind |
 | --- | --- | --- |
-| `make metrics_demo_up` | Creates the kind cluster `kube-oidc-proxy-metrics-demo`, builds and side-loads the proxy and mock-issuer images, installs kube-prometheus-stack, deploys the issuer, installs this chart with `metrics.enabled`, `metrics.serviceMonitor.enabled` and `metrics.dashboards.enabled`, applies the demo RBAC and the `demo-shell` pod, then runs `check.sh`. | `.state/` with the kubeconfig, the issuer CA, key and URL, and the proxy's serving certificate. |
+| `make metrics_demo_up` | Creates the kind cluster `kube-oidc-proxy-metrics-demo`, builds and side-loads the proxy image under a tag carrying the build identity and the mock-issuer image, installs kube-prometheus-stack, deploys the issuer, installs this chart with `metrics.enabled`, `metrics.serviceMonitor.enabled` and `metrics.dashboards.enabled`, applies the demo RBAC and the `demo-shell` pod, then runs `check.sh`. | `.state/` with the kubeconfig, the issuer CA, key and URL, and the proxy's serving certificate. |
 | `make metrics_demo_load` | Runs the load generator. `METRICS_DEMO_LOAD_ARGS=--once` runs each traffic kind exactly once and fails if any call did not produce its expected status; `METRICS_DEMO_LOAD_ARGS="--duration 10m"` drives traffic for ten minutes. | One JSON log line per call on stdout. |
 | `make metrics_demo_verify` | Queries every `expr` in every dashboard against the demo's Prometheus and fails if any returns an empty result, then renders each dashboard through Grafana's image renderer. | `docs/dashboards/overview.png`, `security.png`, `capacity.png`. |
 | `make metrics_demo_down` | Deletes the cluster and `.state/`. | Nothing. |
 
 `up.sh` is idempotent: re-running it after a failure resumes rather than
 starting over. On the reference run it took about four minutes end to end.
+
+## Why the proxy image tag is not constant
+
+`up.sh` tags the proxy image `demo-$(git describe --tags --always --dirty)`,
+never a constant `demo`. `helm upgrade --install` restarts pods only when
+something in the pod template changes; side-loading a rebuilt image under an
+unchanged tag changes nothing Helm can see, so the previous build keeps
+serving and the overview's Version panel reports a binary that is not the one
+in the tree - the one panel an operator would trust to tell them otherwise.
+
+`check.sh` asserts it: every pod matching the chart's own selector runs
+exactly that tag (`demo-shell` and the issuer live in the same namespace and
+were never meant to), and, when `git status` is clean, that each pod's
+`kube_oidc_proxy_build_info` carries no `-dirty`. That second assertion is not
+redundant: `git describe --dirty` only notices modified tracked files, while
+the version stamp in `hack/lib/version.sh` uses `git status`, so an untracked
+file produces a dirty binary under a clean-looking tag. On a genuinely dirty
+tree the build_info assertion is skipped and says so - developing against a
+dirty tree is fine, it is just not where the committed screenshots come from.
 
 ## Why `check.sh` waits
 
@@ -111,6 +130,14 @@ and logs each of them separately.
 | `logs` | read the pod's log | long-running but not hijacked |
 | `non_resource` | `GET /version` and `GET /healthz`, both asserted | scope `none`, verb `get` |
 | `hostile_methods` | nine methods `M1`..`M9`, each asserted | every one must project onto `k8s_verb="other"` |
+
+**The demo's latency p99 is the `upstream_5xx` scenario, not proxy overhead.**
+That scenario lists pods at a `resourceVersion` the API server will never
+observe, and the API server takes about three seconds to give up and answer
+504. The proxy forwards it and records the whole three seconds, so the
+overview's p99 line sits near 3s: it is the proxy reporting a slow upstream
+faithfully, which is what that panel is for. The scenario runs at most once
+per rotation for exactly this reason.
 
 **No upstream failure is faked.** `upstream_5xx` is a 5xx the API server itself
 answers, so the proxy's exchange completes normally and its `termination` is

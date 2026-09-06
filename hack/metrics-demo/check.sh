@@ -3,6 +3,13 @@
 set -euo pipefail
 STATE=hack/metrics-demo/.state
 KUBECONFIG=$STATE/kubeconfig; export KUBECONFIG
+# The image up.sh built and side-loaded. Derived the same way up.sh derives it,
+# so check.sh still works when it is run on its own; up.sh exports the tag it
+# actually used, which is what wins when the two could differ (a commit made
+# between the two calls).
+IMAGE_TAG=${METRICS_DEMO_IMAGE_TAG:-demo-$(git describe --tags --always --dirty | tr '+' '-')}
+PROXY_IMAGE=kube-oidc-proxy:$IMAGE_TAG
+PROXY_PODS=(app.kubernetes.io/name=kube-oidc-proxy app.kubernetes.io/instance=kop)
 for f in kubeconfig issuer-ca.pem issuer-key.pem issuer-url proxy-ca.pem; do
   [ -s "$STATE/$f" ] || { echo "missing $STATE/$f" >&2; exit 1; }
 done
@@ -10,6 +17,33 @@ kubectl -n monitoring rollout status deploy/kps-grafana --timeout=1s >/dev/null 
 kubectl -n monitoring get prometheus -o name | grep -q . || { echo "no Prometheus" >&2; exit 1; }
 kubectl -n proxy rollout status deploy/kop-kube-oidc-proxy --timeout=1s >/dev/null || { echo "proxy not ready" >&2; exit 1; }
 kubectl -n proxy get servicemonitor kop-kube-oidc-proxy -o name >/dev/null || { echo "no ServiceMonitor" >&2; exit 1; }
+# Every proxy pod runs the image this tree builds. The selector is the chart's
+# own, not "every pod in the namespace": demo-shell and the mock issuer live
+# there too and were never meant to run this image. Pods being deleted are
+# skipped and the count is polled, because `helm --wait` and `rollout status`
+# both return as soon as the new pods are ready, while the pod they replaced
+# is still Terminating - listing once races the rollout and reads the outgoing
+# build.
+sel=$(IFS=,; echo "${PROXY_PODS[*]}")
+want=$(kubectl -n proxy get deploy kop-kube-oidc-proxy -o jsonpath='{.spec.replicas}')
+n=0; fresh=0; pods=""
+for _ in $(seq 1 20); do
+  pods=$(kubectl -n proxy get pods -l "$sel" -o json \
+    | jq -r '.items[] | select(.metadata.deletionTimestamp == null)
+             | .metadata.name + " " + (.spec.containers | map(.image) | join(","))')
+  n=$(printf '%s\n' "$pods" | grep -c . || true)
+  fresh=$(printf '%s\n' "$pods" | grep -cF " $PROXY_IMAGE" || true)
+  [ "$n" = "$want" ] && [ "$fresh" = "$want" ] && break
+  sleep 3
+done
+[ "$n" = "$want" ] && [ "$fresh" = "$want" ] || {
+  echo "expected $want proxy pods on $PROXY_IMAGE, found $n pod(s), $fresh of them on it:" >&2
+  printf '%s\n' "$pods" >&2
+  echo "helm upgrade did not roll the pods after the image was rebuilt" >&2
+  exit 1
+}
+echo "proxy pods running $PROXY_IMAGE:"
+printf '%s\n' "$pods" | sed 's/^/  /'
 kubectl -n proxy get configmap kop-kube-oidc-proxy-dashboards -o name >/dev/null || { echo "no dashboards ConfigMap" >&2; exit 1; }
 # Prometheus has discovered the proxy target and it is up. Discovery is
 # asynchronous: the operator regenerates the scrape config from the
@@ -35,4 +69,28 @@ for i in $(seq 1 40); do
   sleep 3
 done
 [ "$up" = "1" ] || { echo "proxy target not up in Prometheus (up=$up)" >&2; exit 1; }
+
+# What each pod reports as its build. The tag assertion above proves the pods
+# run the image this checkout built; this proves that image was built from a
+# committed tree, because the screenshots are documentation and a Version panel
+# reading "-dirty" documents a build nobody else can reproduce. `git describe
+# --dirty` only notices modified tracked files, while the version stamp
+# (hack/lib/version.sh) uses `git status`, so an untracked file makes the
+# binary dirty without changing the tag - only this check sees that. Skipped
+# when the tree really is dirty: building from one is a legitimate thing to do
+# while developing, it is just not what the committed screenshots come from.
+if [ -n "$(git status --porcelain)" ]; then
+  echo "working tree is dirty; not asserting a clean build_info"
+else
+  while read -r name _; do
+    pf_check || exit 1
+    port=$(pf_start proxy "pod/$name" 9090 </dev/null)
+    info=$(curl -sf "http://127.0.0.1:$port/metrics" | grep '^kube_oidc_proxy_build_info' || true)
+    [ -n "$info" ] || { echo "pod $name exposed no kube_oidc_proxy_build_info" >&2; exit 1; }
+    case "$info" in
+      *-dirty*) echo "pod $name reports a dirty build from a clean tree: $info" >&2; exit 1 ;;
+    esac
+    echo "  $name $info"
+  done <<<"$pods"
+fi
 echo "metrics demo: ready"

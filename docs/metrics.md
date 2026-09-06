@@ -212,6 +212,15 @@ The demo does not fake any of them: in the screenshots below the
 upstream-failure panel reads zero because the API server never failed to
 answer, which is what a healthy deployment looks like.
 
+The p99 latency in those screenshots sits near three seconds, and that is the
+upstream, not the proxy: one of the demo's traffic kinds lists pods at a
+`resourceVersion` the API server will never observe, and the API server takes
+about three seconds to answer it 504. The proxy forwards that request and
+records its full duration, which is exactly what the panel is for - it
+measures what a client waited, and a slow upstream is the usual reason. The
+scenario runs at most once per rotation, so it lifts p99 without distorting
+the rest.
+
 ### Overview (`kube-oidc-proxy-overview`)
 
 For whoever is on call: is it up, how much traffic, how slow, what fails.

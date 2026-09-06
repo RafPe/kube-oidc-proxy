@@ -28,9 +28,20 @@ KIND=(go run sigs.k8s.io/kind)
 
 CLUSTER=kube-oidc-proxy-metrics-demo
 STATE=hack/metrics-demo/.state
-PROXY_IMAGE=kube-oidc-proxy:demo
 ISSUER_IMAGE=oidc-issuer-e2e
 ARCH=$(go env GOARCH)
+
+# The proxy image tag carries the build identity, and is never constant.
+# `helm upgrade --install` only restarts pods when something in the pod
+# template changes: with a fixed tag the reference stays
+# kube-oidc-proxy:demo, side-loading a freshly built image over it changes
+# nothing Helm can see, and the previous build keeps serving. The overview's
+# Version panel then reports a binary that is not the one in the tree - which
+# is exactly the panel an operator would trust to tell them otherwise.
+# check.sh asserts the pods really run this tag.
+METRICS_DEMO_IMAGE_TAG=demo-$(git describe --tags --always --dirty | tr '+' '-')
+export METRICS_DEMO_IMAGE_TAG
+PROXY_IMAGE=kube-oidc-proxy:$METRICS_DEMO_IMAGE_TAG
 
 mkdir -p "$STATE"
 KUBECONFIG=$STATE/kubeconfig; export KUBECONFIG
@@ -80,7 +91,7 @@ helm upgrade --install kop ./chart/kube-oidc-proxy -n proxy \
   --set "oidc.issuerUrl=$(cat "$STATE/issuer-url")" \
   --set-file "oidc.caPEM=$STATE/issuer-ca.pem" \
   --set image.repository=kube-oidc-proxy \
-  --set image.tag=demo \
+  --set "image.tag=$METRICS_DEMO_IMAGE_TAG" \
   --set image.pullPolicy=Never \
   --wait --timeout 10m
 
