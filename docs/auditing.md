@@ -55,7 +55,8 @@ policy, a mount, and three flags are the whole setup.
 Write to stdout. The chart runs the proxy with a read-only root filesystem, and
 a stdout audit log needs no writable path, no sidecar and no extra collector:
 it lands in the same stream as the structured log and reaches your log pipeline
-the same way.
+the same way ([shipping logs and audit events](./log-shipping.md) is a worked
+example with a node-level agent and AWS Kinesis).
 
 ```yaml
 # values.yaml
@@ -333,6 +334,8 @@ API server event at all. See [correlation](./logging.md#correlation).
 - [Logging reference](./logging.md) — the structured log the audit events sit
   next to, and the `request_id` that joins them.
 - [Operations: reading the request log](./operations.md#reading-the-request-log).
+- [Shipping logs and audit events](./log-shipping.md) — moving the stdout
+  audit log, with the structured log, to AWS Kinesis with a node-level agent.
 - [Configuration reference](./configuration.md) — every flag, including the
   audit flags the proxy inherits from kube-apiserver.
 - [Kubernetes auditing](https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/)

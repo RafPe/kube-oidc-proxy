@@ -122,6 +122,7 @@ Format, readiness and the per-issuer prefix rule: [multi-issuer authentication](
 | Configure several issuers in one proxy | [Multi-issuer authentication](./docs/multi-issuer.md) |
 | Debug a failing request, watch traffic, upgrade, plan for outages | [Operations](./docs/operations.md) |
 | Read the structured log or ship it to a SIEM | [Logging reference](./docs/logging.md) |
+| Ship the log and audit events off the cluster, to Kinesis for example | [Shipping logs and audit events](./docs/log-shipping.md) |
 | Audit who did what, on the proxy and the API server | [Auditing](./docs/auditing.md) |
 | Tune the review caches and the header cap | [Caching and API-server protection](./docs/caching.md) |
 | Look up a flag | [Configuration reference](./docs/configuration.md) |
