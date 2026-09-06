@@ -139,6 +139,9 @@ that must be present beyond `time`, `level`, `msg`, `schema_version`,
 | `cache.sar.lookup` | `sar` | DEBUG | `request_id`, `cache_result` | One SubjectAccessReview cache consultation. Carries decision on a hit, never the cache key. |
 | `cache.tokenreview.lookup` | `tokenreview` | DEBUG | `request_id`, `cache_result` | One TokenReview cache consultation. Carries authenticated on a hit, never the cache key. |
 | `log.warning.suppressed` | any | WARN | `warning_reason`, `suppressed_count`, `interval_seconds` | Token-bucket summary of dropped warning records. |
+| `metrics.scrape.failed` | `metrics` | ERROR | `error_message` | Gathering or encoding the exposition failed; the scrape was answered with 500. |
+| `metrics.server.failed` | `metrics` | ERROR | `error_message` | The metrics HTTP server returned an error. |
+| `metrics.server.started` | `metrics` | INFO | `address` | The metrics listener is serving /metrics. |
 | `oidc.issuer.configured` | `oidc` | INFO | `issuer_name`, `issuer_count` | Once per configured issuer at startup. |
 | `oidc.issuer.initialized` | `oidc` | INFO | `issuer_name`, `issuer_state`, `ready_issuers`, `total_issuers` | An issuer's JWKS loaded. Carries issuer_state=initialized. |
 | `oidc.issuer.pending` | `oidc` | WARN | `issuer_name`, `issuer_state`, `pending_reason`, `ready_issuers`, `total_issuers` | The pending set or a pending reason changed. Carries issuer_state=pending; not emitted on every scrape. |

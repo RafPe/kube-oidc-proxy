@@ -17,6 +17,7 @@ const (
 	ComponentAudit       Component = "audit"
 	ComponentUpstream    Component = "upstream"
 	ComponentShutdown    Component = "shutdown"
+	ComponentMetrics     Component = "metrics"
 	ComponentK8s         Component = "k8s"
 )
 
@@ -25,5 +26,5 @@ const (
 func AllComponents() []Component {
 	return []Component{ComponentStartup, ComponentServer, ComponentOIDC, ComponentReadiness,
 		ComponentRequest, ComponentTokenReview, ComponentSAR, ComponentAudit, ComponentUpstream,
-		ComponentShutdown, ComponentK8s}
+		ComponentShutdown, ComponentMetrics, ComponentK8s}
 }

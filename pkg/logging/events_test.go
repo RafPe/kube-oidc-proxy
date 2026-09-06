@@ -13,6 +13,7 @@ var eventGrammar = regexp.MustCompile(`^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*){2}$`)
 var domains = map[string]bool{
 	"proxy": true, "request": true, "authn": true, "authz": true, "cache": true,
 	"oidc": true, "readiness": true, "upstream": true, "audit": true, "log": true,
+	"metrics": true,
 }
 
 var actions = map[string]bool{
@@ -41,7 +42,7 @@ func TestEventTypeGrammar(t *testing.T) {
 		}
 		seen[e] = true
 	}
-	if got, want := len(AllEventTypes()), 40; got != want {
+	if got, want := len(AllEventTypes()), 43; got != want {
 		t.Errorf("registry has %d events, want %d", got, want)
 	}
 }
@@ -87,7 +88,7 @@ func TestEventAttr(t *testing.T) {
 }
 
 func TestAllComponentsClosedSet(t *testing.T) {
-	if got, want := len(AllComponents()), 11; got != want {
+	if got, want := len(AllComponents()), 12; got != want {
 		t.Fatalf("got %d components, want %d", got, want)
 	}
 }

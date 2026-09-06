@@ -54,6 +54,9 @@ const (
 	EventUpstreamRequestFailed      EventType = "upstream.request.failed"
 	EventUpstreamRequestCanceled    EventType = "upstream.request.canceled"
 	EventLogWarningSuppressed       EventType = "log.warning.suppressed"
+	EventMetricsServerStarted       EventType = "metrics.server.started"
+	EventMetricsServerFailed        EventType = "metrics.server.failed"
+	EventMetricsScrapeFailed        EventType = "metrics.scrape.failed"
 )
 
 // EventSpec is the registry entry for one event type.
@@ -355,6 +358,27 @@ var Registry = map[EventType]EventSpec{
 		Required:   []string{"warning_reason", "suppressed_count", "interval_seconds"},
 		Message:    "warnings suppressed",
 		Summary:    "Token-bucket summary of dropped warning records.",
+	},
+	EventMetricsServerStarted: {
+		Components: []Component{ComponentMetrics},
+		Level:      slog.LevelInfo,
+		Required:   []string{"address"},
+		Message:    "metrics server started",
+		Summary:    "The metrics listener is serving /metrics.",
+	},
+	EventMetricsServerFailed: {
+		Components: []Component{ComponentMetrics},
+		Level:      slog.LevelError,
+		Required:   []string{"error_message"},
+		Message:    "metrics server failed",
+		Summary:    "The metrics HTTP server returned an error.",
+	},
+	EventMetricsScrapeFailed: {
+		Components: []Component{ComponentMetrics},
+		Level:      slog.LevelError,
+		Required:   []string{"error_message"},
+		Message:    "metrics scrape failed",
+		Summary:    "Gathering or encoding the exposition failed; the scrape was answered with 500.",
 	},
 }
 
