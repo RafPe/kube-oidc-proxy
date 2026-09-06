@@ -54,7 +54,7 @@
     {
       "type": "timeseries",
       "title": "Open streams by verb",
-      "description": "Long-running requests whose response has started and not yet ended, by verb. watch is a client holding a list-watch open; connect is exec, attach, portforward and logs. Each one pins a goroutine and an upstream connection for its whole life, so this is the number that decides how much memory a replica needs.",
+      "description": "Long-running requests whose response has started and not yet ended, by verb. watch is a client holding a list-watch open; connect is exec, attach, portforward, logs and the resource proxy subresource, whatever HTTP method carried them. Each one pins a goroutine and an upstream connection for its whole life, so this is the number that decides how much memory a replica needs.",
       "datasource": {
         "uid": "${datasource}"
       },

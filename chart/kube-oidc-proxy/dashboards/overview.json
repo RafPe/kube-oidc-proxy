@@ -670,7 +670,7 @@
     {
       "type": "timeseries",
       "title": "Latency p95 by verb",
-      "description": "The same p95, split by verb, which is where a slow dependency shows up first: list and watch establishment go through the API server, get and create do not. A single verb lifting while the others stay flat points at the upstream, not at the proxy.",
+      "description": "The same p95, split by verb, which is where a slow dependency shows up first. Every proxied request goes to the API server, whatever its verb, so this is not a split between calls that reach the upstream and calls that do not. It measures short requests only: long-running requests (watch, exec, attach, portforward, logs, proxy) and hijacked connections are excluded from the histogram, so nothing here is the time a stream stayed open. A single verb lifting while the others stay flat points at the upstream's handling of that verb, not at the proxy.",
       "datasource": {
         "uid": "${datasource}"
       },
@@ -785,7 +785,7 @@
     {
       "type": "stat",
       "title": "Denial ratio",
-      "description": "Share of final access decisions that were denials. A steady low level is normal (probes, expired tokens); a step change means a broken RBAC grant, a rotated issuer or someone probing. Amber above 5%, red above 20%. Break it down by reason on the Security & identity dashboard.",
+      "description": "Share of final access decisions that were denials. A steady low level is normal (expired tokens, stale kubeconfigs); a step change means a broken RBAC grant, a rotated issuer or someone probing. The kubelet's own probes are not in this ratio: they go to the readiness listener on a separate port and never reach the proxy handler, so they record no decision. Amber above 5%, red above 20%. Break it down by reason on the Security & identity dashboard.",
       "datasource": {
         "uid": "${datasource}"
       },
@@ -931,7 +931,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (class) (label_replace(rate(kube_oidc_proxy_requests_total{namespace=\"$namespace\",pod=~\"$pod\"}[$__rate_interval]), \"class\", \"$1xx\", \"code\", \"(\\\\d)\\\\d\\\\d\"))",
+          "expr": "sum by (class) (label_replace(rate(kube_oidc_proxy_requests_total{namespace=\"$namespace\",pod=~\"$pod\"}[$__rate_interval]), \"class\", \"${1}xx\", \"code\", \"(\\\\d)\\\\d\\\\d\"))",
           "legendFormat": "{{class}}",
           "range": true,
           "refId": "A"

@@ -46,6 +46,13 @@ for f in "$CHART"/dashboards/*.json; do
     || { echo "$f: a query does not target this proxy's families" >&2; exit 1; }
   jq -e '[.. | objects | select(has("datasource")) | select(.datasource.uid? != "${datasource}")] | length == 0' "$f" >/dev/null \
     || { echo "$f: a panel or query does not use the datasource variable" >&2; exit 1; }
+  # Go's regexp expands "$1xx" as the group NAMED "1xx", which does not exist,
+  # so the replacement is empty and every code class collapses into one series.
+  # Only "${1}xx" names group 1. Inside a label_replace the template variables
+  # are $namespace, $pod and $__rate_interval, none of which start with a
+  # digit, so a "$" followed by a digit is always an unbraced group reference.
+  jq -e '[.. | objects | select(has("expr")) | select(.expr | test("label_replace\\(")) | select(.expr | test("\\$[0-9]"))] | length == 0' "$f" >/dev/null \
+    || { echo "$f: a label_replace replacement uses an unbraced \$<digit>; write \${1} so Go expands the capture group" >&2; exit 1; }
 done
 
 # `lint` takes one dashboard per invocation, so run it per file.
