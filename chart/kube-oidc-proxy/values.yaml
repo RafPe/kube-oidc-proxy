@@ -231,6 +231,113 @@ logging:
   # "0" to pin that explicitly.
   verbosity: ""
 
+# Prometheus metrics. Off by default: enabling opens a second listener, and the
+# default render must keep a command line that an image tag older than the
+# release that added --metrics-bind-address can still parse (the same rule as
+# logging.* above; see hack/verify-chart-metrics.sh). When enabled the chart
+# renders the flag, a named container port and a dedicated ClusterIP Service
+# `<release>-metrics`. The port is never added to the main Service, so
+# service.type=LoadBalancer cannot expose it. The endpoint is plain HTTP and
+# reveals traffic shape and health, never identities; restrict who can scrape
+# it with networkPolicy below. Reference: docs/metrics.md.
+metrics:
+  enabled: false
+  # Listener address passed as --metrics-bind-address. Empty derives
+  # "0.0.0.0:<metrics.port>". Set "127.0.0.1:<port>" when a sidecar scrapes.
+  bindAddress: ""
+  # Container port and Service port. Must differ from 8443 and 8080.
+  port: 9090
+  # Name of the container and Service port. A ServiceMonitor references the
+  # Service port by this name, so it is part of the scrape contract.
+  portName: metrics
+  service:
+    labels: {}
+    annotations: {}
+  # Prometheus Operator ServiceMonitor selecting the metrics Service. Gated on
+  # this explicit flag rather than on .Capabilities.APIVersions, which is empty
+  # under `helm template` and offline GitOps renders and would silently drop
+  # the object. Requires the monitoring.coreos.com/v1 CRDs on the cluster.
+  serviceMonitor:
+    enabled: false
+    # Namespace to create it in; empty uses the release namespace.
+    namespace: ""
+    additionalLabels: {}
+    annotations: {}
+    # Duration strings such as "30s". Empty omits the field so the
+    # Prometheus defaults apply.
+    interval: ""
+    scrapeTimeout: ""
+    path: /metrics
+    scheme: http
+    honorLabels: false
+    jobLabel: ""
+    targetLabels: []
+    podTargetLabels: []
+    relabelings: []
+    metricRelabelings: []
+    tlsConfig: {}
+    # Per-scrape limits protecting Prometheus from this target; 0 omits.
+    sampleLimit: 0
+    targetLimit: 0
+    labelLimit: 0
+  # PodMonitor scraping the pods directly, for clusters that prefer it over
+  # the Service. Mutually exclusive with serviceMonitor.enabled.
+  podMonitor:
+    enabled: false
+    namespace: ""
+    additionalLabels: {}
+    annotations: {}
+    interval: ""
+    scrapeTimeout: ""
+    path: /metrics
+    scheme: http
+    honorLabels: false
+    relabelings: []
+    metricRelabelings: []
+  # Optional PrometheusRule. No default rules ship: alert thresholds are
+  # deployment-specific and a wrong default alert is worse than none. `groups`
+  # is rendered verbatim as spec.groups.
+  prometheusRule:
+    enabled: false
+    namespace: ""
+    additionalLabels: {}
+    annotations: {}
+    groups: []
+  # Reserved for a later release: TLS on the metrics listener and delegated
+  # TokenReview/SubjectAccessReview authorization of scrapes. Any value other
+  # than the defaults below fails to render until they are implemented.
+  tls:
+    enabled: false
+  authentication:
+    mode: none
+
+# NetworkPolicy restricting who may reach the metrics port. Off by default: in a
+# cluster without a policy-enforcing CNI it is a no-op that gives false
+# assurance, and a wrong policy silently breaks scraping. When enabled with
+# metrics.enabled, the policy admits the listed peers to the metrics port,
+# then the rules in additionalIngress. `from` is required and is rendered
+# verbatim as NetworkPolicy ingress peers, e.g.
+#   from:
+#     - namespaceSelector:
+#         matchLabels:
+#           kubernetes.io/metadata.name: monitoring
+networkPolicy:
+  enabled: false
+  metrics:
+    from: []
+  # Rendered after the metrics rule, verbatim. Selecting the proxy pods
+  # isolates ALL their ingress, so the default re-admits every peer to the
+  # proxy (8443) and readiness (8080) ports and enabling the policy never cuts
+  # the proxy off. If other policies already govern those ports, set this to
+  # [] so this policy does not widen them: NetworkPolicies are additive, and a
+  # rule that admits every peer here cannot be narrowed by another policy.
+  additionalIngress:
+    - ports:
+        - port: 8443
+          protocol: TCP
+        - port: 8080
+          protocol: TCP
+
 # Arbitrary extra CLI flags passed to the proxy as --<key>=<value>.
 extraArgs: {}
   #audit-log-path: /audit-log

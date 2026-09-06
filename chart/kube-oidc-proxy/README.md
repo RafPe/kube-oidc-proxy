@@ -162,6 +162,38 @@ Ignored when `authenticationConfig.content` is set.
 | `logging.format` | string | `""` | Log output format (`--logging-format`): `json` or `text`. Empty renders no flag, leaving the binary default of `json`. |
 | `logging.verbosity` | int or `""` | `""` | Log verbosity (`--v`). `0` shows lifecycle, access records and warnings; `1` and above add request internals. Empty renders no flag, leaving the binary default of `0`, which also keeps the command line valid for an `image.tag` pinned to a release older than `--logging-format`. Rendered before `extraArgs`, so an `extraArgs` entry of the same flag still wins. |
 
+### Metrics
+
+Off by default. Enabling renders `--metrics-bind-address`, a named container
+port, and a dedicated ClusterIP Service `<release>-metrics`; the port is never
+added to the main Service. The endpoint is plain HTTP and reveals traffic shape
+and health, never identities; see the [metrics reference](../../docs/metrics.md).
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `metrics.enabled` | bool | `false` | Serve Prometheus metrics on a dedicated listener. Leaves the command line unchanged when false, so an older pinned `image.tag` still starts. |
+| `metrics.bindAddress` | string | `""` | `--metrics-bind-address`; empty derives `0.0.0.0:<metrics.port>`. |
+| `metrics.port` | int | `9090` | Container and Service port. Must differ from 8443 and 8080. |
+| `metrics.portName` | string | `metrics` | Name of the container and Service port the ServiceMonitor references. |
+| `metrics.service.labels` / `.annotations` | map | `{}` | Added to the metrics Service. |
+| `metrics.serviceMonitor.enabled` | bool | `false` | Render a `monitoring.coreos.com/v1` ServiceMonitor selecting the metrics Service. Needs the Prometheus Operator CRDs. |
+| `metrics.serviceMonitor.namespace` | string | `""` | Namespace for the ServiceMonitor; empty uses the release namespace. |
+| `metrics.serviceMonitor.additionalLabels` / `.annotations` | map | `{}` | Labels such as `release: kube-prometheus-stack` that your Prometheus selects on. |
+| `metrics.serviceMonitor.interval` / `.scrapeTimeout` | string | `""` | Duration strings (`30s`); empty omits the field. |
+| `metrics.serviceMonitor.path` / `.scheme` / `.honorLabels` | | `/metrics` / `http` / `false` | Endpoint settings. |
+| `metrics.serviceMonitor.jobLabel` / `.targetLabels` / `.podTargetLabels` | | `""` / `[]` / `[]` | Passed through to the spec. |
+| `metrics.serviceMonitor.relabelings` / `.metricRelabelings` / `.tlsConfig` | | `[]` / `[]` / `{}` | Passed through to the endpoint. |
+| `metrics.serviceMonitor.sampleLimit` / `.targetLimit` / `.labelLimit` | int | `0` | Per-scrape limits protecting Prometheus; 0 omits. |
+| `metrics.podMonitor.enabled` | bool | `false` | PodMonitor alternative that scrapes the pods directly. Mutually exclusive with the ServiceMonitor. |
+| `metrics.podMonitor.namespace` / `.additionalLabels` / `.annotations` | | `""` / `{}` / `{}` | Object metadata, as for the ServiceMonitor. |
+| `metrics.podMonitor.interval` / `.scrapeTimeout` / `.path` / `.scheme` / `.honorLabels` / `.relabelings` / `.metricRelabelings` | | as ServiceMonitor | Endpoint settings; the PodMonitor has no `tlsConfig` or limit fields. |
+| `metrics.prometheusRule.enabled` / `.groups` | bool / list | `false` / `[]` | Optional PrometheusRule; `groups` is rendered as `spec.groups`. No default alerts ship. |
+| `metrics.prometheusRule.namespace` / `.additionalLabels` / `.annotations` | | `""` / `{}` / `{}` | Object metadata. |
+| `metrics.tls.enabled`, `metrics.authentication.mode` | | `false`, `none` | Reserved for a later release; any other value fails to render. |
+| `networkPolicy.enabled` | bool | `false` | Render a NetworkPolicy admitting only `networkPolicy.metrics.from` to the metrics port, plus the rules in `networkPolicy.additionalIngress`. NetworkPolicies are additive: another policy selecting the proxy pods that already admits the metrics port cannot be narrowed by this one. |
+| `networkPolicy.metrics.from` | list | `[]` | NetworkPolicy ingress peers allowed to scrape; required when enabled. |
+| `networkPolicy.additionalIngress` | list | admits every peer to 8443 and 8080 | Extra ingress rules rendered after the metrics rule, verbatim. The default keeps the proxy and readiness ports reachable, because selecting the pods isolates all their ingress. Set `[]` when other policies already cover those ports, so this one does not widen them. |
+
 ### Extra args & volumes
 
 | Key | Type | Default | Description |

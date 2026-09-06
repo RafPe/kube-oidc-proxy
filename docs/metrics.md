@@ -189,6 +189,7 @@ kube_oidc_proxy_oidc_issuer_initialized == 0
 ## See also
 
 - [Configuration: `--metrics-bind-address`](./configuration.md#serving--tls--misc)
+- [Chart values `metrics.*`](../chart/kube-oidc-proxy/README.md#metrics)
 - [Operations: capacity and sizing](./operations.md#capacity-and-sizing)
 - [Logging reference](./logging.md), which the label vocabularies mirror
 - [CONTRIBUTING](../CONTRIBUTING.md#adding-a-metric)

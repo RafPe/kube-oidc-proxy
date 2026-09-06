@@ -1,0 +1,25 @@
+# CI fixture: single-issuer mode with every metrics object enabled, so the
+# ServiceMonitor, PrometheusRule and NetworkPolicy templates lint and render.
+oidc:
+  clientId: my-client
+  issuerUrl: https://accounts.google.com
+  usernameClaim: email
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    scrapeTimeout: 10s
+    additionalLabels:
+      release: kube-prometheus-stack
+    sampleLimit: 5000
+  prometheusRule:
+    enabled: true
+    groups: []
+networkPolicy:
+  enabled: true
+  metrics:
+    from:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: monitoring

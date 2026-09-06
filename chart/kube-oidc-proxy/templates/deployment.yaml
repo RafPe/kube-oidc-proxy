@@ -1,6 +1,30 @@
 {{ $fullname := include "kube-oidc-proxy.fullname" . }}
 {{ $defaultTlsSecretName := printf "%s-tls" $fullname }}
 {{ $tlsSecretName := .Values.tls.secretName | default $defaultTlsSecretName }}
+{{ $metrics := .Values.metrics | default dict }}
+{{- if dig "tls" "enabled" false $metrics }}
+{{- fail "metrics.tls.enabled is reserved for a later release and must stay false" }}
+{{- end }}
+{{- if ne (toString (dig "authentication" "mode" "none" $metrics)) "none" }}
+{{- fail "metrics.authentication.mode is reserved for a later release and must stay \"none\"" }}
+{{- end }}
+{{- $metricsPort := int (dig "port" 9090 $metrics) }}
+{{- if or (lt $metricsPort 1) (gt $metricsPort 65535) }}
+{{- fail "metrics.port must be between 1 and 65535" }}
+{{- end }}
+{{- if or (eq $metricsPort 8443) (eq $metricsPort 8080) }}
+{{- fail "metrics.port must differ from 8443 (the secure port) and 8080 (the readiness port)" }}
+{{- end }}
+{{- $metricsBind := toString (dig "bindAddress" "" $metrics) }}
+{{- if and (dig "enabled" false $metrics) (eq $metricsBind "0") }}
+{{- fail "metrics.bindAddress=\"0\" disables the listener in the binary; set metrics.enabled=false instead" }}
+{{- end }}
+{{- if and $metricsBind (not (hasSuffix (printf ":%d" $metricsPort) $metricsBind)) }}
+{{- fail (printf "metrics.bindAddress %q must end with :%d, the port the Service and monitors target" $metricsBind $metricsPort) }}
+{{- end }}
+{{- if not (regexMatch "^[a-z]([-a-z0-9]{0,13}[a-z0-9])?$" (toString (dig "portName" "metrics" $metrics))) }}
+{{- fail "metrics.portName must be a valid IANA_SVC_NAME: 1-15 lowercase alphanumerics or dashes, starting with a letter" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -55,6 +79,10 @@ spec:
         ports:
         - containerPort: 8443
         - containerPort: 8080
+        {{- if dig "enabled" false $metrics }}
+        - containerPort: {{ $metricsPort }}
+          name: {{ dig "portName" "metrics" $metrics }}
+        {{- end }}
         readinessProbe:
           httpGet:
             path: /ready
@@ -132,6 +160,9 @@ spec:
           {{ end }}
           {{- if and (not (kindIs "invalid" .Values.logging.verbosity)) (ne (toString .Values.logging.verbosity) "") }}
           - "--v={{ .Values.logging.verbosity }}"
+          {{ end }}
+          {{- if dig "enabled" false $metrics }}
+          - "--metrics-bind-address={{ dig "bindAddress" "" $metrics | default (printf "0.0.0.0:%d" $metricsPort) }}"
           {{ end }}
           {{- range $key, $value := .Values.extraArgs }}
           - "--{{ $key }}={{ $value }}"

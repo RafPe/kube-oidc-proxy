@@ -102,3 +102,11 @@ is nil rather than its default.
 {{- range $keys -}}{{- $lowered = append $lowered (lower .) -}}{{- end -}}
 {{- $lowered | uniq | sortAlpha | toJson -}}
 {{- end -}}
+
+{{/*
+Name of the dedicated metrics Service: the full name, shortened so that the
+"-metrics" suffix keeps the result within the 63-character Service name limit.
+*/}}
+{{- define "kube-oidc-proxy.metricsServiceName" -}}
+{{- printf "%s-metrics" (include "kube-oidc-proxy.fullname" . | trunc 55 | trimSuffix "-") -}}
+{{- end -}}

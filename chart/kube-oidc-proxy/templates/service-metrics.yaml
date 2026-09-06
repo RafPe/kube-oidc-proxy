@@ -1,0 +1,35 @@
+{{- $metrics := .Values.metrics | default dict -}}
+{{- if dig "enabled" false $metrics }}
+# Dedicated ClusterIP Service for the metrics listener. Deliberately separate
+# from the main Service, which may be a LoadBalancer: the metrics port never
+# leaves the cluster by configuration. The ServiceMonitor selects it by the
+# component label. Reads go through dig so an upgrade with --reuse-values
+# from a release without the metrics key still renders (see _helpers.tpl).
+# Labels are merged so an operator-supplied label can never override the
+# chart's own selector labels or the component label the monitors select on.
+{{- $labels := mergeOverwrite (dict)
+      (dig "service" "labels" dict $metrics)
+      (include "kube-oidc-proxy.labels" . | fromYaml)
+      (dict "app.kubernetes.io/component" "metrics") }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kube-oidc-proxy.metricsServiceName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- toYaml $labels | nindent 4 }}
+  {{- with dig "service" "annotations" dict $metrics }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ dig "port" 9090 $metrics }}
+      targetPort: {{ dig "portName" "metrics" $metrics }}
+      protocol: TCP
+      name: {{ dig "portName" "metrics" $metrics }}
+  selector:
+    app.kubernetes.io/name: {{ include "kube-oidc-proxy.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}

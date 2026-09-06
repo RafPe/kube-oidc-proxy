@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Copyright Jetstack Ltd. See LICENSE for details.
+set -euo pipefail
+# Metrics are opt-in. The default render must carry no metrics flag, port,
+# Service or monitor: an image pinned to a release older than the one that
+# added --metrics-bind-address must still get a command line it can parse
+# (the same rule hack/verify-chart-logging.sh enforces for the logging
+# flags). When enabled, the flag, the named container port and the dedicated
+# Service must agree on the port, because the ServiceMonitor references the
+# Service port by name.
+CHART=chart/kube-oidc-proxy
+BASE=(--set oidc.issuerUrl=https://x --set oidc.clientId=y)
+
+render() { helm template kop "$CHART" "${BASE[@]}" "$@"; }
+
+# 1. Default: nothing metrics-related renders.
+out=$(render)
+! grep -q -- '--metrics-bind-address' <<<"$out" || { echo "--metrics-bind-address rendered without metrics.enabled" >&2; exit 1; }
+! grep -q 'name: kop-kube-oidc-proxy-metrics' <<<"$out" || { echo "metrics Service rendered without metrics.enabled" >&2; exit 1; }
+! grep -q 'kind: ServiceMonitor' <<<"$out" || { echo "ServiceMonitor rendered without metrics.enabled" >&2; exit 1; }
+! grep -q 'kind: PodMonitor' <<<"$out" || { echo "PodMonitor rendered without metrics.enabled" >&2; exit 1; }
+! grep -q 'kind: NetworkPolicy' <<<"$out" || { echo "NetworkPolicy rendered without networkPolicy.enabled" >&2; exit 1; }
+
+# 2. Enabled: the flag, the named container port and the Service agree.
+out=$(render --set metrics.enabled=true)
+grep -q -- '"--metrics-bind-address=0.0.0.0:9090"' <<<"$out" || { echo "--metrics-bind-address not rendered from metrics.port" >&2; exit 1; }
+port_name=$(render --set metrics.enabled=true --show-only templates/deployment.yaml \
+  | yq -r '.spec.template.spec.containers[0].ports[] | select(.name != null) | .name')
+[ "$port_name" = "metrics" ] || { echo "named container port = '$port_name', expected metrics" >&2; exit 1; }
+container_port=$(render --set metrics.enabled=true --show-only templates/deployment.yaml \
+  | yq -r '.spec.template.spec.containers[0].ports[] | select(.name == "metrics") | .containerPort')
+svc=$(render --set metrics.enabled=true --show-only templates/service-metrics.yaml)
+[ "$(yq -r '.kind' <<<"$svc")" = "Service" ] || { echo "service-metrics.yaml did not render a Service" >&2; exit 1; }
+[ "$(yq -r '.spec.type' <<<"$svc")" = "ClusterIP" ] || { echo "metrics Service must be ClusterIP" >&2; exit 1; }
+[ "$(yq -r '.spec.ports[0].name' <<<"$svc")" = "metrics" ] || { echo "metrics Service port is not named metrics" >&2; exit 1; }
+[ "$(yq -r '.spec.ports[0].port' <<<"$svc")" = "$container_port" ] || { echo "Service port and container port differ" >&2; exit 1; }
+[ "$(yq -r '.spec.ports[0].targetPort' <<<"$svc")" = "metrics" ] || { echo "Service targetPort must reference the named port" >&2; exit 1; }
+[ "$(yq -r '.metadata.labels["app.kubernetes.io/component"]' <<<"$svc")" = "metrics" ] || { echo "metrics Service lacks the component label" >&2; exit 1; }
+! grep -q 'name: metrics' <<<"$(render --set metrics.enabled=true --show-only templates/service.yaml)" || { echo "metrics port leaked onto the main Service" >&2; exit 1; }
+
+# 3. An explicit bind address wins over the derived one.
+render --set metrics.enabled=true --set metrics.bindAddress=127.0.0.1:9090 | grep -q -- '"--metrics-bind-address=127.0.0.1:9090"' \
+  || { echo "metrics.bindAddress not honoured" >&2; exit 1; }
+
+# 4. Reserved keys refuse to render anything but their default.
+! render --set metrics.enabled=true --set metrics.tls.enabled=true >/dev/null 2>&1 || { echo "metrics.tls.enabled=true must fail: not implemented" >&2; exit 1; }
+! render --set metrics.enabled=true --set metrics.authentication.mode=delegated >/dev/null 2>&1 || { echo "metrics.authentication.mode=delegated must fail: not implemented" >&2; exit 1; }
+
+# 4b. An upgrade with --reuse-values from a release that predates the metrics
+#     and networkPolicy keys renders with those keys absent (nil). Every
+#     template must survive that, as _helpers.tpl requires.
+render --set metrics=null --set networkPolicy=null >/dev/null || { echo "render fails when metrics/networkPolicy keys are absent (--reuse-values shape)" >&2; exit 1; }
+
+# 4c. A port collision with the proxy or readiness port, an out-of-range port,
+#     a bind address that disables the listener or targets another port, and
+#     an invalid port name all fail at render time rather than after install.
+! render --set metrics.enabled=true --set metrics.port=8080 >/dev/null 2>&1 || { echo "metrics.port=8080 must fail to render" >&2; exit 1; }
+! render --set metrics.enabled=true --set metrics.port=8443 >/dev/null 2>&1 || { echo "metrics.port=8443 must fail to render" >&2; exit 1; }
+! render --set metrics.enabled=true --set metrics.port=70000 >/dev/null 2>&1 || { echo "metrics.port=70000 must fail to render" >&2; exit 1; }
+! render --set metrics.enabled=true --set metrics.bindAddress=0 >/dev/null 2>&1 || { echo "metrics.bindAddress=0 must fail to render" >&2; exit 1; }
+! render --set metrics.enabled=true --set metrics.bindAddress=0.0.0.0:9091 >/dev/null 2>&1 || { echo "bindAddress on another port must fail to render" >&2; exit 1; }
+! render --set metrics.enabled=true --set metrics.portName=Metrics_Port >/dev/null 2>&1 || { echo "invalid metrics.portName must fail to render" >&2; exit 1; }
+
+# 4d. A non-default port and name agree everywhere.
+out=$(render --set metrics.enabled=true --set metrics.port=9191 --set metrics.portName=observe)
+grep -q -- '"--metrics-bind-address=0.0.0.0:9191"' <<<"$out" || { echo "non-default port not in the flag" >&2; exit 1; }
+[ "$(render --set metrics.enabled=true --set metrics.port=9191 --set metrics.portName=observe --show-only templates/deployment.yaml | yq -r '.spec.template.spec.containers[0].ports[] | select(.name == "observe") | .containerPort')" = "9191" ] \
+  || { echo "non-default named container port missing" >&2; exit 1; }
+[ "$(render --set metrics.enabled=true --set metrics.port=9191 --set metrics.portName=observe --show-only templates/service-metrics.yaml | yq -r '.spec.ports[0].targetPort')" = "observe" ] \
+  || { echo "non-default Service targetPort missing" >&2; exit 1; }
+
+# 4e. Operator labels on the metrics Service cannot override the selector labels.
+svc_labels=$(render --set metrics.enabled=true --set 'metrics.service.labels.app\.kubernetes\.io/component=other' --set 'metrics.service.labels.team=platform' --show-only templates/service-metrics.yaml)
+[ "$(yq -r '.metadata.labels["app.kubernetes.io/component"]' <<<"$svc_labels")" = "metrics" ] || { echo "operator label overrode the component label" >&2; exit 1; }
+[ "$(yq -r '.metadata.labels.team' <<<"$svc_labels")" = "platform" ] || { echo "harmless operator label dropped" >&2; exit 1; }
+
+# 5. extraArgs still renders on top of the metrics block.
+render --set metrics.enabled=true --set extraArgs.v=5 --show-only templates/deployment.yaml | grep -q -- '"--v=5"' \
+  || { echo "extraArgs did not render after the metrics block" >&2; exit 1; }
+
+echo "chart metrics values: ok"
