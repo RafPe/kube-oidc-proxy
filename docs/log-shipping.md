@@ -299,10 +299,10 @@ both if yours differ.
 - **The partition key is random.** The `kinesis_streams` plugin always uses a
   random key, so records for one request may land on different shards and
   Kinesis preserves no cross-shard order. Consumers sort by
-  `(auditID, stage, stageTimestamp)` rather than by arrival.
+  `(data.auditID, data.stage, data.stageTimestamp)` rather than by arrival.
 - **Delivery is at-least-once.** A batch that partially succeeds is retried
   whole, so duplicates happen under throttling. Deduplicate audit events on
-  `(auditID, stage)`, never on `auditID` alone: a long-running request
+  `(data.auditID, data.stage)`, never on `auditID` alone: a long-running request
   legitimately emits `ResponseStarted` and `ResponseComplete` under one ID. If
   the same stream also receives the kube-apiserver's audit log, add the
   producer to the key, because the API server's event for the same request
