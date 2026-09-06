@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"golang.org/x/sync/singleflight"
 	v1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -111,6 +112,9 @@ type SubjectAccessReview struct {
 	// and log() covers a reviewer built without one.
 	logger *slog.Logger
 
+	// metrics receives the API-call and cache observations; nil records nothing.
+	metrics *metrics.Recorder
+
 	reviewer clientazv1.SubjectAccessReviewInterface
 
 	// sarTimeout is the single shared budget applied across the whole sequence
@@ -159,6 +163,13 @@ func New(reviewer clientazv1.SubjectAccessReviewInterface, sarTimeout, allowCach
 		maxHeaderValues: maxHeaderValues,
 		cache:           newDecisionCache(allowCacheTTL, denyCacheTTL, decisionCacheSize, realClock{}),
 	}, nil
+}
+
+// WithMetrics sets the recorder the reviewer reports API calls and cache
+// lookups to. A nil recorder records nothing.
+func (s *SubjectAccessReview) WithMetrics(r *metrics.Recorder) *SubjectAccessReview {
+	s.metrics = r
+	return s
 }
 
 // realClock supplies wall-clock time to the decision cache; tests substitute a
@@ -346,6 +357,7 @@ func (s *SubjectAccessReview) checkRbacImpersonationAuthorization(ctx context.Co
 	key, cacheable := s.cache.key(&spec)
 	if !cacheable {
 		logging.Emit(ctx, s.log(), logging.EventCacheSARLookup, slog.String("cache_result", "bypass"))
+		s.metrics.CacheLookup(metrics.ReviewSAR, metrics.CacheBypass)
 		return s.timedLiveCheck(ctx, kind, false, &spec)
 	}
 
@@ -353,9 +365,11 @@ func (s *SubjectAccessReview) checkRbacImpersonationAuthorization(ctx context.Co
 		logging.Emit(ctx, s.log(), logging.EventCacheSARLookup,
 			slog.String("cache_result", "hit"),
 			slog.String("decision", decision(allowed)))
+		s.metrics.CacheLookup(metrics.ReviewSAR, metrics.CacheHit)
 		return allowed, nil
 	}
 	logging.Emit(ctx, s.log(), logging.EventCacheSARLookup, slog.String("cache_result", "miss"))
+	s.metrics.CacheLookup(metrics.ReviewSAR, metrics.CacheMiss)
 
 	return s.sharedLiveCheck(ctx, kind, key, &spec)
 }
@@ -504,11 +518,16 @@ func (s *SubjectAccessReview) sharedLiveCheck(ctx context.Context, kind, key str
 }
 
 // liveCheck submits spec to the API server as a SubjectAccessReview and
-// reports whether it allowed the request.
+// reports whether it allowed the request. It is the only place the API server
+// is called, so it is where the review API-call metric is observed: a caller
+// served by the cache or by a coalesced in-flight call never reaches here.
 func (s *SubjectAccessReview) liveCheck(ctx context.Context, spec *v1.SubjectAccessReviewSpec) (bool, error) {
 	clusterSubjectAccessReview := v1.SubjectAccessReview{Spec: *spec}
 
+	start := time.Now()
 	reviewResult, err := s.reviewer.Create(ctx, &clusterSubjectAccessReview, metav1.CreateOptions{})
+	allowed := err == nil && reviewResult.Status.Allowed
+	s.metrics.ReviewRequest(metrics.ReviewSAR, metrics.ReviewOutcomeFor(err, allowed), time.Since(start))
 	if err != nil {
 		return false, fmt.Errorf("%w: %w", ErrCreateSubjectAccessReview, err)
 	}

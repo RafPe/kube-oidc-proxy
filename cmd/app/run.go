@@ -352,6 +352,7 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 			if err != nil {
 				return fail(err)
 			}
+			subjectAccessReviewer.WithMetrics(recorder)
 
 			oidcLogger := logging.ForComponent(root, logging.ComponentOIDC)
 
