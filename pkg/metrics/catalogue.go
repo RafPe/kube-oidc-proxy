@@ -1,8 +1,6 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
 package metrics
 
-import "slices"
-
 // Spec is one entry of the metric catalogue: the name, type, label names,
 // stability and help of a family this binary exports. The collectors are
 // built from these entries and docs/metrics.md is generated from them, so
@@ -39,52 +37,51 @@ const (
 	nameAuditBackendFailures = Namespace + "_audit_backend_failures_total"
 )
 
-// catalogue lists every first-party family. Order is the order docs/metrics.md
+// catalogue lists every first-party family, as a fresh literal on every call
+// so nothing package-level is mutable. Order is the order docs/metrics.md
 // renders them in. Append-only: a shipped name, label set or type is never
 // changed in place.
-var catalogue = []Spec{
-	{Name: nameBuildInfo, Type: "gauge", Labels: []string{"version", "revision", "go_version"}, Stability: "STABLE",
-		Help: "Build information; always 1."},
-	{Name: nameRequestsTotal, Type: "counter", Labels: []string{"k8s_verb", "scope", "code", "termination"}, Stability: "STABLE",
-		Help: "Completed requests by Kubernetes verb, scope, HTTP status code and how the exchange ended."},
-	{Name: nameRequestDuration, Type: "histogram", Labels: []string{"k8s_verb", "scope"}, Stability: "STABLE",
-		Help: "Latency of completed requests in seconds, excluding long-running (watch, exec, attach, portforward, logs, proxy) and hijacked requests."},
-	{Name: nameRequestsInFlight, Type: "gauge", Labels: nil, Stability: "STABLE",
-		Help: "Requests currently inside the handler chain."},
-	{Name: nameLongRunningRequests, Type: "gauge", Labels: []string{"k8s_verb", "scope"}, Stability: "STABLE",
-		Help: "Long-running requests whose response has started (headers written or connection hijacked) and not yet ended."},
-	{Name: nameAuthnAttempts, Type: "counter", Labels: []string{"auth_method", "outcome"}, Stability: "STABLE",
-		Help: "Authentication attempts by method and outcome, before the identity and authorization checks that follow."},
-	{Name: nameAccessDecisions, Type: "counter", Labels: []string{"auth_method", "decision", "reason"}, Stability: "STABLE",
-		Help: "Final access decisions; reason is empty on allow."},
-	{Name: nameReviewRequests, Type: "counter", Labels: []string{"review", "outcome"}, Stability: "STABLE",
-		Help: "TokenReview and SubjectAccessReview API calls actually issued to the API server, by outcome."},
-	{Name: nameReviewDuration, Type: "histogram", Labels: []string{"review", "outcome"}, Stability: "STABLE",
-		Help: "Latency of review API calls in seconds."},
-	{Name: nameCacheLookups, Type: "counter", Labels: []string{"cache", "result"}, Stability: "STABLE",
-		Help: "Review cache lookups by cache and result."},
-	{Name: nameIssuerInitialized, Type: "gauge", Labels: []string{"issuer_name"}, Stability: "STABLE",
-		Help: "1 once the issuer's authenticator has fetched its JWKS. Reports initialization, not ongoing issuer availability."},
-	{Name: nameReady, Type: "gauge", Labels: nil, Stability: "STABLE",
-		Help: "1 once the proxy is serving and readiness has latched."},
-	{Name: nameAuditBackendFailures, Type: "counter", Labels: []string{"operation"}, Stability: "ALPHA",
-		Help: "Audit backend failures observable at start and shutdown. Asynchronous delivery failures are not included."},
+func catalogue() []Spec {
+	return []Spec{
+		{Name: nameBuildInfo, Type: "gauge", Labels: []string{"version", "revision", "go_version"}, Stability: "STABLE",
+			Help: "Build information; always 1."},
+		{Name: nameRequestsTotal, Type: "counter", Labels: []string{"k8s_verb", "scope", "code", "termination"}, Stability: "STABLE",
+			Help: "Completed requests by Kubernetes verb, scope, HTTP status code and how the exchange ended."},
+		{Name: nameRequestDuration, Type: "histogram", Labels: []string{"k8s_verb", "scope"}, Stability: "STABLE",
+			Help: "Latency of completed requests in seconds, excluding long-running (watch, exec, attach, portforward, logs, proxy) and hijacked requests."},
+		{Name: nameRequestsInFlight, Type: "gauge", Labels: nil, Stability: "STABLE",
+			Help: "Requests currently inside the handler chain."},
+		{Name: nameLongRunningRequests, Type: "gauge", Labels: []string{"k8s_verb", "scope"}, Stability: "STABLE",
+			Help: "Long-running requests whose response has started (headers written or connection hijacked) and not yet ended."},
+		{Name: nameAuthnAttempts, Type: "counter", Labels: []string{"auth_method", "outcome"}, Stability: "STABLE",
+			Help: "Authentication attempts by method and outcome, before the identity and authorization checks that follow."},
+		{Name: nameAccessDecisions, Type: "counter", Labels: []string{"auth_method", "decision", "reason"}, Stability: "STABLE",
+			Help: "Final access decisions; reason is empty on allow."},
+		{Name: nameReviewRequests, Type: "counter", Labels: []string{"review", "outcome"}, Stability: "STABLE",
+			Help: "TokenReview and SubjectAccessReview API calls actually issued to the API server, by outcome."},
+		{Name: nameReviewDuration, Type: "histogram", Labels: []string{"review", "outcome"}, Stability: "STABLE",
+			Help: "Latency of review API calls in seconds."},
+		{Name: nameCacheLookups, Type: "counter", Labels: []string{"cache", "result"}, Stability: "STABLE",
+			Help: "Review cache lookups by cache and result."},
+		{Name: nameIssuerInitialized, Type: "gauge", Labels: []string{"issuer_name"}, Stability: "STABLE",
+			Help: "1 once the issuer's authenticator has fetched its JWKS. Reports initialization, not ongoing issuer availability."},
+		{Name: nameReady, Type: "gauge", Labels: nil, Stability: "STABLE",
+			Help: "1 once the proxy is serving and readiness has latched."},
+		{Name: nameAuditBackendFailures, Type: "counter", Labels: []string{"operation"}, Stability: "ALPHA",
+			Help: "Audit backend failures observable at start and shutdown. Asynchronous delivery failures are not included."},
+	}
 }
 
-// Catalogue returns a copy of every first-party family, in documentation order.
+// Catalogue returns every first-party family, in documentation order. Each
+// call returns a fresh slice the caller owns.
 func Catalogue() []Spec {
-	out := make([]Spec, len(catalogue))
-	for i, s := range catalogue {
-		out[i] = s
-		out[i].Labels = slices.Clone(s.Labels)
-	}
-	return out
+	return catalogue()
 }
 
 // spec returns the catalogue entry for name. A missing entry is a programming
 // error caught by TestEveryCollectorIsInTheCatalogue, so it panics.
 func spec(name string) Spec {
-	for _, s := range catalogue {
+	for _, s := range catalogue() {
 		if s.Name == name {
 			return s
 		}

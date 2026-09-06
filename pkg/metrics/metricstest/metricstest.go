@@ -70,13 +70,18 @@ func samples(t testing.TB, g prometheus.Gatherer, name string) []*dto.Metric {
 	return nil
 }
 
+// hasLabels reports whether every wanted label is present with that value. An
+// absent label never matches, even when the wanted value is empty: an allow
+// decision carries reason="" and must not be confused with a sample that has
+// no reason label at all.
 func hasLabels(m *dto.Metric, want map[string]string) bool {
 	got := map[string]string{}
 	for _, lp := range m.GetLabel() {
 		got[lp.GetName()] = lp.GetValue()
 	}
 	for k, v := range want {
-		if got[k] != v {
+		actual, present := got[k]
+		if !present || actual != v {
 			return false
 		}
 	}

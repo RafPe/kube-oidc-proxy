@@ -18,10 +18,13 @@ type MetricsOptions struct {
 	BindAddress string
 }
 
+// NewMetricsOptions registers the metrics flag set on nfs and returns the
+// options it binds.
 func NewMetricsOptions(nfs *cliflag.NamedFlagSets) *MetricsOptions {
 	return new(MetricsOptions).AddFlags(nfs.FlagSet("Metrics"))
 }
 
+// AddFlags binds the metrics flags to fs and returns m for chaining.
 func (m *MetricsOptions) AddFlags(fs *pflag.FlagSet) *MetricsOptions {
 	fs.StringVar(&m.BindAddress, "metrics-bind-address", "",
 		"Address (host:port) to serve Prometheus metrics on, over plain HTTP at "+

@@ -49,15 +49,14 @@ const (
 	VerbOther            Verb = other
 )
 
-var knownVerbs = map[Verb]struct{}{
-	VerbGet: {}, VerbList: {}, VerbWatch: {}, VerbCreate: {}, VerbUpdate: {}, VerbPatch: {},
-	VerbDelete: {}, VerbDeleteCollection: {}, VerbProxy: {}, VerbConnect: {},
-}
-
-// connectSubresources are the streaming subresources kube-apiserver reports
-// as CONNECT in its own metrics, whichever HTTP method reached them.
-var connectSubresources = map[string]struct{}{
-	"exec": {}, "attach": {}, "portforward": {}, "log": {}, "proxy": {},
+// isConnectSubresource reports the streaming subresources kube-apiserver
+// reports as CONNECT in its own metrics, whichever HTTP method reached them.
+func isConnectSubresource(sub string) bool {
+	switch sub {
+	case "exec", "attach", "portforward", "log", "proxy":
+		return true
+	}
+	return false
 }
 
 // VerbFor projects the resolved RequestInfo onto the verb label. See Verb for
@@ -72,14 +71,16 @@ func VerbFor(info *genericapirequest.RequestInfo) Verb {
 		}
 		return VerbOther
 	}
-	if _, ok := connectSubresources[info.Subresource]; ok {
+	if isConnectSubresource(info.Subresource) {
 		return VerbConnect
 	}
 	return Verb(projectVerb(Verb(info.Verb)))
 }
 
 func projectVerb(v Verb) string {
-	if _, ok := knownVerbs[v]; ok {
+	switch v {
+	case VerbGet, VerbList, VerbWatch, VerbCreate, VerbUpdate, VerbPatch,
+		VerbDelete, VerbDeleteCollection, VerbProxy, VerbConnect:
 		return string(v)
 	}
 	return string(VerbOther)
@@ -98,8 +99,6 @@ const (
 	ScopeNone      Scope = "none"
 )
 
-var knownScopes = map[Scope]struct{}{ScopeCluster: {}, ScopeNamespace: {}, ScopeResource: {}, ScopeNone: {}}
-
 // ScopeFor projects the resolved RequestInfo onto the scope label.
 func ScopeFor(info *genericapirequest.RequestInfo) Scope {
 	if info == nil || !info.IsResourceRequest {
@@ -115,7 +114,8 @@ func ScopeFor(info *genericapirequest.RequestInfo) Scope {
 }
 
 func projectScope(s Scope) string {
-	if _, ok := knownScopes[s]; ok {
+	switch s {
+	case ScopeCluster, ScopeNamespace, ScopeResource, ScopeNone:
 		return string(s)
 	}
 	return string(ScopeNone)
@@ -135,40 +135,36 @@ func CodeFor(status int) string {
 	return strconv.Itoa(status)
 }
 
-// The termination vocabulary of pkg/proxy/lifecycle.go, repeated here rather
-// than imported so this package has no dependency on the proxy.
-var knownTerminations = map[string]struct{}{
-	"normal": {}, "hijacked": {}, "client_cancel": {}, "panic": {},
-	"upstream_timeout": {}, "upstream_reset": {}, "proxy_error": {},
-}
-
+// projectTermination projects onto the termination vocabulary of
+// pkg/proxy/lifecycle.go, repeated here rather than imported so this package
+// has no dependency on the proxy.
 func projectTermination(v string) string {
-	if _, ok := knownTerminations[v]; ok {
+	switch v {
+	case "normal", "hijacked", "client_cancel", "panic",
+		"upstream_timeout", "upstream_reset", "proxy_error":
 		return v
 	}
 	return other
 }
 
-// The auth_method vocabulary of pkg/proxy/handlers.go.
-var knownAuthMethods = map[string]struct{}{"oidc": {}, "tokenreview": {}, "none": {}}
-
+// projectAuthMethod projects onto the auth_method vocabulary of
+// pkg/proxy/handlers.go.
 func projectAuthMethod(v string) string {
-	if _, ok := knownAuthMethods[v]; ok {
+	switch v {
+	case "oidc", "tokenreview", "none":
 		return v
 	}
 	return other
 }
 
-// The access-record reason vocabulary of pkg/proxy/handlers.go. The empty
-// reason is the reason of an allow and passes through.
-var knownReasons = map[string]struct{}{
-	"": {}, "unauthorized": {}, "reserved_identity": {}, "no_username_claim": {},
-	"impersonation_denied": {}, "too_many_impersonation_values": {}, "client_canceled": {},
-	"internal_error": {}, "upstream_error": {}, "authentication_dependency_error": {},
-}
-
+// projectReason projects onto the access-record reason vocabulary of
+// pkg/proxy/handlers.go. The empty reason is the reason of an allow and
+// passes through.
 func projectReason(v string) string {
-	if _, ok := knownReasons[v]; ok {
+	switch v {
+	case "", "unauthorized", "reserved_identity", "no_username_claim",
+		"impersonation_denied", "too_many_impersonation_values", "client_canceled",
+		"internal_error", "upstream_error", "authentication_dependency_error":
 		return v
 	}
 	return other
