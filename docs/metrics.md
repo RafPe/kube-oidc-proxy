@@ -197,7 +197,14 @@ The chart ships three Grafana dashboards (`metrics.dashboards.enabled: true`)
 as a ConfigMap the Grafana sidecar loads; kube-prometheus-stack picks them up
 with no further configuration. Each answers a different set of questions.
 The screenshots come from the [kind demo](./development.md#metrics-demo) with
-the load generator running.
+the load generator running. Five panels count things a healthy proxy never
+does - upstream failures, TokenReview dependency errors, review errors and
+timeouts, audit backend failures, reserved-identity and header-flood attempts.
+A counter child that has never been incremented has no series at all, so those
+five queries end with `or vector(0)` and read a flat zero rather than
+"No data". The demo does not fake any of them: in the screenshots below the
+upstream-failure panel reads zero because the API server never failed to
+answer, which is what a healthy deployment looks like.
 
 ### Overview (`kube-oidc-proxy-overview`)
 

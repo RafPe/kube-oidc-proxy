@@ -296,10 +296,15 @@ PNGs. [Architecture](./architecture.md#diagrams) shows them.
 
 `hack/metrics-demo/` builds a kind cluster running kube-prometheus-stack and
 this chart with metrics, a ServiceMonitor and the three Grafana dashboards, and
-proves the dashboards are honest: it drives every kind of traffic the metric
-catalogue can observe, fails if any dashboard panel's query returns an empty
-result, and only then captures the screenshots in `docs/dashboards/`. Four
-steps, each one command:
+proves the dashboards are honest: it drives nineteen kinds of traffic —
+allowed and forbidden requests, a 5xx the API server itself answers, invalid,
+expired and username-less tokens, allowed, denied and simultaneous
+impersonation, the two anomaly denials, both token-passthrough outcomes, a
+watch, an exec, a log stream, non-resource paths and nine non-Kubernetes verbs
+— fails if any dashboard panel's query returns an empty result, and only then
+captures the screenshots in `docs/dashboards/`. It fakes no failure of the hop
+to the API server, so the overview's "Upstream failures/s" panel reads zero, as
+it should against a healthy upstream. Four steps, each one command:
 
 ```sh
 make metrics_demo_up                                     # cluster, Prometheus, Grafana, the chart

@@ -2,9 +2,10 @@
 
 A reproducible kind cluster that installs this chart with metrics, a
 ServiceMonitor and the three Grafana dashboards, alongside
-kube-prometheus-stack, generates every kind of traffic the metric catalogue
-can observe, proves every dashboard panel returns data, and captures the
-screenshots in [`docs/dashboards/`](../../docs/dashboards).
+kube-prometheus-stack, drives the nineteen kinds of traffic listed under
+[what the load generator drives](#what-the-load-generator-drives), proves every
+dashboard panel returns data, and captures the screenshots in
+[`docs/dashboards/`](../../docs/dashboards).
 
 It is a demo, not a deployment reference: everything runs on one node, nothing
 is hardened, and Grafana allows anonymous viewers so the screenshots can be
@@ -82,6 +83,43 @@ four panel rows of every dashboard. It refuses to render them until every
 Prometheus, so a screenshot of empty panels cannot be produced by accident,
 and it rejects an image too small to be a populated dashboard. Run the load
 generator for ten minutes first, or the panels have nothing to draw.
+
+## What the load generator drives
+
+The exact kinds, one per traffic shape the dashboards draw. `--once` runs each
+one and asserts every call it makes; a scenario made of several calls asserts
+and logs each of them separately.
+
+| Kind | What it sends | What it is there for |
+| --- | --- | --- |
+| `allowed_list` | list pods with a valid token | 200 at namespace scope, `authn{oidc,accepted}`, `decisions{allow}` |
+| `allowed_get` | get one pod | 200 at resource scope |
+| `forbidden_by_rbac` | list nodes, which the demo identity is not granted | 403 from the API server after the proxy allowed the request |
+| `upstream_5xx` | list pods at a resource version the API server will never observe | 504 from the API server, so the code-class panel has a 5xx band |
+| `invalid_token` | a bearer that is not a JWT | 401, `decisions{deny,unauthorized}` |
+| `expired_token` | a correctly signed token past its `exp` | 401 by a different route through the authenticator |
+| `impersonation_allowed` | three identical `Impersonate-User: jjackson` calls | `review_requests{sar,allow}`, a cache miss then hits |
+| `impersonation_coalesced` | eight identical impersonation calls at once, at one replica whose decision cache has just expired | that replica issues fewer SubjectAccessReviews than it answers calls |
+| `impersonation_denied` | `Impersonate-User: mallory` | 403, `decisions{deny,impersonation_denied}` |
+| `too_many_impersonation_values` | 100 `Impersonate-Group` headers | 431, refused on the header count before any review |
+| `reserved_identity` | a token claiming `system:masters` | 403, `decisions{deny,reserved_identity}` |
+| `no_username_claim` | a token the issuer signed that names nobody | 403, `decisions{deny,no_username_claim}`, asserted by counter delta |
+| `passthrough_allowed` | three calls with the same ServiceAccount token | `authn{oidc,rejected}` then `{tokenreview,accepted}` |
+| `passthrough_denied` | three calls with a well-formed token nobody vouches for | `authn{tokenreview,rejected}` |
+| `watch` | a list-watch held open for 20s, then cancelled | `long_running_requests{watch}`, termination `client_cancel` |
+| `exec` | `exec` into `demo-shell` | the hijack path: termination `hijacked`, code `none` |
+| `logs` | read the pod's log | long-running but not hijacked |
+| `non_resource` | `GET /version` and `GET /healthz`, both asserted | scope `none`, verb `get` |
+| `hostile_methods` | nine methods `M1`..`M9`, each asserted | every one must project onto `k8s_verb="other"` |
+
+**No upstream failure is faked.** `upstream_5xx` is a 5xx the API server itself
+answers, so the proxy's exchange completes normally and its `termination` is
+`normal`. Nothing in the demo makes the hop to the API server fail, so the
+overview's "Upstream failures/s" panel reads a flat zero, which is the healthy
+reading. That panel and four others end their query with `or vector(0)` for
+exactly this reason: a counter child that has never been incremented has no
+series at all, and a panel that says "No data" where it should say zero is a
+panel an operator learns to ignore.
 
 ## What each file is
 
