@@ -308,6 +308,7 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 				if err != nil {
 					return fail(err)
 				}
+				reviewer.WithMetrics(recorder)
 				tokenReviewer = tokenreview.NewCached(reviewer,
 					opts.App.TokenPassthrough.CacheSuccessTTL,
 					opts.App.TokenPassthrough.CacheFailureTTL)
