@@ -868,7 +868,7 @@
     {
       "type": "state-timeline",
       "title": "Issuer initialized",
-      "description": "Per-issuer state over time: 1 once that issuer's authenticator has fetched its JWKS on the selected pods. A band that drops to 0 is an issuer that never initialized on a restarted replica, which silently rejects every token from it. It reports initialization, not ongoing issuer availability.",
+      "description": "Per-issuer state over time: 1 once that issuer's authenticator has fetched its JWKS on the selected pods. A band that drops to 0 is an issuer that never initialized on a restarted replica, which silently rejects every token from it. It reports initialization, not ongoing issuer availability. Each row is one issuer on one replica, labelled by issuer name; with more than one replica the same issuer appears once per pod, and hovering a band names it.",
       "datasource": {
         "uid": "${datasource}"
       },
@@ -944,15 +944,15 @@
           },
           "editorMode": "code",
           "expr": "kube_oidc_proxy_oidc_issuer_initialized{namespace=\"$namespace\",pod=~\"$pod\"}",
-          "legendFormat": "{{issuer_name}} / {{pod}}",
+          "legendFormat": "{{issuer_name}}",
           "range": true,
           "refId": "A"
         }
       ],
       "id": 14,
       "gridPos": {
-        "h": 8,
-        "w": 12,
+        "h": 6,
+        "w": 24,
         "x": 0,
         "y": 28
       }
@@ -1017,10 +1017,10 @@
       ],
       "id": 15,
       "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 28
+        "h": 5,
+        "w": 24,
+        "x": 0,
+        "y": 34
       }
     }
   ],

@@ -32,6 +32,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	authenticationv1 "k8s.io/api/authentication/v1"
@@ -58,9 +59,18 @@ const (
 	impersonated  = "jjackson"
 	notImpersonat = "mallory"
 
+	// cacheWarmCalls is how many identical calls a cache-exercising scenario
+	// makes. The proxy runs two replicas behind a ClusterIP, each with its own
+	// cache, so three identical calls guarantee at least one lands on a
+	// replica that has already cached the decision.
+	cacheWarmCalls = 3
+
 	// statusNone marks a scenario that completes without an HTTP status the
 	// client can observe, because the connection was upgraded or streamed.
 	statusNone = 0
+
+	// How many times the tunnel tries to come back after kubectl drops it.
+	tunnelReopenAttempts = 10
 
 	watchHold  = 20 * time.Second
 	callTimout = 30 * time.Second
@@ -98,13 +108,13 @@ func run(logger *slog.Logger, statePath, namespace string, duration, interval ti
 		return err
 	}
 
-	port, stop, err := portForward(ctx, st.kubeconfig, namespace)
+	tun, err := newTunnel(ctx, st.kubeconfig, namespace, logger)
 	if err != nil {
 		return err
 	}
-	defer stop()
+	defer tun.Close()
 
-	g, err := newGenerator(st, namespace, port)
+	g, err := newGenerator(st, namespace, tun)
 	if err != nil {
 		return err
 	}
@@ -191,7 +201,97 @@ func loadState(dir string) (*state, error) {
 // dies under it and turns every call into "connection refused". kubectl
 // announces the port it picked on stdout, and that line is also the signal
 // that the tunnel is ready, so nothing has to poll for it.
-func portForward(ctx context.Context, kubeconfig, namespace string) (int, func(), error) {
+// tunnel keeps a kubectl port-forward to the proxy Service open for the life
+// of the run. kubectl drops a forward when a client disappears mid-stream
+// ("lost connection to pod" after a broken pipe), and this generator does that
+// on purpose in the exec and watch scenarios, so the tunnel reopens itself
+// instead of turning the rest of the run into "connection refused". The local
+// port is whatever kubectl picks, and changes when it reopens: a fixed port
+// would silently attach to a forward left behind by an earlier run.
+type tunnel struct {
+	kubeconfig string
+	namespace  string
+	logger     *slog.Logger
+
+	mu     sync.Mutex
+	port   int
+	stop   func()
+	closed bool
+}
+
+func newTunnel(ctx context.Context, kubeconfig, namespace string, logger *slog.Logger) (*tunnel, error) {
+	t := &tunnel{kubeconfig: kubeconfig, namespace: namespace, logger: logger}
+	if err := t.open(ctx); err != nil {
+		return nil, err
+	}
+
+	return t, nil
+}
+
+// URL is the proxy's address through the tunnel as it stands right now.
+func (t *tunnel) URL() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	return fmt.Sprintf("https://127.0.0.1:%d", t.port)
+}
+
+func (t *tunnel) Close() {
+	t.mu.Lock()
+	t.closed = true
+	stop := t.stop
+	t.mu.Unlock()
+
+	if stop != nil {
+		stop()
+	}
+}
+
+func (t *tunnel) open(ctx context.Context) error {
+	port, stop, err := startPortForward(ctx, t.kubeconfig, t.namespace, func(cause error) {
+		t.reopen(ctx, cause)
+	})
+	if err != nil {
+		return err
+	}
+
+	t.mu.Lock()
+	t.port, t.stop = port, stop
+	t.mu.Unlock()
+
+	return nil
+}
+
+func (t *tunnel) reopen(ctx context.Context, cause error) {
+	t.mu.Lock()
+	closed := t.closed
+	t.mu.Unlock()
+	if closed {
+		return
+	}
+
+	t.logger.Warn("port-forward dropped, reopening",
+		slog.String("error_message", cause.Error()))
+
+	for i := 0; i < tunnelReopenAttempts; i++ {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Second):
+		}
+		if err := t.open(ctx); err == nil {
+			t.logger.Info("port-forward reopened", slog.String("url", t.URL()))
+
+			return
+		}
+	}
+
+	t.logger.Error("port-forward could not be reopened; traffic has stopped")
+}
+
+// startPortForward runs one kubectl port-forward and returns the local port it
+// chose. onDeath is called if it exits on its own.
+func startPortForward(ctx context.Context, kubeconfig, namespace string, onDeath func(error)) (int, func(), error) {
 	// #nosec G204 -- the binary is the constant "kubectl"; the only variable
 	// arguments are the operator's own --state and --namespace flags.
 	cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfig, "-n", namespace,
@@ -207,14 +307,10 @@ func portForward(ctx context.Context, kubeconfig, namespace string) (int, func()
 		return 0, nil, fmt.Errorf("failed to start kubectl port-forward: %s", err)
 	}
 
-	stop := func() {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-	}
-
 	port, err := readForwardedPort(stdout)
 	if err != nil {
-		stop()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
 
 		return 0, nil, fmt.Errorf("%s: %s", err, strings.TrimSpace(stderr.String()))
 	}
@@ -223,6 +319,27 @@ func portForward(ctx context.Context, kubeconfig, namespace string) (int, func()
 	// pipe must be drained or kubectl blocks on a full buffer once the run has
 	// made a few hundred calls, and the traffic simply stops.
 	go func() { _, _ = io.Copy(io.Discard, stdout) }()
+
+	// Exactly one goroutine may Wait on a command, so this one owns it and
+	// stop() waits for it rather than calling Wait itself.
+	stopping := make(chan struct{})
+	waited := make(chan struct{})
+	go func() {
+		defer close(waited)
+		err := cmd.Wait()
+		select {
+		case <-stopping: // stop() killed it; expected.
+		default:
+			onDeath(fmt.Errorf("kubectl port-forward exited (%v): %s",
+				err, strings.TrimSpace(stderr.String())))
+		}
+	}()
+
+	stop := func() {
+		close(stopping)
+		_ = cmd.Process.Kill()
+		<-waited
+	}
 
 	return port, stop, nil
 }
@@ -252,11 +369,11 @@ type generator struct {
 	helper    *helper.Helper
 	cluster   kubernetes.Interface
 	namespace string
-	proxyURL  string
+	tunnel    *tunnel
 	client    *http.Client
 }
 
-func newGenerator(st *state, namespace string, port int) (*generator, error) {
+func newGenerator(st *state, namespace string, tun *tunnel) (*generator, error) {
 	restConfig, err := clientcmd.BuildConfigFromFlags("", st.kubeconfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build a rest config from %q: %s", st.kubeconfig, err)
@@ -274,7 +391,7 @@ func newGenerator(st *state, namespace string, port int) (*generator, error) {
 		helper:    h,
 		cluster:   cluster,
 		namespace: namespace,
-		proxyURL:  fmt.Sprintf("https://127.0.0.1:%d", port),
+		tunnel:    tun,
 		client: &http.Client{
 			Timeout: callTimout,
 			Transport: &http.Transport{
@@ -304,7 +421,7 @@ func (g *generator) validToken() (string, error) {
 // and no server name is overridden.
 func (g *generator) restConfig(token string) *rest.Config {
 	return &rest.Config{
-		Host:            g.proxyURL,
+		Host:            g.tunnel.URL(),
 		BearerToken:     token,
 		TLSClientConfig: rest.TLSClientConfig{CAData: g.st.proxyCAPEM},
 	}
@@ -312,7 +429,7 @@ func (g *generator) restConfig(token string) *rest.Config {
 
 // do issues one request against the proxy and returns its status code.
 func (g *generator) do(ctx context.Context, method, path, token string, headers http.Header) (int, error) {
-	req, err := http.NewRequestWithContext(ctx, method, g.proxyURL+path, nil)
+	req, err := http.NewRequestWithContext(ctx, method, g.tunnel.URL()+path, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -412,8 +529,17 @@ func (g *generator) scenarios() []scenario {
 			name: "impersonation_allowed",
 			want: http.StatusOK,
 			run: func(ctx context.Context) (int, error) {
-				return g.doWithValidToken(ctx, http.MethodGet, pods,
-					http.Header{"Impersonate-User": []string{impersonated}})
+				// Three times, back to back: the first call to each replica
+				// is a cache miss and issues a real SubjectAccessReview, and
+				// with two replicas a third call is guaranteed to land on one
+				// that is already warm. One call on its own would only ever
+				// produce misses, because the rotation comes round again long
+				// after the cache entry has expired.
+				headers := http.Header{"Impersonate-User": []string{impersonated}}
+
+				return g.repeat(ctx, cacheWarmCalls, func(ctx context.Context) (int, error) {
+					return g.doWithValidToken(ctx, http.MethodGet, pods, headers)
+				})
 			},
 		},
 		{
@@ -465,7 +591,12 @@ func (g *generator) scenarios() []scenario {
 					return 0, err
 				}
 
-				return g.do(ctx, http.MethodGet, pods, token, nil)
+				// The same token repeatedly, so the TokenReview result is
+				// cached and reused rather than reviewed again on every call.
+				// A freshly minted token on each call would only ever miss.
+				return g.repeat(ctx, cacheWarmCalls, func(ctx context.Context) (int, error) {
+					return g.do(ctx, http.MethodGet, pods, token, nil)
+				})
 			},
 		},
 		{
@@ -474,7 +605,13 @@ func (g *generator) scenarios() []scenario {
 			name: "passthrough_denied",
 			want: http.StatusUnauthorized,
 			run: func(ctx context.Context) (int, error) {
-				return g.do(ctx, http.MethodGet, pods, unknownServiceAccountToken(), nil)
+				// Repeated with the same token, so a later lookup is served
+				// from the TokenReview failure cache rather than reviewed
+				// again; that is what shields the API server from a client
+				// retrying a bad token in a loop.
+				return g.repeat(ctx, cacheWarmCalls, func(ctx context.Context) (int, error) {
+					return g.do(ctx, http.MethodGet, pods, unknownServiceAccountToken(), nil)
+				})
 			},
 		},
 		{
@@ -641,6 +778,20 @@ func (g *generator) hostileMethods(ctx context.Context) (int, error) {
 	}
 
 	return statusNone, nil
+}
+
+// repeat runs the same call n times and returns the last status, so a
+// scenario can warm a cache and then hit it.
+func (g *generator) repeat(ctx context.Context, n int, call func(context.Context) (int, error)) (int, error) {
+	var status int
+	for i := 0; i < n; i++ {
+		var err error
+		if status, err = call(ctx); err != nil {
+			return 0, err
+		}
+	}
+
+	return status, nil
 }
 
 // runOnce runs every scenario once and fails if any produced an unexpected

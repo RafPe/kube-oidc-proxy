@@ -14,6 +14,7 @@ path is `404` — no pprof, no index, no reset.
 - [Buckets](#buckets)
 - [Compatibility](#compatibility)
 - [Worked queries](#worked-queries)
+- [Dashboards](#dashboards)
 - [Exposure and hardening](#exposure-and-hardening)
 - [See also](#see-also)
 
@@ -189,6 +190,44 @@ Issuers not initialized:
 ```promql
 kube_oidc_proxy_oidc_issuer_initialized == 0
 ```
+
+## Dashboards
+
+The chart ships three Grafana dashboards (`metrics.dashboards.enabled: true`)
+as a ConfigMap the Grafana sidecar loads; kube-prometheus-stack picks them up
+with no further configuration. Each answers a different set of questions.
+The screenshots come from the [kind demo](./development.md#metrics-demo) with
+the load generator running.
+
+### Overview (`kube-oidc-proxy-overview`)
+
+For whoever is on call: is it up, how much traffic, how slow, what fails.
+Ready and issuer state, request rate by verb, in-flight and open streams,
+p50/p95/p99 latency against the same buckets as the API server, denial ratio,
+responses by code class, upstream failures.
+
+![Overview dashboard](./dashboards/overview.png)
+
+### Security and identity (`kube-oidc-proxy-security`)
+
+For the security engineer: who is being refused and why, how clients
+authenticate, whether impersonation is authorized as intended, whether the
+review dependencies are healthy. Denials by reason, reserved-identity and
+header-flood attempts, authentication attempts by method and outcome,
+SubjectAccessReview allow/deny, review errors and timeouts, issuer state,
+audit backend failures.
+
+![Security and identity dashboard](./dashboards/security.png)
+
+### Capacity and dependencies (`kube-oidc-proxy-capacity`)
+
+For the platform engineer: what holds connections and memory, how the API
+server dependency behaves, whether the caches are earning their keep, runtime
+health. Open streams by verb and their peak, review latency and call rate,
+proxy p99 next to the API server's, cache hit ratio, goroutines, heap, GC,
+CPU, restarts.
+
+![Capacity and dependencies dashboard](./dashboards/capacity.png)
 
 ## Exposure and hardening
 

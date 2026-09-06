@@ -19,7 +19,11 @@ rendered without a login.
   `your configuration file uses an old API spec: "kubeadm.k8s.io/v1beta3"`, so
   the demo deliberately does not use it. **You do not need a `kind` CLI.**
 - **kubectl**, **helm**, **jq** and **yq** on `PATH`.
-- Network access, for the kube-prometheus-stack chart and the container images.
+- **git**, and network access, for the kube-prometheus-stack chart, the
+  container images, and the pinned Grafana dashboard linter that
+  `hack/verify-chart-dashboards.sh` builds from a shallow clone (every
+  published tag of it carries a `replace` directive, so
+  `go run <module>@<version>` cannot build it).
 
 ## Pinned versions
 
@@ -53,6 +57,31 @@ ServiceMonitor into a scrape config and Prometheus has to reload it — about a
 minute on the reference run. `check.sh` therefore polls
 `up{job=~".*kube-oidc-proxy.*"}` for up to two minutes instead of asserting it
 once, and prints a progress line every ten attempts.
+
+## Why the demo mints its own serving certificate
+
+The chart's self-generated TLS Secret cannot be verified from outside the
+cluster: `secret_tls.yaml` signs the serving certificate with an ephemeral
+`genCA` it never publishes, and emits no `subjectAltName`, so the `tls.crt` in
+that Secret is a leaf nothing can build a chain to. The load generator reaches
+the proxy through a port-forward on 127.0.0.1 and verifies it properly, so
+`hack/metrics-demo/issuer` mints a certificate for the in-cluster Service name
+plus 127.0.0.1 into Secret `kop-demo-tls`, `proxy-values.yaml` points the chart
+at it with `tls.secretName`, and `.state/proxy-ca.pem` holds the issuing
+certificate — the certificate only; the key stays in the Secret. Nothing in the
+demo uses `InsecureSkipVerify`. Minting is idempotent: an existing Secret is
+left alone, because replacing it would invalidate the `proxy-ca.pem` the demo
+already trusts.
+
+## Screenshots
+
+`make metrics_demo_verify` writes `docs/dashboards/overview.png`,
+`security.png` and `capacity.png`, each 1920x1800 - tall enough for all
+four panel rows of every dashboard. It refuses to render them until every
+`expr` in every dashboard returns a non-empty result against the demo's
+Prometheus, so a screenshot of empty panels cannot be produced by accident,
+and it rejects an image too small to be a populated dashboard. Run the load
+generator for ten minutes first, or the panels have nothing to draw.
 
 ## What each file is
 
