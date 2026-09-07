@@ -46,5 +46,34 @@ for candidate in /usr/bin/stat /bin/stat; do
   break
 done
 
+# demo_finite / demo_nonfinite must read a sample value, not count results.
+# verify.sh used to accept a panel because the query returned a result; a
+# histogram_quantile over an idle bucket set and a ratio over a zero
+# denominator both return one result whose value is the string "NaN", which
+# Grafana draws as nothing at all.
+sample_case() {
+  local label=$1 body=$2 want_finite=$3 want_bad=$4 got
+  got=$(printf '%s' "$body" | demo_finite | tr '\n' ' ' | sed 's/ $//')
+  [ "$got" = "$want_finite" ] || fail "demo_finite($label) = '$got', want '$want_finite'"
+  got=$(printf '%s' "$body" | demo_nonfinite | tr '\n' ' ' | sed 's/ $//')
+  [ "$got" = "$want_bad" ] || fail "demo_nonfinite($label) = '$got', want '$want_bad'"
+}
+sample_case "an instant NaN, which used to pass as one result" \
+  '{"data":{"resultType":"vector","result":[{"metric":{},"value":[1,"NaN"]}]}}' \
+  "" "NaN"
+sample_case "an instant +Inf" \
+  '{"data":{"resultType":"vector","result":[{"metric":{},"value":[1,"+Inf"]}]}}' \
+  "" "+Inf"
+sample_case "an ordinary instant value" \
+  '{"data":{"resultType":"vector","result":[{"metric":{},"value":[1,"0.125"]}]}}' \
+  "0.125" ""
+sample_case "a range series that is NaN until traffic starts" \
+  '{"data":{"resultType":"matrix","result":[{"metric":{},"values":[[1,"NaN"],[2,"NaN"],[3,"2"]]}]}}' \
+  "2" "NaN NaN"
+sample_case "a range series that is NaN throughout" \
+  '{"data":{"resultType":"matrix","result":[{"metric":{},"values":[[1,"NaN"],[2,"NaN"]]}]}}' \
+  "" "NaN NaN"
+sample_case "an empty result" '{"data":{"resultType":"vector","result":[]}}' "" ""
+
 [ $rc -eq 0 ] && echo "metrics-demo checks: ok"
 exit $rc

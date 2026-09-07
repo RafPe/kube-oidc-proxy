@@ -20,3 +20,29 @@ demo_file_size() {
   size=$(wc -c <"$1") || return 1
   printf '%s' "${size//[[:space:]]/}"
 }
+
+# A Prometheus sample value is a string, and "NaN", "+Inf" and "-Inf" are
+# perfectly ordinary members of that set: histogram_quantile over a bucket set
+# with no observations answers NaN, and so does every ratio whose denominator
+# is zero. A panel drawing NaN draws nothing, so counting results is not proof
+# that a panel has data - only counting *finite* results is.
+_demo_jq_samples='
+  def samples:
+    [.data.result[]? | if has("value") then .value else empty end]
+    + [.data.result[]? | .values[]?]
+    | map(.[1] | tostring);
+  def finite:
+    test("^-?(?:[0-9]+(?:\\.[0-9]+)?|\\.[0-9]+)(?:[eE][-+]?[0-9]+)?$");
+'
+
+# demo_finite reads a Prometheus query or query_range response on stdin and
+# prints every finite sample value in it, one per line.
+demo_finite() {
+  jq -r "$_demo_jq_samples"' samples | map(select(finite)) | .[]'
+}
+
+# demo_nonfinite is its complement: every sample value that is not a finite
+# decimal, one per line. Empty output means every sample was a number.
+demo_nonfinite() {
+  jq -r "$_demo_jq_samples"' samples | map(select(finite | not)) | .[]'
+}

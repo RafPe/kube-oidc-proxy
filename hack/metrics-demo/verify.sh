@@ -27,6 +27,19 @@ promq() {
   curl -sfG "http://127.0.0.1:$PROM/api/v1/query" --data-urlencode "query=$1"
 }
 
+# The same query over the window the screenshots are rendered from, at the
+# step Grafana would use. A panel that draws a line is proved by points in the
+# window, not by whatever the expression happens to evaluate to at this one
+# instant.
+promqr() {
+  pf_check || return 1
+  curl -sfG "http://127.0.0.1:$PROM/api/v1/query_range" \
+    --data-urlencode "query=$1" \
+    --data-urlencode "start=$RENDER_FROM" \
+    --data-urlencode "end=$RENDER_TO" \
+    --data-urlencode "step=60"
+}
+
 # The Prometheus on the other end is this demo's, not a leftover: it scrapes
 # targets in the demo namespace. Asserted before the panels, so "no data for"
 # can only mean the panel, never the wrong Prometheus.
@@ -39,14 +52,50 @@ fi
 # Substitute the template variables the way Grafana would for the demo.
 expand() { sed -e 's/\$namespace/proxy/g' -e 's/\$pod/.+/g' -e 's/\$__rate_interval/2m/g' -e 's/\${datasource}//g'; }
 
+# The window the screenshots below are rendered from (from=now-30m), so the
+# proof and the picture are the same data.
+RENDER_TO=$(date +%s)
+RENDER_FROM=$((RENDER_TO - 1800))
+
+# A result is not the same thing as a value. Prometheus answers "NaN" for
+# histogram_quantile over a bucket set with no observations and for every
+# ratio with a zero denominator, and "+Inf"/"-Inf" for a division by zero with
+# a non-zero numerator; each of those is one result, which the old count-only
+# test accepted, and each draws nothing at all. So: a stat that reads the
+# state now must have a finite value now, and a panel that draws a line over
+# the window must have at least one finite point in it.
+#
+# The instant flag and the expression are joined by a unit separator rather
+# than by @tsv, because @tsv escapes the backslashes in a label_replace
+# pattern and would hand Prometheus a different query than the dashboard has.
+SEP=$(printf '\037')
 rc=0
 for f in "$CHART"/dashboards/*.json; do
   name=$(basename "$f" .json)
-  while IFS= read -r expr; do
+  while IFS= read -r line; do
+    instant=${line%%"$SEP"*}
+    expr=${line#*"$SEP"}
     q=$(printf '%s' "$expr" | expand)
-    n=$(promq "$q" | jq '.data.result | length') || exit 1
-    if [ "${n:-0}" -eq 0 ]; then echo "$name: no data for: $expr" >&2; rc=1; fi
-  done < <(jq -r '.. | objects | select(has("expr")) | .expr' "$f")
+    if [ "$instant" = true ]; then
+      body=$(promq "$q") || exit 1
+    else
+      body=$(promqr "$q") || exit 1
+    fi
+    n=$(printf '%s' "$body" | jq '.data.result | length')
+    if [ "${n:-0}" -eq 0 ]; then echo "$name: no data for: $expr" >&2; rc=1; continue; fi
+    if [ "$instant" = true ]; then
+      bad=$(printf '%s' "$body" | demo_nonfinite | sort -u | tr '\n' ' ')
+      if [ -n "$bad" ]; then
+        echo "$name: not a finite value (${bad% }) for: $expr" >&2; rc=1
+      fi
+    else
+      finite=$(printf '%s' "$body" | demo_finite | grep -c . || true)
+      if [ "${finite:-0}" -eq 0 ]; then
+        echo "$name: no finite point in the render window for: $expr" >&2; rc=1
+      fi
+    fi
+  done < <(jq -r --arg sep "$SEP" '.. | objects | select(has("expr"))
+             | ((.instant // false) | tostring) + $sep + .expr' "$f")
 done
 [ $rc -eq 0 ] || exit 1
 
