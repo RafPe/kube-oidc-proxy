@@ -13,7 +13,9 @@ import (
 
 // Sample is one series of a Prometheus exposition. A histogram contributes
 // one sample per bucket (family name plus _bucket, with le), plus _count and
-// _sum, so an assertion can address them the way PromQL does.
+// _sum; a summary contributes one sample per objective (the family name, with
+// quantile), plus _count and _sum. Assertions address them the way PromQL
+// does.
 type Sample struct {
 	Name   string
 	Labels map[string]string
@@ -51,6 +53,8 @@ func ParseMetrics(text string) ([]Sample, error) {
 				out = append(out, Sample{Name: name, Labels: labels, Value: m.Untyped.GetValue()})
 			case m.Histogram != nil:
 				out = append(out, histogramSamples(name, labels, m.Histogram)...)
+			case m.Summary != nil:
+				out = append(out, summarySamples(name, labels, m.Summary)...)
 			}
 		}
 	}
@@ -70,6 +74,27 @@ func histogramSamples(name string, labels map[string]string, h *dto.Histogram) [
 	out = append(out,
 		Sample{Name: name + "_count", Labels: labels, Value: float64(h.GetSampleCount())},
 		Sample{Name: name + "_sum", Labels: labels, Value: h.GetSampleSum()},
+	)
+	return out
+}
+
+// summarySamples renders a summary the way PromQL addresses it: the family
+// name with a quantile label per objective, plus _count and _sum. The Go
+// collector exposes go_gc_duration_seconds this way, so a scrape of any Go
+// binary contains one.
+func summarySamples(name string, labels map[string]string, s *dto.Summary) []Sample {
+	var out []Sample
+	for _, q := range s.GetQuantile() {
+		l := make(map[string]string, len(labels)+1)
+		for k, v := range labels {
+			l[k] = v
+		}
+		l["quantile"] = fmt.Sprint(q.GetQuantile())
+		out = append(out, Sample{Name: name, Labels: l, Value: q.GetValue()})
+	}
+	out = append(out,
+		Sample{Name: name + "_count", Labels: labels, Value: float64(s.GetSampleCount())},
+		Sample{Name: name + "_sum", Labels: labels, Value: s.GetSampleSum()},
 	)
 	return out
 }

@@ -49,3 +49,48 @@ func TestParseMetricsRejectsMalformedInput(t *testing.T) {
 		})
 	}
 }
+
+// TestParseMetricsReadsSummaries pins that summary families survive the
+// parse. The Go collector exposes go_gc_duration_seconds as a summary, so a
+// parser that drops the type silently loses every sample of it -- and with
+// it any assertion sweeping over "every label the endpoint serves".
+func TestParseMetricsReadsSummaries(t *testing.T) {
+	text := `# HELP go_gc_duration_seconds A summary of the wall-time pause.
+# TYPE go_gc_duration_seconds summary
+go_gc_duration_seconds{quantile="0"} 1e-05
+go_gc_duration_seconds{quantile="0.5"} 2e-05
+go_gc_duration_seconds{quantile="1"} 3e-05
+go_gc_duration_seconds_sum 0.0001
+go_gc_duration_seconds_count 4
+`
+	samples, err := ParseMetrics(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Three quantiles plus _count and _sum.
+	if len(samples) != 5 {
+		t.Fatalf("parsed %d samples, want 5: %+v", len(samples), samples)
+	}
+	v, ok := SampleValue(samples, "go_gc_duration_seconds", map[string]string{"quantile": "0.5"})
+	if !ok || v != 2e-05 {
+		t.Fatalf("quantile 0.5 = %v (present=%v), want 2e-05", v, ok)
+	}
+	if v, ok := SampleValue(samples, "go_gc_duration_seconds_count", nil); !ok || v != 4 {
+		t.Fatalf("_count = %v (present=%v), want 4", v, ok)
+	}
+	if v, ok := SampleValue(samples, "go_gc_duration_seconds_sum", nil); !ok || v != 0.0001 {
+		t.Fatalf("_sum = %v (present=%v), want 0.0001", v, ok)
+	}
+	// The quantile label belongs to the quantile samples only.
+	for _, s := range samples {
+		if s.Name == "go_gc_duration_seconds" {
+			if _, ok := s.Labels["quantile"]; !ok {
+				t.Fatalf("quantile sample without a quantile label: %+v", s)
+			}
+			continue
+		}
+		if _, ok := s.Labels["quantile"]; ok {
+			t.Fatalf("%s carries a quantile label: %+v", s.Name, s)
+		}
+	}
+}

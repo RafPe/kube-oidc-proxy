@@ -19,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/helper"
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
@@ -177,12 +178,39 @@ var _ = framework.CasesDescribe("Metrics", Label("shard-a"), func() {
 		}, 20*time.Second, time.Second).Should(BeNumerically(">=", 1))
 
 		samples := mustSamples(f, surface)
-		for _, v := range helper.LabelValuesOf(samples, metricRequestsTotal, "k8s_verb") {
-			Expect(isKnownVerb(v)).To(BeTrue(), "k8s_verb leaked %q", v)
+
+		// Every first-party family carries exactly the documented label
+		// names, and every bounded label carries only documented values. The
+		// sets come from pkg/metrics' own catalogue, not from a copy here, so
+		// a label added to a collector without a catalogue entry fails this.
+		for _, spec := range metrics.Catalogue() {
+			allowed := spec.AllowedValues()
+			for _, sample := range samplesOf(samples, spec) {
+				Expect(labelNames(sample)).To(ConsistOf(documentedNames(spec, sample)),
+					"%s carries labels %v, documented as %v", sample.Name, labelNames(sample), spec.Labels)
+				for name, value := range sample.Labels {
+					if name == "le" || name == "quantile" {
+						continue // added by the exposition, not by the recorder
+					}
+					values, bounded := allowed[name]
+					if !bounded {
+						continue // issuer_name and the build strings, checked by shape below
+					}
+					Expect(values).To(ContainElement(value),
+						"%s label %s carries %q, which is not in its documented set", sample.Name, name, value)
+				}
+			}
 		}
-		for _, v := range helper.LabelValuesOf(samples, metricRequestsTotal, "scope") {
-			Expect(isKnownScope(v)).To(BeTrue(), "scope leaked %q", v)
+
+		// issuer_name is the only first-party label with no closed set. It is
+		// a host, so it never carries a scheme, a path or an identity.
+		for _, v := range helper.LabelValuesOf(samples, metricIssuerInit, "issuer_name") {
+			Expect(v).NotTo(BeEmpty(), "issuer_name is empty")
+			Expect(v).To(MatchRegexp(`^([a-z0-9.:\[\]-]+|unknown)$`), "issuer_name is not a host: %q", v)
 		}
+
+		// The sweep that covers the third-party families too: nothing
+		// anywhere in the exposition looks like a path or an identity.
 		for _, s := range samples {
 			for k, v := range s.Labels {
 				Expect(v).NotTo(ContainSubstring("/"), "label %s carries a path: %q", k, v)
@@ -192,25 +220,36 @@ var _ = framework.CasesDescribe("Metrics", Label("shard-a"), func() {
 	})
 })
 
-// isKnownVerb and isKnownScope are the closed label sets of pkg/metrics,
-// repeated here as switches rather than package-level maps: a map var is
-// mutable state a linter cannot tell from a constant table, which the metrics
-// packages avoid throughout.
-func isKnownVerb(v string) bool {
-	switch v {
-	case "get", "list", "watch", "create", "update", "patch",
-		"delete", "deletecollection", "proxy", "connect", "other":
-		return true
+// samplesOf returns every scraped sample belonging to spec's family,
+// including the _bucket, _count and _sum series a histogram contributes.
+func samplesOf(samples []helper.Sample, spec metrics.Spec) []helper.Sample {
+	var out []helper.Sample
+	for _, s := range samples {
+		switch s.Name {
+		case spec.Name, spec.Name + "_bucket", spec.Name + "_count", spec.Name + "_sum":
+			out = append(out, s)
+		}
 	}
-	return false
+	return out
 }
 
-func isKnownScope(v string) bool {
-	switch v {
-	case "cluster", "namespace", "resource", "none":
-		return true
+// labelNames returns the label names a sample carries.
+func labelNames(s helper.Sample) []string {
+	out := make([]string, 0, len(s.Labels))
+	for name := range s.Labels {
+		out = append(out, name)
 	}
-	return false
+	return out
+}
+
+// documentedNames is the label set a sample of this family must carry: the
+// catalogue's names, plus the le a histogram bucket adds.
+func documentedNames(spec metrics.Spec, s helper.Sample) []string {
+	out := append([]string{}, spec.Labels...)
+	if s.Name == spec.Name+"_bucket" {
+		out = append(out, "le")
+	}
+	return out
 }
 
 // metricsServiceName mirrors the chart's <fullname>-metrics naming for the
