@@ -143,7 +143,7 @@ and logs each of them separately.
 | `reserved_identity` | a token claiming `system:masters` | 403, `decisions{deny,reserved_identity}` |
 | `no_username_claim` | a token the issuer signed that names nobody | 403, `decisions{deny,no_username_claim}`, asserted by counter delta |
 | `passthrough_allowed` | three calls with the same ServiceAccount token | `authn{oidc,rejected}` then `{tokenreview,accepted}` |
-| `passthrough_denied` | three calls with a well-formed token nobody vouches for | `authn{tokenreview,rejected}` |
+| `passthrough_denied` | three calls with a well-formed token nobody vouches for | 401, and `authn{tokenreview,error}`: kube-apiserver answers a token no authenticator claims with `status.error`, so this is the traffic that lights the TokenReview error panels |
 | `watch` | a list-watch held open for 20s, then cancelled | `long_running_requests{watch}`, termination `client_cancel` |
 | `exec` | `exec` into `demo-shell` | the hijack path: termination `hijacked`, code `none` |
 | `logs` | read the pod's log | long-running but not hijacked |
@@ -162,7 +162,17 @@ per rotation for exactly this reason.
 answers, so the proxy's exchange completes normally and its `termination` is
 `normal`. Nothing in the demo makes the hop to the API server fail, so the
 overview's "Upstream failures/s" panel reads a flat zero, which is the healthy
-reading. That panel and four others fall back to `vector(0)` for exactly this
+reading.
+
+**The TokenReview error panels are not zero, and that is the demo, not a
+fault.** `passthrough_denied` presents a token no authenticator claims, and
+kube-apiserver answers that with `status.error` ("invalid bearer token",
+measured against the pinned v1.37.0 node) rather than with a plain
+`authenticated: false`. The proxy therefore records
+`authentication_attempts_total{tokenreview,error}` and refuses the request as
+an ordinary 401, which is exactly the "a bad client looks like a broken
+dependency" case the security dashboard's two error panels describe. No token
+shape produces `{tokenreview,rejected}` against this API server. That panel and four others fall back to `vector(0)` for exactly this
 reason: a counter child that has never been incremented has no series at all,
 and a panel that says "No data" where it should say zero is a panel an operator
 learns to ignore. None of the five groups by a label. Each aggregates to a

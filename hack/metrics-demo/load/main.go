@@ -938,8 +938,12 @@ func (g *generator) scenarios() []scenario {
 					return g.do(ctx, http.MethodGet, pods, token, nil)
 				})
 		}},
-		// A token the API server cannot authenticate either:
-		// authentication_attempts_total{tokenreview,rejected}.
+		// A token the API server cannot authenticate either. It answers
+		// authenticated=false *and* status.error "invalid bearer token", so
+		// the proxy records
+		// authentication_attempts_total{tokenreview,error} - not
+		// {tokenreview,rejected}, which nothing here produces. See
+		// unknownServiceAccountToken.
 		{name: "passthrough_denied", run: func(ctx context.Context) []result {
 			// Repeated with the same token, so a later lookup is served from
 			// the TokenReview failure cache rather than reviewed again; that
@@ -1180,8 +1184,18 @@ func (g *generator) serviceAccountToken(ctx context.Context) (string, error) {
 	return tr.Status.Token, nil
 }
 
-// unknownServiceAccountToken is a syntactically well-formed bearer token that
-// no issuer will vouch for, so the TokenReview rejects rather than errors.
+// unknownServiceAccountToken is a bearer token no issuer will vouch for. The
+// proxy answers the client 401, but the TokenReview behind it does not come
+// back as a plain rejection: kube-apiserver (v1.37.0, measured against this
+// demo) sets status.error "invalid bearer token" for every token no
+// authenticator claims - a JWT-shaped one with a bad signature, an opaque
+// random string, anything - so the proxy records
+// authentication_attempts_total{tokenreview,error} and
+// review_requests_total{tokenreview,error}. That is deliberate here: it is
+// the only traffic in the demo that lights the security dashboard's
+// TokenReview error panels, and it is why they are not flat zero in the
+// screenshots. There is no token shape that produces
+// {tokenreview,rejected} against this API server.
 func unknownServiceAccountToken() string {
 	return "eyJhbGciOiJSUzI1NiIsImtpZCI6ImRlbW8ifQ." +
 		"eyJzdWIiOiJzeXN0ZW06c2VydmljZWFjY291bnQ6cHJveHk6bm9ib2R5In0." +

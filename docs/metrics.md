@@ -239,7 +239,12 @@ the fallback on exactly the ungrouped ones.
 
 The demo does not fake any of them: in the screenshots below
 the upstream-failure panel reads zero because the API server never failed to
-answer, which is what a healthy deployment looks like.
+answer, which is what a healthy deployment looks like. The two TokenReview
+error panels are not zero there, and that is the point of the paragraph above:
+one traffic kind presents a bearer token no authenticator claims, kube-apiserver
+answers it with `status.error`, and the panels count it exactly as they would
+count an unreachable API server. The proxy still refuses that request as an
+ordinary 401.
 
 The p99 latency in those screenshots sits near three seconds, and that is the
 upstream, not the proxy: one of the demo's traffic kinds lists pods at a
