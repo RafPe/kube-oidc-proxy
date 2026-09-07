@@ -583,23 +583,49 @@ jwt:
 	if err == nil || !strings.Contains(err.Error(), "share the name \"idp.example.com\"") {
 		t.Fatalf("buildTokenAuther = %v, want the shared-host refusal", err)
 	}
+	// The name alone does not say which two entries have to be changed, so
+	// both colliding URLs belong in the refusal.
+	for _, want := range []string{"https://idp.example.com/realms/a", "https://idp.example.com/realms/b"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("buildTokenAuther = %v, want it to name %q", err, want)
+		}
+	}
 }
 
 func TestDuplicateIssuerNameIsRefused(t *testing.T) {
 	tests := map[string]struct {
-		urls    []string
-		wantDup string
+		urls      []string
+		wantDup   string
+		wantFirst string
+		wantOther string
 	}{
-		"distinct hosts":         {[]string{"https://a.example.com", "https://b.example.com"}, ""},
-		"same host, other paths": {[]string{"https://idp.example.com/realms/a", "https://idp.example.com/realms/b"}, "idp.example.com"},
-		"single issuer":          {[]string{"https://idp.example.com/realms/a"}, ""},
-		"two unparsable":         {[]string{"::", "::"}, "unknown"},
+		"distinct hosts": {urls: []string{"https://a.example.com", "https://b.example.com"}},
+		"same host, other paths": {
+			urls:      []string{"https://idp.example.com/realms/a", "https://idp.example.com/realms/b"},
+			wantDup:   "idp.example.com",
+			wantFirst: "https://idp.example.com/realms/a",
+			wantOther: "https://idp.example.com/realms/b",
+		},
+		"single issuer": {urls: []string{"https://idp.example.com/realms/a"}},
+		"the first URL under the name is the one reported": {
+			urls:      []string{"https://a.example.com", "https://idp.example.com/realms/a", "https://idp.example.com/realms/b"},
+			wantDup:   "idp.example.com",
+			wantFirst: "https://idp.example.com/realms/a",
+			wantOther: "https://idp.example.com/realms/b",
+		},
+		"two unparsable": {
+			urls:      []string{"::", "::"},
+			wantDup:   "unknown",
+			wantFirst: "::",
+			wantOther: "::",
+		},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			dup, ok := duplicateIssuerName(tc.urls)
-			if ok != (tc.wantDup != "") || dup != tc.wantDup {
-				t.Fatalf("duplicateIssuerName(%v) = %q, %v; want %q", tc.urls, dup, ok, tc.wantDup)
+			dup, first, other, ok := duplicateIssuerName(tc.urls)
+			if ok != (tc.wantDup != "") || dup != tc.wantDup || first != tc.wantFirst || other != tc.wantOther {
+				t.Fatalf("duplicateIssuerName(%v) = %q, %q, %q, %v; want %q, %q, %q",
+					tc.urls, dup, first, other, ok, tc.wantDup, tc.wantFirst, tc.wantOther)
 			}
 		})
 	}

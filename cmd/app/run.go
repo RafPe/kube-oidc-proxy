@@ -158,18 +158,21 @@ func issuerNames(issuerURLs []string) []string {
 	return names
 }
 
-// duplicateIssuerName reports the first issuer name two configured issuer
-// URLs map onto, if any. Names are hosts (see probe.IssuerName), so issuers
-// that differ only by path collide.
-func duplicateIssuerName(issuerURLs []string) (string, bool) {
-	seen := make(map[string]struct{}, len(issuerURLs))
-	for _, name := range issuerNames(issuerURLs) {
-		if _, ok := seen[name]; ok {
-			return name, true
+// duplicateIssuerName reports the first issuer name two configured issuer URLs
+// map onto, together with the URL already stored under that name and the one
+// that collided with it. Names are hosts (see probe.IssuerName), so issuers
+// that differ only by path collide -- and then the name alone does not say
+// which two configuration entries have to change.
+func duplicateIssuerName(issuerURLs []string) (name, first, other string, dup bool) {
+	seen := make(map[string]string, len(issuerURLs))
+	names := issuerNames(issuerURLs)
+	for i, n := range names {
+		if firstURL, ok := seen[n]; ok {
+			return n, firstURL, issuerURLs[i], true
 		}
-		seen[name] = struct{}{}
+		seen[n] = issuerURLs[i]
 	}
-	return "", false
+	return "", "", "", false
 }
 
 // ErrReported marks an error that was already emitted on the log stream. main
@@ -600,8 +603,8 @@ func buildUnionAuther(opts *options.Options, oidcLogger *slog.Logger) (authentic
 	for _, jwtEntry := range authCfg.JWT {
 		issuerURLs = append(issuerURLs, jwtEntry.Issuer.URL)
 	}
-	if name, dup := duplicateIssuerName(issuerURLs); dup {
-		return nil, nil, fmt.Errorf("two configured issuers share the name %q; issuers must differ by host", name)
+	if name, first, other, dup := duplicateIssuerName(issuerURLs); dup {
+		return nil, nil, fmt.Errorf("two configured issuers share the name %q (%q and %q); issuers must differ by host", name, first, other)
 	}
 
 	authers := make([]authenticator.Token, 0, len(authCfg.JWT))
