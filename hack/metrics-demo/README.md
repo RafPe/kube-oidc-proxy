@@ -136,7 +136,7 @@ and logs each of them separately.
 | `invalid_token` | a bearer that is not a JWT | 401, `decisions{deny,unauthorized}` |
 | `expired_token` | a correctly signed token past its `exp` | 401 by a different route through the authenticator |
 | `impersonation_allowed` | three identical `Impersonate-User: jjackson` calls | `review_requests{sar,allow}`, a cache miss then hits |
-| `impersonation_coalesced` | eight identical impersonation calls at once, at one replica whose decision cache has just expired | that replica issues fewer SubjectAccessReviews than it answers calls |
+| `impersonation_coalesced` | eight identical impersonation calls released together at one replica whose decision cache has just expired | more than one of them misses that replica's decision cache, and the misses are answered by fewer SubjectAccessReviews than there were of them |
 | `impersonation_denied` | `Impersonate-User: mallory` | 403, `decisions{deny,impersonation_denied}` |
 | `too_many_impersonation_values` | 100 `Impersonate-Group` headers | 431, refused on the header count before any review |
 | `reserved_identity` | a token claiming `system:masters` | 403, `decisions{deny,reserved_identity}` |

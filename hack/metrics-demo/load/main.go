@@ -67,11 +67,17 @@ const (
 	cacheWarmCalls = 3
 
 	// coalesceCalls is how many identical impersonation calls the coalescing
-	// scenario fires at one replica at once. More than a handful and the
-	// assertion stops being about coalescing and starts being about the
-	// client's own concurrency; fewer and a single accidental serialisation
-	// would satisfy "fewer reviews than calls" on its own.
+	// scenario releases at one replica together. More than a handful and the
+	// scenario stops being about coalescing and starts being about the
+	// client's own concurrency; fewer and one mistimed call would leave too
+	// few concurrent cache misses for the verdict to read.
 	coalesceCalls = 8
+
+	// coalesceAttempts is how many times the burst is retried when it did not
+	// overlap inside the proxy. Overlap is the one thing the client cannot
+	// make certain, and each attempt costs another sarCacheTTL, so the retry
+	// is bounded and a persistent failure to overlap is still a failure.
+	coalesceAttempts = 3
 
 	// sarCacheTTL is pkg/proxy/subjectaccessreview.DefaultAllowCacheTTL, which
 	// the chart does not override in the demo. The coalescing scenario waits
@@ -84,13 +90,14 @@ const (
 	// The proxy Service and the container ports the chart renders
 	// (chart/kube-oidc-proxy/templates/deployment.yaml). The metrics port is
 	// the only named one, so it is looked up by name and never assumed.
-	proxyService      = "svc/kop-kube-oidc-proxy"
-	proxyServicePort  = 443
-	proxyPodPort      = 8443
-	metricsPortName   = "metrics"
-	proxyPodSelector  = "app.kubernetes.io/name=kube-oidc-proxy,app.kubernetes.io/instance=kop"
-	metricDecisions   = "kube_oidc_proxy_access_decisions_total"
-	metricReviewCalls = "kube_oidc_proxy_review_requests_total"
+	proxyService       = "svc/kop-kube-oidc-proxy"
+	proxyServicePort   = 443
+	proxyPodPort       = 8443
+	metricsPortName    = "metrics"
+	proxyPodSelector   = "app.kubernetes.io/name=kube-oidc-proxy,app.kubernetes.io/instance=kop"
+	metricDecisions    = "kube_oidc_proxy_access_decisions_total"
+	metricReviewCalls  = "kube_oidc_proxy_review_requests_total"
+	metricCacheLookups = "kube_oidc_proxy_cache_lookups_total"
 
 	// statusNone marks a scenario that completes without an HTTP status the
 	// client can observe, because the connection was upgraded or streamed.
@@ -525,6 +532,10 @@ func (g *generator) scrape(ctx context.Context) ([]helper.Sample, error) {
 	return helper.ParseMetrics(string(body))
 }
 
+// sarMissLabels selects the SAR decision cache's misses. A fresh literal on
+// every call, so nothing package-level is mutable.
+func sarMissLabels() map[string]string { return map[string]string{"cache": "sar", "result": "miss"} }
+
 // seriesSum totals every series of name whose labels include the given pairs,
 // which is what a delta assertion needs: helper.SampleValue answers with the
 // first matching series only, and a denial reason or a review outcome is
@@ -905,37 +916,69 @@ func (g *generator) noUsernameClaim(ctx context.Context) []result {
 
 // coalescedImpersonation fires coalesceCalls identical impersonation requests
 // at one replica whose decision cache has just expired, and asserts that they
-// shared SubjectAccessReviews: every call must be allowed, and the replica
-// must have issued fewer reviews than it answered calls. This is the property
-// that keeps a thundering herd of clients from becoming a thundering herd of
-// SubjectAccessReviews against the API server.
+// shared SubjectAccessReviews. This is the property that keeps a thundering
+// herd of clients from becoming a thundering herd of SubjectAccessReviews
+// against the API server.
+//
+// The burst is released from a barrier rather than merely started in
+// goroutines: goroutines guarantee only that the client sent the calls, and
+// the proxy can still finish one before the next arrives, in which case seven
+// of the eight are cache hits and nothing was shared. Whether they really
+// overlapped is read back from the replica's own counters, and a run that did
+// not overlap is retried rather than failed - it was mistimed, not wrong.
 func (g *generator) coalescedImpersonation(ctx context.Context) []result {
 	token, err := g.validToken()
 	if err != nil {
 		return failed("impersonation_coalesced", err)
 	}
 
+	var results []result
+	for attempt := 1; ; attempt++ {
+		results, err = g.coalesceBurst(ctx, token)
+		if err == nil || !errors.Is(err, errNoConcurrentMiss) || attempt == coalesceAttempts {
+			break
+		}
+	}
+	if err != nil && len(results) > 0 {
+		// Only the last attempt's results are returned, so --once sees one
+		// set of scenario names and one verdict rather than a mixture.
+		results[0].err = err
+	}
+
+	return results
+}
+
+// coalesceBurst runs one attempt: wait the cache out, release coalesceCalls
+// identical calls together, and read the verdict off the replica's counters.
+// The results it returns are the calls this attempt made.
+func (g *generator) coalesceBurst(ctx context.Context, token string) ([]result, error) {
 	// The cache is what would otherwise answer these calls, and a cached
-	// decision issues no review at all, which would satisfy "fewer reviews
-	// than calls" without proving anything about coalescing.
+	// decision never reaches the flight group at all.
 	select {
 	case <-ctx.Done():
-		return failed("impersonation_coalesced", ctx.Err())
+		return failed("impersonation_coalesced", ctx.Err()), nil
 	case <-time.After(sarCacheTTL + time.Second):
 	}
 
 	before, err := g.scrape(ctx)
 	if err != nil {
-		return failed("impersonation_coalesced", err)
+		return failed("impersonation_coalesced", err), nil
 	}
 
 	headers := http.Header{"Impersonate-User": []string{impersonated}}
 	// One slot per call, written only by the goroutine that owns it, so the
 	// results stay in call order and nothing is shared but the slice header.
 	results := make([]result, coalesceCalls)
+	// Every caller announces itself on ready and then blocks on release, so
+	// the requests leave together instead of trailing the goroutine that
+	// started them.
+	ready := make(chan struct{}, coalesceCalls)
+	release := make(chan struct{})
 	var wg sync.WaitGroup
 	for i := 0; i < coalesceCalls; i++ {
 		wg.Go(func() {
+			ready <- struct{}{}
+			<-release
 			results[i] = g.observe(ctx, fmt.Sprintf("impersonation_coalesced[%d/%d]", i+1, coalesceCalls),
 				http.StatusOK, func(ctx context.Context) (int, error) {
 					return g.doAt(ctx, g.pinned.proxy.URL(), http.MethodGet,
@@ -943,11 +986,15 @@ func (g *generator) coalescedImpersonation(ctx context.Context) []result {
 				})
 		})
 	}
+	for i := 0; i < coalesceCalls; i++ {
+		<-ready
+	}
+	close(release)
 	wg.Wait()
 
 	for _, r := range results {
 		if !r.ok() {
-			return results
+			return results, nil
 		}
 	}
 
@@ -955,30 +1002,50 @@ func (g *generator) coalescedImpersonation(ctx context.Context) []result {
 	if err != nil {
 		results[0].err = err
 
-		return results
+		return results, nil
 	}
 
 	sar := map[string]string{"review": "sar"}
 	allowed := map[string]string{"decision": "allow"}
 	reviews := seriesSum(after, metricReviewCalls, sar) - seriesSum(before, metricReviewCalls, sar)
 	decisions := seriesSum(after, metricDecisions, allowed) - seriesSum(before, metricDecisions, allowed)
+	misses := seriesSum(after, metricCacheLookups, sarMissLabels()) - seriesSum(before, metricCacheLookups, sarMissLabels())
 
+	return results, coalescingVerdict(g.pinned.name, coalesceCalls, decisions, misses, reviews)
+}
+
+// errNoConcurrentMiss marks a verdict that failed because the burst never
+// overlapped in the proxy, which is a timing accident rather than a defect.
+var errNoConcurrentMiss = errors.New("the burst produced no concurrent cache misses")
+
+// coalescingVerdict reports whether the deltas one burst produced are evidence
+// that the replica shared its SubjectAccessReviews.
+//
+// Reviews counted against calls is not evidence: one cold live review followed
+// by seven ordinary cache hits produces "fewer reviews than calls" without
+// anything having overlapped, and firing the calls from goroutines does not
+// make the proxy see them at once. The cache misses are what says how many
+// calls actually reached the flight group - a hit never gets there - so the
+// burst has to produce more than one miss, and those misses have to have been
+// answered by fewer reviews than there were of them. Below two misses there is
+// nothing to share and the verdict is retryable: the run was mistimed, not
+// wrong.
+func coalescingVerdict(pod string, calls int, allowed, misses, reviews float64) error {
 	switch {
-	case int(decisions) != coalesceCalls:
-		results[0].err = fmt.Errorf("%s allowed %.0f of %d calls, want all of them",
-			g.pinned.name, decisions, coalesceCalls)
+	case int(allowed) != calls:
+		return fmt.Errorf("%s allowed %.0f of %d calls, want all of them", pod, allowed, calls)
+	case misses < 2:
+		return fmt.Errorf("%s answered %d simultaneous calls with %.0f decision-cache miss(es), so at most one reached the flight group: %w",
+			pod, calls, misses, errNoConcurrentMiss)
 	case reviews < 1:
-		// Nothing was coalesced because nothing was reviewed: the cache was
-		// still warm, and the assertion below would have passed for the wrong
-		// reason.
-		results[0].err = fmt.Errorf("%s issued no SubjectAccessReview at all; its decision cache had not expired",
-			g.pinned.name)
-	case int(reviews) >= coalesceCalls:
-		results[0].err = fmt.Errorf("%s issued %.0f SubjectAccessReviews for %d simultaneous identical calls; they did not coalesce",
-			g.pinned.name, reviews, coalesceCalls)
+		return fmt.Errorf("%s recorded %.0f decision-cache misses and no SubjectAccessReview at all; the two counters disagree",
+			pod, misses)
+	case reviews >= misses:
+		return fmt.Errorf("%s issued %.0f SubjectAccessReviews for %.0f concurrent decision-cache misses; they did not coalesce",
+			pod, reviews, misses)
 	}
 
-	return results
+	return nil
 }
 
 // serviceAccountToken mints a short-lived token for the demo ServiceAccount
