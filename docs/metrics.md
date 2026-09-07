@@ -202,14 +202,17 @@ does - upstream failures, TokenReview dependency errors, review errors and
 timeouts, audit backend failures, reserved-identity and header-flood attempts.
 A counter child that has never been incremented has no series at all, so those
 five queries fall back to `vector(0)` and read a flat zero rather than
-"No data". Three of them aggregate to a single series and can write the
-fallback as `or vector(0)`; the two that group by a label write
-`or on() label_replace(vector(0), ...)` instead, because `or` only drops the
-right-hand side when its label set matches one on the left, and an empty label
-set never matches a grouped one - without the `on()` the zero would be drawn
-beside the real series, and without the `label_replace` it would have no name.
-The demo does not fake any of them: in the screenshots below the
-upstream-failure panel reads zero because the API server never failed to
+"No data". Each of the five aggregates to a single series first - `sum(rate(...))`
+for the three rate panels, `sum(increase(...))` for the two counting panels -
+and then writes the fallback as a plain `or vector(0)`. That works because
+`vector(0)` has an empty label set and so does the result of a `sum()` with no
+`by`: `or` drops its right-hand side when the label set already appears on the
+left, which it does the moment there is any real data. None of the five groups
+by a label, so none needs `or on() label_replace(...)`, and each names its
+series with a literal `legendFormat` - in the order the five are named above,
+"failures", "errors", "errors and timeouts", "failures" and "attempts" -
+rather than letting Grafana label the fallback "Value". The demo does not fake any of them: in the screenshots below
+the upstream-failure panel reads zero because the API server never failed to
 answer, which is what a healthy deployment looks like.
 
 The p99 latency in those screenshots sits near three seconds, and that is the
