@@ -114,6 +114,10 @@ done
 
 # Screenshots through Grafana's image renderer (grafana.imageRenderer.enabled
 # in the demo values), anonymous viewer access, kiosk mode, the last 30 min.
+# The height is the whole dashboard's, not a viewport: whatever does not fit
+# is cropped, silently. 1400 cut the fourth row off every dashboard; 1800 cut
+# the x-axis off the capacity dashboard once "GC pause quantiles" moved to a
+# full-width row of its own. Raise it when a dashboard grows a row.
 for f in "$CHART"/dashboards/*.json; do
   name=$(basename "$f" .json)
   uid=$(jq -r .uid "$f")
@@ -121,7 +125,7 @@ for f in "$CHART"/dashboards/*.json; do
   # --max-time: the image renderer is a headless browser, and one that wedges
   # on a dashboard answers nothing at all rather than answering an error, so
   # without a deadline this blocks for ever with no output.
-  curl -sf --max-time 120 "http://127.0.0.1:$GRAFANA/render/d/$uid/$name?orgId=1&kiosk&from=now-30m&to=now&width=1920&height=1800&tz=UTC" -o "docs/dashboards/$name.png" \
+  curl -sf --max-time 120 "http://127.0.0.1:$GRAFANA/render/d/$uid/$name?orgId=1&kiosk&from=now-30m&to=now&width=1920&height=2000&tz=UTC" -o "docs/dashboards/$name.png" \
     || { echo "the Grafana renderer did not answer for dashboard $name ($uid) within 120s" >&2; exit 1; }
   # A rendered dashboard with data is not a tiny image.
   [ "$(demo_file_size "docs/dashboards/$name.png")" -gt 150000 ] \
