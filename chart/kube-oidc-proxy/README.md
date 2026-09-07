@@ -172,7 +172,7 @@ and health, never identities; see the [metrics reference](../../docs/metrics.md)
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `metrics.enabled` | bool | `false` | Serve Prometheus metrics on a dedicated listener. Leaves the command line unchanged when false, so an older pinned `image.tag` still starts. |
-| `metrics.bindAddress` | string | `""` | `--metrics-bind-address`; empty derives `0.0.0.0:<metrics.port>`. With `metrics.enabled=true` it must end in `:<metrics.port>` and `extraArgs` may not carry the same flag; with metrics disabled the value is not read and not validated. |
+| `metrics.bindAddress` | string | `""` | `--metrics-bind-address`; empty derives `0.0.0.0:<metrics.port>`. With `metrics.enabled=true` it must end in `:<metrics.port>` and `extraArgs` may not carry the same flag; with metrics disabled the value is not read and not validated, and the same holds for `metrics.port`, `metrics.portName` and the ServiceMonitor limits. |
 | `metrics.port` | int | `9090` | Container and Service port. Must be a whole number between 1 and 65535 and differ from 8443 and 8080; a fractional or non-numeric value fails to render. |
 | `metrics.portName` | string | `metrics` | Name of the container and Service port the ServiceMonitor references. A valid `IANA_SVC_NAME`, as Kubernetes requires: 1-15 lowercase alphanumerics and dashes, at least one letter, no leading or trailing dash and no consecutive dashes. |
 | `metrics.service.labels` / `.annotations` | map | `{}` | Added to the metrics Service. |

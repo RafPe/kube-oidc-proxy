@@ -12,17 +12,19 @@
 {{- end -}}
 {{- /* The limits are cast and range-checked here rather than emitted through
      `with`, which passes a negative value straight to Prometheus and treats 0
-     and "" alike. 0 means "no limit" and omits the field. */ -}}
+     and "" alike. 0 means "no limit" and omits the field. The checks fire only
+     for a monitor that renders; a disabled block's values are never read. */ -}}
+{{- $render := and $enabled $smEnabled -}}
 {{- $sampleLimit := int (dig "sampleLimit" 0 $sm) -}}
-{{- if lt $sampleLimit 0 -}}
+{{- if and $render (lt $sampleLimit 0) -}}
 {{- fail "metrics.serviceMonitor.sampleLimit must be >= 0" -}}
 {{- end -}}
 {{- $targetLimit := int (dig "targetLimit" 0 $sm) -}}
-{{- if lt $targetLimit 0 -}}
+{{- if and $render (lt $targetLimit 0) -}}
 {{- fail "metrics.serviceMonitor.targetLimit must be >= 0" -}}
 {{- end -}}
 {{- $labelLimit := int (dig "labelLimit" 0 $sm) -}}
-{{- if lt $labelLimit 0 -}}
+{{- if and $render (lt $labelLimit 0) -}}
 {{- fail "metrics.serviceMonitor.labelLimit must be >= 0" -}}
 {{- end -}}
 {{- if and $enabled $smEnabled }}

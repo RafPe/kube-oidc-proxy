@@ -130,13 +130,16 @@ Callers pass the root context ($), because the value lookup is absolute.
 {{- $metrics := .Values.metrics | default dict -}}
 {{- $raw := dig "port" 9090 $metrics -}}
 {{- $port := int $raw -}}
-{{- if ne (toString $port) (toString $raw) -}}
+{{- /* The guards fire only for a listener the chart renders; a disabled
+     block's values are never read, so they are not validated. */ -}}
+{{- $on := dig "enabled" false $metrics -}}
+{{- if and $on (ne (toString $port) (toString $raw)) -}}
 {{- fail (printf "metrics.port must be an integer, got %v" $raw) -}}
 {{- end -}}
-{{- if or (lt $port 1) (gt $port 65535) -}}
+{{- if and $on (or (lt $port 1) (gt $port 65535)) -}}
 {{- fail "metrics.port must be between 1 and 65535" -}}
 {{- end -}}
-{{- if or (eq $port 8443) (eq $port 8080) -}}
+{{- if and $on (or (eq $port 8443) (eq $port 8080)) -}}
 {{- fail "metrics.port must differ from 8443 (the secure port) and 8080 (the readiness port)" -}}
 {{- end -}}
 {{- $port -}}
@@ -153,13 +156,14 @@ the dash pair are three separate checks.
 */}}
 {{- define "kube-oidc-proxy.metricsPortName" -}}
 {{- $name := toString (dig "portName" "metrics" (.Values.metrics | default dict)) -}}
-{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,13}[a-z0-9])?$" $name) -}}
+{{- $on := dig "enabled" false (.Values.metrics | default dict) -}}
+{{- if and $on (not (regexMatch "^[a-z0-9]([-a-z0-9]{0,13}[a-z0-9])?$" $name)) -}}
 {{- fail "metrics.portName must be a valid IANA_SVC_NAME: 1-15 lowercase alphanumerics or dashes, not starting or ending with a dash" -}}
 {{- end -}}
-{{- if not (regexMatch "[a-z]" $name) -}}
+{{- if and $on (not (regexMatch "[a-z]" $name)) -}}
 {{- fail "metrics.portName must contain at least one letter" -}}
 {{- end -}}
-{{- if contains "--" $name -}}
+{{- if and $on (contains "--" $name) -}}
 {{- fail "metrics.portName must not contain consecutive dashes" -}}
 {{- end -}}
 {{- $name -}}
