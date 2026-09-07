@@ -34,10 +34,12 @@ The same request carries the same ID in both: `request_id` on the log record,
 audit log, because the proxy forwards it as `Audit-ID`
 ([correlation](./logging.md#correlation)).
 
-Within one process the two writers cannot tear each other's lines: Go
-serialises writes to one file descriptor and writes each line whole. The
-container runtime may still split a very long line into several file entries,
-which the agent's `cri` parser reassembles.
+The two writers do not tear each other's lines. Each hands a complete
+record to stdout in a single write call, and Go's `os.File` serialises write
+calls on one descriptor within the process, so a line from one writer is never
+split by a line from the other. What arrives on the node is line-delimited
+JSON. The container runtime may still split a very long line into several
+file entries, which the agent's `cri` parser reassembles.
 
 ## What you need
 
@@ -93,7 +95,12 @@ aws kinesis increase-stream-retention-period --region "$REGION" \
 
 The agent's IAM role needs exactly this. Scope `Resource` to the two stream
 ARNs; the plugin's own documentation shows `"*"`, and that is the one thing to
-tighten.
+tighten. The `kms:GenerateDataKey` statement is not optional with a
+customer-managed key: Kinesis calls KMS with the producer's identity, and
+[AWS's producer permissions](https://docs.aws.amazon.com/streams/latest/dev/permissions-user-key-KMS.html)
+list exactly that action next to `kinesis:PutRecords`. Only the AWS-managed
+`aws/kinesis` key needs no KMS grant. To keep the grant tight, condition it on
+the stream: `"kms:EncryptionContext:aws:kinesis:arn"` equal to the stream ARN.
 
 ```json
 {

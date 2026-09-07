@@ -75,7 +75,7 @@ port_forward() { # <local_port> <remote_port> <-n ns> <svc/name>
 # 0. Preflight: tools, the demo cluster and what the demo generated
 # --------------------------------------------------------------------------
 log "Checking prerequisites"
-for t in kind kubectl helm aws jq openssl; do
+for t in kind kubectl helm aws jq openssl grep; do
   command -v "$t" >/dev/null 2>&1 || fail "required tool not found: $t"
 done
 kind get clusters 2>/dev/null | grep -qx "${CLUSTER}" \
