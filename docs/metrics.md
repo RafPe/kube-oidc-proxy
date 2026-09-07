@@ -1,10 +1,10 @@
 # Metrics
 
 `kube-oidc-proxy` can serve Prometheus metrics on a dedicated listener. It is
-**off by default**: pass `--metrics-bind-address=host:port` (or set
-`metrics.enabled: true` in the chart) and the proxy answers `GET /metrics` on
-that address over plain HTTP. Nothing else is served there: no pprof, no index,
-no reset.
+**off by default**: pass `--metrics-bind-address=host:port` and the proxy
+answers `GET` and `HEAD /metrics` on that address over plain HTTP. Nothing else
+is served there: any other method on that path is `405` with an `Allow` header
+and every other path is `404` — no pprof, no index, no reset.
 
 - [What the endpoint reveals](#what-the-endpoint-reveals)
 - [Catalogue](#catalogue)
@@ -170,15 +170,16 @@ kube_oidc_proxy_oidc_issuer_initialized == 0
 ## Exposure and hardening
 
 - The listener is plain HTTP. Any pod that can reach the proxy pod's IP on
-  that port can read the metrics unless a NetworkPolicy restricts it. The
-  chart's `networkPolicy.enabled` renders one allowing only the peers you
-  list.
-- The chart puts the port on a dedicated ClusterIP Service,
-  `<release>-metrics`, never on the main Service, so `service.type:
-  LoadBalancer` cannot expose it.
+  that port can read the metrics, so write a NetworkPolicy for the workload
+  that admits only your scraper. Bind `127.0.0.1:<port>` instead when a
+  sidecar in the same pod does the scraping.
+- Keep the port off the proxy's own Service. A Service that names it makes it
+  reachable by every client of that Service, and a `type: LoadBalancer`
+  Service would publish it outside the cluster. Give it a separate ClusterIP
+  Service if a scraper needs to discover it by name.
 - The handler bounds concurrent scrapes (3 in flight, 10s timeout) and the
-  server bounds header and idle time; set `sampleLimit` and `targetLimit` on
-  the ServiceMonitor as defence in depth for Prometheus itself.
+  server bounds header and idle time; cap what your scrape config accepts —
+  a sample and target limit — as defence in depth for Prometheus itself.
 - Do not put the metrics port on the proxy's TLS listener or on the readiness
   port: the former fronts blanket impersonation rights, the latter is in the
   kubelet's path.
@@ -188,7 +189,6 @@ kube_oidc_proxy_oidc_issuer_initialized == 0
 ## See also
 
 - [Configuration: `--metrics-bind-address`](./configuration.md#serving--tls--misc)
-- [Chart values `metrics.*`](../chart/kube-oidc-proxy/README.md#values)
 - [Operations: capacity and sizing](./operations.md#capacity-and-sizing)
 - [Logging reference](./logging.md), which the label vocabularies mirror
 - [CONTRIBUTING](../CONTRIBUTING.md#adding-a-metric)
