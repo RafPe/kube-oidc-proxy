@@ -44,7 +44,7 @@ jobs:
       matrix:
         include:
           - shard: a
-            cases: "impersonation, headers, probe"
+            cases: "impersonation, headers, probe, metrics"
           - shard: b
             cases: "authconfig, upgrade, audit"
           - shard: c
