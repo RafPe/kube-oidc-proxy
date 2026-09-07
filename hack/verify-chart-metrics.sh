@@ -63,6 +63,11 @@ render --set metrics=null --set networkPolicy=null >/dev/null || { echo "render 
 ! render --set metrics.enabled=true --set metrics.port=70000 >/dev/null 2>&1 || { echo "metrics.port=70000 must fail to render" >&2; exit 1; }
 ! render --set metrics.enabled=true --set metrics.bindAddress=0 >/dev/null 2>&1 || { echo "metrics.bindAddress=0 must fail to render" >&2; exit 1; }
 ! render --set metrics.enabled=true --set metrics.bindAddress=0.0.0.0:9091 >/dev/null 2>&1 || { echo "bindAddress on another port must fail to render" >&2; exit 1; }
+# With metrics disabled the bindAddress is never read, so a value on another
+# port (or the binary's "0" disable value) must not fail the render: the
+# guards only fire for a listener the chart actually renders.
+render --set metrics.enabled=false --set metrics.bindAddress=127.0.0.1:9091 >/dev/null 2>&1 || { echo "metrics.bindAddress on another port must render while metrics are disabled" >&2; exit 1; }
+render --set metrics.enabled=false --set metrics.bindAddress=0 >/dev/null 2>&1 || { echo "metrics.bindAddress=0 must render while metrics are disabled" >&2; exit 1; }
 ! render --set metrics.enabled=true --set metrics.portName=Metrics_Port >/dev/null 2>&1 || { echo "invalid metrics.portName must fail to render" >&2; exit 1; }
 # A fractional port passes `int` in the Deployment but reaches the Service as
 # 9090.5; a non-numeric one casts to 0. Both must be refused as non-integers,

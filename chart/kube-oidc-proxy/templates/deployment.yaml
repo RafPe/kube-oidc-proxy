@@ -16,7 +16,7 @@
 {{- if and (dig "enabled" false $metrics) (eq $metricsBind "0") }}
 {{- fail "metrics.bindAddress=\"0\" disables the listener in the binary; set metrics.enabled=false instead" }}
 {{- end }}
-{{- if and $metricsBind (not (hasSuffix (printf ":%d" $metricsPort) $metricsBind)) }}
+{{- if and (dig "enabled" false $metrics) $metricsBind (not (hasSuffix (printf ":%d" $metricsPort) $metricsBind)) }}
 {{- fail (printf "metrics.bindAddress %q must end with :%d, the port the Service and monitors target" $metricsBind $metricsPort) }}
 {{- end }}
 {{/* extraArgs render after the generated --metrics-bind-address, so a
