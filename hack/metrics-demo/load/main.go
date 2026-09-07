@@ -119,6 +119,13 @@ const (
 	// How many times the tunnel tries to come back after kubectl drops it.
 	tunnelReopenAttempts = 10
 
+	// portForwardReadyTimeout bounds how long a freshly started kubectl may
+	// take to announce its local port. The announcement is the only readiness
+	// signal there is, and reading for it has no natural end: a kubectl that
+	// never announces one - the pod gone, the upgrade refused - would
+	// otherwise block its caller for ever, and Close behind it.
+	portForwardReadyTimeout = 30 * time.Second
+
 	watchHold  = 20 * time.Second
 	callTimout = 30 * time.Second
 )
@@ -271,12 +278,26 @@ type tunnel struct {
 	remote     int
 	scheme     string
 	logger     *slog.Logger
+	ready      time.Duration
+
+	// The tunnel's own context, derived from the caller's and cancelled by
+	// Close. A reconnect runs on its own goroutine and a starting kubectl
+	// waits on this context, so Close tells them to stop rather than queueing
+	// behind them.
+	ctx    context.Context
+	cancel context.CancelFunc
 
 	mu     sync.Mutex
 	port   int
 	stop   func()
 	closed bool
 }
+
+// errTunnelClosed is what open() reports when Close ran while the forward it
+// started was still coming up. That forward is stopped rather than published:
+// Close has already taken the stop it knew about and will never look again, so
+// a port published after it belongs to a kubectl nobody can stop.
+var errTunnelClosed = errors.New("the tunnel was closed while a port-forward was starting")
 
 func newTunnel(ctx context.Context, kubeconfig, namespace, target string, remote int, scheme string, logger *slog.Logger) (*tunnel, error) {
 	t := &tunnel{
@@ -286,8 +307,13 @@ func newTunnel(ctx context.Context, kubeconfig, namespace, target string, remote
 		remote:     remote,
 		scheme:     scheme,
 		logger:     logger,
+		ready:      portForwardReadyTimeout,
 	}
-	if err := t.open(ctx); err != nil {
+	t.ctx, t.cancel = context.WithCancel(ctx)
+
+	if err := t.open(); err != nil {
+		t.cancel()
+
 		return nil, err
 	}
 
@@ -302,37 +328,67 @@ func (t *tunnel) URL() string {
 	return fmt.Sprintf("%s://127.0.0.1:%d", t.scheme, t.port)
 }
 
+// Close stops the forward and refuses every later one. It is idempotent, so
+// the deferred Close in run() and the watchdog that closes on cancellation can
+// both call it.
 func (t *tunnel) Close() {
 	t.mu.Lock()
+	if t.closed {
+		t.mu.Unlock()
+
+		return
+	}
 	t.closed = true
 	stop := t.stop
+	t.stop = nil
 	t.mu.Unlock()
+
+	// Cancel before waiting, not after. A reconnect is running on its own
+	// goroutine and a starting kubectl is watching this context; stopping the
+	// current forward first is how Close used to block for the whole reopen
+	// budget behind a kubectl that had not announced a port yet.
+	t.cancel()
 
 	if stop != nil {
 		stop()
 	}
 }
 
-func (t *tunnel) open(ctx context.Context) error {
-	port, stop, err := startPortForward(ctx, t.kubeconfig, t.namespace, t.target, t.remote, func(cause error) {
-		t.reopen(ctx, cause)
-	})
+func (t *tunnel) closedNow() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	return t.closed
+}
+
+func (t *tunnel) open() error {
+	port, stop, err := startPortForward(t.ctx, t.kubeconfig, t.namespace, t.target, t.remote, t.ready,
+		// On its own goroutine: this callback runs on the one goroutine that
+		// owns cmd.Wait, and stop() waits for that goroutine to finish, so a
+		// reconnect started here would be something Close has to outlast.
+		func(cause error) { go t.reopen(cause) })
 	if err != nil {
 		return err
 	}
 
 	t.mu.Lock()
-	t.port, t.stop = port, stop
+	closed := t.closed
+	if !closed {
+		t.port, t.stop = port, stop
+	}
 	t.mu.Unlock()
+
+	if closed {
+		stop()
+
+		return errTunnelClosed
+	}
 
 	return nil
 }
 
-func (t *tunnel) reopen(ctx context.Context, cause error) {
-	t.mu.Lock()
-	closed := t.closed
-	t.mu.Unlock()
-	if closed {
+func (t *tunnel) reopen(cause error) {
+	if t.closedNow() {
 		return
 	}
 
@@ -342,14 +398,17 @@ func (t *tunnel) reopen(ctx context.Context, cause error) {
 
 	for i := 0; i < tunnelReopenAttempts; i++ {
 		select {
-		case <-ctx.Done():
+		case <-t.ctx.Done():
 			return
 		case <-time.After(time.Second):
 		}
-		if err := t.open(ctx); err == nil {
+		switch err := t.open(); {
+		case err == nil:
 			t.logger.Info("port-forward reopened",
 				slog.String("target", t.target), slog.String("url", t.URL()))
 
+			return
+		case errors.Is(err, errTunnelClosed):
 			return
 		}
 	}
@@ -358,9 +417,17 @@ func (t *tunnel) reopen(ctx context.Context, cause error) {
 		slog.String("target", t.target))
 }
 
+// portAnnouncement is what the goroutine reading kubectl's stdout reports:
+// the local port it announced, or why it never did.
+type portAnnouncement struct {
+	port int
+	err  error
+}
+
 // startPortForward runs one kubectl port-forward and returns the local port it
-// chose. onDeath is called if it exits on its own.
-func startPortForward(ctx context.Context, kubeconfig, namespace, target string, remote int, onDeath func(error)) (int, func(), error) {
+// chose. It gives up after ready if kubectl never announces one, and onDeath
+// is called if the forward later exits on its own.
+func startPortForward(ctx context.Context, kubeconfig, namespace, target string, remote int, ready time.Duration, onDeath func(error)) (int, func(), error) {
 	// #nosec G204 -- the binary is the constant "kubectl"; the variable
 	// arguments are the operator's own --state and --namespace flags and a
 	// target this program composed from names it read out of the cluster.
@@ -377,7 +444,25 @@ func startPortForward(ctx context.Context, kubeconfig, namespace, target string,
 		return 0, nil, fmt.Errorf("failed to start kubectl port-forward: %s", err)
 	}
 
-	port, err := readForwardedPort(stdout)
+	// The announcement is read on its own goroutine so the wait for it can be
+	// bounded. Killing the process closes the pipe, which is what lets that
+	// goroutine finish once this one has given up.
+	announced := make(chan portAnnouncement, 1)
+	go func() {
+		port, err := readForwardedPort(stdout)
+		announced <- portAnnouncement{port: port, err: err}
+	}()
+
+	var port int
+	err = nil
+	select {
+	case a := <-announced:
+		port, err = a.port, a.err
+	case <-time.After(ready):
+		err = fmt.Errorf("kubectl port-forward did not announce a local port within %s", ready)
+	case <-ctx.Done():
+		err = fmt.Errorf("kubectl port-forward was stopped before it announced a local port: %s", ctx.Err())
+	}
 	if err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
@@ -395,8 +480,11 @@ func startPortForward(ctx context.Context, kubeconfig, namespace, target string,
 	stopping := make(chan struct{})
 	waited := make(chan struct{})
 	go func() {
-		defer close(waited)
 		err := cmd.Wait()
+		// Release stop() before the callback, not after: whatever onDeath
+		// decides to do, stop() is done waiting the moment the process is
+		// reaped.
+		close(waited)
 		select {
 		case <-stopping: // stop() killed it; expected.
 		default:
