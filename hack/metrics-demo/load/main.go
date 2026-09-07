@@ -161,7 +161,7 @@ func run(logger *slog.Logger, statePath, namespace string, duration, interval ti
 	}
 	defer tun.Close()
 
-	g, err := newGenerator(st, namespace, tun)
+	g, err := newGenerator(logger, st, namespace, tun)
 	if err != nil {
 		return err
 	}
@@ -435,6 +435,7 @@ func readForwardedPort(stdout io.Reader) (int, error) {
 }
 
 type generator struct {
+	logger    *slog.Logger
 	st        *state
 	helper    *helper.Helper
 	cluster   kubernetes.Interface
@@ -562,7 +563,7 @@ func seriesSum(samples []helper.Sample, name string, labels map[string]string) f
 	return total
 }
 
-func newGenerator(st *state, namespace string, tun *tunnel) (*generator, error) {
+func newGenerator(logger *slog.Logger, st *state, namespace string, tun *tunnel) (*generator, error) {
 	restConfig, err := clientcmd.BuildConfigFromFlags("", st.kubeconfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build a rest config from %q: %s", st.kubeconfig, err)
@@ -576,6 +577,7 @@ func newGenerator(st *state, namespace string, tun *tunnel) (*generator, error) 
 	h.KubeClient = cluster
 
 	return &generator{
+		logger:    logger,
 		st:        st,
 		helper:    h,
 		cluster:   cluster,
@@ -934,7 +936,7 @@ func (g *generator) coalescedImpersonation(ctx context.Context) []result {
 
 	var results []result
 	for attempt := 1; ; attempt++ {
-		results, err = g.coalesceBurst(ctx, token)
+		results, err = g.coalesceBurst(ctx, attempt, token)
 		if err == nil || !errors.Is(err, errNoConcurrentMiss) || attempt == coalesceAttempts {
 			break
 		}
@@ -951,7 +953,7 @@ func (g *generator) coalescedImpersonation(ctx context.Context) []result {
 // coalesceBurst runs one attempt: wait the cache out, release coalesceCalls
 // identical calls together, and read the verdict off the replica's counters.
 // The results it returns are the calls this attempt made.
-func (g *generator) coalesceBurst(ctx context.Context, token string) ([]result, error) {
+func (g *generator) coalesceBurst(ctx context.Context, attempt int, token string) ([]result, error) {
 	// The cache is what would otherwise answer these calls, and a cached
 	// decision never reaches the flight group at all.
 	select {
@@ -1010,6 +1012,15 @@ func (g *generator) coalesceBurst(ctx context.Context, token string) ([]result, 
 	reviews := seriesSum(after, metricReviewCalls, sar) - seriesSum(before, metricReviewCalls, sar)
 	decisions := seriesSum(after, metricDecisions, allowed) - seriesSum(before, metricDecisions, allowed)
 	misses := seriesSum(after, metricCacheLookups, sarMissLabels()) - seriesSum(before, metricCacheLookups, sarMissLabels())
+
+	// The numbers the verdict is about, so a reader can see what was shared
+	// rather than only that something was. An assertion whose evidence is
+	// invisible is how the call-counting version of this scenario passed for
+	// years without ever proving anything.
+	g.logger.Info("coalescing burst",
+		slog.String("pod", g.pinned.name), slog.Int("attempt", attempt),
+		slog.Int("calls", coalesceCalls), slog.Float64("cache_misses", misses),
+		slog.Float64("review_requests", reviews))
 
 	return results, coalescingVerdict(g.pinned.name, coalesceCalls, decisions, misses, reviews)
 }
