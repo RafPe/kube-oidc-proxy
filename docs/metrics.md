@@ -197,12 +197,23 @@ The chart ships three Grafana dashboards (`metrics.dashboards.enabled: true`)
 as a ConfigMap the Grafana sidecar loads; kube-prometheus-stack picks them up
 with no further configuration. Each answers a different set of questions.
 The screenshots come from the [kind demo](./development.md#metrics-demo) with
-the load generator running. Five panels count things a healthy proxy never
-does - upstream failures, TokenReview dependency errors, review errors and
-timeouts, audit backend failures, reserved-identity and header-flood attempts.
-A counter child that has never been incremented has no series at all, so those
-five queries fall back to `vector(0)` and read a flat zero rather than
-"No data". Each of the five aggregates to a single series first - `sum(rate(...))`
+the load generator running. Five panels count things a healthy
+proxy is not expected to be doing - upstream failures, TokenReview dependency
+errors, review errors and timeouts, audit backend failures, reserved-identity
+and header-flood attempts. A counter child that has never been incremented has
+no series at all, so those five queries fall back to `vector(0)` and read a
+flat zero rather than "No data".
+
+Two of the five are not pure dependency-health signals, and their panels say
+so. `authentication_attempts_total{auth_method="tokenreview",outcome="error"}`
+and `review_requests_total{outcome="error"}` count every TokenReview that came
+back with no verdict, and kube-apiserver sets `status.error` on a bearer token
+it cannot parse - so a client presenting a malformed token lights both panels
+exactly as an unreachable API server does, and the proxy then refuses that
+request as an ordinary unauthorized denial. A non-zero value means "no verdict
+was reached", not "the dependency is broken"; the `authn.tokenreview.failed`
+log records, or the API server's own error rate, are what separate a bad
+client from a broken dependency. Each of the five aggregates to a single series first - `sum(rate(...))`
 for the three rate panels, `sum(increase(...))` for the two counting panels -
 and then writes the fallback as a plain `or vector(0)`. That works because
 `vector(0)` has an empty label set and so does the result of a `sum()` with no
