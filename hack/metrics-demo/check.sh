@@ -45,8 +45,8 @@ done
 echo "proxy pods running $PROXY_IMAGE:"
 printf '%s\n' "$pods" | sed 's/^/  /'
 kubectl -n proxy get configmap kop-kube-oidc-proxy-dashboards -o name >/dev/null || { echo "no dashboards ConfigMap" >&2; exit 1; }
-# Prometheus has discovered the proxy target and it is up. Discovery is
-# asynchronous: the operator regenerates the scrape config from the
+# Prometheus has discovered every proxy target and each one is up. Discovery
+# is asynchronous: the operator regenerates the scrape config from the
 # ServiceMonitor and Prometheus reloads it, which took about a minute on the
 # reference run, so poll rather than assert once. The query is passed with
 # --data-urlencode because =~, {, } and " are not URL-safe and Prometheus
@@ -54,21 +54,40 @@ kubectl -n proxy get configmap kop-kube-oidc-proxy-dashboards -o name >/dev/null
 # fixed one: a fixed port is answered by whatever already holds it, so a
 # forward left behind by another cluster would make this assertion pass
 # against a Prometheus that has never seen this demo.
+#
+# Every pod, not `result[0]`. The Deployment runs two replicas and each is its
+# own scrape target: reading the first result declared the demo ready while
+# half of it was invisible to Prometheus, so a dashboard filtered by $pod had
+# nothing to draw for the missing replica - and when the down target sorted
+# first the same expression read 0 and the poll timed out with no clue which
+# pod was at fault. The ready set is re-read on every attempt because a pod
+# can become ready during the poll.
+# shellcheck source=hack/metrics-demo/checks.sh
+. hack/metrics-demo/checks.sh
 # shellcheck source=hack/metrics-demo/portforward.sh
 . hack/metrics-demo/portforward.sh
 trap pf_cleanup EXIT
 pf_start PROM monitoring svc/kps-kube-prometheus-stack-prometheus 9090
-up=0
+ready=""; scraped=""; missing=""
 for i in $(seq 1 40); do
   pf_check || exit 1
-  up=$(curl -sfG "http://127.0.0.1:$PROM/api/v1/query" \
+  ready=$(kubectl -n proxy get pods -l "$sel" -o json | demo_ready_pods)
+  scraped=$(curl -sfG "http://127.0.0.1:$PROM/api/v1/query" \
     --data-urlencode 'query=up{job=~".*kube-oidc-proxy.*"}' \
-    | jq -r '.data.result[0].value[1] // "0"') || up=0
-  [ "$up" = "1" ] && break
+    | demo_up_pods) || scraped=""
+  missing=""
+  for pod in $ready; do
+    printf '%s\n' "$scraped" | grep -qx "$pod" || missing="$missing $pod"
+  done
+  [ -n "$ready" ] && [ -z "$missing" ] && break
   [ $((i % 10)) -eq 0 ] && echo "waiting for Prometheus to discover the proxy target (attempt $i/40)"
   sleep 3
 done
-[ "$up" = "1" ] || { echo "proxy target not up in Prometheus (up=$up)" >&2; exit 1; }
+[ -n "$ready" ] && [ -z "$missing" ] || {
+  echo "proxy target not up in Prometheus (up=$(printf '%s' "${scraped:-none}" | tr '\n' ' ')," \
+       "ready=$(printf '%s' "${ready:-none}" | tr '\n' ' '), not scraped:${missing:- none})" >&2
+  exit 1
+}
 
 # What each pod reports as its build. The tag assertion above proves the pods
 # run the image up.sh side-loaded; this proves that image is the binary up.sh

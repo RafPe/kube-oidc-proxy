@@ -75,5 +75,49 @@ sample_case "a range series that is NaN throughout" \
   "" "NaN NaN"
 sample_case "an empty result" '{"data":{"resultType":"vector","result":[]}}' "" ""
 
+# demo_up_pods must answer with the whole set, not with the first element.
+# check.sh used to read `.data.result[0].value[1]`, so a Deployment of two
+# replicas was declared ready when either one of them was scraped - and when
+# the down target happened to sort first it read 0 and the poll timed out for
+# no reason anyone could see.
+pods_case() {
+  local label=$1 body=$2 want=$3 got
+  got=$(printf '%s' "$body" | demo_up_pods | tr '\n' ' ' | sed 's/ $//')
+  [ "$got" = "$want" ] || fail "demo_up_pods($label) = '$got', want '$want'"
+}
+pods_case "one pod up, one down" \
+  '{"data":{"result":[{"metric":{"pod":"kop-a"},"value":[1,"1"]},{"metric":{"pod":"kop-b"},"value":[1,"0"]}]}}' \
+  "kop-a"
+pods_case "one pod down, one up (the down one first)" \
+  '{"data":{"result":[{"metric":{"pod":"kop-b"},"value":[1,"0"]},{"metric":{"pod":"kop-a"},"value":[1,"1"]}]}}' \
+  "kop-a"
+pods_case "a single result, up" \
+  '{"data":{"result":[{"metric":{"pod":"kop-a"},"value":[1,"1"]}]}}' \
+  "kop-a"
+pods_case "both up" \
+  '{"data":{"result":[{"metric":{"pod":"kop-b"},"value":[1,"1"]},{"metric":{"pod":"kop-a"},"value":[1,"1"]}]}}' \
+  "kop-a kop-b"
+pods_case "a target with no pod label" \
+  '{"data":{"result":[{"metric":{"job":"kop"},"value":[1,"1"]}]}}' \
+  ""
+pods_case "no targets at all" '{"data":{"result":[]}}' ""
+
+ready_case() {
+  local label=$1 body=$2 want=$3 got
+  got=$(printf '%s' "$body" | demo_ready_pods | tr '\n' ' ' | sed 's/ $//')
+  [ "$got" = "$want" ] || fail "demo_ready_pods($label) = '$got', want '$want'"
+}
+ready_case "one ready, one still starting" \
+  '{"items":[{"metadata":{"name":"kop-a"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+             {"metadata":{"name":"kop-b"},"status":{"conditions":[{"type":"Ready","status":"False"}]}}]}' \
+  "kop-a"
+ready_case "a ready pod that is terminating" \
+  '{"items":[{"metadata":{"name":"kop-a","deletionTimestamp":"now"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}]}' \
+  ""
+ready_case "two ready" \
+  '{"items":[{"metadata":{"name":"kop-b"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+             {"metadata":{"name":"kop-a"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}]}' \
+  "kop-a kop-b"
+
 [ $rc -eq 0 ] && echo "metrics-demo checks: ok"
 exit $rc

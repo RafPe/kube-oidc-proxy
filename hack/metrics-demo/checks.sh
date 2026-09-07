@@ -46,3 +46,22 @@ demo_finite() {
 demo_nonfinite() {
   jq -r "$_demo_jq_samples"' samples | map(select(finite | not)) | .[]'
 }
+
+# demo_up_pods reads a Prometheus `up` response on stdin and prints the pods
+# reporting 1, sorted and deduplicated. A target that is down, or one whose
+# series carries no pod label, contributes nothing - so the caller comparing
+# this against the pods it expects sees the hole rather than an average.
+demo_up_pods() {
+  jq -r '.data.result[]? | select((.value[1] // "0") == "1") | .metric.pod // empty' | sort -u
+}
+
+# demo_ready_pods reads `kubectl get pods -o json` on stdin and prints the
+# pods that are Ready and not being deleted, sorted. These are the pods
+# Prometheus must be scraping: a Deployment with two replicas whose second pod
+# is invisible to Prometheus is a half-blind dashboard, not a ready demo.
+demo_ready_pods() {
+  jq -r '.items[]?
+         | select(.metadata.deletionTimestamp == null)
+         | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+         | .metadata.name' | sort -u
+}
