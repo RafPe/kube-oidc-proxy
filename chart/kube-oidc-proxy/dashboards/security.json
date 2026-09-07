@@ -209,7 +209,7 @@
             "lastNotNull"
           ],
           "displayMode": "table",
-          "placement": "right",
+          "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
@@ -944,7 +944,7 @@
           },
           "editorMode": "code",
           "expr": "kube_oidc_proxy_oidc_issuer_initialized{namespace=\"$namespace\",pod=~\"$pod\"}",
-          "legendFormat": "{{issuer_name}}",
+          "legendFormat": "{{issuer_name}} {{pod}}",
           "range": true,
           "refId": "A"
         }

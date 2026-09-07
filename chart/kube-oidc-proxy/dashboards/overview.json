@@ -860,7 +860,7 @@
     {
       "type": "timeseries",
       "title": "Responses by code class",
-      "description": "Completed requests per second grouped into 1xx-5xx by rewriting the code label. 4xx is the client's problem (bad token, forbidden), 5xx is the proxy's or the API server's. Requests that never carried an HTTP status code land in 'none': a hijacked connection (exec, attach, portforward) and a watch or log stream the client cancelled, both of which the proxy records as code 'none'. Stacked, so the band widths are the mix.",
+      "description": "Completed requests per second grouped into 1xx-5xx by rewriting the code label. 4xx is the client's problem (bad token, forbidden), 5xx is the proxy's or the API server's. Requests that never carried an HTTP status code land in 'none': a hijacked connection (exec, attach, portforward) and a watch or log stream the client cancelled, both of which the proxy records as code 'none'. A status the closed label set does not recognise is recorded as code 'other' and drawn as its own 'other' band, rather than being folded into 'none'. Stacked, so the band widths are the mix.",
       "datasource": {
         "uid": "${datasource}"
       },
@@ -936,7 +936,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (class) (label_replace(label_replace(rate(kube_oidc_proxy_requests_total{namespace=\"$namespace\",pod=~\"$pod\"}[$__rate_interval]), \"class\", \"${1}xx\", \"code\", \"(\\\\d)\\\\d\\\\d\"), \"class\", \"none\", \"class\", \"^$\"))",
+          "expr": "sum by (class) (label_replace(label_replace(label_replace(rate(kube_oidc_proxy_requests_total{namespace=\"$namespace\",pod=~\"$pod\"}[$__rate_interval]), \"class\", \"${1}xx\", \"code\", \"(\\\\d)\\\\d\\\\d\"), \"class\", \"other\", \"code\", \"^other$\"), \"class\", \"none\", \"class\", \"^$\"))",
           "legendFormat": "{{class}}",
           "range": true,
           "refId": "A"
