@@ -146,11 +146,12 @@ type Server struct {
 	// shutdown failure path without waiting out the production budget.
 	shutdownTimeout time.Duration
 
-	// served is closed once Serve returns; err holds the terminal serve error
-	// (nil after a clean shutdown). Closing served happens-after the write to
-	// err, so Wait observes err safely without additional synchronization.
-	served chan struct{}
-	err    error
+	// done is closed once serving and shutdown have both finished; err holds
+	// the terminal error (nil after a clean shutdown). Closing done
+	// happens-after the write to err, so Wait observes err safely without
+	// additional synchronization.
+	done chan struct{}
+	err  error
 }
 
 // NewServer builds a readiness Server that probes the given issuers via
@@ -188,7 +189,7 @@ func NewServer(port string, issuers []IssuerReadiness, requireAll bool, oidcAuth
 			// accumulate (gosec G112, Slowloris).
 			ReadHeaderTimeout: readHeaderTimeout,
 		},
-		served: make(chan struct{}),
+		done: make(chan struct{}),
 	}
 }
 
@@ -244,29 +245,45 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("readiness probe failed to listen on %s: %w", s.srv.Addr, err)
 	}
 
+	// Serve's result travels on a channel so the single owner goroutine below
+	// can join it whichever way serving ended.
+	serveResult := make(chan error, 1)
+	go func() { serveResult <- s.srv.Serve(ln) }()
+
+	// One goroutine owns shutdown and the terminal error. Shutdown makes Serve
+	// return at once, so closing done when Serve returns would report the
+	// listener as stopped while it is still draining -- and would drop the
+	// drain's error, which cmd/app joins into the process exit status. done is
+	// closed here instead, once both have finished.
+	//
+	//nolint:gosec // G118: this goroutine runs because ctx was cancelled; a context derived from it would be dead on arrival and Shutdown would not drain the in-flight request.
 	go func() {
-		serveErr := s.srv.Serve(ln)
+		defer close(s.done)
+
+		var serveErr, shutdownErr error
+		select {
+		case serveErr = <-serveResult:
+			// Serving stopped on its own (a listener error, or a direct
+			// Shutdown call): nothing is draining, but any open connection is
+			// closed for hygiene.
+			shutdownErr = s.srv.Close()
+		case <-ctx.Done():
+			shutdownErr = s.Shutdown()
+			if shutdownErr != nil {
+				shutdownErr = errors.Join(shutdownErr, s.srv.Close())
+			}
+			serveErr = <-serveResult
+		}
 		// A graceful shutdown is expected, not a failure.
 		if errors.Is(serveErr, http.ErrServerClosed) {
 			serveErr = nil
 		}
-		s.err = serveErr
-		close(s.served)
-	}()
-
-	// Bridge context cancellation to a bounded graceful shutdown. This goroutine
-	// exits either when ctx is cancelled or when serving has already stopped, so
-	// it never outlives the server (no leak across repeated Start/Shutdown).
-	go func() {
-		select {
-		case <-ctx.Done():
-			if err := s.Shutdown(); err != nil {
-				// ctx is already cancelled here, which the record does not care
-				// about: it carries no deadline and no request scope.
-				logging.Emit(ctx, s.hc.readinessLogger,
-					logging.EventReadinessServerFailed, logging.ErrAttr(err))
-			}
-		case <-s.served:
+		s.err = errors.Join(serveErr, shutdownErr)
+		if s.err != nil {
+			// ctx may already be cancelled here, which the record does not care
+			// about: it carries no deadline and no request scope.
+			logging.Emit(ctx, s.hc.readinessLogger,
+				logging.EventReadinessServerFailed, logging.ErrAttr(s.err))
 		}
 	}()
 
@@ -282,11 +299,12 @@ func (s *Server) Shutdown() error {
 	return s.srv.Shutdown(ctx)
 }
 
-// Wait blocks until the server has stopped serving and returns the terminal
-// serve error, with http.ErrServerClosed normalized to nil. It may be called
-// by multiple goroutines.
+// Wait blocks until serving and the graceful shutdown have both finished and
+// returns the terminal error: a listener failure, a drain that overran its
+// budget, or nil after a clean stop. http.ErrServerClosed is normalized to
+// nil. It may be called by multiple goroutines.
 func (s *Server) Wait() error {
-	<-s.served
+	<-s.done
 	return s.err
 }
 

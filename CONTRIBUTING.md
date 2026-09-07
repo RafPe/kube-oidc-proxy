@@ -36,7 +36,7 @@ builds one from a string. To add one:
    lowercase segments, `<domain>.<object>.<action>`
    (`^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*){2}$`), with the domain from the closed
    set `proxy`, `request`, `authn`, `authz`, `cache`, `oidc`, `readiness`,
-   `upstream`, `audit`, `log`, and the action from the closed verb list in
+   `upstream`, `audit`, `log`, `metrics`, and the action from the closed verb list in
    `docs/logging.md`. The outcome never goes in the name — `decision`, `reason`,
    `termination` and `cache_result` carry it.
 2. **Add the registry entry** in the same file: component, default level,

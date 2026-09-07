@@ -9,7 +9,10 @@ import (
 	"net/http"
 	"time"
 
+	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
+
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/audit"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
 )
@@ -51,6 +54,12 @@ type responseRecorder struct {
 	// else the terminal record arrives close enough behind the headers that a
 	// second record says nothing new.
 	onStart func(status int)
+
+	// onHijack, when set, reports a successful hijack. httputil.ReverseProxy
+	// hijacks first and writes the 101 onto the connection itself, so the
+	// recorder never sees a WriteHeader for an upgrade; this is how an exec or
+	// attach still counts as an established stream.
+	onHijack func()
 }
 
 // WriteHeader records the status the handler chose. Only the first final
@@ -120,6 +129,9 @@ func (r *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	c, rw, err := h.Hijack()
 	if err == nil {
 		r.hijacked = true
+		if r.onHijack != nil {
+			r.onHijack()
+		}
 	}
 	return c, rw, err
 }
@@ -154,14 +166,43 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 		ctx := req.Context()
 		l := logging.FromContext(ctx)
 
+		// The verb and scope labels come from the RequestInfo the audit filter
+		// resolved ahead of this one; both projections collapse anything
+		// outside the documented sets, so a client cannot mint a series.
+		info, _ := genericapirequest.RequestInfoFrom(ctx)
+		verb, scope := metrics.VerbFor(info), metrics.ScopeFor(info)
+		longRunning := audit.IsLongRunning(req)
+
 		rec := &responseRecorder{ResponseWriter: w}
-		if audit.IsLongRunning(req) {
+		established := false
+		if longRunning {
+			// A stream is open once its response has begun: headers written,
+			// or the connection hijacked for an upgrade. Either path marks it
+			// exactly once, and the gauge is released in the defer below.
+			establish := func() {
+				if !established {
+					established = true
+					p.metrics.LongRunningEstablished(verb, scope)
+				}
+			}
 			rec.onStart = func(code int) {
 				logging.Emit(ctx, l, logging.EventRequestResponseStarted,
 					slog.Int("http_status", code),
 					slog.Int64("time_to_headers_ms", time.Since(start).Milliseconds()))
+				// Only a success status opens a stream: a refused watch (401,
+				// 403) and a redirected upgrade (3xx) wrote headers but no
+				// stream exists. 101 is the upgrade acknowledgement.
+				if code == http.StatusSwitchingProtocols ||
+					(code >= http.StatusOK && code < http.StatusMultipleChoices) {
+					establish()
+				}
 			}
+			rec.onHijack = establish
 		}
+
+		// Counted before the handler runs, released in the defer whatever the
+		// handler does, so a panic cannot leak the gauge.
+		p.metrics.RequestStarted()
 
 		defer func() {
 			panicked := recover()
@@ -217,6 +258,19 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 			}
 
 			logging.Emit(ctx, l, logging.EventRequestResponseCompleted, attrs...)
+
+			// One request, one record, one observation: the metric carries the
+			// same status and termination the record does, by construction.
+			p.metrics.RequestFinished(metrics.RequestObservation{
+				Verb:        verb,
+				Scope:       scope,
+				Status:      status,
+				Termination: term,
+				Duration:    time.Since(start),
+				LongRunning: longRunning,
+				Established: established,
+				Hijacked:    rec.hijacked,
+			})
 
 			if panicked != nil {
 				panic(panicked)

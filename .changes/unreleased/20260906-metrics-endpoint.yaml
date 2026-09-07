@@ -1,0 +1,2 @@
+kind: Added
+body: An opt-in Prometheus metrics endpoint. `--metrics-bind-address=host:port` serves `GET /metrics` over plain HTTP on a dedicated listener with request counters, a latency histogram that excludes long-running requests, in-flight and open-stream gauges and build information. Off by default; every label value comes from a closed set, so no identity, path or client-chosen value ever becomes a series.

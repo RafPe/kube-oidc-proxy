@@ -30,8 +30,8 @@ event-specific field:
 | `level` | string | `ERROR`, `WARN`, `INFO`, `DEBUG` | `slog` default |
 | `msg` | string | static text per event, never interpolated | query on `event_type`, not `msg` |
 | `schema_version` | int | `1` | bumped only on a breaking field change |
-| `component` | string | `startup`, `server`, `oidc`, `readiness`, `request`, `tokenreview`, `sar`, `audit`, `upstream`, `shutdown`, `k8s` | which subsystem spoke; `k8s` marks bridged library output |
-| `event_type` | string | `<domain>.<object>.<action>`, one of the 40 registered values | absent on `component=k8s` records |
+| `component` | string | `startup`, `server`, `oidc`, `readiness`, `request`, `tokenreview`, `sar`, `audit`, `upstream`, `shutdown`, `metrics`, `k8s` | which subsystem spoke; `k8s` marks bridged library output |
+| `event_type` | string | `<domain>.<object>.<action>`, one of the 43 registered values | absent on `component=k8s` records |
 
 An access decision looks like this (line-wrapped here, one line in the stream):
 
@@ -117,7 +117,7 @@ Both flags are documented in the
 
 ## Event registry
 
-40 registered values, generated from the registry. "Required" lists the fields
+43 registered values, generated from the registry. "Required" lists the fields
 that must be present beyond `time`, `level`, `msg`, `schema_version`,
 `component` and `event_type`; conditional fields are described in the summary.
 
@@ -139,6 +139,9 @@ that must be present beyond `time`, `level`, `msg`, `schema_version`,
 | `cache.sar.lookup` | `sar` | DEBUG | `request_id`, `cache_result` | One SubjectAccessReview cache consultation. Carries decision on a hit, never the cache key. |
 | `cache.tokenreview.lookup` | `tokenreview` | DEBUG | `request_id`, `cache_result` | One TokenReview cache consultation. Carries authenticated on a hit, never the cache key. |
 | `log.warning.suppressed` | any | WARN | `warning_reason`, `suppressed_count`, `interval_seconds` | Token-bucket summary of dropped warning records. |
+| `metrics.scrape.failed` | `metrics` | ERROR | `error_message` | Gathering or encoding the exposition failed; the scrape was answered with 500. |
+| `metrics.server.failed` | `metrics` | ERROR | `error_message` | The metrics HTTP server returned an error. |
+| `metrics.server.started` | `metrics` | INFO | `address` | The metrics listener is serving /metrics. |
 | `oidc.issuer.configured` | `oidc` | INFO | `issuer_name`, `issuer_count` | Once per configured issuer at startup. |
 | `oidc.issuer.initialized` | `oidc` | INFO | `issuer_name`, `issuer_state`, `ready_issuers`, `total_issuers` | An issuer's JWKS loaded. Carries issuer_state=initialized. |
 | `oidc.issuer.pending` | `oidc` | WARN | `issuer_name`, `issuer_state`, `pending_reason`, `ready_issuers`, `total_issuers` | The pending set or a pending reason changed. Carries issuer_state=pending; not emitted on every scrape. |

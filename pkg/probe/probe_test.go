@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -731,5 +732,98 @@ func TestStalePendingResultIsDroppedOnceInitialized(t *testing.T) {
 	}
 	if got := cap.ByEvent(logging.EventOIDCIssuerPending); len(got) != 0 {
 		t.Fatalf("pending published after initialized: %v", got)
+	}
+}
+
+// TestReadinessServerWaitReturnsTheShutdownError pins that a drain which
+// overruns its budget reaches the caller, not just the log stream. cmd/app
+// joins Wait's result into the process exit error, so a readiness listener
+// that never released its port has to be reportable there.
+func TestReadinessServerWaitReturnsTheShutdownError(t *testing.T) {
+	root, cap := logtest.New(t, 0)
+	defer logtest.AssertRegistered(t, cap)
+
+	port := freePort(t)
+	s := NewServer(port, nil, false, &fakeAuther{}, root)
+
+	// A handler that outlives the shutdown budget, so Shutdown returns its
+	// context's deadline error.
+	inFlight := make(chan struct{})
+	release := make(chan struct{})
+	s.srv.Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(inFlight)
+		<-release
+		w.WriteHeader(http.StatusOK)
+	})
+	s.shutdownTimeout = 50 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := s.Start(ctx); err != nil {
+		t.Fatalf("Start: %s", err)
+	}
+
+	go func() {
+		//nolint:errcheck // the response never arrives; the request is only here to hold the connection.
+		http.Get("http://127.0.0.1:" + port + "/live")
+	}()
+	<-inFlight
+
+	cancel()
+
+	err := s.Wait()
+	close(release)
+	if err == nil {
+		t.Fatal("Wait returned nil after a shutdown that overran its budget")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Wait error = %v, want the shutdown deadline", err)
+	}
+}
+
+// TestReadinessServerWaitBlocksUntilShutdownCompletes pins that Wait reports
+// the end of the drain, not the end of Serve. Shutdown makes Serve return at
+// once, so a Wait that keys on Serve alone lets cmd/app run the pre-shutdown
+// hooks while the readiness port is still held by an in-flight request.
+func TestReadinessServerWaitBlocksUntilShutdownCompletes(t *testing.T) {
+	root, cap := logtest.New(t, 0)
+	defer logtest.AssertRegistered(t, cap)
+
+	port := freePort(t)
+	s := NewServer(port, nil, false, &fakeAuther{}, root)
+
+	// The handler stays in flight well past the cancellation and only then
+	// lets the connection go idle, which is what Shutdown waits for. The
+	// budget is left at its default so the drain succeeds.
+	inFlight := make(chan struct{})
+	var handlerReturned atomic.Bool
+	s.srv.Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(inFlight)
+		time.Sleep(200 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+		handlerReturned.Store(true)
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := s.Start(ctx); err != nil {
+		t.Fatalf("Start: %s", err)
+	}
+
+	go func() {
+		resp, err := http.Get("http://127.0.0.1:" + port + "/live")
+		if err == nil {
+			resp.Body.Close()
+		}
+	}()
+	<-inFlight
+
+	cancel()
+
+	if err := s.Wait(); err != nil {
+		t.Fatalf("Wait: %s", err)
+	}
+	if !handlerReturned.Load() {
+		t.Fatal("Wait returned while a request was still in flight")
 	}
 }

@@ -32,6 +32,7 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
+	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/mocks"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/audit"
 	proxycontext "github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
@@ -590,6 +591,13 @@ func newTestProxy(t *testing.T) *fakeProxy {
 	subjectAccessReview, _ := subjectaccessreview.New(fakeSubjectAccessReviewer, subjectaccessreview.DefaultTimeout, 0, 0,
 		subjectaccessreview.DefaultMaxHeaderValues, logging.ForComponent(root, logging.ComponentSAR))
 
+	// A real recorder, not a fake: the tests assert on the exposition the
+	// binary would serve, including help strings and label names.
+	recorder, err := metrics.New(metrics.BuildInfo{Version: "test", Revision: "test", GoVersion: "test"})
+	if err != nil {
+		t.Fatalf("metrics.New: %v", err)
+	}
+
 	p := &fakeProxy{
 		ctrl:         ctrl,
 		fakeToken:    fakeToken,
@@ -597,6 +605,7 @@ func newTestProxy(t *testing.T) *fakeProxy {
 		fakeRT:       fakeRT,
 		logs:         logs,
 		Proxy: &Proxy{
+			metrics:               recorder,
 			logger:                requestLogger,
 			oidcLog:               logging.ForComponent(root, logging.ComponentOIDC),
 			tokenReviewLog:        logging.ForComponent(root, logging.ComponentTokenReview),

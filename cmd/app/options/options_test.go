@@ -292,3 +292,62 @@ func TestValidate_MaxImpersonationHeaderValues(t *testing.T) {
 		})
 	}
 }
+
+// TestValidate_MetricsBindAddressPortCollisions pins that the metrics listener
+// cannot be pointed at a port the process already binds. Both collisions are
+// reported by port number, and a disabled listener is never checked -- "0" is
+// a disabled listener, not a port.
+func TestValidate_MetricsBindAddressPortCollisions(t *testing.T) {
+	tests := map[string]struct {
+		bindAddress   string
+		probePort     int
+		securePort    int
+		wantErrSubstr string
+	}{
+		"collides with the readiness probe port": {
+			bindAddress:   ":8080",
+			probePort:     8080,
+			securePort:    6443,
+			wantErrSubstr: "--metrics-bind-address port 8080 is already used by the readiness probe",
+		},
+		"collides with the secure serving port": {
+			bindAddress:   "127.0.0.1:6443",
+			probePort:     8080,
+			securePort:    6443,
+			wantErrSubstr: "--metrics-bind-address port 6443 is already used by the secure serving port",
+		},
+		"a distinct port is accepted": {
+			bindAddress: ":9090",
+			probePort:   8080,
+			securePort:  6443,
+		},
+		"a disabled listener is not compared with either port": {
+			bindAddress: "0",
+			probePort:   8080,
+			securePort:  6443,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			o := New()
+			cmd := &cobra.Command{}
+			o.AddFlags(cmd)
+
+			o.Metrics.BindAddress = tc.bindAddress
+			o.App.ReadinessProbePort = tc.probePort
+			o.SecureServing.BindPort = tc.securePort
+
+			err := o.Validate(cmd)
+			if tc.wantErrSubstr == "" {
+				if err != nil && strings.Contains(err.Error(), "--metrics-bind-address") {
+					t.Errorf("Validate() unexpected metrics collision error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErrSubstr) {
+				t.Errorf("Validate() error = %v, want error containing %q", err, tc.wantErrSubstr)
+			}
+		})
+	}
+}

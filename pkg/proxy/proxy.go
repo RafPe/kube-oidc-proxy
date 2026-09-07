@@ -25,6 +25,7 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/audit"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/hooks"
@@ -136,6 +137,12 @@ type Proxy struct {
 	// warning.
 	warnLimiter *logging.Limiter
 
+	// metrics is the process recorder every request observation goes to. A
+	// nil recorder is a no-op, so a Proxy built without one (every unit test
+	// that constructs the struct directly, and a binary run without
+	// --metrics-bind-address) records nothing and never nil-checks.
+	metrics *metrics.Recorder
+
 	hooks       *hooks.Hooks
 	handleError errorHandlerFn
 }
@@ -165,6 +172,9 @@ type Dependencies struct {
 	SubjectAccessReviewer *subjectaccessreview.SubjectAccessReview
 	SecureServingInfo     *server.SecureServingInfo
 	Config                *Config
+
+	// Metrics is the process recorder. Optional: nil records nothing.
+	Metrics *metrics.Recorder
 }
 
 // New validates deps and constructs a Proxy. Invalid configurations fail here,
@@ -228,6 +238,7 @@ func New(deps Dependencies) (*Proxy, error) {
 	requestLogger := logging.ForComponent(deps.Logger, logging.ComponentRequest)
 
 	return &Proxy{
+		metrics:               deps.Metrics,
 		restConfig:            deps.RestConfig,
 		logger:                requestLogger,
 		oidcLog:               logging.ForComponent(deps.Logger, logging.ComponentOIDC),

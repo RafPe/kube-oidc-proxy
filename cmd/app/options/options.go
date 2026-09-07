@@ -28,6 +28,7 @@ type Options struct {
 	Audit                *AuditOptions
 	Client               *ClientOptions
 	Logging              *LoggingOptions
+	Metrics              *MetricsOptions
 	Misc                 *MiscOptions
 
 	nfs *cliflag.NamedFlagSets
@@ -45,6 +46,7 @@ func New() *Options {
 		Audit:                NewAuditOptions(nfs),
 		Client:               NewClientOptions(nfs),
 		Logging:              NewLoggingOptions(nfs),
+		Metrics:              NewMetricsOptions(nfs),
 		Misc:                 NewMiscOptions(nfs),
 
 		nfs: nfs,
@@ -107,6 +109,19 @@ func (o *Options) Validate(cmd *cobra.Command) error {
 
 	if err := o.Logging.Validate(); err != nil {
 		errs = append(errs, err)
+	}
+
+	if err := o.Metrics.Validate(); err != nil {
+		errs = append(errs, err)
+	} else if o.Metrics.Enabled() {
+		// Port() cannot fail here: Validate just accepted the address.
+		port, _ := o.Metrics.Port()
+		if port == o.App.ReadinessProbePort {
+			errs = append(errs, fmt.Errorf("--metrics-bind-address port %d is already used by the readiness probe", port))
+		}
+		if port == o.SecureServing.BindPort {
+			errs = append(errs, fmt.Errorf("--metrics-bind-address port %d is already used by the secure serving port", port))
+		}
 	}
 
 	if o.App.DisableImpersonation &&
