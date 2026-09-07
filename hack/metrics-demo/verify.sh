@@ -14,6 +14,8 @@ mkdir -p docs/dashboards
 # panels of a Prometheus that has never seen the demo; the announced port is
 # also the signal that the listener is bound, so nothing has to sleep and
 # hope.
+# shellcheck source=hack/metrics-demo/checks.sh
+. hack/metrics-demo/checks.sh
 # shellcheck source=hack/metrics-demo/portforward.sh
 . hack/metrics-demo/portforward.sh
 trap pf_cleanup EXIT
@@ -56,7 +58,7 @@ for f in "$CHART"/dashboards/*.json; do
   pf_check || exit 1
   curl -sf "http://127.0.0.1:$GRAFANA/render/d/$uid/$name?orgId=1&kiosk&from=now-30m&to=now&width=1920&height=1800&tz=UTC" -o "docs/dashboards/$name.png"
   # A rendered dashboard with data is not a tiny image.
-  [ "$(stat -f %z "docs/dashboards/$name.png" 2>/dev/null || stat -c %s "docs/dashboards/$name.png")" -gt 150000 ] \
+  [ "$(demo_file_size "docs/dashboards/$name.png")" -gt 150000 ] \
     || { echo "docs/dashboards/$name.png is suspiciously small" >&2; exit 1; }
 done
 echo "metrics demo: every panel has data; screenshots in docs/dashboards/"

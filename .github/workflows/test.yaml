@@ -77,6 +77,12 @@ jobs:
       - name: Verify metrics-demo image tag
         run: bash hack/verify-demo-image-tag.sh
 
+      # The assertions check.sh and verify.sh make, exercised against
+      # synthetic inputs so a demo run cannot be the first place they are
+      # tried. No cluster needed.
+      - name: Verify metrics-demo checks
+        run: bash hack/verify-metrics-demo.sh
+
       # The e2e framework's unit tests render the chart's ClusterRole and check
       # it grants every permission the proxy code needs.
       - name: Set up Helm
