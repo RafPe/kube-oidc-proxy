@@ -141,8 +141,13 @@ func mintProxyCertificate(client kubernetes.Interface, state, namespace, name, s
 	existing, err := client.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err == nil {
 		// Only the certificate is written out; the key never leaves the
-		// Secret and .state.
-		if err := os.WriteFile(filepath.Join(state, "proxy-ca.pem"), existing.Data["tls.crt"], 0600); err != nil {
+		// Secret and .state. A Secret that is not what the demo minted is
+		// refused here rather than surfacing later as an empty trust anchor.
+		cert, err := servingCertFromSecret(existing)
+		if err != nil {
+			return fmt.Errorf("secret %s/%s cannot be reused: %s; delete it to let the demo mint a new one", namespace, name, err)
+		}
+		if err := os.WriteFile(filepath.Join(state, "proxy-ca.pem"), cert, 0600); err != nil {
 			return fmt.Errorf("failed to write proxy-ca.pem: %s", err)
 		}
 		fmt.Printf("proxy serving certificate already minted in %s/%s\n", namespace, name)
@@ -178,4 +183,19 @@ func mintProxyCertificate(client kubernetes.Interface, state, namespace, name, s
 	fmt.Printf("proxy serving certificate minted for %s and 127.0.0.1 in %s/%s\n", host, namespace, name)
 
 	return nil
+}
+
+// servingCertFromSecret returns the serving certificate a kubernetes.io/tls
+// Secret carries, refusing any other type and an absent or empty tls.crt so a
+// malformed Secret fails here instead of producing an empty proxy-ca.pem.
+func servingCertFromSecret(secret *corev1.Secret) ([]byte, error) {
+	if secret.Type != corev1.SecretTypeTLS {
+		return nil, fmt.Errorf("type %s, want %s", secret.Type, corev1.SecretTypeTLS)
+	}
+	cert := secret.Data[corev1.TLSCertKey]
+	if len(cert) == 0 {
+		return nil, fmt.Errorf("no %s data", corev1.TLSCertKey)
+	}
+
+	return cert, nil
 }
