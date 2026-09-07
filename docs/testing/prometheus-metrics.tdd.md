@@ -4,8 +4,9 @@ Evidence for the metrics endpoint, its versioned contract and its chart
 surface, built across four phases (`metrics/phase-0-prep` through
 `metrics/phase-3-chart-e2e`). Every RED and GREEN cell below comes from a real
 run recorded while the change was built; no result here was written from
-expectation. The per-phase working notes, with the full output each line was
-taken from, are in `docs/superpowers/evidence/phase-{0,1,2,3}.md`.
+expectation. The full command output each row was taken from was captured
+during development and is not committed to the repository; the RED and GREEN
+cells quote the decisive lines from it verbatim.
 
 ## Journeys
 
