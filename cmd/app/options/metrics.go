@@ -28,12 +28,12 @@ func NewMetricsOptions(nfs *cliflag.NamedFlagSets) *MetricsOptions {
 func (m *MetricsOptions) AddFlags(fs *pflag.FlagSet) *MetricsOptions {
 	fs.StringVar(&m.BindAddress, "metrics-bind-address", "",
 		"Address (host:port) to serve Prometheus metrics on, over plain HTTP at "+
-			"GET /metrics. Empty (the default) or \"0\" disables the listener. The "+
-			"endpoint reveals traffic shape and health, never identities; restrict "+
-			"who can reach it with a NetworkPolicy. Use \"127.0.0.1:<port>\" when a "+
-			"sidecar does the scraping. Port 0 is not accepted: the chart and a "+
-			"ServiceMonitor must know the port. Must differ from --secure-port and "+
-			"--readiness-probe-port.")
+			"GET or HEAD /metrics. Empty (the default) or \"0\" disables the "+
+			"listener. The endpoint reveals traffic shape and health, never "+
+			"identities; restrict who can reach it with a NetworkPolicy. Use "+
+			"\"127.0.0.1:<port>\" when a sidecar does the scraping. Port 0 is not "+
+			"accepted: a scrape target must know the port in advance. Must differ "+
+			"from --secure-port and --readiness-probe-port.")
 	return m
 }
 
