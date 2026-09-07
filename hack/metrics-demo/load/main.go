@@ -55,12 +55,12 @@ import (
 const (
 	// The identity the demo's OIDC tokens carry, and the one the demo RBAC
 	// grants; see hack/metrics-demo/demo-identities.yaml.
-	demoUser      = "user@example.com"
-	demoClientID  = "kube-oidc-proxy"
-	demoPod       = "demo-shell"
-	demoSA        = "demo-passthrough"
-	impersonated  = "jjackson"
-	notImpersonat = "mallory"
+	demoUser        = "user@example.com"
+	demoClientID    = "kube-oidc-proxy"
+	demoPod         = "demo-shell"
+	demoSA          = "demo-passthrough"
+	impersonated    = "jjackson"
+	notImpersonated = "mallory"
 
 	// cacheWarmCalls is how many identical calls a cache-exercising scenario
 	// makes. The proxy runs two replicas behind a ClusterIP, each with its own
@@ -128,8 +128,8 @@ const (
 	// otherwise block its caller for ever, and Close behind it.
 	portForwardReadyTimeout = 30 * time.Second
 
-	watchHold  = 20 * time.Second
-	callTimout = 30 * time.Second
+	watchHold   = 20 * time.Second
+	callTimeout = 30 * time.Second
 )
 
 func main() {
@@ -689,7 +689,7 @@ func newGenerator(logger *slog.Logger, st *state, namespace string, tun *tunnel)
 		namespace: namespace,
 		tunnel:    tun,
 		client: &http.Client{
-			Timeout: callTimout,
+			Timeout: callTimeout,
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{RootCAs: st.proxyCAs, MinVersion: tls.VersionTLS12},
 			},
@@ -897,7 +897,7 @@ func (g *generator) scenarios() []scenario {
 		// decisions{deny,impersonation_denied}.
 		g.one("impersonation_denied", http.StatusForbidden, func(ctx context.Context) (int, error) {
 			return g.doWithValidToken(ctx, http.MethodGet, pods,
-				http.Header{"Impersonate-User": []string{notImpersonat}})
+				http.Header{"Impersonate-User": []string{notImpersonated}})
 		}),
 		// decisions{deny,too_many_impersonation_values}: refused on the
 		// header count before any review is issued.
@@ -1255,7 +1255,7 @@ func (g *generator) exec(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("failed to build an exec executor: %s", err)
 	}
 
-	execCtx, cancel := context.WithTimeout(ctx, callTimout)
+	execCtx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 
 	if err := executor.StreamWithContext(execCtx, remotecommand.StreamOptions{
