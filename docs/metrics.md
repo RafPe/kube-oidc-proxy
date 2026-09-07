@@ -211,7 +211,22 @@ left, which it does the moment there is any real data. None of the five groups
 by a label, so none needs `or on() label_replace(...)`, and each names its
 series with a literal `legendFormat` - in the order the five are named above,
 "failures", "errors", "errors and timeouts", "failures" and "attempts" -
-rather than letting Grafana label the fallback "Value". The demo does not fake any of them: in the screenshots below
+rather than letting Grafana label the fallback "Value".
+
+Three ratio panels need the same fallback for the same reason: the overview's
+denial ratio, and the security dashboard's OIDC rejection ratio and SAR deny
+ratio. Their numerator selects the denied or rejected outcome, which has no
+series until something is denied, while the denominator counts every outcome
+and has plenty - so an unguarded division matches nothing and the panel reads
+"No data" on a deployment that is refusing nobody. Each numerator is therefore
+written `(sum(rate(...)) or vector(0))`. It reads 0 against live traffic, and
+it still reads "No data" when the *denominator* is absent, which is the right
+answer: with no traffic at all there is no share to take. Grouped ratios keep
+no fallback - an unlabelled zero would draw as an extra series beside the real
+ones rather than fill a gap - and `hack/verify-chart-dashboards.sh` requires
+the fallback on exactly the ungrouped ones.
+
+The demo does not fake any of them: in the screenshots below
 the upstream-failure panel reads zero because the API server never failed to
 answer, which is what a healthy deployment looks like.
 

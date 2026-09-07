@@ -843,7 +843,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(kube_oidc_proxy_access_decisions_total{namespace=\"$namespace\",pod=~\"$pod\",decision=\"deny\"}[$__rate_interval])) / sum(rate(kube_oidc_proxy_access_decisions_total{namespace=\"$namespace\",pod=~\"$pod\"}[$__rate_interval]))",
+          "expr": "(sum(rate(kube_oidc_proxy_access_decisions_total{namespace=\"$namespace\",pod=~\"$pod\",decision=\"deny\"}[$__rate_interval])) or vector(0)) / sum(rate(kube_oidc_proxy_access_decisions_total{namespace=\"$namespace\",pod=~\"$pod\"}[$__rate_interval]))",
           "legendFormat": "denied",
           "range": true,
           "refId": "A"

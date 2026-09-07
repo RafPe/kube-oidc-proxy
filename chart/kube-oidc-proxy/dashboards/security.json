@@ -466,7 +466,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(kube_oidc_proxy_authentication_attempts_total{namespace=\"$namespace\",pod=~\"$pod\",auth_method=\"oidc\",outcome=\"rejected\"}[$__rate_interval])) / sum(rate(kube_oidc_proxy_authentication_attempts_total{namespace=\"$namespace\",pod=~\"$pod\",auth_method=\"oidc\"}[$__rate_interval]))",
+          "expr": "(sum(rate(kube_oidc_proxy_authentication_attempts_total{namespace=\"$namespace\",pod=~\"$pod\",auth_method=\"oidc\",outcome=\"rejected\"}[$__rate_interval])) or vector(0)) / sum(rate(kube_oidc_proxy_authentication_attempts_total{namespace=\"$namespace\",pod=~\"$pod\",auth_method=\"oidc\"}[$__rate_interval]))",
           "legendFormat": "rejected",
           "range": true,
           "refId": "A"
@@ -740,7 +740,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(kube_oidc_proxy_review_requests_total{namespace=\"$namespace\",pod=~\"$pod\",review=\"sar\",outcome=\"deny\"}[$__rate_interval])) / sum(rate(kube_oidc_proxy_review_requests_total{namespace=\"$namespace\",pod=~\"$pod\",review=\"sar\",outcome=~\"allow|deny\"}[$__rate_interval]))",
+          "expr": "(sum(rate(kube_oidc_proxy_review_requests_total{namespace=\"$namespace\",pod=~\"$pod\",review=\"sar\",outcome=\"deny\"}[$__rate_interval])) or vector(0)) / sum(rate(kube_oidc_proxy_review_requests_total{namespace=\"$namespace\",pod=~\"$pod\",review=\"sar\",outcome=~\"allow|deny\"}[$__rate_interval]))",
           "legendFormat": "denied",
           "range": true,
           "refId": "A"

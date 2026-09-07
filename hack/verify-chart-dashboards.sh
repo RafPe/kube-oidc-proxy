@@ -61,6 +61,21 @@ for f in "$CHART"/dashboards/*.json; do
   # interpolates.
   jq -e '[.. | objects | select(has("expr")) | select(.expr | test("vector\\(0\\)")) | . as $t | (($t.legendFormat // "")) as $lf | select(($lf | length) == 0 or ([$lf | scan("\\{\\{ *([A-Za-z_][A-Za-z0-9_]*) *\\}\\}")] | flatten | map(. as $n | select($t.expr | test("label_replace\\(.*\"" + $n + "\"") | not)) | length > 0))] | length == 0' "$f" >/dev/null \
     || { echo "$f: a vector(0) fallback has no legendFormat, or one naming labels the zero branch does not carry; use a literal legend or wrap vector(0) in label_replace" >&2; exit 1; }
+  # A ratio whose denominator is an ungrouped sum(rate(...)) must give its
+  # numerator an `or vector(0)` fallback. Counter children are created the
+  # first time an outcome occurs, so on a healthy deployment the deny/reject
+  # numerator has no series at all while the denominator has plenty: the
+  # division matches nothing and the panel reads "No data" where the honest
+  # answer is 0. `vector(0)` has an empty label set and so does an ungrouped
+  # `sum`, so the fallback divides cleanly - and when the denominator is
+  # itself absent the panel still reads "No data", which is right, because
+  # then there is no traffic to take a share of. Ratios that aggregate `by`
+  # a label are excluded: an unlabelled zero would draw as an extra series
+  # beside the real ones instead of filling a gap.
+  jq -e '[.. | objects | select(has("expr"))
+          | select(.expr | test("/ sum\\(rate\\("))
+          | select(.expr | test("\\(sum\\(rate\\(.*\\) or vector\\(0\\)\\) / sum\\(rate\\(") | not)] | length == 0' "$f" >/dev/null \
+    || { echo "$f: a ratio over an ungrouped sum(rate(...)) denominator does not wrap its numerator as (sum(rate(...)) or vector(0)); it reads No data instead of 0 while nothing is denied" >&2; exit 1; }
   # A stat that answers "what is the state now" must query instantly. A range
   # query makes Grafana's stat reduce every series that had a sample anywhere
   # in the window, so after a rollout the build identity of the pods that are
