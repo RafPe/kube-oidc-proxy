@@ -3,16 +3,16 @@
 set -euo pipefail
 STATE=hack/metrics-demo/.state
 KUBECONFIG=$STATE/kubeconfig; export KUBECONFIG
-# The image up.sh built and side-loaded. Derived the same way up.sh derives it,
-# so check.sh still works when it is run on its own; up.sh exports the tag it
-# actually used, which is what wins when the two could differ (a commit made
-# between the two calls).
-IMAGE_TAG=${METRICS_DEMO_IMAGE_TAG:-demo-$(git describe --tags --always --dirty | tr '+' '-')}
-PROXY_IMAGE=kube-oidc-proxy:$IMAGE_TAG
 PROXY_PODS=(app.kubernetes.io/name=kube-oidc-proxy app.kubernetes.io/instance=kop)
-for f in kubeconfig issuer-ca.pem issuer-key.pem issuer-url proxy-ca.pem; do
+for f in kubeconfig issuer-ca.pem issuer-key.pem issuer-url proxy-ca.pem image-tag image-version; do
   [ -s "$STATE/$f" ] || { echo "missing $STATE/$f" >&2; exit 1; }
 done
+# What up.sh built and side-loaded, read back rather than re-derived: the tree
+# can have moved on since - a commit, an edit, a `git checkout` - and the
+# question here is what the pods are running, not what the tree describes now.
+IMAGE_TAG=$(cat "$STATE/image-tag")
+IMAGE_VERSION=$(cat "$STATE/image-version")
+PROXY_IMAGE=kube-oidc-proxy:$IMAGE_TAG
 kubectl -n monitoring rollout status deploy/kps-grafana --timeout=1s >/dev/null || { echo "grafana not ready" >&2; exit 1; }
 kubectl -n monitoring get prometheus -o name | grep -q . || { echo "no Prometheus" >&2; exit 1; }
 kubectl -n proxy rollout status deploy/kop-kube-oidc-proxy --timeout=1s >/dev/null || { echo "proxy not ready" >&2; exit 1; }
@@ -71,27 +71,26 @@ done
 [ "$up" = "1" ] || { echo "proxy target not up in Prometheus (up=$up)" >&2; exit 1; }
 
 # What each pod reports as its build. The tag assertion above proves the pods
-# run the image this checkout built; this proves that image was built from a
-# committed tree, because the screenshots are documentation and a Version panel
-# reading "-dirty" documents a build nobody else can reproduce. `git describe
-# --dirty` only notices modified tracked files, while the version stamp
-# (hack/lib/version.sh) uses `git status`, so an untracked file makes the
-# binary dirty without changing the tag - only this check sees that. Skipped
-# when the tree really is dirty: building from one is a legitimate thing to do
-# while developing, it is just not what the committed screenshots come from.
-if [ -n "$(git status --porcelain)" ]; then
-  echo "working tree is dirty; not asserting a clean build_info"
-else
-  while read -r name _; do
-    pf_check || exit 1
-    pf_start port proxy "pod/$name" 9090 </dev/null
-    # shellcheck disable=SC2154  # pf_start assigns `port` with printf -v.
-    info=$(curl -sf "http://127.0.0.1:$port/metrics" | grep '^kube_oidc_proxy_build_info' || true)
-    [ -n "$info" ] || { echo "pod $name exposed no kube_oidc_proxy_build_info" >&2; exit 1; }
-    case "$info" in
-      *-dirty*) echo "pod $name reports a dirty build from a clean tree: $info" >&2; exit 1 ;;
-    esac
-    echo "  $name $info"
-  done <<<"$pods"
-fi
+# run the image up.sh side-loaded; this proves that image is the binary up.sh
+# built, by comparing the version it stamped with the one every pod exposes.
+# The two can only differ if a pod is serving something else, which is exactly
+# the failure the tag alone used to hide. Run unconditionally: a dirty version
+# is a legitimate thing to be running while developing, and asserting equality
+# reports it rather than skipping the check - and because the version comes
+# from `git status` and not from `git describe --dirty`, an untracked .go file
+# is dirty here too.
+while read -r name _; do
+  pf_check || exit 1
+  pf_start port proxy "pod/$name" 9090 </dev/null
+  # shellcheck disable=SC2154  # pf_start assigns `port` with printf -v.
+  info=$(curl -sf "http://127.0.0.1:$port/metrics" | grep '^kube_oidc_proxy_build_info' || true)
+  [ -n "$info" ] || { echo "pod $name exposed no kube_oidc_proxy_build_info" >&2; exit 1; }
+  reported=$(printf '%s' "$info" | sed -n 's/.*[{,]version="\([^"]*\)".*/\1/p')
+  [ "$reported" = "$IMAGE_VERSION" ] || {
+    echo "pod $name reports build_info version '$reported', but $PROXY_IMAGE was built from '$IMAGE_VERSION'" >&2
+    echo "$info" >&2
+    exit 1
+  }
+  echo "  $name $info"
+done <<<"$pods"
 echo "metrics demo: ready"

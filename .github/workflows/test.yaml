@@ -72,6 +72,11 @@ jobs:
       - name: Verify metrics-demo port-forwards
         run: bash hack/verify-portforward.sh
 
+      # The demo image tag is what makes helm roll the proxy pods after a
+      # rebuild. Guarded against a throwaway repository; no cluster needed.
+      - name: Verify metrics-demo image tag
+        run: bash hack/verify-demo-image-tag.sh
+
       # The e2e framework's unit tests render the chart's ClusterRole and check
       # it grants every permission the proxy code needs.
       - name: Set up Helm

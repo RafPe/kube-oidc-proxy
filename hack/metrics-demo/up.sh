@@ -31,18 +31,6 @@ STATE=hack/metrics-demo/.state
 ISSUER_IMAGE=oidc-issuer-e2e
 ARCH=$(go env GOARCH)
 
-# The proxy image tag carries the build identity, and is never constant.
-# `helm upgrade --install` only restarts pods when something in the pod
-# template changes: with a fixed tag the reference stays
-# kube-oidc-proxy:demo, side-loading a freshly built image over it changes
-# nothing Helm can see, and the previous build keeps serving. The overview's
-# Version panel then reports a binary that is not the one in the tree - which
-# is exactly the panel an operator would trust to tell them otherwise.
-# check.sh asserts the pods really run this tag.
-METRICS_DEMO_IMAGE_TAG=demo-$(git describe --tags --always --dirty | tr '+' '-')
-export METRICS_DEMO_IMAGE_TAG
-PROXY_IMAGE=kube-oidc-proxy:$METRICS_DEMO_IMAGE_TAG
-
 mkdir -p "$STATE"
 KUBECONFIG=$STATE/kubeconfig; export KUBECONFIG
 
@@ -56,8 +44,26 @@ else
   "${KIND[@]}" create cluster --name "$CLUSTER" --image "$NODE_IMAGE" --kubeconfig "$STATE/kubeconfig"
 fi
 
-step "build and load the proxy image $PROXY_IMAGE"
+step "build and load the proxy image"
 make build
+# The tag names the build that was just produced, and is never constant:
+# `helm upgrade --install` restarts pods only when something in the pod
+# template changes, so a tag that repeats leaves the previous build serving
+# under a freshly side-loaded image nobody is running. Derived after the build,
+# not before: `make build` runs `generate` first, and the ldflags that stamp
+# build_info are expanded inside that recipe, so a tree sampled beforehand can
+# describe a different version from the one the binary reports.
+# shellcheck source=hack/metrics-demo/imagetag.sh
+. hack/metrics-demo/imagetag.sh
+demo_build_identity METRICS_DEMO_IMAGE_TAG METRICS_DEMO_VERSION "bin/$ARCH/kube-oidc-proxy"
+# shellcheck disable=SC2154  # both are assigned by demo_build_identity's printf -v.
+PROXY_IMAGE=kube-oidc-proxy:$METRICS_DEMO_IMAGE_TAG
+# check.sh reads these back, so a standalone run compares the running pods
+# against what was actually deployed rather than against whatever the tree
+# happens to describe by the time it runs.
+printf '%s\n' "$METRICS_DEMO_IMAGE_TAG" >"$STATE/image-tag"
+printf '%s\n' "$METRICS_DEMO_VERSION" >"$STATE/image-version"
+echo "image $PROXY_IMAGE, reporting build_info version $METRICS_DEMO_VERSION"
 # The Dockerfile copies bin/${TARGETARCH}/kube-oidc-proxy; BuildKit does not
 # always populate TARGETARCH, so pass the host's explicitly (the kind node
 # matches the host architecture).

@@ -42,7 +42,7 @@ screenshots were taken against exactly these.
 
 | Command | What it does | What it leaves behind |
 | --- | --- | --- |
-| `make metrics_demo_up` | Creates the kind cluster `kube-oidc-proxy-metrics-demo`, builds and side-loads the proxy image under a tag carrying the build identity and the mock-issuer image, installs kube-prometheus-stack, deploys the issuer, installs this chart with `metrics.enabled`, `metrics.serviceMonitor.enabled` and `metrics.dashboards.enabled`, applies the demo RBAC and the `demo-shell` pod, then runs `check.sh`. | `.state/` with the kubeconfig, the issuer CA, key and URL, and the proxy's serving certificate. |
+| `make metrics_demo_up` | Creates the kind cluster `kube-oidc-proxy-metrics-demo`, builds and side-loads the proxy image under a tag carrying the build identity and the mock-issuer image, installs kube-prometheus-stack, deploys the issuer, installs this chart with `metrics.enabled`, `metrics.serviceMonitor.enabled` and `metrics.dashboards.enabled`, applies the demo RBAC and the `demo-shell` pod, then runs `check.sh`. | `.state/` with the kubeconfig, the issuer CA, key and URL, the proxy's serving certificate, and the image tag and version it deployed. |
 | `make metrics_demo_load` | Runs the load generator. `METRICS_DEMO_LOAD_ARGS=--once` runs each traffic kind exactly once and fails if any call did not produce its expected status; `METRICS_DEMO_LOAD_ARGS="--duration 10m"` drives traffic for ten minutes. | One JSON log line per call on stdout. |
 | `make metrics_demo_verify` | Queries every `expr` in every dashboard against the demo's Prometheus and fails if any returns an empty result, then renders each dashboard through Grafana's image renderer. | `docs/dashboards/overview.png`, `security.png`, `capacity.png`. |
 | `make metrics_demo_down` | Deletes the cluster and `.state/`. | Nothing. |
@@ -50,24 +50,42 @@ screenshots were taken against exactly these.
 `up.sh` is idempotent: re-running it after a failure resumes rather than
 starting over. On the reference run it took about four minutes end to end.
 
-## Why the proxy image tag is not constant
+## Why the proxy image tag is never the same twice
 
-`up.sh` tags the proxy image `demo-$(git describe --tags --always --dirty)`,
-never a constant `demo`. `helm upgrade --install` restarts pods only when
-something in the pod template changes; side-loading a rebuilt image under an
-unchanged tag changes nothing Helm can see, so the previous build keeps
-serving and the overview's Version panel reports a binary that is not the one
-in the tree - the one panel an operator would trust to tell them otherwise.
+`helm upgrade --install` restarts pods only when something in the pod template
+changes, and the image tag is the only part of it a rebuild moves. Side-load a
+rebuilt image under a tag the pods already run and Helm sees nothing to do: the
+previous build keeps serving, and the overview's Version panel reports a binary
+that is not the one in the tree - the one panel an operator would trust to tell
+them otherwise.
 
-`check.sh` asserts it: every pod matching the chart's own selector runs
-exactly that tag (`demo-shell` and the issuer live in the same namespace and
-were never meant to), and, when `git status` is clean, that each pod's
-`kube_oidc_proxy_build_info` carries no `-dirty`. That second assertion is not
-redundant: `git describe --dirty` only notices modified tracked files, while
-the version stamp in `hack/lib/version.sh` uses `git status`, so an untracked
-file produces a dirty binary under a clean-looking tag. On a genuinely dirty
-tree the build_info assertion is skipped and says so - developing against a
-dirty tree is fine, it is just not where the committed screenshots come from.
+`hack/metrics-demo/imagetag.sh` derives the tag, and it is the only place that
+does. From a clean tree it is the human-readable `demo-<version>`, the version
+being the one `hack/lib/version.sh` stamps into the binary. From a dirty tree it
+gains a short digest of the binary that was just built. The digest is of the
+artifact, deliberately not of `git diff HEAD` and the untracked file list:
+hashing the source would repeat across two rebuilds of an unchanged dirty tree
+and put the bug straight back, while the binary carries a build date stamped to
+the second, so every dirty rebuild gets its own tag and every dirty rebuild
+rolls the pods.
+
+`up.sh` derives it after `make build`, not before - the same ldflags are
+expanded inside that recipe, and `make build` runs `generate` first - and writes
+both values to `.state/image-tag` and `.state/image-version`. `check.sh` reads
+them back rather than re-deriving anything, so a standalone run compares the
+pods against what was actually deployed even if the tree has since moved on. It
+asserts two things: every pod matching the chart's own selector runs exactly
+that image (`demo-shell` and the issuer live in the same namespace and were
+never meant to), and every pod's `kube_oidc_proxy_build_info` reports exactly
+the version that was built. The equality subsumes the older "no `-dirty` from a
+clean tree" check and closes the hole beside it, because both the tag and the
+version now follow `git status` rather than `git describe --dirty`, which
+ignores untracked files.
+
+`hack/verify-demo-image-tag.sh` guards the derivation against a throwaway
+repository - clean tag human-readable, two consecutive dirty builds at one HEAD
+distinct, an untracked file enough to change the tag - and checks that nothing
+else re-derives it. It needs no cluster and runs in CI.
 
 ## Why `check.sh` waits
 
