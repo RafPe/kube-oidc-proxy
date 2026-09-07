@@ -164,12 +164,25 @@ overview's "Upstream failures/s" panel reads a flat zero, which is the healthy
 reading. That panel and four others fall back to `vector(0)` for exactly this
 reason: a counter child that has never been incremented has no series at all,
 and a panel that says "No data" where it should say zero is a panel an operator
-learns to ignore. The two that group by a label write the fallback as
-`or on() label_replace(vector(0), ...)`: `on()` keeps the zero out of the panel
-once real series exist (a bare `or vector(0)` draws the unlabelled zero
-*alongside* them, because an empty label set never matches a grouped one), and
-the `label_replace` names it, so the legend reads `none` rather than a blank
-row or Grafana's placeholder `Value`.
+learns to ignore. None of the five groups by a label. Each aggregates to a
+single series first - `sum(rate(...))` for the three rate panels,
+`sum(increase(...))` for the two counting ones - and then writes the fallback
+as a plain `or vector(0)`, which is well defined because `vector(0)` and an
+ungrouped `sum()` both carry an empty label set; none of them needs
+`or on() label_replace(...)`. Each names its series with a literal
+`legendFormat` - "failures", "errors", "errors and timeouts", "failures",
+"attempts" - rather than letting Grafana label the fallback `Value`.
+
+Three ratio panels take the same fallback on their numerator: the overview's
+"Denial ratio" and the security dashboard's "OIDC rejection ratio" and "SAR
+deny ratio", each written `(sum(rate(...)) or vector(0)) / sum(rate(...))`.
+Without it the numerator is missing whenever nothing has been denied while the
+denominator is not, and the division matches nothing at all; with it the panel
+reads 0, and it still reads "No data" when the denominator is absent, because
+then there is no traffic to take a share of.
+`hack/verify-chart-dashboards.sh` enforces both rules: a literal legend on
+every `vector(0)` fallback, and the fallback itself on every ratio whose
+denominator is an ungrouped `sum(rate(...))`.
 
 ## What each file is
 
