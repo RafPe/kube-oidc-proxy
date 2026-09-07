@@ -173,5 +173,10 @@ demo/
 │   ├── authentication-config.yaml.tpl      # multi-issuer AuthenticationConfiguration (CA inlined at runtime)
 │   ├── proxy-values.yaml                   # Helm values for the proxy
 │   └── rbac.yaml                           # view ClusterRoleBindings for the two identities
+├── lab-log-delivery/                       # optional: ship the audit log + structured log to Kinesis and S3 (local emulator)
 └── .generated/                             # gitignored: certs, rendered config, kubeconfigs
 ```
+
+The [log-delivery lab](./lab-log-delivery/README.md) builds on this cluster:
+run it after `./run.sh` to see the proxy's audit events and structured log
+flow through a node agent into Kinesis and S3, all emulated locally.

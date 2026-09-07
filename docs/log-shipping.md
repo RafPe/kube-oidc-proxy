@@ -67,6 +67,12 @@ has an AWS identity. The rest of this page assumes EKS with IAM Roles for
 Service Accounts (IRSA); on another platform substitute the credential
 mechanism and keep everything else.
 
+> **Try it locally first.** [`demo/lab-log-delivery`](../demo/lab-log-delivery/README.md)
+> runs this exact recipe on a kind cluster against a local AWS emulator and
+> follows one request's audit event and log record into an S3 bucket. It is
+> the quickest way to see the record shape your consumers will get, and to
+> check a change to the agent values before it meets a real account.
+
 ## AWS side
 
 Two streams, so audit and operational logs get their own IAM scope, retention

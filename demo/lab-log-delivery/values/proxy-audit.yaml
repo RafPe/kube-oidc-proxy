@@ -1,0 +1,14 @@
+# Audit values from docs/log-shipping.md, applied on top of the demo's
+# proxy values by run.sh. Audit events go to stdout next to the structured log.
+extraArgs:
+  audit-policy-file: /audit/policy.yaml
+  audit-log-path: "-"
+  audit-log-format: json
+extraVolumeMounts:
+  - name: audit-policy
+    mountPath: /audit
+    readOnly: true
+extraVolumes:
+  - name: audit-policy
+    configMap:
+      name: kube-oidc-proxy-audit-policy
