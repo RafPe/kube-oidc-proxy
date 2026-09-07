@@ -73,6 +73,8 @@ render --set metrics.enabled=false --set-json 'metrics.port=9090.5' >/dev/null 2
 render --set metrics.enabled=false --set metrics.portName=a--b >/dev/null 2>&1 || { echo "invalid metrics.portName must render while metrics are disabled" >&2; exit 1; }
 render --set metrics.enabled=false --set metrics.serviceMonitor.sampleLimit=-1 >/dev/null 2>&1 || { echo "negative sampleLimit must render while the ServiceMonitor is disabled" >&2; exit 1; }
 render --set metrics.enabled=true --set metrics.serviceMonitor.enabled=false --set metrics.serviceMonitor.labelLimit=-1 >/dev/null 2>&1 || { echo "negative labelLimit must render while the ServiceMonitor is disabled" >&2; exit 1; }
+render --set metrics.enabled=false --set metrics.tls.enabled=true >/dev/null 2>&1 || { echo "reserved metrics.tls.enabled must render while metrics are disabled" >&2; exit 1; }
+render --set metrics.enabled=false --set metrics.authentication.mode=delegated >/dev/null 2>&1 || { echo "reserved metrics.authentication.mode must render while metrics are disabled" >&2; exit 1; }
 ! render --set metrics.enabled=true --set metrics.portName=Metrics_Port >/dev/null 2>&1 || { echo "invalid metrics.portName must fail to render" >&2; exit 1; }
 # A fractional port passes `int` in the Deployment but reaches the Service as
 # 9090.5; a non-numeric one casts to 0. Both must be refused as non-integers,

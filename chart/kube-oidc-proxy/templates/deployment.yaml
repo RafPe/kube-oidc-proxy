@@ -2,10 +2,13 @@
 {{ $defaultTlsSecretName := printf "%s-tls" $fullname }}
 {{ $tlsSecretName := .Values.tls.secretName | default $defaultTlsSecretName }}
 {{ $metrics := .Values.metrics | default dict }}
-{{- if dig "tls" "enabled" false $metrics }}
+{{/* Every metrics guard, these two included, fires only for a listener the
+     chart renders: with metrics disabled nothing under metrics.* is read. */}}
+{{- $metricsOn := dig "enabled" false $metrics }}
+{{- if and $metricsOn (dig "tls" "enabled" false $metrics) }}
 {{- fail "metrics.tls.enabled is reserved for a later release and must stay false" }}
 {{- end }}
-{{- if ne (toString (dig "authentication" "mode" "none" $metrics)) "none" }}
+{{- if and $metricsOn (ne (toString (dig "authentication" "mode" "none" $metrics)) "none") }}
 {{- fail "metrics.authentication.mode is reserved for a later release and must stay \"none\"" }}
 {{- end }}
 {{/* Validated and cast once in _helpers.tpl so every template that carries
