@@ -317,7 +317,7 @@ make metrics_demo_down                                   # delete the cluster an
 `up` leaves `hack/metrics-demo/.state/` holding the kubeconfig, the mock
 issuer's CA, key and URL and the proxy's serving certificate; the load
 generator and `verify` read it, and `down` removes it. It needs Docker, Go,
-kubectl, helm, jq and yq — but no `kind` CLI: the scripts run the kind pinned
+kubectl, helm, jq and curl — but no `kind` CLI: the scripts run the kind pinned
 in `go.mod`, which is the one the e2e suite uses. Prerequisites, the pinned
 versions and what each file does are in
 [`hack/metrics-demo/README.md`](../hack/metrics-demo/README.md).

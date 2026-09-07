@@ -19,7 +19,8 @@ rendered without a login.
   `kind` on `PATH`. A `kind` CLI older than the node image below fails with
   `your configuration file uses an old API spec: "kubeadm.k8s.io/v1beta3"`, so
   the demo deliberately does not use it. **You do not need a `kind` CLI.**
-- **kubectl**, **helm**, **jq** and **yq** on `PATH`.
+- **kubectl**, **helm**, **jq** and **curl** on `PATH`. `curl` is what
+  `check.sh` and `verify.sh` query Prometheus and Grafana with.
 - **git**, and network access, for the kube-prometheus-stack chart, the
   container images, and the pinned Grafana dashboard linter that
   `hack/verify-chart-dashboards.sh` builds from a shallow clone (every
