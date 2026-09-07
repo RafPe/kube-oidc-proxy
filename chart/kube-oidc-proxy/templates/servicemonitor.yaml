@@ -1,0 +1,99 @@
+{{- /* dig with defaults: on `helm upgrade --reuse-values` from a release
+     without the metrics key, $m is an empty dict and nothing renders. */ -}}
+{{- $m := .Values.metrics | default dict -}}
+{{- $sm := dig "serviceMonitor" dict $m -}}
+{{- $enabled := dig "enabled" false $m -}}
+{{- $smEnabled := dig "enabled" false $sm -}}
+{{- if and $smEnabled (not $enabled) -}}
+{{- fail "metrics.serviceMonitor.enabled requires metrics.enabled" -}}
+{{- end -}}
+{{- if and $smEnabled (dig "podMonitor" "enabled" false $m) -}}
+{{- fail "metrics.serviceMonitor.enabled and metrics.podMonitor.enabled are mutually exclusive" -}}
+{{- end -}}
+{{- /* The limits are cast and range-checked here rather than emitted through
+     `with`, which passes a negative value straight to Prometheus and treats 0
+     and "" alike. 0 means "no limit" and omits the field. The checks fire only
+     for a monitor that renders; a disabled block's values are never read. */ -}}
+{{- $render := and $enabled $smEnabled -}}
+{{- $sampleLimit := int (dig "sampleLimit" 0 $sm) -}}
+{{- if and $render (lt $sampleLimit 0) -}}
+{{- fail "metrics.serviceMonitor.sampleLimit must be >= 0" -}}
+{{- end -}}
+{{- $targetLimit := int (dig "targetLimit" 0 $sm) -}}
+{{- if and $render (lt $targetLimit 0) -}}
+{{- fail "metrics.serviceMonitor.targetLimit must be >= 0" -}}
+{{- end -}}
+{{- $labelLimit := int (dig "labelLimit" 0 $sm) -}}
+{{- if and $render (lt $labelLimit 0) -}}
+{{- fail "metrics.serviceMonitor.labelLimit must be >= 0" -}}
+{{- end -}}
+{{- if and $enabled $smEnabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "kube-oidc-proxy.fullname" . }}
+  namespace: {{ $sm.namespace | default .Release.Namespace }}
+  labels:
+{{ include "kube-oidc-proxy.labels" . | indent 4 }}
+    {{- with $sm.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with $sm.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with $sm.jobLabel }}
+  jobLabel: {{ . | quote }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "kube-oidc-proxy.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: metrics
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  {{- with $sm.targetLabels }}
+  targetLabels:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with $sm.podTargetLabels }}
+  podTargetLabels:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- if gt $sampleLimit 0 }}
+  sampleLimit: {{ $sampleLimit }}
+  {{- end }}
+  {{- if gt $targetLimit 0 }}
+  targetLimit: {{ $targetLimit }}
+  {{- end }}
+  {{- if gt $labelLimit 0 }}
+  labelLimit: {{ $labelLimit }}
+  {{- end }}
+  endpoints:
+    # `port` names a Service port, not a container port: it must match
+    # metrics.portName as rendered onto the metrics Service.
+    - port: {{ include "kube-oidc-proxy.metricsPortName" $ }}
+      path: {{ $sm.path | default "/metrics" }}
+      scheme: {{ $sm.scheme | default "http" }}
+      honorLabels: {{ $sm.honorLabels | default false }}
+      {{- with $sm.interval }}
+      interval: {{ . | quote }}
+      {{- end }}
+      {{- with $sm.scrapeTimeout }}
+      scrapeTimeout: {{ . | quote }}
+      {{- end }}
+      {{- with $sm.tlsConfig }}
+      tlsConfig:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $sm.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $sm.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

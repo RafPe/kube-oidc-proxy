@@ -29,6 +29,9 @@ type ProxyExtras struct {
 	Volumes      []corev1.Volume
 	VolumeMounts []corev1.VolumeMount
 	Containers   []corev1.Container
+	// Ports are added to the proxy container, so a test can give it the named
+	// port the chart renders.
+	Ports []corev1.ContainerPort
 }
 
 func (h *Helper) DeployProxy(ns *corev1.Namespace, issuerURL *url.URL, clientID string,
@@ -117,6 +120,7 @@ func (h *Helper) DeployProxyWithExtras(ns *corev1.Namespace, issuerURL *url.URL,
 	volumes := extraVolumes
 	if extras != nil {
 		cnt.VolumeMounts = append(cnt.VolumeMounts, extras.VolumeMounts...)
+		cnt.Ports = append(cnt.Ports, extras.Ports...)
 		volumes = append(volumes, extras.Volumes...)
 	}
 

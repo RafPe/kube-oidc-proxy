@@ -102,3 +102,69 @@ is nil rather than its default.
 {{- range $keys -}}{{- $lowered = append $lowered (lower .) -}}{{- end -}}
 {{- $lowered | uniq | sortAlpha | toJson -}}
 {{- end -}}
+
+{{/*
+Name of the dedicated metrics Service: the full name, shortened so that the
+"-metrics" suffix keeps the result within the 63-character Service name limit.
+*/}}
+{{- define "kube-oidc-proxy.metricsServiceName" -}}
+{{- printf "%s-metrics" (include "kube-oidc-proxy.fullname" . | trunc 55 | trimSuffix "-") -}}
+{{- end -}}
+
+{{/*
+The metrics container and Service port, validated once and returned as an
+integer.
+
+Every template that needs the port includes this rather than reading
+`metrics.port` itself: the Deployment used to cast with `int` while the
+Service and the NOTES emitted the raw value, so `--set-json
+'metrics.port=9090.5'` rendered containerPort 9090 next to Service port
+9090.5. Casting is not enough on its own — `int` swallows the error and
+yields 0 for a non-numeric value — so the raw value is compared with its own
+cast before the range checks run, and a non-integer is named as such instead
+of being reported as out of range.
+
+Callers pass the root context ($), because the value lookup is absolute.
+*/}}
+{{- define "kube-oidc-proxy.metricsPort" -}}
+{{- $metrics := .Values.metrics | default dict -}}
+{{- $raw := dig "port" 9090 $metrics -}}
+{{- $port := int $raw -}}
+{{- /* The guards fire only for a listener the chart renders; a disabled
+     block's values are never read, so they are not validated. */ -}}
+{{- $on := dig "enabled" false $metrics -}}
+{{- if and $on (ne (toString $port) (toString $raw)) -}}
+{{- fail (printf "metrics.port must be an integer, got %v" $raw) -}}
+{{- end -}}
+{{- if and $on (or (lt $port 1) (gt $port 65535)) -}}
+{{- fail "metrics.port must be between 1 and 65535" -}}
+{{- end -}}
+{{- if and $on (or (eq $port 8443) (eq $port 8080)) -}}
+{{- fail "metrics.port must differ from 8443 (the secure port) and 8080 (the readiness port)" -}}
+{{- end -}}
+{{- $port -}}
+{{- end -}}
+
+{{/*
+The name of the metrics container and Service port, validated once.
+
+Kubernetes' IsValidPortName is the contract: at most 15 characters, only
+lowercase alphanumerics and dashes, at least one letter, no leading or
+trailing dash and no consecutive dashes. A single anchored regex cannot
+express "no --" without becoming unreadable, so the charset, the letter and
+the dash pair are three separate checks.
+*/}}
+{{- define "kube-oidc-proxy.metricsPortName" -}}
+{{- $name := toString (dig "portName" "metrics" (.Values.metrics | default dict)) -}}
+{{- $on := dig "enabled" false (.Values.metrics | default dict) -}}
+{{- if and $on (not (regexMatch "^[a-z0-9]([-a-z0-9]{0,13}[a-z0-9])?$" $name)) -}}
+{{- fail "metrics.portName must be a valid IANA_SVC_NAME: 1-15 lowercase alphanumerics or dashes, not starting or ending with a dash" -}}
+{{- end -}}
+{{- if and $on (not (regexMatch "[a-z]" $name)) -}}
+{{- fail "metrics.portName must contain at least one letter" -}}
+{{- end -}}
+{{- if and $on (contains "--" $name) -}}
+{{- fail "metrics.portName must not contain consecutive dashes" -}}
+{{- end -}}
+{{- $name -}}
+{{- end -}}

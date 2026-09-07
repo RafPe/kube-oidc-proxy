@@ -1,6 +1,39 @@
 {{ $fullname := include "kube-oidc-proxy.fullname" . }}
 {{ $defaultTlsSecretName := printf "%s-tls" $fullname }}
 {{ $tlsSecretName := .Values.tls.secretName | default $defaultTlsSecretName }}
+{{ $metrics := .Values.metrics | default dict }}
+{{/* Every metrics guard, these two included, fires only for a listener the
+     chart renders: with metrics disabled nothing under metrics.* is read. */}}
+{{- $metricsOn := dig "enabled" false $metrics }}
+{{- if and $metricsOn (dig "tls" "enabled" false $metrics) }}
+{{- fail "metrics.tls.enabled is reserved for a later release and must stay false" }}
+{{- end }}
+{{- if and $metricsOn (ne (toString (dig "authentication" "mode" "none" $metrics)) "none") }}
+{{- fail "metrics.authentication.mode is reserved for a later release and must stay \"none\"" }}
+{{- end }}
+{{/* Validated and cast once in _helpers.tpl so every template that carries
+     the port or its name agrees with this one. */}}
+{{- $metricsPort := int (include "kube-oidc-proxy.metricsPort" $) }}
+{{- $metricsPortName := include "kube-oidc-proxy.metricsPortName" $ }}
+{{- $metricsBind := toString (dig "bindAddress" "" $metrics) }}
+{{- if and (dig "enabled" false $metrics) (eq $metricsBind "0") }}
+{{- fail "metrics.bindAddress=\"0\" disables the listener in the binary; set metrics.enabled=false instead" }}
+{{- end }}
+{{- if and (dig "enabled" false $metrics) $metricsBind (not (hasSuffix (printf ":%d" $metricsPort) $metricsBind)) }}
+{{- fail (printf "metrics.bindAddress %q must end with :%d, the port the Service and monitors target" $metricsBind $metricsPort) }}
+{{- end }}
+{{/* extraArgs render after the generated --metrics-bind-address, so a
+     duplicate there wins pflag parsing while the container port, the metrics
+     Service and the monitors still follow metrics.port. Refuse it rather than
+     install a listener nothing can scrape. Both key spellings are caught: the
+     template prefixes the key with "--" itself. */}}
+{{- if dig "enabled" false $metrics }}
+{{- range $key := keys (.Values.extraArgs | default dict) }}
+{{- if or (eq $key "metrics-bind-address") (eq $key "--metrics-bind-address") }}
+{{- fail (printf "extraArgs.%s conflicts with the metrics listener the chart renders; set metrics.port (or metrics.bindAddress) instead, so the flag, the container port, the metrics Service and the monitors keep agreeing" $key) }}
+{{- end }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -55,6 +88,10 @@ spec:
         ports:
         - containerPort: 8443
         - containerPort: 8080
+        {{- if dig "enabled" false $metrics }}
+        - containerPort: {{ $metricsPort }}
+          name: {{ $metricsPortName }}
+        {{- end }}
         readinessProbe:
           httpGet:
             path: /ready
@@ -132,6 +169,9 @@ spec:
           {{ end }}
           {{- if and (not (kindIs "invalid" .Values.logging.verbosity)) (ne (toString .Values.logging.verbosity) "") }}
           - "--v={{ .Values.logging.verbosity }}"
+          {{ end }}
+          {{- if dig "enabled" false $metrics }}
+          - "--metrics-bind-address={{ dig "bindAddress" "" $metrics | default (printf "0.0.0.0:%d" $metricsPort) }}"
           {{ end }}
           {{- range $key, $value := .Values.extraArgs }}
           - "--{{ $key }}={{ $value }}"

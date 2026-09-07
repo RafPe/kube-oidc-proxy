@@ -10,6 +10,7 @@ on:
       - 'hack/verify-chart-logging.sh'
       - 'hack/verify-chart-rbac.sh'
       - 'hack/verify-chart-namespace.sh'
+      - 'hack/verify-chart-metrics.sh'
   pull_request:
     paths:
       - 'chart/kube-oidc-proxy/**'
@@ -17,6 +18,7 @@ on:
       - 'hack/verify-chart-logging.sh'
       - 'hack/verify-chart-rbac.sh'
       - 'hack/verify-chart-namespace.sh'
+      - 'hack/verify-chart-metrics.sh'
 
 permissions:
   contents: read
@@ -51,6 +53,15 @@ jobs:
 
       - name: helm template (multi-issuer fixture)
         run: helm template ci-multi "$CHART" -f "$CHART/ci/multi-issuer-values.yaml" > /dev/null
+
+      - name: helm lint (metrics fixture)
+        run: helm lint "$CHART" -f "$CHART/ci/metrics-values.yaml"
+
+      - name: helm template (metrics fixture)
+        run: helm template ci-metrics "$CHART" -f "$CHART/ci/metrics-values.yaml" > /dev/null
+
+      - name: metrics values render the listener, the Service and the monitors
+        run: bash hack/verify-chart-metrics.sh
 
       - name: logging values render as proxy flags
         run: bash hack/verify-chart-logging.sh

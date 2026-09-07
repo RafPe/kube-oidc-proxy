@@ -1,0 +1,40 @@
+{{- $m := .Values.metrics | default dict -}}
+{{- $np := .Values.networkPolicy | default dict -}}
+{{- $npEnabled := dig "enabled" false $np -}}
+{{- $from := dig "metrics" "from" list $np -}}
+{{- if and $npEnabled (not (dig "enabled" false $m)) -}}
+{{- fail "networkPolicy.enabled requires metrics.enabled: the policy only exists to guard the metrics port" -}}
+{{- end -}}
+{{- if and $npEnabled (not $from) -}}
+{{- fail "networkPolicy.metrics.from must list at least one peer; an empty list would admit every pod" -}}
+{{- end -}}
+{{- if and (dig "enabled" false $m) $npEnabled }}
+# Selecting the proxy pods isolates ALL their ingress. The rules after the
+# metrics rule come from networkPolicy.additionalIngress, whose default
+# re-admits every peer to the proxy and readiness ports so enabling the policy
+# never cuts the proxy off; operators whose other policies already cover those
+# ports set it to [] so this policy does not widen them.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kube-oidc-proxy.metricsServiceName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{ include "kube-oidc-proxy.labels" . | indent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "kube-oidc-proxy.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: {{ include "kube-oidc-proxy.metricsPortName" $ }}
+          protocol: TCP
+      from:
+        {{- toYaml $from | nindent 8 }}
+    {{- with dig "additionalIngress" list $np }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

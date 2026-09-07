@@ -270,6 +270,7 @@ helm lint chart/kube-oidc-proxy -f chart/kube-oidc-proxy/ci/single-issuer-values
 helm template t chart/kube-oidc-proxy -f chart/kube-oidc-proxy/ci/multi-issuer-values.yaml
 bash hack/verify-chart-logging.sh   # logging values render as flags
 bash hack/verify-chart-rbac.sh      # ClusterRole grants every declared userextras key
+bash hack/verify-chart-metrics.sh   # metrics values render the listener, Service and monitors
 ```
 
 ## Log contract

@@ -34,5 +34,6 @@ check "ingress" -f "$CHART/ci/single-issuer-values.yaml" --set ingress.enabled=t
 check "cert-manager" -f "$CHART/ci/single-issuer-values.yaml" \
   --set tls.certManager=true --set tls.selfSigned=true
 check "pdb" -f "$CHART/ci/single-issuer-values.yaml" --set podDisruptionBudget.enabled=true
+check "metrics" -f "$CHART/ci/metrics-values.yaml"
 
 echo "chart namespaces: ok"
