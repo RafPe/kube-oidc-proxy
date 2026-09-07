@@ -92,9 +92,27 @@ for f in "$CHART"/dashboards/*.json; do
 done
 
 # Off by default; on, one ConfigMap with one key per file, contents identical.
-! render | grep -q 'grafana_dashboard' || { echo "dashboards rendered without metrics.dashboards.enabled" >&2; exit 1; }
+# The render is captured before it is searched: under `set -o pipefail` a
+# `! render | grep -q ...` succeeds when *render* fails, so a chart that could
+# not be templated at all used to satisfy the "renders nothing" assertion.
+default_render=$(render) || { echo "the default render failed" >&2; exit 1; }
+! grep -q 'grafana_dashboard' <<<"$default_render" || { echo "dashboards rendered without metrics.dashboards.enabled" >&2; exit 1; }
 cm=$(render --set metrics.enabled=true --set metrics.dashboards.enabled=true --show-only templates/dashboards-configmap.yaml)
 [ "$(yq -r '.metadata.labels.grafana_dashboard' <<<"$cm")" = "1" ] || { echo "sidecar label missing" >&2; exit 1; }
+# No folder and no extra annotations means no annotations block. Helm renders
+# a bare `annotations:` key as the value null, and `metadata.annotations: null`
+# is a field an apply-time schema check is entitled to reject.
+[ "$(yq -r '.metadata | has("annotations")' <<<"$cm")" = "false" ] \
+  || { echo "the default dashboards ConfigMap renders a null annotations block" >&2; exit 1; }
+[ "$(render --set metrics.enabled=true --set metrics.dashboards.enabled=true --set metrics.dashboards.folder=Platform --show-only templates/dashboards-configmap.yaml | yq -r '.metadata.annotations.grafana_folder')" = "Platform" ] \
+  || { echo "metrics.dashboards.folder does not render the grafana_folder annotation" >&2; exit 1; }
+# The linter's rule exclusions are a development file, not chart content.
+pkg=$(mktemp -d)
+# shellcheck disable=SC2064
+trap "rm -rf '$pkg'" EXIT
+helm package "$CHART" --destination "$pkg" >/dev/null || { echo "helm package failed" >&2; exit 1; }
+! tar -tzf "$pkg"/*.tgz | grep -q 'dashboards/\.lint$' \
+  || { echo "the packaged chart carries dashboards/.lint; add it to $CHART/.helmignore" >&2; exit 1; }
 for f in "$CHART"/dashboards/*.json; do
   key=$(basename "$f")
   # mikefarah yq (the one this repo's other guards use) has no --arg; strenv

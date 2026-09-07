@@ -17,6 +17,7 @@ metadata:
     {{- with $d.labels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
+  {{- if or $d.folder $d.annotations }}
   annotations:
     {{- with $d.folder }}
     {{ $d.folderAnnotation | default "grafana_folder" }}: {{ . | quote }}
@@ -24,6 +25,7 @@ metadata:
     {{- with $d.annotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
+  {{- end }}
 data:
 {{- range $path, $_ := .Files.Glob "dashboards/*.json" }}
   {{ base $path }}: |-
