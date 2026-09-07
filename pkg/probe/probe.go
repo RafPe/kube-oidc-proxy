@@ -22,6 +22,7 @@ import (
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 )
 
 const (
@@ -110,6 +111,9 @@ type HealthCheck struct {
 	readinessLogger *slog.Logger
 	oidcLogger      *slog.Logger
 
+	// metrics receives the per-issuer and readiness gauges; nil records nothing.
+	metrics *metrics.Recorder
+
 	oidcAuther authenticator.Token
 	issuers    []IssuerReadiness
 	requireAll bool
@@ -191,6 +195,19 @@ func NewServer(port string, issuers []IssuerReadiness, requireAll bool, oidcAuth
 		},
 		done: make(chan struct{}),
 	}
+}
+
+// WithMetrics sets the recorder the probe publishes its issuer and readiness
+// gauges to, and seeds one series per configured issuer at 0 so an issuer
+// that never initializes is visible rather than absent. A nil recorder
+// records nothing.
+func (s *Server) WithMetrics(r *metrics.Recorder) *Server {
+	s.hc.metrics = r
+	r.SetReady(false)
+	for _, issuer := range s.hc.issuers {
+		r.SetIssuerInitialized(IssuerName(issuer.IssuerURL), false)
+	}
+	return s
 }
 
 // SetServing records that the proxy has started serving, so readiness may now
@@ -420,6 +437,7 @@ func (h *HealthCheck) Check() error {
 	}
 
 	h.ready = true
+	h.metrics.SetReady(true)
 	logging.Emit(ctx, h.readinessLogger, logging.EventReadinessProxyReady,
 		slog.Int("ready_issuers", len(h.initialized)),
 		slog.Int("total_issuers", len(h.issuers)),
@@ -441,6 +459,7 @@ func (h *HealthCheck) recordProbeResults(ctx context.Context, newlyInitialized [
 			continue
 		}
 		h.initialized[issuerURL] = true
+		h.metrics.SetIssuerInitialized(IssuerName(issuerURL), true)
 		logging.Emit(ctx, h.oidcLogger, logging.EventOIDCIssuerInitialized,
 			slog.String("issuer_name", IssuerName(issuerURL)),
 			slog.String("issuer_state", "initialized"),

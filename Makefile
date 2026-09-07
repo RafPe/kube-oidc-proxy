@@ -12,7 +12,7 @@ export GO111MODULE=on
 help:  ## display this help
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n\nTargets:\n"} /^[a-zA-Z0-9_-]+:.*?##/ { printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
-.PHONY: help build docker_build test depend verify all clean generate eventdoc verify_eventdoc e2e e2e-clean verify-e2e-shards
+.PHONY: help build docker_build test depend verify all clean generate eventdoc verify_eventdoc metricdoc verify_metricdoc e2e e2e-clean verify-e2e-shards
 
 # golangci-lint is installed via the upstream, GOOS/GOARCH-aware installer,
 # pinned to a supported v2 release. Keep this in lockstep with the version the
@@ -85,9 +85,9 @@ clean: ## clean up created files
 
 # generate (not just depend) so pkg/mocks/authenticator.go exists before
 # go_vet ./... and go_lint compile the packages that reference it.
-verify: generate verify_boilerplate verify_eventdoc go_fmt go_vet go_lint ## verify code and mod
+verify: generate verify_boilerplate verify_eventdoc verify_metricdoc go_fmt go_vet go_lint ## verify code and mod
 
-generate: depend eventdoc ## generates mocks and assets files
+generate: depend eventdoc metricdoc ## generates mocks and assets files
 	go generate $$(go list ./pkg/... ./cmd/...)
 
 eventdoc: ## regenerate the event table in docs/logging.md
@@ -95,6 +95,12 @@ eventdoc: ## regenerate the event table in docs/logging.md
 
 verify_eventdoc:
 	go run ./hack/eventdoc -check
+
+metricdoc: ## regenerate the metric table in docs/metrics.md
+	go run ./hack/metricdoc
+
+verify_metricdoc:
+	go run ./hack/metricdoc -check
 
 test: generate verify ## run all go tests
 	mkdir -p $(ARTIFACTS)

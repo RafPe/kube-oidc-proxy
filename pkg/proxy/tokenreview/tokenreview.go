@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	authv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilcache "k8s.io/apimachinery/pkg/util/cache"
@@ -54,6 +55,9 @@ type TokenReview struct {
 	reviewRequester clientauthv1.TokenReviewInterface
 	audiences       []string
 	timeout         time.Duration
+
+	// metrics receives the API-call and cache observations; nil records nothing.
+	metrics *metrics.Recorder
 }
 
 var _ authenticator.Token = (*TokenReview)(nil)
@@ -78,6 +82,14 @@ func New(restConfig *rest.Config, audiences []string, timeout time.Duration, log
 		audiences:       audiences,
 		timeout:         timeout,
 	}, nil
+}
+
+// WithMetrics sets the recorder the reviewer reports API calls and cache
+// lookups to. A nil recorder records nothing. It returns the reviewer so a
+// caller can chain it before NewCached.
+func (t *TokenReview) WithMetrics(r *metrics.Recorder) *TokenReview {
+	t.metrics = r
+	return t
 }
 
 // NewCached wraps reviewer in a TokenReview result cache. Successful reviews
@@ -168,10 +180,12 @@ func (c *cachedTokenReview) AuthenticateToken(ctx context.Context, token string)
 		logging.Emit(ctx, c.reviewer.log(), logging.EventCacheTokenReviewLookup,
 			slog.String("cache_result", "hit"),
 			slog.Bool("authenticated", record.ok))
+		c.reviewer.metrics.CacheLookup(metrics.ReviewTokenReview, metrics.CacheHit)
 		return record.resp, record.ok, nil
 	}
 	logging.Emit(ctx, c.reviewer.log(), logging.EventCacheTokenReviewLookup,
 		slog.String("cache_result", "miss"))
+	c.reviewer.metrics.CacheLookup(metrics.ReviewTokenReview, metrics.CacheMiss)
 
 	resp, ok, err := c.reviewer.AuthenticateToken(ctx, token)
 	if err != nil {
@@ -247,14 +261,17 @@ func (t *TokenReview) AuthenticateToken(ctx context.Context, token string) (*aut
 	start := time.Now()
 
 	resp, err := t.reviewRequester.Create(ctx, t.buildReview(token), metav1.CreateOptions{})
-	if err != nil {
+	// Observed at the one place the API server is called: the outcome is the
+	// call's, not the caller's, so a cache hit or a fallback never counts.
+	switch {
+	case err != nil:
+		t.metrics.ReviewRequest(metrics.ReviewTokenReview, metrics.ReviewOutcomeFor(err, false), time.Since(start))
 		return nil, false, err
+	case len(resp.Status.Error) > 0:
+		t.metrics.ReviewRequest(metrics.ReviewTokenReview, metrics.ReviewError, time.Since(start))
+		return nil, false, fmt.Errorf("error authenticating using token review: %s", resp.Status.Error)
 	}
-
-	if len(resp.Status.Error) > 0 {
-		return nil, false, fmt.Errorf("error authenticating using token review: %s",
-			resp.Status.Error)
-	}
+	t.metrics.ReviewRequest(metrics.ReviewTokenReview, metrics.ReviewOutcomeFor(nil, resp.Status.Authenticated), time.Since(start))
 
 	logging.Emit(ctx, t.log(), logging.EventAuthnTokenReviewCompleted,
 		slog.Bool("authenticated", resp.Status.Authenticated),

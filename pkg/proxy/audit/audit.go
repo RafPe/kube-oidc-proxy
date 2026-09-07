@@ -13,6 +13,7 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"k8s.io/apimachinery/pkg/util/sets"
 	genericapifilters "k8s.io/apiserver/pkg/endpoints/filters"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
@@ -55,6 +56,9 @@ type Audit struct {
 	// logger is the audit-component logger this backend reports its own
 	// lifecycle through. Never nil: New substitutes a discarding logger.
 	logger *slog.Logger
+
+	// metrics receives the observable backend failures; nil records nothing.
+	metrics *metrics.Recorder
 
 	opts         *options.AuditOptions
 	serverConfig *server.CompletedConfig
@@ -107,6 +111,13 @@ func New(opts *options.AuditOptions, externalAddress string, secureServingInfo *
 	}, nil
 }
 
+// WithMetrics sets the recorder start and shutdown failures are counted on.
+// A nil recorder records nothing.
+func (a *Audit) WithMetrics(r *metrics.Recorder) *Audit {
+	a.metrics = r
+	return a
+}
+
 // errorReporter is implemented by an audit backend that can say whether its
 // Shutdown flushed successfully. The upstream audit.Backend interface declares
 // Shutdown with no return value, so a backend that knows it dropped events has
@@ -128,6 +139,7 @@ func (a *Audit) Run(stopCh <-chan struct{}) error {
 	ctx := context.Background()
 	if err := a.serverConfig.AuditBackend.Run(stopCh); err != nil {
 		logging.Emit(ctx, a.logger, logging.EventAuditBackendFailed, logging.ErrAttr(err))
+		a.metrics.AuditBackendFailure(metrics.AuditRun)
 		return fmt.Errorf("failed to run the audit backend: %s", err)
 	}
 
@@ -171,6 +183,7 @@ func (a *Audit) Shutdown() error {
 	if reporter, ok := backend.(errorReporter); ok {
 		if err := reporter.ShutdownErr(); err != nil {
 			logging.Emit(ctx, a.logger, logging.EventAuditFlushFailed, logging.ErrAttr(err))
+			a.metrics.AuditBackendFailure(metrics.AuditShutdown)
 			return fmt.Errorf("audit backend failed to flush: %w", err)
 		}
 	}

@@ -158,6 +158,51 @@ func issuerNames(issuerURLs []string) []string {
 	return names
 }
 
+// duplicateIssuerName reports the first issuer name two configured issuer URLs
+// map onto, together with the URL already stored under that name and the one
+// that collided with it. Names are hosts (see probe.IssuerName), so issuers
+// that differ only by path collide -- and then the name alone does not say
+// which two configuration entries have to change.
+func duplicateIssuerName(issuerURLs []string) (name, first, other string, dup bool) {
+	seen := make(map[string]string, len(issuerURLs))
+	names := issuerNames(issuerURLs)
+	for i, n := range names {
+		if firstURL, ok := seen[n]; ok {
+			return n, firstURL, issuerURLs[i], true
+		}
+		seen[n] = issuerURLs[i]
+	}
+	return "", "", "", false
+}
+
+// drain runs the shutdown sequence and joins every failure it collects, so a
+// listener that never released its port and a hook that could not flush both
+// reach the exit status. No step is skipped because an earlier one failed.
+//
+// The order matters. The readiness listener stops first, so nothing new is
+// admitted. The pre-shutdown hooks run next; they report through the recorder
+// -- the audit backend increments the operation="shutdown" counter from inside
+// one -- so the metrics listener stops last, and a scrape landing in the drain
+// window can still read what they recorded.
+//
+// stopMetrics and waitMetrics are nil when the metrics listener is disabled.
+func drain(stopProbe func(), waitProbe func() error, runHooks func() error, stopMetrics, waitMetrics func() error) error {
+	stopProbe()
+	probeErr := waitProbe()
+
+	hooksErr := runHooks()
+
+	var metricsErr error
+	if stopMetrics != nil {
+		metricsErr = stopMetrics()
+	}
+	if waitMetrics != nil {
+		metricsErr = errors.Join(metricsErr, waitMetrics())
+	}
+
+	return errors.Join(probeErr, metricsErr, hooksErr)
+}
+
 // ErrReported marks an error that was already emitted on the log stream. main
 // exits non-zero on it without printing it again, so a failure after the
 // logger exists never adds an unstructured line beside the JSON records.
@@ -241,6 +286,14 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 			// collectors, as it does on any Kubernetes component. recorder stays
 			// nil when metrics are disabled; every collaborator treats a nil
 			// recorder as a no-op.
+			// The metrics listener has a context of its own rather than the
+			// shared one: it must outlive the readiness listener and the
+			// pre-shutdown hooks, which report their own failures through the
+			// recorder, so a scrape landing in the drain window can still see
+			// them. drain below cancels it once the hooks have returned.
+			metricsCtx, cancelMetrics := context.WithCancel(context.Background())
+			defer cancelMetrics()
+
 			var recorder *metrics.Recorder
 			var metricsServer *metrics.Server
 			if opts.Metrics.Enabled() {
@@ -254,11 +307,11 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 				}
 				metricsServer = metrics.NewServer(opts.Metrics.BindAddress, recorder,
 					logging.ForComponent(root, logging.ComponentMetrics))
-				if err := metricsServer.Start(ctx); err != nil {
+				if err := metricsServer.Start(metricsCtx); err != nil {
 					return fail(err)
 				}
 				defer func() {
-					cancel()
+					cancelMetrics()
 					// Reported as metrics.server.failed by the server itself;
 					// on a startup failure the exit status already says so.
 					_ = metricsServer.Wait()
@@ -308,6 +361,7 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 				if err != nil {
 					return fail(err)
 				}
+				reviewer.WithMetrics(recorder)
 				tokenReviewer = tokenreview.NewCached(reviewer,
 					opts.App.TokenPassthrough.CacheSuccessTTL,
 					opts.App.TokenPassthrough.CacheFailureTTL)
@@ -351,6 +405,7 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 			if err != nil {
 				return fail(err)
 			}
+			subjectAccessReviewer.WithMetrics(recorder)
 
 			oidcLogger := logging.ForComponent(root, logging.ComponentOIDC)
 
@@ -401,6 +456,7 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 				issuerProbes, opts.App.ReadinessRequireAllIssuers,
 				p.OIDCTokenAuthenticator(),
 				root)
+			probeServer.WithMetrics(recorder)
 			if err := probeServer.Start(ctx); err != nil {
 				return fail(err)
 			}
@@ -430,19 +486,17 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 			logging.Emit(context.Background(), serverLogger, logging.EventProxyServerStopped,
 				slog.Int64("duration_ms", time.Since(servingSince).Milliseconds()))
 
-			// Stop the readiness and metrics servers and wait for their
-			// listeners to be released. Errors are collected, not returned:
-			// the pre-shutdown hooks below flush the audit backend and must run
-			// whatever the listeners reported.
+			// Stop the listeners, wait for their ports to be released and run
+			// the pre-shutdown hooks. Errors are collected, not returned: every
+			// step runs whatever the previous one reported. Each failure was
+			// already named on the log stream by its owner.
 			shutdownSince := time.Now()
-			cancel()
-			probeErr := probeServer.Wait() // reported readiness.server.failed itself
-			var metricsErr error
+			var stopMetrics, waitMetrics func() error
 			if metricsServer != nil {
-				metricsErr = metricsServer.Wait() // reported metrics.server.failed itself
+				stopMetrics = func() error { cancelMetrics(); return nil }
+				waitMetrics = metricsServer.Wait
 			}
-
-			hooksErr := p.RunPreShutdownHooks()
+			drainErr := drain(cancel, probeServer.Wait, p.RunPreShutdownHooks, stopMetrics, waitMetrics)
 
 			// Reported whether or not a hook failed: the milestone is that the
 			// teardown finished, and the failing hook has already named itself.
@@ -450,7 +504,7 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 				logging.EventProxyShutdownCompleted,
 				slog.Int64("duration_ms", time.Since(shutdownSince).Milliseconds()))
 
-			if err := errors.Join(probeErr, metricsErr, hooksErr); err != nil {
+			if err := drainErr; err != nil {
 				// Each failure was reported on the stream by its owner.
 				return fmt.Errorf("%w: %w", ErrReported, err)
 			}
@@ -575,15 +629,25 @@ func buildUnionAuther(opts *options.Options, oidcLogger *slog.Logger) (authentic
 		return nil, nil, err
 	}
 
-	authers := make([]authenticator.Token, 0, len(authCfg.JWT))
+	// Issuers are named by host in every record and every metric series. Two
+	// issuers on one host with different paths would share a name, and a
+	// per-issuer gauge cannot tell them apart, so the configuration is refused
+	// here, before any authenticator is built or any issuer is reported.
 	issuerURLs := make([]string, 0, len(authCfg.JWT))
+	for _, jwtEntry := range authCfg.JWT {
+		issuerURLs = append(issuerURLs, jwtEntry.Issuer.URL)
+	}
+	if name, first, other, dup := duplicateIssuerName(issuerURLs); dup {
+		return nil, nil, fmt.Errorf("two configured issuers share the name %q (%q and %q); issuers must differ by host", name, first, other)
+	}
+
+	authers := make([]authenticator.Token, 0, len(authCfg.JWT))
 	for _, jwtEntry := range authCfg.JWT {
 		auther, err := oidcAutherFromJWT(jwtEntry, compiler, oidc.AllValidSigningAlgorithms(), opts.OIDCAuthentication)
 		if err != nil {
 			return nil, nil, fmt.Errorf("building authenticator for issuer %q: %w", jwtEntry.Issuer.URL, err)
 		}
 		authers = append(authers, proxy.WithIssuerName(issuerNameFor(jwtEntry), auther))
-		issuerURLs = append(issuerURLs, jwtEntry.Issuer.URL)
 	}
 
 	logIssuersConfigured(oidcLogger, issuerNames(issuerURLs))

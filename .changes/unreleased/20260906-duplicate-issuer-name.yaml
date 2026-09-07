@@ -1,0 +1,2 @@
+kind: Changed
+body: The proxy now refuses to start when two configured issuers share a host (for example `https://idp.example.com/realms/a` and `https://idp.example.com/realms/b`). Issuers are identified by host in every log record and metric series, so such a configuration could not be reported unambiguously. Give each issuer its own host.

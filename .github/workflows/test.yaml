@@ -59,6 +59,10 @@ jobs:
       - name: Verify event reference
         run: make verify_eventdoc && git diff --exit-code docs/logging.md
 
+      # The generated metric table in docs/metrics.md must match the catalogue.
+      - name: Verify metric reference
+        run: make verify_metricdoc && git diff --exit-code docs/metrics.md
+
       # The e2e framework's unit tests render the chart's ClusterRole and check
       # it grants every permission the proxy code needs.
       - name: Set up Helm

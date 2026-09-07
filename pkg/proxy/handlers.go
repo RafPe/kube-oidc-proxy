@@ -22,6 +22,7 @@ import (
 	"k8s.io/client-go/transport"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/audit"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
 	accesslogging "github.com/rafpe/kube-oidc-proxy/pkg/proxy/logging"
@@ -225,6 +226,7 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 			// error. The error text itself stays out of the record: the denial
 			// is reported by reason, and a validation message is attacker
 			// influenced.
+			p.metrics.AuthenticationAttempt(authMethodOIDC, metrics.AuthRejected)
 			var srcIP string
 			req, srcIP = context.RemoteAddr(req)
 			logging.Emit(req.Context(), componentLogger(p.oidcLog), logging.EventAuthnOIDCFailed,
@@ -239,9 +241,12 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 
 		// Failed authorization
 		if !ok {
+			p.metrics.AuthenticationAttempt(authMethodNone, metrics.AuthRejected)
 			p.handleError(rw, req, errUnauthorized)
 			return
 		}
+
+		p.metrics.AuthenticationAttempt(authMethodOIDC, metrics.AuthAccepted)
 
 		// Attribute the request to the issuer that accepted its token, for this
 		// record and for every access record the request goes on to produce.
@@ -693,7 +698,7 @@ func (p *Proxy) logDenied(r *http.Request, reason string, err error) {
 		d.TargetName = strings.Trim(authErr.Target, "'")
 	}
 
-	p.access.LogDecision(r, d)
+	p.recordDecision(r, d)
 }
 
 // cloneExtra returns a deep copy of an authenticator-owned extra map: both the

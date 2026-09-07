@@ -3,13 +3,18 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +27,7 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
+	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 )
 
 func writeTempFile(t *testing.T, content string) string {
@@ -546,5 +552,184 @@ func TestMetricsBindFailureIsReportedAtStartup(t *testing.T) {
 	msg, _ := failure["error_message"].(string)
 	if !strings.Contains(msg, "metrics listener") || strings.Contains(msg, "missing-kubeconfig") {
 		t.Fatalf("error_message = %q, want the metrics bind failure, reported before the kubeconfig is read", msg)
+	}
+}
+
+// TestBuildTokenAutherRefusesIssuersSharingAHost pins the placement: the
+// configuration is refused by buildTokenAuther itself, before it constructs
+// any authenticator.
+func TestBuildTokenAutherRefusesIssuersSharingAHost(t *testing.T) {
+	config := filepath.Join(t.TempDir(), "auth.yaml")
+	content := `apiVersion: apiserver.config.k8s.io/v1beta1
+kind: AuthenticationConfiguration
+jwt:
+  - issuer:
+      url: https://idp.example.com/realms/a
+      audiences:
+        - a
+    claimMappings:
+      username:
+        claim: email
+        prefix: ""
+  - issuer:
+      url: https://idp.example.com/realms/b
+      audiences:
+        - b
+    claimMappings:
+      username:
+        claim: email
+        prefix: ""
+`
+	if err := os.WriteFile(config, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opts := options.New()
+	opts.AuthenticationConfig.ConfigFile = config
+	_, _, err := buildTokenAuther(opts, slog.New(slog.DiscardHandler), slog.New(slog.DiscardHandler))
+	if err == nil || !strings.Contains(err.Error(), "share the name \"idp.example.com\"") {
+		t.Fatalf("buildTokenAuther = %v, want the shared-host refusal", err)
+	}
+	// The name alone does not say which two entries have to be changed, so
+	// both colliding URLs belong in the refusal.
+	for _, want := range []string{"https://idp.example.com/realms/a", "https://idp.example.com/realms/b"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("buildTokenAuther = %v, want it to name %q", err, want)
+		}
+	}
+}
+
+func TestDuplicateIssuerNameIsRefused(t *testing.T) {
+	tests := map[string]struct {
+		urls      []string
+		wantDup   string
+		wantFirst string
+		wantOther string
+	}{
+		"distinct hosts": {urls: []string{"https://a.example.com", "https://b.example.com"}},
+		"same host, other paths": {
+			urls:      []string{"https://idp.example.com/realms/a", "https://idp.example.com/realms/b"},
+			wantDup:   "idp.example.com",
+			wantFirst: "https://idp.example.com/realms/a",
+			wantOther: "https://idp.example.com/realms/b",
+		},
+		"single issuer": {urls: []string{"https://idp.example.com/realms/a"}},
+		"the first URL under the name is the one reported": {
+			urls:      []string{"https://a.example.com", "https://idp.example.com/realms/a", "https://idp.example.com/realms/b"},
+			wantDup:   "idp.example.com",
+			wantFirst: "https://idp.example.com/realms/a",
+			wantOther: "https://idp.example.com/realms/b",
+		},
+		"two unparsable": {
+			urls:      []string{"::", "::"},
+			wantDup:   "unknown",
+			wantFirst: "::",
+			wantOther: "::",
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			dup, first, other, ok := duplicateIssuerName(tc.urls)
+			if ok != (tc.wantDup != "") || dup != tc.wantDup || first != tc.wantFirst || other != tc.wantOther {
+				t.Fatalf("duplicateIssuerName(%v) = %q, %q, %q, %v; want %q, %q, %q",
+					tc.urls, dup, first, other, ok, tc.wantDup, tc.wantFirst, tc.wantOther)
+			}
+		})
+	}
+}
+
+// TestDrainStopsTheMetricsListenerAfterTheHooks pins the shutdown order. The
+// pre-shutdown hooks report their own failures through the recorder -- the
+// audit backend increments the operation="shutdown" counter from inside one --
+// so stopping the metrics listener before they run makes those series
+// unscrapeable for the whole life of the process.
+func TestDrainStopsTheMetricsListenerAfterTheHooks(t *testing.T) {
+	var order []string
+	note := func(step string) func() error {
+		return func() error { order = append(order, step); return nil }
+	}
+
+	err := drain(
+		func() { order = append(order, "stop probe") },
+		note("wait probe"),
+		note("hooks"),
+		note("stop metrics"),
+		note("wait metrics"),
+	)
+	if err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+
+	want := []string{"stop probe", "wait probe", "hooks", "stop metrics", "wait metrics"}
+	if !slices.Equal(order, want) {
+		t.Fatalf("drain order = %v, want %v", order, want)
+	}
+}
+
+// TestDrainJoinsEveryFailure pins that no step is skipped because an earlier
+// one failed and that every failure reaches the exit status.
+func TestDrainJoinsEveryFailure(t *testing.T) {
+	probeErr := errors.New("probe drain overran")
+	hooksErr := errors.New("audit flush failed")
+	metricsErr := errors.New("metrics drain overran")
+
+	ran := 0
+	err := drain(
+		func() {},
+		func() error { ran++; return probeErr },
+		func() error { ran++; return hooksErr },
+		func() error { ran++; return nil },
+		func() error { ran++; return metricsErr },
+	)
+	if ran != 4 {
+		t.Fatalf("ran %d steps, want 4", ran)
+	}
+	for _, want := range []error{probeErr, hooksErr, metricsErr} {
+		if !errors.Is(err, want) {
+			t.Fatalf("drain error = %v, want it to carry %v", err, want)
+		}
+	}
+}
+
+// TestDrainKeepsTheMetricsEndpointUpForTheHooks is the property the order
+// exists for: a scrape that lands while the hooks are running still reaches
+// the listener and sees what a hook just recorded.
+func TestDrainKeepsTheMetricsEndpointUpForTheHooks(t *testing.T) {
+	rec, err := metrics.New(metrics.BuildInfo{Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := metrics.NewServer("127.0.0.1:0", rec, slog.New(slog.DiscardHandler))
+	ctx, cancelMetrics := context.WithCancel(context.Background())
+	defer cancelMetrics()
+	if err := srv.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	addr := srv.Addr()
+
+	var body string
+	hooks := func() error {
+		// What the audit backend's pre-shutdown hook does.
+		rec.AuditBackendFailure(metrics.AuditShutdown)
+
+		resp, err := http.Get("http://" + addr + "/metrics")
+		if err != nil {
+			return fmt.Errorf("scraping during the drain window: %w", err)
+		}
+		defer resp.Body.Close()
+		raw, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+		body = string(raw)
+		return nil
+	}
+
+	if err := drain(func() {}, func() error { return nil }, hooks,
+		func() error { cancelMetrics(); return nil }, srv.Wait); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+
+	if !strings.Contains(body, `kube_oidc_proxy_audit_backend_failures_total{operation="shutdown"} 1`) {
+		t.Fatalf("the shutdown series was not scrapeable during the drain window:\n%s", body)
 	}
 }
