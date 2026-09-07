@@ -30,9 +30,13 @@ trap pf_cleanup EXIT
 pf_start PROM monitoring svc/kps-kube-prometheus-stack-prometheus 9090
 pf_start GRAFANA monitoring svc/kps-grafana 80
 
+# Both query helpers name the query when they fail. Their callers exit on a
+# non-zero status, and "exit 1" on its own says nothing about which of the
+# forty expressions in three dashboards could not be answered.
 promq() {
   pf_check || return 1
-  curl -sfG "http://127.0.0.1:$PROM/api/v1/query" --data-urlencode "query=$1"
+  curl -sfG --max-time 60 "http://127.0.0.1:$PROM/api/v1/query" --data-urlencode "query=$1" \
+    || { echo "the Prometheus instant query failed: $1" >&2; return 1; }
 }
 
 # The same query over the window the screenshots are rendered from, at the
@@ -41,11 +45,12 @@ promq() {
 # instant.
 promqr() {
   pf_check || return 1
-  curl -sfG "http://127.0.0.1:$PROM/api/v1/query_range" \
+  curl -sfG --max-time 60 "http://127.0.0.1:$PROM/api/v1/query_range" \
     --data-urlencode "query=$1" \
     --data-urlencode "start=$RENDER_FROM" \
     --data-urlencode "end=$RENDER_TO" \
-    --data-urlencode "step=60"
+    --data-urlencode "step=60" \
+    || { echo "the Prometheus range query failed: $1" >&2; return 1; }
 }
 
 # The Prometheus on the other end is this demo's, not a leftover: it scrapes
@@ -113,7 +118,11 @@ for f in "$CHART"/dashboards/*.json; do
   name=$(basename "$f" .json)
   uid=$(jq -r .uid "$f")
   pf_check || exit 1
-  curl -sf "http://127.0.0.1:$GRAFANA/render/d/$uid/$name?orgId=1&kiosk&from=now-30m&to=now&width=1920&height=1800&tz=UTC" -o "docs/dashboards/$name.png"
+  # --max-time: the image renderer is a headless browser, and one that wedges
+  # on a dashboard answers nothing at all rather than answering an error, so
+  # without a deadline this blocks for ever with no output.
+  curl -sf --max-time 120 "http://127.0.0.1:$GRAFANA/render/d/$uid/$name?orgId=1&kiosk&from=now-30m&to=now&width=1920&height=1800&tz=UTC" -o "docs/dashboards/$name.png" \
+    || { echo "the Grafana renderer did not answer for dashboard $name ($uid) within 120s" >&2; exit 1; }
   # A rendered dashboard with data is not a tiny image.
   [ "$(demo_file_size "docs/dashboards/$name.png")" -gt 150000 ] \
     || { echo "docs/dashboards/$name.png is suspiciously small" >&2; exit 1; }
