@@ -32,6 +32,6 @@ for bad in ("var(--", "currentColor"):
         print(f"{path}: uses {bad}; GitHub does not resolve it"); sys.exit(1)
 PY
   name=$(basename "$svg")
-  grep -rq "diagrams/$name" docs/*.md || { echo "$svg is not referenced from any doc" >&2; rc=1; }
+  grep -rq --include='*.md' "diagrams/$name" docs || { echo "$svg is not referenced from any document under docs/" >&2; rc=1; }
 done
 exit $rc
