@@ -510,7 +510,7 @@
     {
       "type": "timeseries",
       "title": "Proxy p99 vs API server p99",
-      "description": "The proxy's own p99 next to the API server's, over the same bucket boundaries - the proxy deliberately reuses the API server's histogram buckets so the two are directly comparable. The gap is what the proxy costs; the API server line moving with it means the upstream is the problem. The API server series is cluster-wide and not filtered by $namespace, and WATCH and CONNECT are excluded from it because they have no comparable duration.",
+      "description": "The proxy's own p99 next to the API server's, over the same bucket boundaries - the proxy deliberately reuses the API server's histogram buckets so the two are directly comparable. Read the two lines together, not the distance between them: the API server line rising with the proxy line points upstream, and a proxy line that rises on its own does not. The gap is not proxy overhead and must not be read as such - the API server series is cluster-wide, covering every namespace and every client and excluding WATCH and CONNECT because they have no comparable duration, while the proxy series is only the traffic this namespace's proxy served. The two summarise different populations of requests.",
       "datasource": {
         "uid": "${datasource}"
       },
