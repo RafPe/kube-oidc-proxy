@@ -231,8 +231,9 @@ and arbitrary token claims are never logged. The full list is in
 [redaction](./logging.md#redaction).
 
 Two more records close out a request, both INFO:
-`request.response.started` (first `WriteHeader` on a long-running request such
-as a watch or `exec`, with `time_to_headers_ms`) and
+`request.response.started` (first final status on a long-running request such
+as a watch or `exec`, with `time_to_headers_ms`; a forwarded 1xx does not start
+the response) and
 `request.response.completed` (the terminal record for every request, with
 `http_status`, `duration_ms`, `response_bytes` and a classified `termination`).
 Join them to the access record on `request_id`.

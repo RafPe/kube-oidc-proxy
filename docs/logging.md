@@ -161,7 +161,7 @@ that must be present beyond `time`, `level`, `msg`, `schema_version`,
 | `request.impersonation.applied` | `request` | DEBUG | `request_id`, `outbound_user`, `impersonated_header_names` | Outbound impersonation headers built. Header names only, never values. |
 | `request.impersonation.skipped` | `request` | DEBUG | `request_id`, `skip_reason` | Impersonation was disabled by flag, or the request took the TokenReview passthrough path. |
 | `request.response.completed` | `request` | INFO | `request_id`, `http_status`, `duration_ms`, `termination` | The handler returned. The terminal record for every request, mirroring the audit stage ResponseComplete. |
-| `request.response.started` | `request` | INFO | `request_id`, `http_status`, `time_to_headers_ms` | First WriteHeader on a long-running request. Mirrors the audit stage ResponseStarted. |
+| `request.response.started` | `request` | INFO | `request_id`, `http_status`, `time_to_headers_ms` | First final status on a long-running request; a forwarded 1xx does not start the response. Mirrors the audit stage ResponseStarted. |
 | `upstream.request.canceled` | `upstream` | DEBUG | `request_id`, `reason` | The client went away before the upstream response completed. Carries reason=client_canceled. |
 | `upstream.request.failed` | `upstream` | ERROR or DEBUG | `request_id`, `reason`, `termination`, `error_message` | The reverse proxy transport failed. Carries reason=upstream_error and a classified termination; drops to DEBUG when the client canceled the request. |
 <!-- events:end -->
@@ -207,7 +207,7 @@ If an alias is ever added it goes in this table with a status of `alias`.
 | `target_kind` | string | `user`, `group`, `uid`, `extra`, `serviceaccount`, `unknown` | new | `request.access.decided` on `impersonation_denied`, `authz.sar.completed`, `authz.impersonation.resolved` | replaces parsing the error text |
 | `target_name` | string | impersonation target, sanitized, max 256 chars | new | same as `target_kind` | |
 | `http_status` | int | HTTP status written to the client | new | `request.response.started`, `request.response.completed` | a `200` implied by the first `Write`, or by a handler that returned without writing, is recorded as `200`; `0` only when no response went out, because the connection was hijacked or the handler aborted before writing |
-| `time_to_headers_ms` | int | milliseconds from request start to `WriteHeader` | new | `request.response.started` | long-running requests only |
+| `time_to_headers_ms` | int | milliseconds from request start to the first final status | new | `request.response.started` | long-running requests only; a forwarded 1xx does not start the response |
 | `duration_ms` | int | milliseconds from request start to handler return | new | `request.response.completed`, `authz.sar.completed`, `authn.tokenreview.completed` | |
 | `response_bytes` | int | bytes written to the client | new | `request.response.completed` | absent when the connection was hijacked |
 | `termination` | string | `normal`, `client_cancel`, `upstream_reset`, `upstream_timeout`, `proxy_error`, `hijacked`, `panic` | new | `request.response.completed`, `upstream.request.failed` | |

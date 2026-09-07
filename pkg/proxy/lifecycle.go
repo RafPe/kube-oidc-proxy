@@ -46,9 +46,10 @@ type responseRecorder struct {
 	wrote    bool
 	hijacked bool
 
-	// onStart, when set, reports the first WriteHeader. Only long-running
-	// requests set it: for everything else the terminal record arrives close
-	// enough behind the headers that a second record says nothing new.
+	// onStart, when set, reports the first final status; a forwarded 1xx does
+	// not start the response. Only long-running requests set it: for everything
+	// else the terminal record arrives close enough behind the headers that a
+	// second record says nothing new.
 	onStart func(status int)
 }
 
