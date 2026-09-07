@@ -227,3 +227,34 @@ exec sleep 60
 
 	assertNoStubsRunning(t, dir)
 }
+
+// TestTunnelClosesWhenItsContextIsCancelled: a signal cancels the run's
+// context, and the deferred Close only fires once run() returns. The tunnel
+// closes itself on cancellation so an interrupted run leaves no kubectl
+// children behind, which is what run() relies on for SIGINT and SIGTERM.
+func TestTunnelClosesWhenItsContextIsCancelled(t *testing.T) {
+	dir := stubKubectl(t, stubPreamble+`
+echo "Forwarding from 127.0.0.1:40003 -> 8443"
+exec sleep 60
+`)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	tun, err := newTunnel(ctx, "kubeconfig", "proxy", "svc/kop", 8443, "https", testLogger())
+	if err != nil {
+		t.Fatalf("newTunnel: %s", err)
+	}
+	t.Cleanup(tun.Close)
+
+	// What signal.NotifyContext does to run()'s context on Ctrl-C.
+	cancel()
+
+	assertNoStubsRunning(t, dir)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for !tun.closedNow() {
+		if time.Now().After(deadline) {
+			t.Fatal("the tunnel did not close itself when its context was cancelled")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

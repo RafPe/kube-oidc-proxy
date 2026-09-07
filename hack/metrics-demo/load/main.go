@@ -29,11 +29,13 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	authenticationv1 "k8s.io/api/authentication/v1"
@@ -154,7 +156,12 @@ func main() {
 }
 
 func run(logger *slog.Logger, statePath, namespace string, duration, interval time.Duration, once bool) error {
-	ctx, cancel := context.WithCancel(context.Background())
+	// Ctrl-C on a foreground run, or a SIGTERM, cancels this context instead
+	// of killing the process where it stands. Everything below hangs off it -
+	// the calls in flight, the timed loop, and the port-forwards, which close
+	// themselves on cancellation - so an interrupted run leaves no kubectl
+	// children behind.
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	st, err := loadState(statePath)
@@ -316,6 +323,16 @@ func newTunnel(ctx context.Context, kubeconfig, namespace, target string, remote
 
 		return nil, err
 	}
+
+	// The caller's deferred Close only fires once the caller returns, and a
+	// call still in flight would keep every kubectl child alive until it did.
+	// A cancelled context - which is what a signal now is - closes the tunnel
+	// straight away. Close cancels t.ctx itself, so this goroutine always
+	// ends, and Close is idempotent, so both paths may run.
+	go func() {
+		<-t.ctx.Done()
+		t.Close()
+	}()
 
 	return t, nil
 }
