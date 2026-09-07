@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 # Copyright Jetstack Ltd. See LICENSE for details.
 set -euo pipefail
+# Every path below - the chart, the values files, the state directory - is
+# relative to the repository root, so anchor there instead of trusting the
+# caller's working directory. Run from anywhere else the first thing to fail
+# was the state check, reporting "missing hack/metrics-demo/.state/..." about
+# a demo that was in fact up. The sourced helpers below are named relatively
+# too, so this has to come first.
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+
 # Every dashboard panel must return data against the demo cluster, and the
 # screenshots must be rendered from those dashboards with that data. A panel
 # without data is a dashboard that lies; this fails before a screenshot can.

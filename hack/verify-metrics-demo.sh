@@ -119,5 +119,18 @@ ready_case "two ready" \
              {"metadata":{"name":"kop-a"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}]}' \
   "kop-a kop-b"
 
+# Every entry script anchors itself at the repository root before it does
+# anything else. All their paths - the chart, the values files, .state, and
+# the helpers they source - are written relative to it, so run from anywhere
+# else the first thing to fail was the state check, reporting
+# "missing hack/metrics-demo/.state/..." about a demo that was in fact up.
+for entry in hack/metrics-demo/{up,down,check,verify}.sh; do
+  first=$(grep -vE '^#|^set |^$' "$entry" | head -1)
+  case "$first" in
+    'cd "$(dirname "${BASH_SOURCE[0]}")/../.."') ;;
+    *) fail "$entry does not cd to the repository root before its first statement; it runs '$first' instead" ;;
+  esac
+done
+
 [ $rc -eq 0 ] && echo "metrics-demo checks: ok"
 exit $rc
