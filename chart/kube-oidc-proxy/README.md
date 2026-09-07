@@ -172,7 +172,7 @@ and health, never identities; see the [metrics reference](../../docs/metrics.md)
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `metrics.enabled` | bool | `false` | Serve Prometheus metrics on a dedicated listener. Leaves the command line unchanged when false, so an older pinned `image.tag` still starts. |
-| `metrics.bindAddress` | string | `""` | `--metrics-bind-address`; empty derives `0.0.0.0:<metrics.port>`. |
+| `metrics.bindAddress` | string | `""` | `--metrics-bind-address`; empty derives `0.0.0.0:<metrics.port>`. It must end in `:<metrics.port>`, and `extraArgs` may not carry the same flag. |
 | `metrics.port` | int | `9090` | Container and Service port. Must be a whole number between 1 and 65535 and differ from 8443 and 8080; a fractional or non-numeric value fails to render. |
 | `metrics.portName` | string | `metrics` | Name of the container and Service port the ServiceMonitor references. A valid `IANA_SVC_NAME`, as Kubernetes requires: 1-15 lowercase alphanumerics and dashes, at least one letter, no leading or trailing dash and no consecutive dashes. |
 | `metrics.service.labels` / `.annotations` | map | `{}` | Added to the metrics Service. |
@@ -198,7 +198,7 @@ and health, never identities; see the [metrics reference](../../docs/metrics.md)
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `extraArgs` | map | `{}` | Extra CLI flags passed as `--key=value`, for anything without a value of its own, such as the audit flags ([auditing](../../docs/auditing.md#enabling-it-with-the-chart)). |
+| `extraArgs` | map | `{}` | Extra CLI flags passed as `--key=value`, for anything without a value of its own, such as the audit flags ([auditing](../../docs/auditing.md#enabling-it-with-the-chart)). Rendered last, so an entry here wins over a flag the chart generates. `metrics-bind-address` is the one exception: with `metrics.enabled=true` it fails the render, because the container port, the metrics Service and the monitors all follow `metrics.port` and would no longer point at the listener. Set `metrics.port` or `metrics.bindAddress` instead. |
 | `extraVolumeMounts` | list | `{}` | Extra container volumeMounts. |
 | `extraVolumes` | list | `{}` | Extra pod volumes. |
 

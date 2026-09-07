@@ -100,6 +100,24 @@ svc_labels=$(render --set metrics.enabled=true --set 'metrics.service.labels.app
 render --set metrics.enabled=true --set extraArgs.v=5 --show-only templates/deployment.yaml | grep -q -- '"--v=5"' \
   || { echo "extraArgs did not render after the metrics block" >&2; exit 1; }
 
+# 5b. extraArgs may not carry its own metrics-bind-address while metrics are
+#     enabled. extraArgs render after the generated flag, so the duplicate
+#     would win pflag parsing while the container port, the Service and the
+#     monitors still follow metrics.port. Both key spellings are refused, and
+#     the message names metrics.port so the reader knows where to set it.
+for key in 'metrics-bind-address' '--metrics-bind-address'; do
+  ! render --set metrics.enabled=true --set "extraArgs.$key=0.0.0.0:9999" >/dev/null 2>&1 \
+    || { echo "extraArgs.$key must fail to render with metrics.enabled" >&2; exit 1; }
+  err=$(render --set metrics.enabled=true --set "extraArgs.$key=0.0.0.0:9999" 2>&1 || true)
+  grep -q 'metrics.port' <<<"$err" || { echo "the extraArgs.$key refusal must name metrics.port" >&2; exit 1; }
+done
+# With the listener off there is no generated flag to duplicate, so the
+# escape hatch stays open for an operator running an image that predates
+# the chart's metrics values.
+render --set extraArgs.metrics-bind-address=0.0.0.0:9999 --show-only templates/deployment.yaml \
+  | grep -q -- '"--metrics-bind-address=0.0.0.0:9999"' \
+  || { echo "extraArgs.metrics-bind-address must still render with metrics disabled" >&2; exit 1; }
+
 # 6. ServiceMonitor references the Service port by name; durations are quoted.
 sm=$(render --set metrics.enabled=true --set metrics.serviceMonitor.enabled=true \
   --set metrics.serviceMonitor.interval=30s --set metrics.serviceMonitor.sampleLimit=5000 \

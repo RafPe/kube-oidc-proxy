@@ -19,6 +19,18 @@
 {{- if and $metricsBind (not (hasSuffix (printf ":%d" $metricsPort) $metricsBind)) }}
 {{- fail (printf "metrics.bindAddress %q must end with :%d, the port the Service and monitors target" $metricsBind $metricsPort) }}
 {{- end }}
+{{/* extraArgs render after the generated --metrics-bind-address, so a
+     duplicate there wins pflag parsing while the container port, the metrics
+     Service and the monitors still follow metrics.port. Refuse it rather than
+     install a listener nothing can scrape. Both key spellings are caught: the
+     template prefixes the key with "--" itself. */}}
+{{- if dig "enabled" false $metrics }}
+{{- range $key := keys (.Values.extraArgs | default dict) }}
+{{- if or (eq $key "metrics-bind-address") (eq $key "--metrics-bind-address") }}
+{{- fail (printf "extraArgs.%s conflicts with the metrics listener the chart renders; set metrics.port (or metrics.bindAddress) instead, so the flag, the container port, the metrics Service and the monitors keep agreeing" $key) }}
+{{- end }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
