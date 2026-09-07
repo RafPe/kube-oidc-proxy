@@ -1091,7 +1091,7 @@
             "lastNotNull"
           ],
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true
         },
         "tooltip": {
@@ -1114,9 +1114,9 @@
       "id": 15,
       "gridPos": {
         "h": 9,
-        "w": 6,
-        "x": 12,
-        "y": 28
+        "w": 24,
+        "x": 0,
+        "y": 37
       }
     },
     {
@@ -1208,7 +1208,7 @@
       "gridPos": {
         "h": 9,
         "w": 6,
-        "x": 18,
+        "x": 12,
         "y": 28
       }
     },
@@ -1272,10 +1272,10 @@
       ],
       "id": 17,
       "gridPos": {
-        "h": 7,
-        "w": 24,
-        "x": 0,
-        "y": 37
+        "h": 9,
+        "w": 6,
+        "x": 18,
+        "y": 28
       }
     }
   ],
