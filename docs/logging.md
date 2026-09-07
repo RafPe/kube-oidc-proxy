@@ -551,6 +551,8 @@ This table is for whoever writes the ingest pipeline that copies them.
 
 - [Operations: reading the request log](./operations.md#reading-the-request-log)
   — the operator narrative and the fields to grep first.
+- [Shipping logs and audit events](./log-shipping.md) — a node-level agent
+  recipe that moves this stream and the audit events to AWS Kinesis.
 - [Configuration: logging](./configuration.md#logging) — `--logging-format` and
   `-v`, and the chart values that render them.
 - [Caching](./caching.md#observing-the-caches) — `cache.sar.lookup`,

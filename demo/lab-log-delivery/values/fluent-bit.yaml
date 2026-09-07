@@ -1,0 +1,120 @@
+# aws-for-fluent-bit values: the "Agent side" block from docs/log-shipping.md,
+# plus the lines the emulator needs. Every such line is marked EMULATOR; on
+# EKS you drop them and keep the IRSA annotation the page shows.
+
+# EMULATOR: static credentials instead of IRSA. Floci accepts any values.
+env:
+  - name: AWS_ACCESS_KEY_ID
+    value: lab
+  - name: AWS_SECRET_ACCESS_KEY
+    value: lab
+  - name: AWS_REGION
+    value: eu-west-1
+  - name: AWS_EC2_METADATA_DISABLED
+    value: "true"
+
+serviceAccount:
+  create: true
+  annotations: {}   # EMULATOR: no IAM, so no eks.amazonaws.com/role-arn
+
+# The chart's default input tails every container on the node. Replace it
+# with one scoped to the proxy, with filesystem buffering.
+input:
+  enabled: false
+additionalInputs: |
+  [INPUT]
+      Name              tail
+      Tag               kube.*
+      Path              /var/log/containers/*_kube-oidc-proxy_kube-oidc-proxy-*.log
+      multiline.parser  cri
+      DB                /var/log/flb_kube_oidc_proxy.db
+      Buffer_Max_Size   1M
+      Skip_Long_Lines   On
+      Refresh_Interval  5
+      Rotate_Wait       30
+      Mem_Buf_Limit     50MB
+      storage.type      filesystem
+
+# The chart's kubernetes filter parses the JSON line into `data` and adds
+# pod metadata under `kubernetes`.
+filter:
+  enabled: true
+  mergeLog: "On"
+  mergeLogKey: "data"
+  keepLog: "Off"
+
+# Audit events get their own tag so they can go to their own stream.
+additionalFilters: |
+  [FILTER]
+      Name                  rewrite_tag
+      Match                 kube.*
+      Rule                  $data['kind'] ^Event$ audit.$TAG false
+      Emitter_Name          oidc_proxy_audit
+      Emitter_Storage.type  filesystem
+
+# The chart's own outputs all match `*`; cloudWatchLogs is on by default.
+cloudWatchLogs:
+  enabled: false
+kinesis:
+  enabled: false
+kinesis_streams:
+  enabled: false
+additionalOutputs: |
+  [OUTPUT]
+      Name                      kinesis_streams
+      Match                     audit.*
+      region                    eu-west-1
+      stream                    kube-oidc-proxy-audit
+      storage.total_limit_size  1G
+      endpoint                  floci.floci.svc.cluster.local
+      port                      443
+      tls.ca_file               /floci-ca/ca.crt
+
+  [OUTPUT]
+      Name                      kinesis_streams
+      Match                     kube.*
+      region                    eu-west-1
+      stream                    kube-oidc-proxy-logs
+      storage.total_limit_size  1G
+      endpoint                  floci.floci.svc.cluster.local
+      port                      443
+      tls.ca_file               /floci-ca/ca.crt
+# EMULATOR: the three endpoint/port/tls.ca_file lines per output point the
+# plugin at the in-cluster emulator behind its TLS front. Real AWS needs
+# none of them.
+
+service:
+  extraService: |
+    HTTP_Server      On
+    HTTP_Listen      0.0.0.0
+    HTTP_PORT        2020
+    Health_Check     On
+    HC_Errors_Count  5
+    HC_Retry_Failure_Count 5
+    HC_Period        5
+    storage.path     /var/log/flb-storage/kube-oidc-proxy/
+    storage.sync     normal
+    storage.checksum off
+    storage.backlog.mem_limit 20M
+
+# EMULATOR: mount the CA that signed the emulator's TLS certificate. The chart
+# takes whole lists here, so its two defaults are repeated.
+volumes:
+  - name: varlog
+    hostPath:
+      path: /var/log
+  - name: varlibdockercontainers
+    hostPath:
+      path: /var/lib/docker/containers
+  - name: floci-ca
+    configMap:
+      name: floci-ca
+volumeMounts:
+  - name: varlog
+    mountPath: /var/log
+  - name: varlibdockercontainers
+    mountPath: /var/lib/docker/containers
+    readOnly: true
+  - name: floci-ca
+    mountPath: /floci-ca
+    readOnly: true

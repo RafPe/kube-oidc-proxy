@@ -55,7 +55,8 @@ policy, a mount, and three flags are the whole setup.
 Write to stdout. The chart runs the proxy with a read-only root filesystem, and
 a stdout audit log needs no writable path, no sidecar and no extra collector:
 it lands in the same stream as the structured log and reaches your log pipeline
-the same way.
+the same way ([shipping logs and audit events](./log-shipping.md) is a worked
+example with a node-level agent and AWS Kinesis).
 
 ```yaml
 # values.yaml
@@ -147,18 +148,28 @@ selectors are `users`, `userGroups`, `verbs`, `resources` (API group plus
 resource, optionally with a subresource such as `pods/exec`), `namespaces`,
 `nonResourceURLs`, and a per-rule `omitStages`.
 
-The level sets how much of each request is kept:
+The level sets how much of each request is kept. The names and their meaning
+are kube-apiserver's:
 
-| Level | Records |
+| Level | Records on kube-apiserver |
 | --- | --- |
 | `None` | nothing |
 | `Metadata` | who, verb, resource, namespace, source IP, status code, timestamps; no bodies |
 | `Request` | Metadata plus the request body |
 | `RequestResponse` | Metadata plus request and response bodies |
 
-`Metadata` is the right default. It answers "who did what, when, and was it
-allowed" without copying object manifests, and never a Secret's contents, into
-the log.
+On the proxy, `Request` and `RequestResponse` record exactly what `Metadata`
+records. kube-apiserver attaches `requestObject` and `responseObject` from its
+resource handlers, and a reverse proxy has none: the audit filter here only ever
+sees the request's metadata, so no level copies a body into the proxy's log. The
+level is still stamped on the event and every kube-apiserver policy parses
+unchanged, which keeps one policy reusable on both sides; when you need the
+body, read the API server's audit log.
+
+`Metadata` is therefore the right default here in every sense. It answers "who
+did what, when, and was it allowed", and on the API server side it is also the
+level that never copies an object manifest, or a Secret's contents, into the
+log.
 
 `omitStages: ["RequestReceived"]` at the top level drops the event that is
 written when a request arrives, before anything is known about the outcome.
@@ -233,10 +244,13 @@ The group names are whatever your mappings produce; see the
 
 ### Sensitive resources
 
-Secrets stay at `Metadata` regardless of who touches them, because even
-`Request` level would copy the value into the log on a create. RBAC changes get
-bodies, because the body is what you will want to read. `exec` and
-`portforward` keep both stages so an open session is visible while it runs.
+Secrets stay at `Metadata` and RBAC changes are marked `Request`, so the same
+policy can be reused on the API server, where the level decides whether a body
+is copied into the log: even `Request` on a Secret create would copy the value
+there, and an RBAC body is the thing you will want to read. On the proxy the
+two levels record the same metadata (see above), so the distinction costs
+nothing here. `exec` and `portforward` keep both stages so an open session is
+visible while it runs.
 
 ```yaml
 apiVersion: audit.k8s.io/v1
@@ -333,6 +347,8 @@ API server event at all. See [correlation](./logging.md#correlation).
 - [Logging reference](./logging.md) — the structured log the audit events sit
   next to, and the `request_id` that joins them.
 - [Operations: reading the request log](./operations.md#reading-the-request-log).
+- [Shipping logs and audit events](./log-shipping.md) — moving the stdout
+  audit log, with the structured log, to AWS Kinesis with a node-level agent.
 - [Configuration reference](./configuration.md) — every flag, including the
   audit flags the proxy inherits from kube-apiserver.
 - [Kubernetes auditing](https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/)

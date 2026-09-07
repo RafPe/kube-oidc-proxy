@@ -1,0 +1,31 @@
+# The baseline policy from docs/auditing.md: quiet on probes and discovery,
+# metadata for everything else, one event per request.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kube-oidc-proxy-audit-policy
+  namespace: kube-oidc-proxy
+data:
+  policy.yaml: |
+    apiVersion: audit.k8s.io/v1
+    kind: Policy
+    omitStages: ["RequestReceived"]
+    rules:
+      - level: None
+        nonResourceURLs:
+          - "/healthz*"
+          - "/readyz*"
+          - "/livez*"
+          - "/version"
+          - "/api"
+          - "/api/*"
+          - "/apis"
+          - "/apis/*"
+          - "/openapi/*"
+      - level: None
+        resources:
+          - group: authentication.k8s.io
+            resources: ["selfsubjectreviews"]
+          - group: authorization.k8s.io
+            resources: ["selfsubjectaccessreviews", "selfsubjectrulesreviews"]
+      - level: Metadata
