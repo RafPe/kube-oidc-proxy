@@ -11,6 +11,7 @@ import (
 	auditinternal "k8s.io/apiserver/pkg/apis/audit"
 	"k8s.io/apiserver/pkg/audit"
 	"k8s.io/apiserver/pkg/endpoints/request"
+	"k8s.io/apiserver/pkg/server"
 	apiserveroptions "k8s.io/apiserver/pkg/server/options"
 
 	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
@@ -430,5 +431,59 @@ func TestRunWithoutBackendIsSilent(t *testing.T) {
 	}
 	if raw := cap.Raw(); raw != "" {
 		t.Fatalf("records emitted with no audit backend configured: %s", raw)
+	}
+}
+
+// TestWithRequestInfoResolvesCoreGroupAsResourceRequest pins
+// LegacyAPIGroupPrefixes. Without it every /api request parses as a
+// non-resource request whose verb is the lowercased HTTP method, which would
+// silently collapse the k8s_verb metric label to "other" and the scope label
+// to "none" for the whole core group.
+func TestWithRequestInfoResolvesCoreGroupAsResourceRequest(t *testing.T) {
+	a, err := New(new(options.AuditOptions), "0.0.0.0:1234", new(server.SecureServingInfo), slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := map[string]struct {
+		method, path      string
+		wantVerb, wantRes string
+		wantNamespace     string
+		wantResource      bool
+	}{
+		"core group list in a namespace": {
+			method: http.MethodGet, path: "/api/v1/namespaces/team-a/pods",
+			wantVerb: "list", wantRes: "pods", wantNamespace: "team-a", wantResource: true,
+		},
+		"core group watch": {
+			method: http.MethodGet, path: "/api/v1/pods?watch=true",
+			wantVerb: "watch", wantRes: "pods", wantResource: true,
+		},
+		"named group create": {
+			method: http.MethodPost, path: "/apis/apps/v1/namespaces/team-a/deployments",
+			wantVerb: "create", wantRes: "deployments", wantNamespace: "team-a", wantResource: true,
+		},
+		"non-resource path keeps the raw method": {
+			method: http.MethodPost, path: "/healthz",
+			wantVerb: "post", wantResource: false,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			var got *request.RequestInfo
+			h := a.WithRequestInfo(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				got, _ = request.RequestInfoFrom(r.Context())
+			}))
+			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(tc.method, tc.path, nil))
+			if got == nil {
+				t.Fatal("no RequestInfo on the context")
+			}
+			if got.IsResourceRequest != tc.wantResource || got.Verb != tc.wantVerb ||
+				got.Resource != tc.wantRes || got.Namespace != tc.wantNamespace {
+				t.Fatalf("got %+v, want resource=%v verb=%q resource=%q namespace=%q",
+					got, tc.wantResource, tc.wantVerb, tc.wantRes, tc.wantNamespace)
+			}
+		})
 	}
 }

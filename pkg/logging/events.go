@@ -86,7 +86,7 @@ var Registry = map[EventType]EventSpec{
 		Level:      slog.LevelInfo,
 		Required:   []string{"request_id", "http_status", "time_to_headers_ms"},
 		Message:    "response started",
-		Summary:    "First WriteHeader on a long-running request. Mirrors the audit stage ResponseStarted.",
+		Summary:    "First final status on a long-running request; a forwarded 1xx does not start the response. Mirrors the audit stage ResponseStarted.",
 	},
 	EventRequestResponseCompleted: {
 		Components: []Component{ComponentRequest},

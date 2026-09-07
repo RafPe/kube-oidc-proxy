@@ -46,16 +46,27 @@ type responseRecorder struct {
 	wrote    bool
 	hijacked bool
 
-	// onStart, when set, reports the first WriteHeader. Only long-running
-	// requests set it: for everything else the terminal record arrives close
-	// enough behind the headers that a second record says nothing new.
+	// onStart, when set, reports the first final status; a forwarded 1xx does
+	// not start the response. Only long-running requests set it: for everything
+	// else the terminal record arrives close enough behind the headers that a
+	// second record says nothing new.
 	onStart func(status int)
 }
 
-// WriteHeader records the status the handler chose. Only the first call counts,
-// as net/http itself does: a duplicate is ignored rather than overwriting the
-// status that actually went on the wire.
+// WriteHeader records the status the handler chose. Only the first final
+// status counts, as net/http itself does: a duplicate is ignored rather than
+// overwriting the status that actually went on the wire.
+//
+// Informational responses are the exception. httputil.ReverseProxy forwards
+// every 1xx the upstream sends through this method, and net/http lets any
+// number of them precede the final status, so they are passed on without
+// being recorded. 101 Switching Protocols is not informational in that sense:
+// it ends the HTTP exchange, so it is latched like any other final status.
 func (r *responseRecorder) WriteHeader(code int) {
+	if code >= 100 && code <= 199 && code != http.StatusSwitchingProtocols {
+		r.ResponseWriter.WriteHeader(code)
+		return
+	}
 	if r.wrote {
 		return
 	}
