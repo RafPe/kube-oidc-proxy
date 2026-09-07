@@ -114,10 +114,11 @@ a 10s default timeout.
   identity; the handler still negotiates the Prometheus text or protobuf
   encoding from the scraper's `Accept` header, as promhttp does.
 - `kube_oidc_proxy_audit_backend_failures_total{operation="shutdown"}` is
-  incremented during shutdown, after the metrics listener has stopped, so a
-  scraper never observes it; the `audit.flush.failed` log record is the
-  operational signal for that case. The counter exists so the family's
-  shape is settled before a future backend can report delivery failures.
+  incremented from a pre-shutdown hook. The metrics listener is stopped only
+  after those hooks return, so the series is observable — but only to a scrape
+  that lands inside the drain window, which is shorter than any ordinary scrape
+  interval. Treat the `audit.flush.failed` log record as the operational signal
+  for that case and the counter as best-effort corroboration.
 - Not covered by this catalogue and deliberately so: request and response
   sizes, TLS handshake failures on the proxy listener (they end before HTTP
   handling), and transport failures inside an upgraded stream after the
