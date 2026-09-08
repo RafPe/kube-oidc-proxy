@@ -1,2 +1,0 @@
-kind: Fixed
-body: A 1xx informational response forwarded from the API server (for example 103 Early Hints) is no longer recorded as the request's final http_status in the request.response.completed record; only the final status is.

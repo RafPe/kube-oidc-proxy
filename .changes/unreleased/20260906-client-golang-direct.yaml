@@ -1,2 +1,0 @@
-kind: Dependencies
-body: Bump github.com/prometheus/client_golang from 1.24.0 (indirect) to a direct dependency at 1.24.1, which fixes a promhttp panic on requests carrying a nil URL, ahead of the proxy exposing a Prometheus metrics endpoint.
