@@ -1,0 +1,22 @@
+# Copyright Jetstack Ltd. See LICENSE for details.
+#
+# Read automatically by github.com/grafana/dashboard-linter for every dashboard
+# in this directory (hack/verify-chart-dashboards.sh runs it with --strict).
+#
+# These dashboards scope by Kubernetes workload, not by Prometheus scrape
+# target: the template variables are $namespace and $pod, taken from the labels
+# the Prometheus Operator attaches to a ServiceMonitor target, and every query
+# selects on them. That is the axis an operator of this chart thinks in - one
+# release, in one namespace, across its replicas - and it survives a job or
+# instance being renamed by a relabeling rule. There are therefore no $job or
+# $instance template variables and no job/instance matchers, which the four
+# rules below require. Nothing else is excluded.
+exclusions:
+  template-job-rule:
+    reason: "Dashboards scope by $namespace/$pod, not by scrape job; there is no $job variable."
+  template-instance-rule:
+    reason: "Dashboards scope by $namespace/$pod, not by scrape instance; there is no $instance variable."
+  target-job-rule:
+    reason: "Queries select on namespace and pod instead of job; see template-job-rule."
+  target-instance-rule:
+    reason: "Queries select on namespace and pod instead of instance; see template-instance-rule."

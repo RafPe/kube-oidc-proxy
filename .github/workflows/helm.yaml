@@ -11,6 +11,7 @@ on:
       - 'hack/verify-chart-rbac.sh'
       - 'hack/verify-chart-namespace.sh'
       - 'hack/verify-chart-metrics.sh'
+      - 'hack/verify-chart-dashboards.sh'
   pull_request:
     paths:
       - 'chart/kube-oidc-proxy/**'
@@ -19,6 +20,7 @@ on:
       - 'hack/verify-chart-rbac.sh'
       - 'hack/verify-chart-namespace.sh'
       - 'hack/verify-chart-metrics.sh'
+      - 'hack/verify-chart-dashboards.sh'
 
 permissions:
   contents: read
@@ -38,6 +40,14 @@ jobs:
       CHART: chart/kube-oidc-proxy
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # hack/verify-chart-dashboards.sh builds the pinned dashboard-linter from
+      # source, so this job needs a Go toolchain and it must be the one the
+      # repository builds with - not whatever the runner image happens to ship.
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
 
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
@@ -62,6 +72,32 @@ jobs:
 
       - name: metrics values render the listener, the Service and the monitors
         run: bash hack/verify-chart-metrics.sh
+
+      # The linter version is read out of the script rather than repeated
+      # here, so the cache key and the binary the script builds can never name
+      # different versions.
+      - name: Read the pinned dashboard-linter version
+        id: linter
+        run: |
+          version="$(sed -n 's/^LINTER_VERSION="\(.*\)"$/\1/p' hack/verify-chart-dashboards.sh)"
+          [ -n "$version" ] || { echo "::error::no LINTER_VERSION in hack/verify-chart-dashboards.sh"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # The script reuses bin/dashboard-linter-<version> when it is already
+      # there, so caching it turns the clone-and-build into a once-per-version
+      # cost rather than a per-run one.
+      - name: Cache the pinned dashboard linter
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: bin/dashboard-linter-${{ steps.linter.outputs.version }}
+          key: dashboard-linter-${{ runner.os }}-${{ runner.arch }}-${{ steps.linter.outputs.version }}
+
+      # Needs git and network on a cache miss: the pinned dashboard-linter
+      # cannot be run with `go run <module>@<version>` because its go.mod
+      # carries a replace directive, so the script builds the pinned tag from a
+      # shallow clone.
+      - name: dashboards are valid, linted and rendered byte-for-byte
+        run: bash hack/verify-chart-dashboards.sh
 
       - name: logging values render as proxy flags
         run: bash hack/verify-chart-logging.sh

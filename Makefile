@@ -12,7 +12,7 @@ export GO111MODULE=on
 help:  ## display this help
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n\nTargets:\n"} /^[a-zA-Z0-9_-]+:.*?##/ { printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
-.PHONY: help build docker_build test depend verify all clean generate eventdoc verify_eventdoc metricdoc verify_metricdoc e2e e2e-clean verify-e2e-shards
+.PHONY: help build docker_build test depend verify all clean generate eventdoc verify_eventdoc metricdoc verify_metricdoc e2e e2e-clean verify-e2e-shards metrics_demo_up metrics_demo_load metrics_demo_verify metrics_demo_down
 
 # golangci-lint is installed via the upstream, GOOS/GOARCH-aware installer,
 # pinned to a supported v2 release. Keep this in lockstep with the version the
@@ -147,6 +147,22 @@ e2e-clean: ## delete the e2e kind cluster if present (safe to run anytime)
 
 verify-e2e-shards: ## check every e2e case container carries exactly one shard label
 	./hack/verify-e2e-shards.sh
+
+# Metrics demo: a kind cluster with kube-prometheus-stack, this chart's
+# metrics and dashboards, a load generator that exercises every metric family,
+# and the panel-data proof that produces docs/dashboards/*.png. Prerequisites
+# and what each step leaves behind: hack/metrics-demo/README.md.
+metrics_demo_up: ## create the kind metrics demo (kind cluster, Prometheus, Grafana, the chart)
+	bash hack/metrics-demo/up.sh
+
+metrics_demo_load: ## drive traffic through the demo proxy (--once, or --duration)
+	bash hack/metrics-demo/load.sh $(METRICS_DEMO_LOAD_ARGS)
+
+metrics_demo_verify: ## assert every dashboard panel has data and capture the screenshots
+	bash hack/metrics-demo/verify.sh
+
+metrics_demo_down: ## delete the metrics demo cluster and its generated state
+	bash hack/metrics-demo/down.sh
 
 build: generate ## build kube-oidc-proxy
 	mkdir -p ./bin/amd64

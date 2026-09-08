@@ -189,10 +189,39 @@ and health, never identities; see the [metrics reference](../../docs/metrics.md)
 | `metrics.podMonitor.interval` / `.scrapeTimeout` / `.path` / `.scheme` / `.honorLabels` / `.relabelings` / `.metricRelabelings` | | as ServiceMonitor | Endpoint settings; the PodMonitor has no `tlsConfig` or limit fields. |
 | `metrics.prometheusRule.enabled` / `.groups` | bool / list | `false` / `[]` | Optional PrometheusRule; `groups` is rendered as `spec.groups`. No default alerts ship. |
 | `metrics.prometheusRule.namespace` / `.additionalLabels` / `.annotations` | | `""` / `{}` / `{}` | Object metadata. |
+| `metrics.dashboards.enabled` | bool | `false` | Ship the three Grafana dashboards as a ConfigMap the Grafana sidecar loads. Requires `metrics.enabled`; without it the render fails rather than producing dashboards for a proxy that serves no metrics. |
+| `metrics.dashboards.namespace` | string | `""` | Namespace for the ConfigMap; empty uses the release namespace. Set it to Grafana's namespace when its sidecar only watches its own. |
+| `metrics.dashboards.label` / `.labelValue` | string | `grafana_dashboard` / `"1"` | The label the Grafana sidecar selects on, and its value. |
+| `metrics.dashboards.folder` / `.folderAnnotation` | string | `""` / `grafana_folder` | Grafana folder for the dashboards, set through the sidecar's folder annotation. Empty keeps the sidecar's default folder. |
+| `metrics.dashboards.labels` / `.annotations` | map | `{}` | Added to the dashboards ConfigMap. |
 | `metrics.tls.enabled`, `metrics.authentication.mode` | | `false`, `none` | Reserved for a later release; any other value fails to render. |
 | `networkPolicy.enabled` | bool | `false` | Render a NetworkPolicy admitting only `networkPolicy.metrics.from` to the metrics port, plus the rules in `networkPolicy.additionalIngress`. NetworkPolicies are additive: another policy selecting the proxy pods that already admits the metrics port cannot be narrowed by this one. |
 | `networkPolicy.metrics.from` | list | `[]` | NetworkPolicy ingress peers allowed to scrape; required when enabled. |
 | `networkPolicy.additionalIngress` | list | admits every peer to 8443 and 8080 | Extra ingress rules rendered after the metrics rule, verbatim. The default keeps the proxy and readiness ports reachable, because selecting the pods isolates all their ingress. Set `[]` when other policies already cover those ports, so this one does not widen them. |
+
+### Dashboards
+
+`metrics.dashboards.enabled` ships three Grafana dashboards in one ConfigMap
+labelled `grafana_dashboard: "1"`, which the Grafana sidecar loads with no
+further configuration (kube-prometheus-stack enables that sidecar by default;
+point `metrics.dashboards.namespace` at Grafana's namespace if its sidecar only
+watches its own). They answer different questions - **Overview** for whoever is
+on call, **Security & identity** for who is being refused and why, **Capacity &
+dependencies** for what holds connections and how the API server behaves - and
+each panel carries a description saying what it is for. Screenshots and the
+per-panel summary are in the
+[metrics reference](../../docs/metrics.md#dashboards).
+
+`hack/verify-chart-dashboards.sh` checks them in CI: the uid, the shared
+template variables, a description on every panel, the datasource variable on
+every query, that the ConfigMap reproduces each file byte-for-byte, and the
+Grafana dashboard linter under `--strict`. **That step needs `git` and network
+access**: every published tag of the linter carries a `replace` directive in
+its `go.mod`, so `go run <module>@<version>` refuses to build it and the script
+builds the pinned tag from a shallow clone instead. Four linter rules are
+excluded in `dashboards/.lint`, with the reason recorded there: these
+dashboards scope by `$namespace`/`$pod` rather than by scrape job, so they have
+no `$job` or `$instance` variables and no job/instance matchers.
 
 ### Extra args & volumes
 

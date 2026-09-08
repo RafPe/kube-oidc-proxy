@@ -20,3 +20,7 @@
 .idea/
 *.tmproj
 .vscode/
+# The dashboard linter's rule exclusions. The ConfigMap template globs
+# dashboards/*.json, so this file is only ever read by
+# hack/verify-chart-dashboards.sh and has no business in a released package.
+dashboards/.lint

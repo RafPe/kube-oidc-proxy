@@ -288,6 +288,40 @@ The C4 diagrams under [`docs/c4/`](./c4/) are generated from
 [`workspace.dsl`](./c4/workspace.dsl) with Structurizr; edit the DSL, not the
 PNGs. [Architecture](./architecture.md#diagrams) shows them.
 
+`docs/diagrams/*.svg` are hand-authored inline SVGs (literal colours, a
+`<title>`, no CSS variables, so GitHub renders them in both themes);
+`hack/verify-diagrams.sh` checks them and CI runs it.
+
+## Metrics demo
+
+`hack/metrics-demo/` builds a kind cluster running kube-prometheus-stack and
+this chart with metrics, a ServiceMonitor and the three Grafana dashboards, and
+proves the dashboards are honest: it drives nineteen kinds of traffic —
+allowed and forbidden requests, a 5xx the API server itself answers, invalid,
+expired and username-less tokens, allowed, denied and simultaneous
+impersonation, the two anomaly denials, both token-passthrough outcomes, a
+watch, an exec, a log stream, non-resource paths and nine non-Kubernetes verbs
+— fails if any dashboard panel's query returns an empty result, and only then
+captures the screenshots in `docs/dashboards/`. It fakes no failure of the hop
+to the API server, so the overview's "Upstream failures/s" panel reads zero, as
+it should against a healthy upstream. Four steps, each one command:
+
+```sh
+make metrics_demo_up                                     # cluster, Prometheus, Grafana, the chart
+make metrics_demo_load METRICS_DEMO_LOAD_ARGS=--once     # one call of every traffic kind
+make metrics_demo_load METRICS_DEMO_LOAD_ARGS="--duration 10m"
+make metrics_demo_verify                                 # every panel has data; write the PNGs
+make metrics_demo_down                                   # delete the cluster and its state
+```
+
+`up` leaves `hack/metrics-demo/.state/` holding the kubeconfig, the mock
+issuer's CA, key and URL and the proxy's serving certificate; the load
+generator and `verify` read it, and `down` removes it. It needs Docker, Go,
+kubectl, helm, jq and curl — but no `kind` CLI: the scripts run the kind pinned
+in `go.mod`, which is the one the e2e suite uses. Prerequisites, the pinned
+versions and what each file does are in
+[`hack/metrics-demo/README.md`](../hack/metrics-demo/README.md).
+
 ## See also
 
 - [Operations](./operations.md) — running the proxy in production.

@@ -1,0 +1,36 @@
+# Copyright Jetstack Ltd. See LICENSE for details.
+#
+# kube-oidc-proxy for the metrics demo (hack/metrics-demo/up.sh). up.sh adds
+# oidc.issuerUrl, oidc.caPEM and the image reference, which it learns from the
+# cluster it just built.
+# The serving certificate the demo minted (hack/metrics-demo/issuer). The
+# chart's own self-generated certificate is signed by an ephemeral CA it never
+# publishes and carries no subjectAltName, so nothing outside the cluster can
+# verify it; the load generator reaches the proxy through a port-forward and
+# does verify it.
+tls:
+  secretName: kop-demo-tls
+
+oidc:
+  clientId: kube-oidc-proxy
+  usernameClaim: email
+  groupsClaim: groups
+
+# The load generator exercises the TokenReview path with a ServiceAccount
+# token, which only reaches the API server when passthrough is on.
+tokenPassthrough:
+  enabled: true
+
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    interval: 15s
+  dashboards:
+    enabled: true
+  # Alert thresholds are deployment-specific; the demo ships none.
+  prometheusRule:
+    enabled: false
+
+# Two replicas so the per-pod panels have more than one series to draw.
+replicaCount: 2

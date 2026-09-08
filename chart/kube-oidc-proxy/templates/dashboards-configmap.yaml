@@ -1,0 +1,34 @@
+{{- $m := .Values.metrics | default dict -}}
+{{- $d := dig "dashboards" dict $m -}}
+{{- $enabled := dig "enabled" false $m -}}
+{{- $dEnabled := dig "enabled" false $d -}}
+{{- if and $dEnabled (not $enabled) -}}
+{{- fail "metrics.dashboards.enabled requires metrics.enabled" -}}
+{{- end -}}
+{{- if and $enabled $dEnabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kube-oidc-proxy.fullname" . }}-dashboards
+  namespace: {{ $d.namespace | default .Release.Namespace }}
+  labels:
+{{ include "kube-oidc-proxy.labels" . | indent 4 }}
+    {{ $d.label | default "grafana_dashboard" }}: {{ $d.labelValue | default "1" | quote }}
+    {{- with $d.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- if or $d.folder $d.annotations }}
+  annotations:
+    {{- with $d.folder }}
+    {{ $d.folderAnnotation | default "grafana_folder" }}: {{ . | quote }}
+    {{- end }}
+    {{- with $d.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+data:
+{{- range $path, $_ := .Files.Glob "dashboards/*.json" }}
+  {{ base $path }}: |-
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}
+{{- end }}

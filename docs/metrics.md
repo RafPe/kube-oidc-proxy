@@ -8,11 +8,13 @@ any other method on that path is `405` with an `Allow` header and every other
 path is `404` — no pprof, no index, no reset.
 
 - [What the endpoint reveals](#what-the-endpoint-reveals)
+- [Where the metrics attach](#where-the-metrics-attach)
 - [Catalogue](#catalogue)
 - [Label values](#label-values)
 - [Buckets](#buckets)
 - [Compatibility](#compatibility)
 - [Worked queries](#worked-queries)
+- [Dashboards](#dashboards)
 - [Exposure and hardening](#exposure-and-hardening)
 - [See also](#see-also)
 
@@ -30,6 +32,27 @@ access controls.
 
 The `go_*` and `process_*` families come from the Prometheus client library
 and are documented by it; the proxy passes them through unchanged.
+
+## Where the metrics attach
+
+![Where the metrics attach — one observation point in the handler chain, every collaborator reporting to one injected recorder, served by a dedicated listener](./diagrams/metrics-data-flow.svg)
+
+The whole request side is observed in one function: the deferred block of the
+lifecycle filter (`pkg/proxy/lifecycle.go`), which already classifies status,
+termination, hijack and panic once per request. The metric and the
+`request.response.completed` record therefore carry the same values by
+construction. Everything else reports through the same recorder, which is nil,
+and a no-op, when metrics are off.
+
+| Family | Observed at | Hook |
+| --- | --- | --- |
+| `requests_total`, `request_duration_seconds`, `requests_in_flight`, `long_running_requests` | the lifecycle filter's deferred block | `RequestStarted`, `LongRunningEstablished` (first success header, or hijack), `RequestFinished` |
+| `authentication_attempts_total` | the authentication filter and the TokenReview fallback | `AuthenticationAttempt` |
+| `access_decisions_total` | wherever the one access record is written | `AccessDecision`, through `recordDecision` |
+| `review_requests_total`, `review_request_duration_seconds` | the single `Create` call of each review client | `ReviewRequest` |
+| `cache_lookups_total` | the two review caches | `CacheLookup` |
+| `oidc_issuer_initialized`, `ready` | the readiness probe's state transitions | `SetIssuerInitialized`, `SetReady` |
+| `audit_backend_failures_total` | the audit backend's start and shutdown | `AuditBackendFailure` |
 
 ## Catalogue
 
@@ -167,6 +190,100 @@ Issuers not initialized:
 ```promql
 kube_oidc_proxy_oidc_issuer_initialized == 0
 ```
+
+## Dashboards
+
+The chart ships three Grafana dashboards (`metrics.dashboards.enabled: true`)
+as a ConfigMap the Grafana sidecar loads; kube-prometheus-stack picks them up
+with no further configuration. Each answers a different set of questions.
+The screenshots come from the [kind demo](./development.md#metrics-demo) with
+the load generator running. Five panels count things a healthy
+proxy is not expected to be doing - upstream failures, TokenReview dependency
+errors, review errors and timeouts, audit backend failures, reserved-identity
+and header-flood attempts. A counter child that has never been incremented has
+no series at all, so those five queries fall back to `vector(0)` and read a
+flat zero rather than "No data".
+
+Two of the five are not pure dependency-health signals, and their panels say
+so. `authentication_attempts_total{auth_method="tokenreview",outcome="error"}`
+and `review_requests_total{outcome="error"}` count every TokenReview that came
+back with no verdict, and kube-apiserver sets `status.error` on a bearer token
+it cannot parse - so a client presenting a malformed token lights both panels
+exactly as an unreachable API server does, and the proxy then refuses that
+request as an ordinary unauthorized denial. A non-zero value means "no verdict
+was reached", not "the dependency is broken"; the `authn.tokenreview.failed`
+log records, or the API server's own error rate, are what separate a bad
+client from a broken dependency. Each of the five aggregates to a single series first - `sum(rate(...))`
+for the three rate panels, `sum(increase(...))` for the two counting panels -
+and then writes the fallback as a plain `or vector(0)`. That works because
+`vector(0)` has an empty label set and so does the result of a `sum()` with no
+`by`: `or` drops its right-hand side when the label set already appears on the
+left, which it does the moment there is any real data. None of the five groups
+by a label, so none needs `or on() label_replace(...)`, and each names its
+series with a literal `legendFormat` - in the order the five are named above,
+"failures", "errors", "errors and timeouts", "failures" and "attempts" -
+rather than letting Grafana label the fallback "Value".
+
+Three ratio panels need the same fallback for the same reason: the overview's
+denial ratio, and the security dashboard's OIDC rejection ratio and SAR deny
+ratio. Their numerator selects the denied or rejected outcome, which has no
+series until something is denied, while the denominator counts every outcome
+and has plenty - so an unguarded division matches nothing and the panel reads
+"No data" on a deployment that is refusing nobody. Each numerator is therefore
+written `(sum(rate(...)) or vector(0))`. It reads 0 against live traffic, and
+it still reads "No data" when the *denominator* is absent, which is the right
+answer: with no traffic at all there is no share to take. Grouped ratios keep
+no fallback - an unlabelled zero would draw as an extra series beside the real
+ones rather than fill a gap - and `hack/verify-chart-dashboards.sh` requires
+the fallback on exactly the ungrouped ones.
+
+The demo does not fake any of them: in the screenshots below
+the upstream-failure panel reads zero because the API server never failed to
+answer, which is what a healthy deployment looks like. The two TokenReview
+error panels are not zero there, and that is the point of the paragraph above:
+one traffic kind presents a bearer token no authenticator claims, kube-apiserver
+answers it with `status.error`, and the panels count it exactly as they would
+count an unreachable API server. The proxy still refuses that request as an
+ordinary 401.
+
+The p99 latency in those screenshots sits near three seconds, and that is the
+upstream, not the proxy: one of the demo's traffic kinds lists pods at a
+`resourceVersion` the API server will never observe, and the API server takes
+about three seconds to answer it 504. The proxy forwards that request and
+records its full duration, which is exactly what the panel is for - it
+measures what a client waited, and a slow upstream is the usual reason. The
+scenario runs at most once per rotation, so it lifts p99 without distorting
+the rest.
+
+### Overview (`kube-oidc-proxy-overview`)
+
+For whoever is on call: is it up, how much traffic, how slow, what fails.
+Ready and issuer state, request rate by verb, in-flight and open streams,
+p50/p95/p99 latency against the same buckets as the API server, denial ratio,
+responses by code class, upstream failures.
+
+![Overview dashboard](./dashboards/overview.png)
+
+### Security and identity (`kube-oidc-proxy-security`)
+
+For the security engineer: who is being refused and why, how clients
+authenticate, whether impersonation is authorized as intended, whether the
+review dependencies are healthy. Denials by reason, reserved-identity and
+header-flood attempts, authentication attempts by method and outcome,
+SubjectAccessReview allow/deny, review errors and timeouts, issuer state,
+audit backend failures.
+
+![Security and identity dashboard](./dashboards/security.png)
+
+### Capacity and dependencies (`kube-oidc-proxy-capacity`)
+
+For the platform engineer: what holds connections and memory, how the API
+server dependency behaves, whether the caches are earning their keep, runtime
+health. Open streams by verb and their peak, review latency and call rate,
+proxy p99 next to the API server's, cache hit ratio, goroutines, heap, GC,
+CPU, restarts.
+
+![Capacity and dependencies dashboard](./dashboards/capacity.png)
 
 ## Exposure and hardening
 

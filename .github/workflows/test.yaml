@@ -63,6 +63,26 @@ jobs:
       - name: Verify metric reference
         run: make verify_metricdoc && git diff --exit-code docs/metrics.md
 
+      - name: Verify hand-authored diagrams
+        run: bash hack/verify-diagrams.sh
+
+      # The kind demo's port-forward helper keeps the pids to kill in shell
+      # arrays, so it breaks silently if a caller ever puts pf_start back in a
+      # command substitution. Checked with a kubectl stub; no cluster needed.
+      - name: Verify metrics-demo port-forwards
+        run: bash hack/verify-portforward.sh
+
+      # The demo image tag is what makes helm roll the proxy pods after a
+      # rebuild. Guarded against a throwaway repository; no cluster needed.
+      - name: Verify metrics-demo image tag
+        run: bash hack/verify-demo-image-tag.sh
+
+      # The assertions check.sh and verify.sh make, exercised against
+      # synthetic inputs so a demo run cannot be the first place they are
+      # tried. No cluster needed.
+      - name: Verify metrics-demo checks
+        run: bash hack/verify-metrics-demo.sh
+
       # The e2e framework's unit tests render the chart's ClusterRole and check
       # it grants every permission the proxy code needs.
       - name: Set up Helm
@@ -75,7 +95,7 @@ jobs:
       # -tags logcheck compiles the required-attribute assertions into Emit, so
       # a record missing a mandatory field fails a test instead of shipping.
       - name: go test
-        run: go test -tags logcheck ./cmd/... ./pkg/... ./test/tools/... ./test/e2e/framework/... ./test/e2e/versions/...
+        run: go test -tags logcheck ./cmd/... ./pkg/... ./hack/... ./test/tools/... ./test/e2e/framework/... ./test/e2e/versions/...
 
       # e2e.yaml runs the suite as three label-filtered shards; an unlabelled
       # case would run in none of them. Cheap text check, no cluster needed.

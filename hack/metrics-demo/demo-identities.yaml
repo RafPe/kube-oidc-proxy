@@ -1,0 +1,100 @@
+# Copyright Jetstack Ltd. See LICENSE for details.
+#
+# The identities and the workload the load generator drives traffic against.
+# Grants are deliberately narrow: the generator needs some calls to be allowed
+# and others to be forbidden, and the difference is what the dashboards show.
+---
+# The identity the demo's OIDC tokens carry in their email claim.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: demo-pods
+  namespace: proxy
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "get"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "create"]
+---
+# The ServiceAccount whose TokenRequest token exercises the token-passthrough
+# path: the proxy cannot verify it as an OIDC token, falls back to a
+# TokenReview, and the API server authorizes the ServiceAccount itself.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: demo-passthrough
+  namespace: proxy
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: demo-pods
+  namespace: proxy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: demo-pods
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: User
+    name: user@example.com
+  # The identity user@example.com is allowed to impersonate. It needs the same
+  # grant, or the proxy would authorize the impersonation and the API server
+  # would then refuse the impersonated request, which is a different outcome
+  # from the one the "impersonation allowed" traffic kind is meant to produce.
+  - apiGroup: rbac.authorization.k8s.io
+    kind: User
+    name: jjackson
+  - kind: ServiceAccount
+    name: demo-passthrough
+    namespace: proxy
+---
+# Impersonating a user is authorized cluster-wide, so this half cannot be a
+# Role: jjackson is allowed, every other name (mallory) is refused by the
+# SubjectAccessReview the proxy issues.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: demo-impersonate-jjackson
+rules:
+  - apiGroups: [""]
+    resources: ["users"]
+    resourceNames: ["jjackson"]
+    verbs: ["impersonate"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: demo-impersonate-jjackson
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: demo-impersonate-jjackson
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: User
+    name: user@example.com
+---
+# Something to exec into and read logs from, so the long-running families
+# (connect) have real traffic rather than a synthetic gauge.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: demo-shell
+  namespace: proxy
+  labels:
+    app: demo-shell
+spec:
+  containers:
+    - name: shell
+      image: busybox:1.37.0
+      command: ["sh", "-c", "while true; do echo demo-shell alive; sleep 15; done"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
