@@ -1,2 +1,0 @@
-kind: Added
-body: The Helm chart can enable the metrics endpoint (`metrics.enabled`), rendering the flag, a named container port and a dedicated ClusterIP Service `<release>-metrics` that is never part of the main Service, plus an optional Prometheus Operator ServiceMonitor or PodMonitor, an empty PrometheusRule and a NetworkPolicy that admits only the listed peers to the metrics port while keeping the proxy and readiness ports open.

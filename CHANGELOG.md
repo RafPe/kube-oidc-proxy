@@ -1,6 +1,16 @@
 # Unreleased
 <!-- next-release -->
 
+## [1.8.0] - 2026-09-08
+
+- The Helm chart can enable the metrics endpoint (`metrics.enabled`), rendering the flag, a named container port and a dedicated ClusterIP Service `<release>-metrics` that is never part of the main Service, plus an optional Prometheus Operator ServiceMonitor or PodMonitor, an empty PrometheusRule and a NetworkPolicy that admits only the listed peers to the metrics port while keeping the proxy and readiness ports open.
+- Bump github.com/prometheus/client_golang from 1.24.0 (indirect) to a direct dependency at 1.24.1, which fixes a promhttp panic on requests carrying a nil URL, ahead of the proxy exposing a Prometheus metrics endpoint.
+- Three Grafana dashboards (overview, security and identity, capacity and dependencies) shipped by the chart as a sidecar-loaded ConfigMap when `metrics.dashboards.enabled` is set, a data-flow diagram of where the metrics attach in docs/metrics.md, and a reproducible kind demo (`make metrics_demo_up`) that installs the chart with Prometheus and Grafana, generates every kind of traffic, verifies every panel has data and captures the documented screenshots.
+- The proxy now refuses to start when two configured issuers share a host (for example `https://idp.example.com/realms/a` and `https://idp.example.com/realms/b`). Issuers are identified by host in every log record and metric series, so such a configuration could not be reported unambiguously. Give each issuer its own host.
+- A 1xx informational response forwarded from the API server (for example 103 Early Hints) is no longer recorded as the request's final http_status in the request.response.completed record; only the final status is.
+- Metrics for authentication attempts, access decisions by reason, TokenReview and SubjectAccessReview API calls and latency, review cache hits and misses, per-issuer initialization, readiness and observable audit backend failures, documented in docs/metrics.md as a versioned contract generated from the code and verified in CI.
+- An opt-in Prometheus metrics endpoint. `--metrics-bind-address=host:port` serves `GET /metrics` over plain HTTP on a dedicated listener with request counters, a latency histogram that excludes long-running requests, in-flight and open-stream gauges and build information. Off by default; every label value comes from a closed set, so no identity, path or client-chosen value ever becomes a series.
+
 ## [1.7.1] - 2026-09-05
 
 - The Helm chart's ClusterRole now lets the proxy's ServiceAccount create `SubjectAccessReview`s. The proxy authorizes every inbound `Impersonate-*` header value with one before forwarding, so on a chart install every `kubectl --as` request failed with HTTP 500 and `reason=internal_error` (`authz.sar.failed` carried `cannot create resource "subjectaccessreviews"`). The end-to-end suite grants this in its own fixture, which is why it never surfaced there. Plain token requests were unaffected.

@@ -1,2 +1,0 @@
-kind: Added
-body: Three Grafana dashboards (overview, security and identity, capacity and dependencies) shipped by the chart as a sidecar-loaded ConfigMap when `metrics.dashboards.enabled` is set, a data-flow diagram of where the metrics attach in docs/metrics.md, and a reproducible kind demo (`make metrics_demo_up`) that installs the chart with Prometheus and Grafana, generates every kind of traffic, verifies every panel has data and captures the documented screenshots.

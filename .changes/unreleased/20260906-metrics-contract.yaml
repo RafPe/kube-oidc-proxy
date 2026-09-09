@@ -1,2 +1,0 @@
-kind: Added
-body: Metrics for authentication attempts, access decisions by reason, TokenReview and SubjectAccessReview API calls and latency, review cache hits and misses, per-issuer initialization, readiness and observable audit backend failures, documented in docs/metrics.md as a versioned contract generated from the code and verified in CI.
