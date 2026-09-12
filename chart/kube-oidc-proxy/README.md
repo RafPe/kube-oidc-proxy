@@ -9,9 +9,9 @@ The chart supports the proxy's two **mutually exclusive** authentication modes:
 - **Single-issuer** — the classic `--oidc-*` flags. Set `oidc.clientId`,
   `oidc.issuerUrl` and `oidc.usernameClaim`.
 - **Multi-issuer** — a Kubernetes `AuthenticationConfiguration`. Set
-  `authenticationConfig.content` (and optionally `readinessRequireAllIssuers`).
+  `authenticationConfig.content` or `authenticationConfig.existingSecret` (and optionally `readinessRequireAllIssuers`).
 
-When `authenticationConfig.content` is non-empty the chart passes
+When `authenticationConfig.content` or `authenticationConfig.existingSecret` is non-empty the chart passes
 `--authentication-config` and omits issuer-specific `--oidc-*` flags.
 `oidc.tlsClient` remains available because its credentials apply to every
 issuer in either mode.
@@ -111,7 +111,7 @@ Every value in [`values.yaml`](./values.yaml).
 
 ### Authentication — single-issuer
 
-Ignored when `authenticationConfig.content` is set.
+Ignored when either multi-issuer configuration source is set.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -130,8 +130,10 @@ Ignored when `authenticationConfig.content` is set.
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `authenticationConfig.content` | string | `""` | YAML of an `AuthenticationConfiguration`. When set, `--authentication-config` is used and issuer-specific `--oidc-*` flags are omitted. Format and recipes: [multi-issuer authentication](../../docs/multi-issuer.md), [integrations](../../docs/integrations.md). |
+| `authenticationConfig.existingSecret` | string | `""` | Existing Secret in the release namespace. Mutually exclusive with `content`. |
+| `authenticationConfig.key` | string | `"authentication-config.yaml"` | Key in the existing Secret containing the configuration. Empty or omitted uses the default. Ignored for inline content. |
 | `readinessRequireAllIssuers` | bool | `false` | Require every issuer to initialize before the pod is ready. Default: ready once at least one initializes. |
-| `rbac.userExtras` | list | `[]` | Extra user-info keys the proxy's ServiceAccount may impersonate (`userextras/<key>`), in addition to every `claimMappings.extra[].key` in `authenticationConfig.content` and every key in `extraImpersonationHeaders.headers`, which the chart grants automatically. Only needed for keys clients send themselves as `Impersonate-Extra-*`. Lowercased. |
+| `rbac.userExtras` | list | `[]` | Extra user-info keys the proxy's ServiceAccount may impersonate (`userextras/<key>`), in addition to every `claimMappings.extra[].key` in `authenticationConfig.content` and every key in `extraImpersonationHeaders.headers`, which the chart grants automatically. Also required for extra claim keys in an existing configuration Secret, which Helm cannot inspect. Lowercased. |
 
 ### OIDC issuer mutual TLS (both modes)
 
@@ -351,3 +353,39 @@ writable regardless.
 - [Multi-issuer authentication](../../docs/multi-issuer.md)
 - [Configuration reference](../../docs/configuration.md)
 - [Operations: security](../../docs/operations.md#security)
+
+### Use an existing authentication Secret
+
+Create the Secret in the namespace where the chart is installed:
+
+```sh
+kubectl -n auth create secret generic proxy-auth \
+  --from-file=authentication-config.yaml=./authentication-config.yaml
+```
+
+The file must contain an `AuthenticationConfiguration`, as shown in the
+[multi-issuer guide](../../docs/multi-issuer.md). Configure the chart:
+
+```yaml
+authenticationConfig:
+  existingSecret: proxy-auth
+  key: authentication-config.yaml
+rbac:
+  userExtras:
+    - example.com/team
+```
+
+Set `rbac.userExtras` to every `claimMappings.extra[].key` in the file. Helm
+cannot read the external configuration to generate these grants. No additional
+Secret API permissions are needed by the proxy.
+
+Leave `authenticationConfig.content` empty. The chart mounts the selected key
+read-only at `/etc/oidc/authentication-config.yaml` and does not create or manage
+the configuration Secret. The Secret and key must exist before the pod starts;
+a missing Secret or key prevents the pod from starting.
+
+Configuration is loaded at startup. Restart the Deployment after updating the
+Secret, for example with `kubectl -n auth rollout restart deployment/<name>`.
+Helm cannot calculate a checksum for external content. Inline configuration
+keeps its existing checksum rollout behavior. Single-issuer values and inline
+multi-issuer configuration require no changes.

@@ -25,6 +25,18 @@ for old_values in false true; do
   check "$deploy.volumes[] | select(.name == \"kube-oidc-proxy-config\") | .secret.secretName == \"kop-kube-oidc-proxy-config\"" 'inline Secret changed'
 done
 
+# Upgrades with old stored values render exactly as fresh default values.
+for fixture in single-issuer multi-issuer; do
+  current=$(render -f "$CHART/ci/$fixture-values.yaml")
+  old=$(render -f "$CHART/ci/$fixture-values.yaml" \
+    --set authenticationConfig.existingSecret=null --set authenticationConfig.key=null)
+  [ "$current" = "$old" ] || { echo "$fixture: old values changed the render" >&2; exit 1; }
+done
+# The external key setting must not alter inline configuration or its checksum.
+current=$(render -f "$CHART/ci/multi-issuer-values.yaml")
+custom=$(render -f "$CHART/ci/multi-issuer-values.yaml" --set authenticationConfig.key=ignored.yaml)
+[ "$current" = "$custom" ] || { echo 'external key changed inline config' >&2; exit 1; }
+
 # External config suppresses every legacy issuer flag/env, even with old values.
 for key in authentication-config.yaml custom.yaml; do
   out=$(render -f "$CHART/ci/single-issuer-values.yaml" \

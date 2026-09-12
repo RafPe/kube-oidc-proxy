@@ -12,6 +12,7 @@ on:
       - 'hack/verify-chart-namespace.sh'
       - 'hack/verify-chart-metrics.sh'
       - 'hack/verify-chart-dashboards.sh'
+      - 'hack/verify-chart-authentication.sh'
   pull_request:
     paths:
       - 'chart/kube-oidc-proxy/**'
@@ -21,6 +22,7 @@ on:
       - 'hack/verify-chart-namespace.sh'
       - 'hack/verify-chart-metrics.sh'
       - 'hack/verify-chart-dashboards.sh'
+      - 'hack/verify-chart-authentication.sh'
 
 permissions:
   contents: read
@@ -98,6 +100,9 @@ jobs:
       # shallow clone.
       - name: dashboards are valid, linted and rendered byte-for-byte
         run: bash hack/verify-chart-dashboards.sh
+
+      - name: authentication sources and backward compatibility
+        run: bash hack/verify-chart-authentication.sh
 
       - name: logging values render as proxy flags
         run: bash hack/verify-chart-logging.sh
