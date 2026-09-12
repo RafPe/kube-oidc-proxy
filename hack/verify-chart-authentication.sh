@@ -35,10 +35,10 @@ for key in authentication-config.yaml custom.yaml; do
   check "$container.args | contains([\"--authentication-config=/etc/oidc/authentication-config.yaml\", \"--readiness-require-all-issuers\", \"--oidc-tls-client-cert-file=/etc/oidc/client-tls/tls.crt\", \"--oidc-tls-client-key-file=/etc/oidc/client-tls/tls.key\"])" 'external config or shared mTLS flags missing'
   check "$container.args | map(select(test(\"^--oidc-\") and (test(\"^--oidc-tls-client-\") | not))) | length == 0" 'legacy flags in external mode'
   check "$container.env | length == 0" 'legacy env in external mode'
-  check "$container.volumeMounts[] | select(.name == \"kube-oidc-proxy-config\") | .mountPath == \"/etc/oidc\" and .readOnly == true" 'config mount missing or writable'
-  check "$deploy.volumes[] | select(.name == \"kube-oidc-proxy-config\") | .secret.secretName == \"external-auth\" and .secret.items == [{\"key\": \"$key\", \"path\": \"authentication-config.yaml\"}]" 'external Secret projection incorrect'
+  check "$container.volumeMounts[] | select(.name == \"kube-oidc-proxy-config\") | (.mountPath == \"/etc/oidc\" and .readOnly == true)" 'config mount missing or writable'
+  check "$deploy.volumes[] | select(.name == \"kube-oidc-proxy-config\") | (.secret.secretName == \"external-auth\" and (.secret.items | length) == 1 and .secret.items[0].key == \"$key\" and .secret.items[0].path == \"authentication-config.yaml\")" 'external Secret projection incorrect'
   check 'select(.kind == "ClusterRole") | .rules[].resources | select(contains(["userextras/example.com/team"])) | length == 1' 'explicit extra grant missing'
-  if yq -e 'select(.kind == "Secret" and (.metadata.name == "external-auth" or .metadata.name == "kop-kube-oidc-proxy-config"))' >/dev/null <<<"$out"; then
+  if yq -e 'select(.kind == "Secret" and (.metadata.name == "external-auth" or .metadata.name == "kop-kube-oidc-proxy-config"))' >/dev/null 2>&1 <<<"$out"; then
     echo 'external mode must not create a configuration Secret' >&2; exit 1
   fi
 done
