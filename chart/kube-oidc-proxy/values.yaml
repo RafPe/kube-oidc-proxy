@@ -80,6 +80,18 @@ tls:
 # oidc.tlsClient is shared by all issuers and remains available in either mode.
 # ---------------------------------------------------------------------------
 oidc:
+  # Existing Secret in the release namespace for the classic --oidc-* mode.
+  # Required fields below must be empty when this is set. Optional unmapped
+  # fields, caPEM, requiredClaims and tlsClient keep their inline behavior.
+  # Mutually exclusive with authenticationConfig. Restart after Secret updates.
+  existingSecret: ""
+  # Required key defaults: oidc.client-id, oidc.issuer-url, oidc.username-claim.
+  # Map optional fields to enable their flags; clear the matching inline value.
+  # For signingAlgs, explicitly set signingAlgs: [] to clear the RS256 default.
+  # Supported fields: clientId, issuerUrl, usernameClaim, usernamePrefix,
+  # groupsClaim, groupsPrefix, signingAlgs. Empty required keys use defaults;
+  # empty optional keys use inline values. A signingAlgs Secret value is CSV.
+  secretKeys: {}
   # SINGLE-ISSUER (required for mode 1): the OIDC client ID the proxy expects in
   # the token audience. Ignored when multi-issuer configuration is set.
   clientId: ""

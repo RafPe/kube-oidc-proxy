@@ -168,3 +168,60 @@ the dash pair are three separate checks.
 {{- end -}}
 {{- $name -}}
 {{- end -}}
+
+{{/* Validate explicit external OIDC sources without reading Secret contents. */}}
+{{- define "kube-oidc-proxy.validateOIDCSecret" -}}
+{{- $oidc := .Values.oidc -}}
+{{- $keys := $oidc.secretKeys | default dict -}}
+{{- $auth := .Values.authenticationConfig | default dict -}}
+{{- if not (kindIs "map" $keys) -}}
+{{- fail "oidc.secretKeys must be a map" -}}
+{{- end -}}
+{{- if and $keys (not $oidc.existingSecret) -}}
+{{- fail "oidc.secretKeys requires oidc.existingSecret" -}}
+{{- end -}}
+{{- if $oidc.existingSecret -}}
+{{- if or $auth.content $auth.existingSecret -}}
+{{- fail "oidc.existingSecret and authenticationConfig are mutually exclusive" -}}
+{{- end -}}
+{{- if eq $oidc.existingSecret (printf "%s-config" (include "kube-oidc-proxy.fullname" .)) -}}
+{{- fail "oidc.existingSecret must not name the chart-managed configuration Secret" -}}
+{{- end -}}
+{{- range $field := list "clientId" "issuerUrl" "usernameClaim" -}}
+{{- if index $oidc $field -}}
+{{- fail (printf "oidc.%s must be empty when oidc.existingSecret is set" $field) -}}
+{{- end -}}
+{{- end -}}
+{{- range $field, $key := $keys -}}
+{{- if not (has $field (list "clientId" "issuerUrl" "usernameClaim" "usernamePrefix" "groupsClaim" "groupsPrefix" "signingAlgs")) -}}
+{{- fail (printf "oidc.secretKeys contains unsupported field %s" $field) -}}
+{{- end -}}
+{{- if $key -}}
+{{- if not (kindIs "string" $key) -}}
+{{- fail (printf "oidc.secretKeys.%s must be a string" $field) -}}
+{{- end -}}
+{{- if or (gt (len $key) 253) (not (regexMatch "^[A-Za-z0-9._-]+$" $key)) -}}
+{{- fail (printf "oidc.secretKeys.%s must be a valid Secret key" $field) -}}
+{{- end -}}
+{{- if index $oidc $field -}}
+{{- fail (printf "oidc.%s and oidc.secretKeys.%s are mutually exclusive; clear the inline value to use the Secret key" $field $field) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/* Select the source of an OIDC environment variable. Required fields always
+come from the external Secret; optional fields do so only when mapped. */}}
+{{- define "kube-oidc-proxy.oidcSecretRef" -}}
+{{- $root := .root -}}
+{{- $keys := $root.Values.oidc.secretKeys | default dict -}}
+{{- $key := index $keys .field -}}
+{{- if and $root.Values.oidc.existingSecret (or .required $key) -}}
+name: {{ $root.Values.oidc.existingSecret | quote }}
+key: {{ $key | default .key | quote }}
+{{- else -}}
+name: {{ include "kube-oidc-proxy.fullname" $root }}-config
+key: {{ .key }}
+{{- end -}}
+{{- end -}}
