@@ -7,7 +7,7 @@ impersonates the authenticated user against the Kubernetes API server.
 The chart supports the proxy's two **mutually exclusive** authentication modes:
 
 - **Single-issuer** — the classic `--oidc-*` flags. Set `oidc.clientId`,
-  `oidc.issuerUrl` and `oidc.usernameClaim`.
+  `oidc.issuerUrl` and `oidc.usernameClaim`, or use `oidc.existingSecret`.
 - **Multi-issuer** — a Kubernetes `AuthenticationConfiguration`. Set
   `authenticationConfig.content` or `authenticationConfig.existingSecret` (and optionally `readinessRequireAllIssuers`).
 
@@ -115,6 +115,8 @@ Ignored when either multi-issuer configuration source is set.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
+| `oidc.existingSecret` | string | `""` | Existing Secret in the release namespace supplying the required single-issuer fields. Mutually exclusive with `authenticationConfig`. |
+| `oidc.secretKeys` | map | `{}` | Secret key mappings for `clientId`, `issuerUrl`, `usernameClaim`, `usernamePrefix`, `groupsClaim`, `groupsPrefix`, and `signingAlgs`. Requires `existingSecret`. See [Single-issuer from an existing Secret](#single-issuer-from-an-existing-secret). |
 | `oidc.clientId` | string | `""` | OIDC client ID expected in the token audience. |
 | `oidc.issuerUrl` | string | `""` | OIDC issuer URL (must serve a discovery document). |
 | `oidc.usernameClaim` | string | `""` | Token claim used as the username. |
@@ -124,6 +126,85 @@ Ignored when either multi-issuer configuration source is set.
 | `oidc.groupsPrefix` | string | `nil` | Prefix prepended to group names. |
 | `oidc.signingAlgs` | list | `[RS256]` | Accepted JWT signing algorithms. |
 | `oidc.requiredClaims` | map | `{}` | Claims that must equal a value. Each entry becomes a repeatable `--oidc-required-claim=k=v` flag. |
+
+### Single-issuer from an existing Secret
+
+Create the Secret in the release namespace, for example `auth`. These example
+values describe the expected token identity; the proxy does not use an OIDC
+client password.
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: proxy-oidc
+  namespace: auth
+type: Opaque
+stringData:
+  client-id: my-client
+  issuer-url: https://accounts.google.com
+  username-claim: email
+  groups-claim: groups
+```
+
+Reference its keys in your Helm values:
+
+```yaml
+oidc:
+  existingSecret: proxy-oidc
+  secretKeys:
+    clientId: client-id
+    issuerUrl: issuer-url
+    usernameClaim: username-claim
+    groupsClaim: groups-claim
+```
+
+The required fields are `clientId`, `issuerUrl`, and `usernameClaim`. Without a
+custom mapping (or with an empty/null mapping), their keys default to
+`oidc.client-id`, `oidc.issuer-url`, and `oidc.username-claim`. Leave the three
+matching inline values empty, including values carried over during upgrades.
+The Secret must have a different name from the chart's `<fullname>-config` Secret.
+
+Mapping `usernamePrefix`, `groupsClaim`, `groupsPrefix`, or `signingAlgs` enables
+that field's flag and reads its value from the external Secret. Clear the
+matching inline value or Helm fails with a source-conflict error. Unmapped
+optional fields retain their inline behavior. For external signing algorithms,
+use a comma-separated Secret value (for example `RS256,ES256`) and explicitly
+clear the default:
+
+```yaml
+oidc:
+  existingSecret: proxy-oidc
+  signingAlgs: []
+  secretKeys:
+    signingAlgs: signing-algs
+```
+
+This last example uses the default required key names. Without a signing
+algorithm mapping, the existing `signingAlgs: [RS256]` default still applies.
+
+Kubernetes injects each selected key through `secretKeyRef` into the matching
+`OIDC_*` environment variable; the Pod's arguments expand those variables into
+`--oidc-*` flags. This is chart wiring: the binary does not automatically read
+`OIDC_*` variables outside this Pod specification. Generic `extraEnv` and
+`envFrom` are not chart options.
+
+The chart does not create, read, or update the external Secret. It still creates
+its configuration Secret for inline values such as signing algorithms and CA
+certificates. `oidc.caPEM` remains a mounted file, `oidc.requiredClaims` remains
+an inline map rendered as repeated flags, and `oidc.tlsClient.existingSecret`
+continues to supply mounted mTLS credentials. Use
+`authenticationConfig.existingSecret` when the entire configuration should come
+from one file; an `AuthenticationConfiguration` can contain just one issuer.
+
+The external Secret and all selected keys must exist before the Pod starts.
+References are required, so missing keys prevent container startup. Helm does
+not inspect their contents. No additional Secret API permissions are needed by
+the proxy's ServiceAccount. Restart the Deployment after updating the external
+Secret, for example `kubectl -n auth rollout restart deployment/<name>`; external
+content is not included in the Helm configuration checksum, and environment
+variables do not refresh in running containers. Inline configuration retains
+its checksum-based rollout behavior.
 
 ### Authentication — multi-issuer
 

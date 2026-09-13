@@ -67,7 +67,6 @@ if out=$(render -f "$CHART/ci/multi-issuer-values.yaml" --set authenticationConf
 fi
 [[ "$out" == *'authenticationConfig.content and authenticationConfig.existingSecret are mutually exclusive'* ]] \
   || { echo 'missing source conflict error' >&2; exit 1; }
-echo 'chart authentication: ok'
 
 # Classic OIDC can source required fields from an existing Secret.
 out=$(render --set oidc.existingSecret=external-oidc)
@@ -131,4 +130,22 @@ reject 'oidc.secretKeys' --set oidc.existingSecret=external-oidc --set oidc.secr
 reject 'oidc.secretKeys' --set oidc.existingSecret=external-oidc --set-string 'oidc.secretKeys.clientId=invalid/key'
 reject 'oidc.existingSecret' --set oidc.existingSecret=kop-kube-oidc-proxy-config
 
-echo 'chart single-issuer existing Secret: ok'
+# Empty/null mappings preserve required defaults and optional inline behavior.
+for empty_key in '' null; do
+  out=$(render --set oidc.existingSecret=external-oidc \
+    --set "oidc.secretKeys.clientId=$empty_key" --set "oidc.secretKeys.groupsClaim=$empty_key")
+  check "$container.env[] | select(.name == \"OIDC_CLIENT_ID\") | .valueFrom.secretKeyRef.key == \"oidc.client-id\"" 'empty required key lost default'
+  check "$container.args | map(select(test(\"^--oidc-groups-claim=\"))) | length == 0" 'empty optional key enabled flag'
+done
+reject 'oidc.secretKeys must be a map' --set oidc.existingSecret=external-oidc --set oidc.secretKeys=invalid
+reject 'oidc.secretKeys.clientId must be a string' --set oidc.existingSecret=external-oidc --set oidc.secretKeys.clientId=123
+
+# References do not create the external Secret or require it to exist at render time.
+out=$(render --set oidc.existingSecret=external-oidc)
+if yq -e 'select(.kind == "Secret" and .metadata.name == "external-oidc")' >/dev/null 2>&1 <<<"$out"; then
+  echo 'chart created the external OIDC Secret' >&2; exit 1
+fi
+check "$container.args | contains([\"--oidc-client-id=\$(OIDC_CLIENT_ID)\", \"--oidc-issuer-url=\$(OIDC_ISSUER_URL)\", \"--oidc-username-claim=\$(OIDC_USERNAME_CLAIM)\"])" 'external OIDC argument wiring missing'
+check 'select(.kind == "Secret" and .metadata.name == "kop-kube-oidc-proxy-config") | (.data | has("oidc.client-id")) == false' 'external field copied into chart Secret'
+
+echo 'chart authentication (including single-issuer existing Secret): ok'
