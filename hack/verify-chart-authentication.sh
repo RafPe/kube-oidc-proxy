@@ -68,3 +68,67 @@ fi
 [[ "$out" == *'authenticationConfig.content and authenticationConfig.existingSecret are mutually exclusive'* ]] \
   || { echo 'missing source conflict error' >&2; exit 1; }
 echo 'chart authentication: ok'
+
+# Classic OIDC can source required fields from an existing Secret.
+out=$(render --set oidc.existingSecret=external-oidc)
+for entry in 'OIDC_CLIENT_ID clientId oidc.client-id' 'OIDC_ISSUER_URL issuerUrl oidc.issuer-url' 'OIDC_USERNAME_CLAIM usernameClaim oidc.username-claim'; do
+  read -r env_name field default_key <<<"$entry"
+  check "$container.env[] | select(.name == \"$env_name\") | (.valueFrom.secretKeyRef.name == \"external-oidc\" and .valueFrom.secretKeyRef.key == \"$default_key\" and (.valueFrom.secretKeyRef.optional // false) == false)" "external $field reference missing"
+  out=$(render --set oidc.existingSecret=external-oidc --set "oidc.secretKeys.$field=custom-key")
+  check "$container.env[] | select(.name == \"$env_name\") | .valueFrom.secretKeyRef.key == \"custom-key\"" "custom $field key missing"
+  out=$(render --set oidc.existingSecret=external-oidc)
+done
+check "$container.args | contains([\"--oidc-signing-algs=\$(OIDC_SIGNING_ALGS)\"])" 'default signing algorithms missing'
+check 'select(.kind == "Secret") | .data."oidc.signing-algs" == "UlMyNTY="' 'default RS256 changed'
+check "$container.env | map(.name) | length == (unique | length)" 'duplicate environment entries'
+check "$container.args | map(select(test(\"^--oidc-groups-claim=\"))) | length == 0" 'unconfigured optional flag enabled'
+
+# Optional mappings enable their flags without placeholder inline values.
+for entry in 'usernamePrefix OIDC_USERNAME_PREFIX username-prefix' 'groupsClaim OIDC_GROUPS_CLAIM groups-claim' 'groupsPrefix OIDC_GROUPS_PREFIX groups-prefix' 'signingAlgs OIDC_SIGNING_ALGS signing-algs'; do
+  read -r field env_name flag <<<"$entry"
+  opts=(--set oidc.existingSecret=external-oidc --set "oidc.secretKeys.$field=custom-key")
+  if [ "$field" = signingAlgs ]; then opts+=(--set-json 'oidc.signingAlgs=[]'); fi
+  out=$(render "${opts[@]}")
+  check "$container.args | contains([\"--oidc-$flag=\$($env_name)\"])" "$field flag missing"
+  check "$container.env[] | select(.name == \"$env_name\") | (.valueFrom.secretKeyRef.name == \"external-oidc\" and .valueFrom.secretKeyRef.key == \"custom-key\")" "$field Secret reference missing"
+done
+
+# Unmapped optional values, CA files, required claims and shared mTLS coexist.
+out=$(render --set oidc.existingSecret=external-oidc --set oidc.caPEM=test-ca \
+  --set oidc.groupsClaim=groups --set oidc.requiredClaims.hd=example.com \
+  --set oidc.tlsClient.existingSecret=issuer-mtls)
+check "$container.args | contains([\"--oidc-ca-file=/etc/oidc/oidc-ca.pem\", \"--oidc-required-claim=hd=example.com\", \"--oidc-tls-client-cert-file=/etc/oidc/client-tls/tls.crt\"])" 'external OIDC broke CA/claims/mTLS'
+check "$container.env[] | select(.name == \"OIDC_GROUPS_CLAIM\") | .valueFrom.secretKeyRef.name == \"kop-kube-oidc-proxy-config\"" 'unmapped inline field lost'
+check "$deploy.volumes[] | select(.name == \"kube-oidc-proxy-config\") | (.secret.secretName == \"kop-kube-oidc-proxy-config\" and .secret.items[0].key == \"oidc.ca-pem\")" 'CA file source changed'
+legacy_rbac=$(render | yq 'select(.kind == "ClusterRole")')
+external_rbac=$(yq 'select(.kind == "ClusterRole")' <<<"$out")
+[ "$legacy_rbac" = "$external_rbac" ] || { echo 'external OIDC changed RBAC' >&2; exit 1; }
+
+# Old stored values still render identically in both authentication modes.
+for fixture in single-issuer multi-issuer; do
+  current=$(render -f "$CHART/ci/$fixture-values.yaml")
+  old=$(render -f "$CHART/ci/$fixture-values.yaml" --set oidc.existingSecret=null --set oidc.secretKeys=null)
+  [ "$current" = "$old" ] || { echo 'old OIDC values changed render' >&2; exit 1; }
+done
+
+reject() {
+  local expected=$1
+  shift
+  if out=$(render "$@" 2>&1); then echo "accepted invalid config: $expected" >&2; exit 1; fi
+  [[ "$out" == *"$expected"* ]] || { echo "$out" >&2; exit 1; }
+}
+for field in clientId issuerUrl usernameClaim; do
+  reject "oidc.$field" --set oidc.existingSecret=external-oidc --set "oidc.$field=conflict"
+done
+for field in usernamePrefix groupsClaim groupsPrefix; do
+  reject "oidc.$field" --set oidc.existingSecret=external-oidc --set "oidc.$field=conflict" --set "oidc.secretKeys.$field=custom-key"
+done
+reject 'oidc.signingAlgs' --set oidc.existingSecret=external-oidc --set oidc.secretKeys.signingAlgs=algs
+reject 'authenticationConfig' --set oidc.existingSecret=external-oidc --set authenticationConfig.existingSecret=external-auth
+reject 'authenticationConfig' --set oidc.existingSecret=external-oidc -f "$CHART/ci/multi-issuer-values.yaml"
+reject 'oidc.existingSecret' --set oidc.secretKeys.groupsClaim=groups
+reject 'oidc.secretKeys' --set oidc.existingSecret=external-oidc --set oidc.secretKeys.typo=key
+reject 'oidc.secretKeys' --set oidc.existingSecret=external-oidc --set-string 'oidc.secretKeys.clientId=invalid/key'
+reject 'oidc.existingSecret' --set oidc.existingSecret=kop-kube-oidc-proxy-config
+
+echo 'chart single-issuer existing Secret: ok'
