@@ -72,27 +72,27 @@ tls:
 #
 #   1. Single-issuer  -> set oidc.clientId / oidc.issuerUrl / oidc.usernameClaim
 #                        (and optionally the other oidc.* fields below).
-#   2. Multi-issuer   -> set authenticationConfig.content (and optionally
+#   2. Multi-issuer   -> set authenticationConfig.content or existingSecret (and optionally
 #                        readinessRequireAllIssuers).
 #
-# When authenticationConfig.content is non-empty the chart passes
+# When authenticationConfig.content or existingSecret is non-empty the chart passes
 # --authentication-config to the proxy and omits issuer-specific --oidc-* flags.
 # oidc.tlsClient is shared by all issuers and remains available in either mode.
 # ---------------------------------------------------------------------------
 oidc:
   # SINGLE-ISSUER (required for mode 1): the OIDC client ID the proxy expects in
-  # the token audience. Ignored when authenticationConfig.content is set.
+  # the token audience. Ignored when multi-issuer configuration is set.
   clientId: ""
   # SINGLE-ISSUER (required for mode 1): the OIDC issuer URL (must serve a
-  # discovery document). Ignored when authenticationConfig.content is set.
+  # discovery document). Ignored when multi-issuer configuration is set.
   issuerUrl: ""
   # SINGLE-ISSUER (required for mode 1): the token claim used as the username
-  # (e.g. "email" or "sub"). Ignored when authenticationConfig.content is set.
+  # (e.g. "email" or "sub"). Ignored when multi-issuer configuration is set.
   usernameClaim: ""
 
   # PEM-encoded CA certificate used to verify the TLS connection to issuerUrl.
   # If empty, the host's system root CAs are used. Ignored when
-  # authenticationConfig.content is set (each issuer's CA is inline in that file).
+  # multi-issuer configuration is set (each issuer's CA is inline in that file).
   caPEM:
 
   # Optional: prefix prepended to every username to avoid clashes (e.g. "oidc:").
@@ -133,6 +133,12 @@ authenticationConfig:
   # flags are omitted. Each issuer's CA must be inline under
   # issuer.certificateAuthority in this content.
   content: ""
+  # Existing Secret in the release namespace. Mutually exclusive with content.
+  # Set rbac.userExtras for any extra claim keys in this external configuration.
+  # Restart the proxy after updating the Secret; configuration is read at startup.
+  existingSecret: ""
+  # Key in existingSecret containing the AuthenticationConfiguration YAML.
+  key: authentication-config.yaml
 
 # MULTI-ISSUER only: if true, the readiness probe waits for EVERY issuer in
 # authenticationConfig.content to initialize (JWKS fetched) before the pod

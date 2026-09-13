@@ -1,9 +1,9 @@
 kube-oidc-proxy {{ .Chart.AppVersion }} has been deployed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
 
 Authentication mode:
-{{- if .Values.authenticationConfig.content }}
+{{- if or .Values.authenticationConfig.content .Values.authenticationConfig.existingSecret }}
   MULTI-ISSUER (--authentication-config). Accepting tokens from every issuer in
-  authenticationConfig.content.
+  the configured AuthenticationConfiguration.
   readinessRequireAllIssuers = {{ .Values.readinessRequireAllIssuers }}
 {{- else }}
   SINGLE-ISSUER (--oidc-* flags).

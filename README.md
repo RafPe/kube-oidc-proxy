@@ -97,7 +97,9 @@ authenticationConfig:
 ```
 
 > [!NOTE]
-> When `authenticationConfig.content` is set, the chart passes `--authentication-config` and does not render the issuer-specific `oidc.*` values. Optional `oidc.tlsClient` credentials apply to every issuer in either configuration.
+> When `authenticationConfig.content` or `authenticationConfig.existingSecret` is set, the chart passes `--authentication-config` and does not render the issuer-specific `oidc.*` values. Optional `oidc.tlsClient` credentials apply to every issuer in either configuration.
+
+To use a Secret managed outside Helm, see [existing authentication Secret](./chart/kube-oidc-proxy/README.md#use-an-existing-authentication-secret).
 
 Format, readiness and the per-issuer prefix rule: [multi-issuer authentication](./docs/multi-issuer.md). A recipe per identity provider: [integrations](./docs/integrations.md).
 
