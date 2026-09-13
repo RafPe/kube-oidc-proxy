@@ -28,7 +28,7 @@ to conflate because two of them share the word "mode".
 
 | You need | Configure | Notes |
 | --- | --- | --- |
-| One issuer, configured with flags | `oidc.clientId`, `oidc.issuerUrl`, `oidc.usernameClaim` (the `--oidc-*` flags) | Mirrors the API server's own OIDC flags one-to-one. Username and group prefixes, required claims and signing algorithms are flags too. |
+| One issuer, configured with flags | `oidc.clientId`, `oidc.issuerUrl`, `oidc.usernameClaim`, or `oidc.existingSecret` (the `--oidc-*` flags) | Mirrors the API server's own OIDC flags one-to-one. Username and group prefixes, required claims and signing algorithms are flags too. |
 | One or more issuers, with claim expressions and validation rules | `authenticationConfig.content` (`--authentication-config`) | The Kubernetes `AuthenticationConfiguration` format. Worth using for a single issuer as soon as you need CEL: synthesized groups, `extra` for audit, numeric-ID pinning. Mutually exclusive with the flags above. |
 | Bearer tokens that are not OIDC tokens, such as ServiceAccount tokens | `tokenPassthrough` (`--token-passthrough`, alpha) | Tried only after OIDC validation fails; validated with a `TokenReview` and forwarded without impersonation. Independent of the two choices above. |
 | Forward authenticated requests without impersonating | `--disable-impersonation` (alpha) | The API server authenticates the request itself. Rarely wanted; see [No impersonation](#no-impersonation). |
@@ -49,6 +49,13 @@ oidc:
   requiredClaims:              # optional: claims that MUST match
     hd: example.com
 ```
+
+To supply these fields through environment variables from an existing Secret,
+set `oidc.existingSecret` and optionally `oidc.secretKeys`. The chart injects
+selected keys into `OIDC_*` variables and passes them to the CLI flags. See the
+[Secret example and key mappings](../chart/kube-oidc-proxy/README.md#single-issuer-from-an-existing-secret)
+for required keys, optional flags, conflicts, and restart behavior. This needs
+no additional Secret-read RBAC for the proxy's ServiceAccount.
 
 If the issuer's TLS certificate comes from a private CA, supply it inline:
 

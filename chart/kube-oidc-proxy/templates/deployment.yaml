@@ -1,3 +1,5 @@
+{{- include "kube-oidc-proxy.validateOIDCSecret" . -}}
+{{- $oidcKeys := .Values.oidc.secretKeys | default dict -}}
 {{- $authConfig := .Values.authenticationConfig | default dict -}}
 {{- $externalConfig := $authConfig.existingSecret | default "" -}}
 {{- $multiIssuer := or $authConfig.content $externalConfig -}}
@@ -126,16 +128,16 @@ spec:
           {{- if .Values.readinessRequireAllIssuers }}
           - "--readiness-require-all-issuers"
           {{- end }}
-          {{- if and .Values.oidc.usernamePrefix (not $multiIssuer) }}
+          {{- if and (or .Values.oidc.usernamePrefix (and .Values.oidc.existingSecret $oidcKeys.usernamePrefix)) (not $multiIssuer) }}
           - "--oidc-username-prefix=$(OIDC_USERNAME_PREFIX)"
           {{ end }}
-          {{- if and .Values.oidc.groupsClaim (not $multiIssuer) }}
+          {{- if and (or .Values.oidc.groupsClaim (and .Values.oidc.existingSecret $oidcKeys.groupsClaim)) (not $multiIssuer) }}
           - "--oidc-groups-claim=$(OIDC_GROUPS_CLAIM)"
           {{ end }}
-          {{- if and .Values.oidc.groupsPrefix (not $multiIssuer) }}
+          {{- if and (or .Values.oidc.groupsPrefix (and .Values.oidc.existingSecret $oidcKeys.groupsPrefix)) (not $multiIssuer) }}
           - "--oidc-groups-prefix=$(OIDC_GROUPS_PREFIX)"
           {{ end }}
-          {{- if and .Values.oidc.signingAlgs (not $multiIssuer) }}
+          {{- if and (or .Values.oidc.signingAlgs (and .Values.oidc.existingSecret $oidcKeys.signingAlgs)) (not $multiIssuer) }}
           - "--oidc-signing-algs=$(OIDC_SIGNING_ALGS)"
           {{ end }}
           {{- if not $multiIssuer }}
@@ -189,46 +191,39 @@ spec:
         - name: OIDC_CLIENT_ID
           valueFrom:
             secretKeyRef:
-              name: {{ include "kube-oidc-proxy.fullname" . }}-config
-              key: oidc.client-id
+              {{- include "kube-oidc-proxy.oidcSecretRef" (dict "root" . "field" "clientId" "key" "oidc.client-id" "required" true) | nindent 14 }}
         - name: OIDC_ISSUER_URL
           valueFrom:
             secretKeyRef:
-              name: {{ include "kube-oidc-proxy.fullname" . }}-config
-              key: oidc.issuer-url
+              {{- include "kube-oidc-proxy.oidcSecretRef" (dict "root" . "field" "issuerUrl" "key" "oidc.issuer-url" "required" true) | nindent 14 }}
         - name: OIDC_USERNAME_CLAIM
           valueFrom:
             secretKeyRef:
-              name: {{ include "kube-oidc-proxy.fullname" . }}-config
-              key: oidc.username-claim
+              {{- include "kube-oidc-proxy.oidcSecretRef" (dict "root" . "field" "usernameClaim" "key" "oidc.username-claim" "required" true) | nindent 14 }}
         {{- end }}
-        {{- if and .Values.oidc.usernamePrefix (not $multiIssuer) }}
+        {{- if and (or .Values.oidc.usernamePrefix (and .Values.oidc.existingSecret $oidcKeys.usernamePrefix)) (not $multiIssuer) }}
         - name: OIDC_USERNAME_PREFIX
           valueFrom:
             secretKeyRef:
-              name: {{ include "kube-oidc-proxy.fullname" . }}-config
-              key: oidc.username-prefix
+              {{- include "kube-oidc-proxy.oidcSecretRef" (dict "root" . "field" "usernamePrefix" "key" "oidc.username-prefix" "required" false) | nindent 14 }}
         {{ end }}
-        {{- if and .Values.oidc.groupsClaim (not $multiIssuer) }}
+        {{- if and (or .Values.oidc.groupsClaim (and .Values.oidc.existingSecret $oidcKeys.groupsClaim)) (not $multiIssuer) }}
         - name: OIDC_GROUPS_CLAIM
           valueFrom:
             secretKeyRef:
-              name: {{ include "kube-oidc-proxy.fullname" . }}-config
-              key: oidc.groups-claim
+              {{- include "kube-oidc-proxy.oidcSecretRef" (dict "root" . "field" "groupsClaim" "key" "oidc.groups-claim" "required" false) | nindent 14 }}
         {{ end }}
-        {{- if and .Values.oidc.groupsPrefix (not $multiIssuer) }}
+        {{- if and (or .Values.oidc.groupsPrefix (and .Values.oidc.existingSecret $oidcKeys.groupsPrefix)) (not $multiIssuer) }}
         - name: OIDC_GROUPS_PREFIX
           valueFrom:
             secretKeyRef:
-              name: {{ include "kube-oidc-proxy.fullname" . }}-config
-              key: oidc.groups-prefix
+              {{- include "kube-oidc-proxy.oidcSecretRef" (dict "root" . "field" "groupsPrefix" "key" "oidc.groups-prefix" "required" false) | nindent 14 }}
         {{ end }}
-        {{- if and .Values.oidc.signingAlgs (not $multiIssuer) }}
+        {{- if and (or .Values.oidc.signingAlgs (and .Values.oidc.existingSecret $oidcKeys.signingAlgs)) (not $multiIssuer) }}
         - name: OIDC_SIGNING_ALGS
           valueFrom:
             secretKeyRef:
-              name: {{ include "kube-oidc-proxy.fullname" . }}-config
-              key: oidc.signing-algs
+              {{- include "kube-oidc-proxy.oidcSecretRef" (dict "root" . "field" "signingAlgs" "key" "oidc.signing-algs" "required" false) | nindent 14 }}
         {{ end }}
         volumeMounts:
           {{- if or .Values.oidc.caPEM $multiIssuer }}
