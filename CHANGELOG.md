@@ -1,6 +1,11 @@
 # Unreleased
 <!-- next-release -->
 
+## [1.8.1] - 2026-09-13
+
+- Load the Helm chart's structured OIDC authentication configuration from an existing Secret with a configurable key.
+- Configure single-issuer OIDC in the Helm chart through environment variables sourced from an existing Secret, with configurable keys for required and optional settings.
+
 ## [1.8.0] - 2026-09-08
 
 - The Helm chart can enable the metrics endpoint (`metrics.enabled`), rendering the flag, a named container port and a dedicated ClusterIP Service `<release>-metrics` that is never part of the main Service, plus an optional Prometheus Operator ServiceMonitor or PodMonitor, an empty PrometheusRule and a NetworkPolicy that admits only the listed peers to the metrics port while keeping the proxy and readiness ports open.
