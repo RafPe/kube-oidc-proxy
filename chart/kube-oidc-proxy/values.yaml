@@ -259,6 +259,8 @@ logging:
 # reveals traffic shape and health, never identities; restrict who can scrape
 # it with networkPolicy below. Reference: docs/metrics.md.
 metrics:
+  # Enable standalone scraping. serviceMonitor.enabled also enables this listener.
+  # Set both switches false to turn metrics off completely.
   enabled: false
   # Listener address passed as --metrics-bind-address. Empty derives
   # "0.0.0.0:<metrics.port>". Set "127.0.0.1:<port>" when a sidecar scrapes.
@@ -275,7 +277,8 @@ metrics:
   service:
     labels: {}
     annotations: {}
-  # Prometheus Operator ServiceMonitor selecting the metrics Service. Gated on
+  # One-switch Prometheus Operator integration: also enables the metrics listener
+  # and Service, even if metrics.enabled is false. Gated on
   # this explicit flag rather than on .Capabilities.APIVersions, which is empty
   # under `helm template` and offline GitOps renders and would silently drop
   # the object. Requires the monitoring.coreos.com/v1 CRDs on the cluster.
@@ -354,7 +357,8 @@ metrics:
 # NetworkPolicy restricting who may reach the metrics port. Off by default: in a
 # cluster without a policy-enforcing CNI it is a no-op that gives false
 # assurance, and a wrong policy silently breaks scraping. When enabled with
-# metrics.enabled, the policy admits the listed peers to the metrics port,
+# either metrics.enabled or metrics.serviceMonitor.enabled, the policy admits
+# the listed peers to the metrics port,
 # then the rules in additionalIngress. `from` is required and is rendered
 # verbatim as NetworkPolicy ingress peers, e.g.
 #   from:

@@ -5,7 +5,7 @@ oidc:
   issuerUrl: https://accounts.google.com
   usernameClaim: email
 metrics:
-  enabled: true
+  # ServiceMonitor enables the listener and Service without a second toggle.
   serviceMonitor:
     enabled: true
     interval: 30s

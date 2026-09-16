@@ -153,7 +153,31 @@ for limit in sampleLimit targetLimit labelLimit; do
 done
 
 # 7. Exclusions and prerequisites fail loudly.
-! render --set metrics.serviceMonitor.enabled=true >/dev/null 2>&1 || { echo "serviceMonitor without metrics.enabled must fail" >&2; exit 1; }
+# The ServiceMonitor toggle alone enables the complete scrape path. Use a fixed
+# TLS Secret so random serving certificates cannot hide a Deployment difference.
+auto=$(render --set tls.secretName=serving-tls --set metrics.serviceMonitor.enabled=true)
+explicit=$(render --set tls.secretName=serving-tls --set metrics.enabled=true --set metrics.serviceMonitor.enabled=true)
+[ "$auto" = "$explicit" ] || { echo "ServiceMonitor toggle must enable the entire metrics surface" >&2; exit 1; }
+# Labels select the monitor; its namespace selector still selects the application.
+sm=$(render --namespace auth --set metrics.serviceMonitor.enabled=true \
+  --set metrics.serviceMonitor.namespace=monitoring --set metrics.serviceMonitor.additionalLabels.release=prom \
+  --show-only templates/servicemonitor.yaml)
+yq -e '.metadata.namespace == "monitoring" and .metadata.labels.release == "prom" and .spec.namespaceSelector.matchNames[0] == "auth" and (.spec.namespaceSelector.matchNames | length) == 1' >/dev/null <<<"$sm"
+# Once standalone metrics are enabled, switching discovery off does not roll pods.
+on=$(render --set tls.secretName=serving-tls --set metrics.enabled=true --set metrics.serviceMonitor.enabled=true --show-only templates/deployment.yaml)
+off=$(render --set tls.secretName=serving-tls --set metrics.enabled=true --show-only templates/deployment.yaml)
+[ "$on" = "$off" ] || { echo "discovery toggle changed the Deployment" >&2; exit 1; }
+# The implicit listener must retain all validation and optional integrations.
+for option in 'metrics.port=8443' 'metrics.portName=bad--name' 'metrics.bindAddress=0' 'metrics.tls.enabled=true' 'metrics.authentication.mode=token' 'extraArgs.metrics-bind-address=0.0.0.0:9999'; do
+  if render --set metrics.serviceMonitor.enabled=true --set "$option" >/dev/null 2>&1; then
+    echo "implicit metrics bypassed validation: $option" >&2; exit 1
+  fi
+done
+out=$(render --set metrics.serviceMonitor.enabled=true --set metrics.dashboards.enabled=true --set metrics.prometheusRule.enabled=true \
+  --set networkPolicy.enabled=true --set 'networkPolicy.metrics.from[0].namespaceSelector.matchLabels.name=monitoring')
+for kind in ServiceMonitor PrometheusRule NetworkPolicy ConfigMap; do
+  yq -e "select(.kind == \"$kind\")" >/dev/null <<<"$out" || { echo "missing $kind with automatic metrics" >&2; exit 1; }
+done
 ! render --set metrics.enabled=true --set metrics.serviceMonitor.enabled=true --set metrics.podMonitor.enabled=true >/dev/null 2>&1 \
   || { echo "both monitors enabled must fail" >&2; exit 1; }
 

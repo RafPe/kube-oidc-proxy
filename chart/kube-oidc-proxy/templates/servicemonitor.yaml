@@ -2,11 +2,8 @@
      without the metrics key, $m is an empty dict and nothing renders. */ -}}
 {{- $m := .Values.metrics | default dict -}}
 {{- $sm := dig "serviceMonitor" dict $m -}}
-{{- $enabled := dig "enabled" false $m -}}
+{{- $enabled := (eq (include "kube-oidc-proxy.metricsEnabled" .) "true") -}}
 {{- $smEnabled := dig "enabled" false $sm -}}
-{{- if and $smEnabled (not $enabled) -}}
-{{- fail "metrics.serviceMonitor.enabled requires metrics.enabled" -}}
-{{- end -}}
 {{- if and $smEnabled (dig "podMonitor" "enabled" false $m) -}}
 {{- fail "metrics.serviceMonitor.enabled and metrics.podMonitor.enabled are mutually exclusive" -}}
 {{- end -}}

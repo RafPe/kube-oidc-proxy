@@ -254,12 +254,12 @@ and health, never identities; see the [metrics reference](../../docs/metrics.md)
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `metrics.enabled` | bool | `false` | Serve Prometheus metrics on a dedicated listener. Leaves the command line unchanged when false, so an older pinned `image.tag` still starts. |
-| `metrics.bindAddress` | string | `""` | `--metrics-bind-address`; empty derives `0.0.0.0:<metrics.port>`. With `metrics.enabled=true` it must end in `:<metrics.port>` and `extraArgs` may not carry the same flag; with metrics disabled the value is not read and not validated, and the same holds for `metrics.port`, `metrics.portName`, the ServiceMonitor limits and the reserved `metrics.tls` and `metrics.authentication` keys. |
+| `metrics.enabled` | bool | `false` | Serve Prometheus metrics on a dedicated listener. The listener also runs when `metrics.serviceMonitor.enabled` is true. With both switches false the command line stays unchanged for older pinned images. |
+| `metrics.bindAddress` | string | `""` | `--metrics-bind-address`; empty derives `0.0.0.0:<metrics.port>`. With either metrics or ServiceMonitor enabled it must end in `:<metrics.port>` and `extraArgs` may not carry the same flag; when both `metrics.enabled` and `metrics.serviceMonitor.enabled` are false, listener settings (`bindAddress`, `port`, `portName`, `tls`, `authentication`) are not validated. ServiceMonitor limits are validated only when the monitor is enabled. |
 | `metrics.port` | int | `9090` | Container and Service port. Must be a whole number between 1 and 65535 and differ from 8443 and 8080; a fractional or non-numeric value fails to render. |
 | `metrics.portName` | string | `metrics` | Name of the container and Service port the ServiceMonitor references. A valid `IANA_SVC_NAME`, as Kubernetes requires: 1-15 lowercase alphanumerics and dashes, at least one letter, no leading or trailing dash and no consecutive dashes. |
 | `metrics.service.labels` / `.annotations` | map | `{}` | Added to the metrics Service. |
-| `metrics.serviceMonitor.enabled` | bool | `false` | Render a `monitoring.coreos.com/v1` ServiceMonitor selecting the metrics Service. Needs the Prometheus Operator CRDs. |
+| `metrics.serviceMonitor.enabled` | bool | `false` | Enable the metrics listener, dedicated Service and `monitoring.coreos.com/v1` ServiceMonitor with one switch, even when `metrics.enabled` is false. Needs the Prometheus Operator CRDs. See [setup and discovery](../../docs/metrics.md#enable-servicemonitor-scraping). |
 | `metrics.serviceMonitor.namespace` | string | `""` | Namespace for the ServiceMonitor; empty uses the release namespace. |
 | `metrics.serviceMonitor.additionalLabels` / `.annotations` | map | `{}` | Labels such as `release: kube-prometheus-stack` that your Prometheus selects on. |
 | `metrics.serviceMonitor.interval` / `.scrapeTimeout` | string | `""` | Duration strings (`30s`); empty omits the field. |
@@ -272,7 +272,7 @@ and health, never identities; see the [metrics reference](../../docs/metrics.md)
 | `metrics.podMonitor.interval` / `.scrapeTimeout` / `.path` / `.scheme` / `.honorLabels` / `.relabelings` / `.metricRelabelings` | | as ServiceMonitor | Endpoint settings; the PodMonitor has no `tlsConfig` or limit fields. |
 | `metrics.prometheusRule.enabled` / `.groups` | bool / list | `false` / `[]` | Optional PrometheusRule; `groups` is rendered as `spec.groups`. No default alerts ship. |
 | `metrics.prometheusRule.namespace` / `.additionalLabels` / `.annotations` | | `""` / `{}` / `{}` | Object metadata. |
-| `metrics.dashboards.enabled` | bool | `false` | Ship the three Grafana dashboards as a ConfigMap the Grafana sidecar loads. Requires `metrics.enabled`; without it the render fails rather than producing dashboards for a proxy that serves no metrics. |
+| `metrics.dashboards.enabled` | bool | `false` | Ship the three Grafana dashboards as a ConfigMap the Grafana sidecar loads. Requires either `metrics.enabled` or `metrics.serviceMonitor.enabled`; when both are false the render fails rather than producing dashboards for a proxy that serves no metrics. |
 | `metrics.dashboards.namespace` | string | `""` | Namespace for the ConfigMap; empty uses the release namespace. Set it to Grafana's namespace when its sidecar only watches its own. |
 | `metrics.dashboards.label` / `.labelValue` | string | `grafana_dashboard` / `"1"` | The label the Grafana sidecar selects on, and its value. |
 | `metrics.dashboards.folder` / `.folderAnnotation` | string | `""` / `grafana_folder` | Grafana folder for the dashboards, set through the sidecar's folder annotation. Empty keeps the sidecar's default folder. |
@@ -310,7 +310,7 @@ no `$job` or `$instance` variables and no job/instance matchers.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `extraArgs` | map | `{}` | Extra CLI flags passed as `--key=value`, for anything without a value of its own, such as the audit flags ([auditing](../../docs/auditing.md#enabling-it-with-the-chart)). Rendered last, so an entry here wins over a flag the chart generates. `metrics-bind-address` is the one exception: with `metrics.enabled=true` it fails the render, because the container port, the metrics Service and the monitors all follow `metrics.port` and would no longer point at the listener. Set `metrics.port` or `metrics.bindAddress` instead. |
+| `extraArgs` | map | `{}` | Extra CLI flags passed as `--key=value`, for anything without a value of its own, such as the audit flags ([auditing](../../docs/auditing.md#enabling-it-with-the-chart)). Rendered last, so an entry here wins over a flag the chart generates. `metrics-bind-address` is the one exception: when either `metrics.enabled` or `metrics.serviceMonitor.enabled` is true it fails the render, because the container port, the metrics Service and the monitors all follow `metrics.port` and would no longer point at the listener. Set `metrics.port` or `metrics.bindAddress` instead. With both switches false, `extraArgs.metrics-bind-address` remains available for manually managed listeners. |
 | `extraVolumeMounts` | list | `{}` | Extra container volumeMounts. |
 | `extraVolumes` | list | `{}` | Extra pod volumes. |
 

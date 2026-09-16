@@ -2,13 +2,13 @@
 {{- $np := .Values.networkPolicy | default dict -}}
 {{- $npEnabled := dig "enabled" false $np -}}
 {{- $from := dig "metrics" "from" list $np -}}
-{{- if and $npEnabled (not (dig "enabled" false $m)) -}}
-{{- fail "networkPolicy.enabled requires metrics.enabled: the policy only exists to guard the metrics port" -}}
+{{- if and $npEnabled (not (eq (include "kube-oidc-proxy.metricsEnabled" .) "true")) -}}
+{{- fail "networkPolicy.enabled requires metrics.enabled or metrics.serviceMonitor.enabled: the policy only exists to guard the metrics port" -}}
 {{- end -}}
 {{- if and $npEnabled (not $from) -}}
 {{- fail "networkPolicy.metrics.from must list at least one peer; an empty list would admit every pod" -}}
 {{- end -}}
-{{- if and (dig "enabled" false $m) $npEnabled }}
+{{- if and (eq (include "kube-oidc-proxy.metricsEnabled" .) "true") $npEnabled }}
 # Selecting the proxy pods isolates ALL their ingress. The rules after the
 # metrics rule come from networkPolicy.additionalIngress, whose default
 # re-admits every peer to the proxy and readiness ports so enabling the policy

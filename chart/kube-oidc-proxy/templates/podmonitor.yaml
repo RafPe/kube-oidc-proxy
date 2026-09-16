@@ -1,6 +1,6 @@
 {{- $m := .Values.metrics | default dict -}}
 {{- $pm := dig "podMonitor" dict $m -}}
-{{- $enabled := dig "enabled" false $m -}}
+{{- $enabled := (eq (include "kube-oidc-proxy.metricsEnabled" .) "true") -}}
 {{- $pmEnabled := dig "enabled" false $pm -}}
 {{- if and $pmEnabled (not $enabled) -}}
 {{- fail "metrics.podMonitor.enabled requires metrics.enabled" -}}
