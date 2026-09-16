@@ -307,6 +307,8 @@ CPU, restarts.
 
 ## See also
 
+- [Proposal: ServiceMonitor onboarding and discovery verification](./proposals/servicemonitor-observability.md) (proposed follow-up work)
+
 - [Configuration: `--metrics-bind-address`](./configuration.md#serving--tls--misc)
 - [Chart values `metrics.*`](../chart/kube-oidc-proxy/README.md#metrics)
 - [Operations: capacity and sizing](./operations.md#capacity-and-sizing)
