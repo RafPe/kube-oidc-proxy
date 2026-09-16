@@ -3,7 +3,7 @@
 {{- $enabled := (eq (include "kube-oidc-proxy.metricsEnabled" .) "true") -}}
 {{- $dEnabled := dig "enabled" false $d -}}
 {{- if and $dEnabled (not $enabled) -}}
-{{- fail "metrics.dashboards.enabled requires metrics.enabled" -}}
+{{- fail "metrics.dashboards.enabled requires metrics.enabled or metrics.serviceMonitor.enabled" -}}
 {{- end -}}
 {{- if and $enabled $dEnabled }}
 apiVersion: v1

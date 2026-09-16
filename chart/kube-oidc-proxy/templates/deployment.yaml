@@ -24,10 +24,10 @@
 {{- $metricsPort := int (include "kube-oidc-proxy.metricsPort" $) }}
 {{- $metricsPortName := include "kube-oidc-proxy.metricsPortName" $ }}
 {{- $metricsBind := toString (dig "bindAddress" "" $metrics) }}
-{{- if and ((eq (include "kube-oidc-proxy.metricsEnabled" .) "true")) (eq $metricsBind "0") }}
+{{- if and (eq (include "kube-oidc-proxy.metricsEnabled" .) "true") (eq $metricsBind "0") }}
 {{- fail "metrics.bindAddress=\"0\" disables the listener in the binary; set metrics.enabled=false and metrics.serviceMonitor.enabled=false instead" }}
 {{- end }}
-{{- if and ((eq (include "kube-oidc-proxy.metricsEnabled" .) "true")) $metricsBind (not (hasSuffix (printf ":%d" $metricsPort) $metricsBind)) }}
+{{- if and (eq (include "kube-oidc-proxy.metricsEnabled" .) "true") $metricsBind (not (hasSuffix (printf ":%d" $metricsPort) $metricsBind)) }}
 {{- fail (printf "metrics.bindAddress %q must end with :%d, the port the Service and monitors target" $metricsBind $metricsPort) }}
 {{- end }}
 {{/* extraArgs render after the generated --metrics-bind-address, so a

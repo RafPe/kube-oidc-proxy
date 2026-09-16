@@ -22,7 +22,7 @@ tokenPassthrough:
   enabled: true
 
 metrics:
-  enabled: true
+  # The ServiceMonitor switch also enables the listener and metrics Service.
   serviceMonitor:
     enabled: true
     interval: 15s

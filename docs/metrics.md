@@ -2,11 +2,12 @@
 
 `kube-oidc-proxy` can serve Prometheus metrics on a dedicated listener. It is
 **off by default**: pass `--metrics-bind-address=host:port` (or set
-`metrics.enabled: true` in the chart) and the proxy answers `GET` and
+`metrics.enabled: true` or `metrics.serviceMonitor.enabled: true` in the chart) and the proxy answers `GET` and
 `HEAD /metrics` on that address over plain HTTP. Nothing else is served there:
 any other method on that path is `405` with an `Allow` header and every other
 path is `404` — no pprof, no index, no reset.
 
+- [Enable ServiceMonitor scraping](#enable-servicemonitor-scraping)
 - [What the endpoint reveals](#what-the-endpoint-reveals)
 - [Where the metrics attach](#where-the-metrics-attach)
 - [Catalogue](#catalogue)
@@ -17,6 +18,62 @@ path is `404` — no pprof, no index, no reset.
 - [Dashboards](#dashboards)
 - [Exposure and hardening](#exposure-and-hardening)
 - [See also](#see-also)
+
+## Enable ServiceMonitor scraping
+
+For a cluster with Prometheus Operator and its ServiceMonitor CRD installed,
+merge this into your normal authentication values:
+
+```yaml
+metrics:
+  serviceMonitor:
+    enabled: true
+    additionalLabels:
+      release: monitoring
+    interval: 30s
+    scrapeTimeout: 10s
+```
+
+The single switch enables the HTTP metrics listener, dedicated ClusterIP Service
+and ServiceMonitor. `metrics.enabled` remains available for standalone scraping;
+it defaults to false but does not override an enabled ServiceMonitor. No monitor
+or listener is enabled by default. PodMonitor and ServiceMonitor remain mutually
+exclusive.
+
+Replace `monitoring` with the label value your Prometheus selects. With standard
+kube-prometheus-stack defaults this is its Helm release name, not necessarily its
+namespace. Inspect the installed Prometheus resource rather than assuming a
+label. Its `serviceMonitorSelector` must match the monitor's metadata labels,
+and `serviceMonitorNamespaceSelector` must include the monitor's namespace.
+
+The monitor defaults to the application release namespace. To place it alongside
+Prometheus, set `metrics.serviceMonitor.namespace: monitoring`; that namespace
+must already exist. Its Service selector still targets the application namespace.
+Prometheus needs permission to discover Services and endpoints there. The proxy's
+ServiceAccount needs no new permissions.
+
+The chart renders enabled monitors during offline Helm/GitOps rendering too.
+Install the CRD first: an enabled monitor on a cluster without it will fail to
+install. See the [Operator troubleshooting guide](https://prometheus-operator.dev/docs/platform/troubleshooting/).
+
+To disable all metrics, set both `metrics.serviceMonitor.enabled: false` and
+`metrics.enabled: false`; also disable optional dashboards, rules, PodMonitor
+and metrics NetworkPolicy if you enabled them. To remove only Operator discovery while retaining the
+listener, set `metrics.enabled: true` and the monitor switch to false. With
+standalone metrics enabled, changing the monitor switch does not change the
+Deployment. Disabling a listener implicitly enabled by the monitor does roll pods.
+
+If no target appears, check the Prometheus monitor label/namespace selectors,
+then the ServiceMonitor Service selector and named Service port. If the target
+is down, check pod readiness, listener address and network access. ServiceMonitor
+scraping needs a pod-reachable bind address; `127.0.0.1` only serves local sidecars.
+The current listener is HTTP: setting the monitor's scheme to HTTPS does not add
+TLS to the server. Use the [network policy guidance](#exposure-and-hardening) to
+restrict access; a ClusterIP alone is not access control.
+
+For a live check with pinned Prometheus Operator dependencies, the
+[metrics demo](../hack/metrics-demo/README.md) deploys this one-switch configuration
+and checks that every ready proxy pod is scraped by Prometheus.
 
 ## What the endpoint reveals
 
@@ -306,8 +363,6 @@ CPU, restarts.
   authorization of scrapes are planned as a later, additive step.
 
 ## See also
-
-- [Proposal: ServiceMonitor onboarding and discovery verification](./proposals/servicemonitor-observability.md) (proposed follow-up work)
 
 - [Configuration: `--metrics-bind-address`](./configuration.md#serving--tls--misc)
 - [Chart values `metrics.*`](../chart/kube-oidc-proxy/README.md#metrics)
