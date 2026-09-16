@@ -162,7 +162,7 @@ explicit=$(render --set tls.secretName=serving-tls --set metrics.enabled=true --
 sm=$(render --namespace auth --set metrics.serviceMonitor.enabled=true \
   --set metrics.serviceMonitor.namespace=monitoring --set metrics.serviceMonitor.additionalLabels.release=prom \
   --show-only templates/servicemonitor.yaml)
-yq -e '.metadata.namespace == "monitoring" and .metadata.labels.release == "prom" and .spec.namespaceSelector.matchNames == ["auth"]' >/dev/null <<<"$sm"
+yq -e '.metadata.namespace == "monitoring" and .metadata.labels.release == "prom" and .spec.namespaceSelector.matchNames[0] == "auth" and (.spec.namespaceSelector.matchNames | length) == 1' >/dev/null <<<"$sm"
 # Once standalone metrics are enabled, switching discovery off does not roll pods.
 on=$(render --set tls.secretName=serving-tls --set metrics.enabled=true --set metrics.serviceMonitor.enabled=true --show-only templates/deployment.yaml)
 off=$(render --set tls.secretName=serving-tls --set metrics.enabled=true --show-only templates/deployment.yaml)

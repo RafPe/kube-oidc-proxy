@@ -1,5 +1,5 @@
 {{- $metrics := .Values.metrics | default dict -}}
-{{- if dig "enabled" false $metrics }}
+{{- if (eq (include "kube-oidc-proxy.metricsEnabled" .) "true") }}
 # Dedicated ClusterIP Service for the metrics listener. Deliberately separate
 # from the main Service, which may be a LoadBalancer: the metrics port never
 # leaves the cluster by configuration. The ServiceMonitor selects it by the

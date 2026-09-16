@@ -132,7 +132,7 @@ Callers pass the root context ($), because the value lookup is absolute.
 {{- $port := int $raw -}}
 {{- /* The guards fire only for a listener the chart renders; a disabled
      block's values are never read, so they are not validated. */ -}}
-{{- $on := dig "enabled" false $metrics -}}
+{{- $on := (eq (include "kube-oidc-proxy.metricsEnabled" .) "true") -}}
 {{- if and $on (ne (toString $port) (toString $raw)) -}}
 {{- fail (printf "metrics.port must be an integer, got %v" $raw) -}}
 {{- end -}}
@@ -156,7 +156,7 @@ the dash pair are three separate checks.
 */}}
 {{- define "kube-oidc-proxy.metricsPortName" -}}
 {{- $name := toString (dig "portName" "metrics" (.Values.metrics | default dict)) -}}
-{{- $on := dig "enabled" false (.Values.metrics | default dict) -}}
+{{- $on := (eq (include "kube-oidc-proxy.metricsEnabled" .) "true") -}}
 {{- if and $on (not (regexMatch "^[a-z0-9]([-a-z0-9]{0,13}[a-z0-9])?$" $name)) -}}
 {{- fail "metrics.portName must be a valid IANA_SVC_NAME: 1-15 lowercase alphanumerics or dashes, not starting or ending with a dash" -}}
 {{- end -}}
@@ -224,4 +224,12 @@ key: {{ $key | default .key | quote }}
 name: {{ include "kube-oidc-proxy.fullname" $root }}-config
 key: {{ .key }}
 {{- end -}}
+{{- end -}}
+
+{{/* ServiceMonitor is a complete opt-in scrape path. Standalone metrics remain
+available without Prometheus Operator. Return a boolean string for callers to
+compare explicitly: the string "false" itself is truthy in Go templates. */}}
+{{- define "kube-oidc-proxy.metricsEnabled" -}}
+{{- $m := .Values.metrics | default dict -}}
+{{- or (dig "enabled" false $m) (dig "serviceMonitor" "enabled" false $m) -}}
 {{- end -}}

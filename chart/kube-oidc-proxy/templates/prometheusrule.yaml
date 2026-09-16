@@ -1,6 +1,6 @@
 {{- $m := .Values.metrics | default dict -}}
 {{- $pr := dig "prometheusRule" dict $m -}}
-{{- $enabled := dig "enabled" false $m -}}
+{{- $enabled := (eq (include "kube-oidc-proxy.metricsEnabled" .) "true") -}}
 {{- $prEnabled := dig "enabled" false $pr -}}
 {{- if and $prEnabled (not $enabled) -}}
 {{- fail "metrics.prometheusRule.enabled requires metrics.enabled" -}}
