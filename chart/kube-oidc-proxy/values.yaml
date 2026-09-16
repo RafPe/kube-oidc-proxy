@@ -357,7 +357,8 @@ metrics:
 # NetworkPolicy restricting who may reach the metrics port. Off by default: in a
 # cluster without a policy-enforcing CNI it is a no-op that gives false
 # assurance, and a wrong policy silently breaks scraping. When enabled with
-# metrics.enabled, the policy admits the listed peers to the metrics port,
+# either metrics.enabled or metrics.serviceMonitor.enabled, the policy admits
+# the listed peers to the metrics port,
 # then the rules in additionalIngress. `from` is required and is rendered
 # verbatim as NetworkPolicy ingress peers, e.g.
 #   from:
