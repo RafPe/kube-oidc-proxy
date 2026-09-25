@@ -1,6 +1,8 @@
 # Unreleased
 <!-- next-release -->
 
+- Document that an issuer entry in `--authentication-config` may list several `audiences` with `audienceMatchPolicy: MatchAny`, and cover it in the unit and end-to-end suites: a token carrying any listed audience is accepted, one carrying none is rejected, and an audience listed for one issuer does not admit tokens from another.
+
 ## [1.8.1] - 2026-09-13
 
 - Load the Helm chart's structured OIDC authentication configuration from an existing Secret with a configurable key.

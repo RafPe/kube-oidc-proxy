@@ -67,6 +67,12 @@ func ExpectProxyAuthenticated(f *framework.Framework, keyBundle *util.KeyBundle,
 		"token should be authenticated by proxy (got %d)", resp.StatusCode)
 }
 
+// ExpectProxyUnauthorized signs payload with keyBundle and asserts the proxy
+// rejected the token with a bare 401.
+func ExpectProxyUnauthorized(f *framework.Framework, keyBundle *util.KeyBundle, payload []byte) {
+	expectUnauthorized(f, keyBundle, payload)
+}
+
 func expectUnauthorized(f *framework.Framework, keyBundle *util.KeyBundle, payload []byte) {
 	body, resp := proxyGetPods(f, keyBundle, payload)
 	body = bytes.TrimSpace(body)

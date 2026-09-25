@@ -8,6 +8,7 @@ apiserver flags cannot be changed and only a single (or no) native OIDC
 provider can be configured.
 
 - [Enabling](#enabling)
+- [Several audiences for one issuer](#several-audiences-for-one-issuer)
 - [Recipes per identity provider](#recipes-per-identity-provider)
 - [Security: always use distinct per-issuer prefixes](#security-always-use-distinct-per-issuer-prefixes)
 - [Readiness](#readiness)
@@ -28,6 +29,34 @@ the `jwt:` section is supported; `anonymous:` is rejected.
 The file is read once at startup. To apply changes, restart the pods — the
 Helm chart annotates the Deployment with a config checksum, so editing
 `authenticationConfig.content` triggers a rolling restart automatically.
+
+## Several audiences for one issuer
+
+An issuer entry may list more than one audience. A token is accepted when
+its `aud` claim, a string or a list, contains at least one of them. Listing
+several requires `audienceMatchPolicy: MatchAny`, the only policy the API
+defines; the proxy refuses to start otherwise, with
+`audienceMatchPolicy must be MatchAny for multiple audiences`. With a single
+audience the field may be left out. Audiences are scoped to their entry: a
+value accepted for one issuer does not admit tokens from another.
+
+```yaml
+jwt:
+  - issuer:
+      url: https://token.actions.githubusercontent.com
+      audiences:
+        - kube-oidc-proxy.example.com
+        - kube-oidc-proxy-legacy.example.com   # kept while workflows migrate
+      audienceMatchPolicy: MatchAny
+    claimMappings:
+      username:
+        expression: '"gha:" + claims.repository + ":" + claims.ref'
+```
+
+Typical uses are rotating an audience without a flag day, and one proxy
+serving clients that request tokens for different audience strings. Both
+kube-apiserver's audience rules apply: each value must be non-empty and unique
+within its entry.
 
 ## Recipes per identity provider
 
