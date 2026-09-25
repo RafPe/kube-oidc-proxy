@@ -1,0 +1,2 @@
+kind: Changed
+body: The Helm chart renders the `helm test` connection hook image from `test.image.repository` and `test.image.tag` (default `docker.io/library/busybox:1.37.0`) instead of a bare `busybox` literal, so image mirrors can redirect it.

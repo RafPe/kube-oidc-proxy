@@ -492,6 +492,13 @@ priorityClassName: ""
 # Annotations added to the proxy pod template (merged with the chart's own
 # checksum/config annotation). Useful for Prometheus scrape hints, etc.
 podAnnotations: {}
+# Image for the `helm test` hook, which runs wget against the proxy Service.
+# A value rather than a literal so an image mirror can redirect it like every
+# other image the chart renders.
+test:
+  image:
+    repository: docker.io/library/busybox
+    tag: "1.37.0"
 
 # Pod-level security context. Hardened by default; override fields or set to {}
 # to relax. runAsUser is required because the image sets no USER, so

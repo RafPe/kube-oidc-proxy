@@ -345,6 +345,8 @@ ingress-nginx are in [getting started: expose it](../../docs/getting-started.md#
 | `topologySpreadConstraints` | list | `[]` | Even placement across zones/nodes (preferred over anti-affinity for balanced spread). |
 | `priorityClassName` | string | `""` | Optional PriorityClass for the proxy pod. |
 | `podAnnotations` | map | `{}` | Annotations added to the pod template (merged with the chart's config checksum). |
+| `test.image.repository` | string | `docker.io/library/busybox` | Image of the `helm test` connection hook. A value so an image mirror can redirect it. |
+| `test.image.tag` | string | `1.37.0` | Tag of the `helm test` connection hook image. |
 
 ### Security context (hardened by default)
 
