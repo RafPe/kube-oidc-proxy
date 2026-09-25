@@ -3,6 +3,7 @@ package authconfig
 
 import (
 	"context"
+	"encoding/json"
 	"net/url"
 	"time"
 
@@ -22,6 +23,11 @@ const (
 	issuer2Name      = "oidc-issuer2-e2e"
 	authConfigVolume = "auth-config"
 	authConfigKey    = "config.yaml"
+
+	// issuer2ExtraAudience is a second audience accepted for the second
+	// issuer only, so a token carrying it alone proves audienceMatchPolicy
+	// MatchAny and that audiences are scoped per issuer.
+	issuer2ExtraAudience = "issuer2-secondary-audience"
 )
 
 // Every spec here reads through the same AuthenticationConfiguration proxy
@@ -43,8 +49,8 @@ var _ = framework.CasesDescribe("AuthenticationConfiguration multi-issuer", Orde
 
 		By("Creating AuthenticationConfiguration ConfigMap")
 		cfgYAML, err := yaml.Marshal(authConfig(
-			jwtAuthenticator(f.IssuerURL().String(), f.ClientID(), f.IssuerKeyBundle().CertBytes),
-			jwtAuthenticator(issuer2URL.String(), f.ClientID(), issuer2Bundle.CertBytes),
+			jwtAuthenticator(f.IssuerURL().String(), f.IssuerKeyBundle().CertBytes, f.ClientID()),
+			jwtAuthenticator(issuer2URL.String(), issuer2Bundle.CertBytes, f.ClientID(), issuer2ExtraAudience),
 		))
 		Expect(err).NotTo(HaveOccurred())
 
@@ -68,7 +74,37 @@ var _ = framework.CasesDescribe("AuthenticationConfiguration multi-issuer", Orde
 		payload := f.Helper().NewTokenPayload(issuer2URL, f.ClientID(), time.Now().Add(time.Minute))
 		sharedtests.ExpectProxyAuthenticated(f, issuer2Bundle, payload)
 	})
+
+	It("accepts a token carrying only the issuer's second audience (audienceMatchPolicy MatchAny)", func() {
+		payload := tokenPayloadWithAudiences(issuer2URL, []string{issuer2ExtraAudience})
+		sharedtests.ExpectProxyAuthenticated(f, issuer2Bundle, payload)
+	})
+
+	It("rejects a token carrying none of the issuer's audiences", func() {
+		payload := tokenPayloadWithAudiences(issuer2URL, []string{"not-configured-audience"})
+		sharedtests.ExpectProxyUnauthorized(f, issuer2Bundle, payload)
+	})
+
+	It("does not let one issuer's extra audience satisfy another issuer", func() {
+		payload := tokenPayloadWithAudiences(f.IssuerURL(), []string{issuer2ExtraAudience})
+		sharedtests.ExpectProxyUnauthorized(f, f.IssuerKeyBundle(), payload)
+	})
 })
+
+// tokenPayloadWithAudiences returns a payload for the suite's fixed identity
+// whose aud claim is exactly audiences, so a spec can pick which configured
+// audiences a token carries.
+func tokenPayloadWithAudiences(issuerURL *url.URL, audiences []string) []byte {
+	payload, err := json.Marshal(map[string]interface{}{
+		"iss":    issuerURL.String(),
+		"aud":    audiences,
+		"email":  "user@example.com",
+		"groups": []string{"group-1", "group-2"},
+		"exp":    time.Now().Add(time.Minute).Unix(),
+	})
+	Expect(err).NotTo(HaveOccurred())
+	return payload
+}
 
 func authConfig(jwts ...apiserverv1.JWTAuthenticator) apiserverv1.AuthenticationConfiguration {
 	return apiserverv1.AuthenticationConfiguration{
@@ -80,14 +116,21 @@ func authConfig(jwts ...apiserverv1.JWTAuthenticator) apiserverv1.Authentication
 	}
 }
 
-func jwtAuthenticator(issuerURL, audience string, caBundle []byte) apiserverv1.JWTAuthenticator {
+// jwtAuthenticator builds one jwt entry. More than one audience requires
+// audienceMatchPolicy MatchAny, the only policy the API defines; it is set
+// whenever several audiences are given, so the entry always validates.
+func jwtAuthenticator(issuerURL string, caBundle []byte, audiences ...string) apiserverv1.JWTAuthenticator {
 	emptyPrefix := ""
+	issuer := apiserverv1.Issuer{
+		URL:                  issuerURL,
+		Audiences:            audiences,
+		CertificateAuthority: string(caBundle),
+	}
+	if len(audiences) > 1 {
+		issuer.AudienceMatchPolicy = apiserverv1.AudienceMatchPolicyMatchAny
+	}
 	return apiserverv1.JWTAuthenticator{
-		Issuer: apiserverv1.Issuer{
-			URL:                  issuerURL,
-			Audiences:            []string{audience},
-			CertificateAuthority: string(caBundle),
-		},
+		Issuer: issuer,
 		ClaimMappings: apiserverv1.ClaimMappings{
 			Username: apiserverv1.PrefixedClaimOrExpression{Claim: "email", Prefix: &emptyPrefix},
 			Groups:   apiserverv1.PrefixedClaimOrExpression{Claim: "groups", Prefix: &emptyPrefix},

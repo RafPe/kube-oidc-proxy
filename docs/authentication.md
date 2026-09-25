@@ -411,6 +411,11 @@ configuration once at startup; a file it mounts from a ConfigMap you manage
 yourself, such as an audit policy, is not watched, so restart the pods after
 editing one.
 
+**Can one issuer accept several audiences?** Yes. List them under
+`audiences` and set `audienceMatchPolicy: MatchAny`; a token then needs any
+one of them in its `aud` claim. See
+[several audiences for one issuer](./multi-issuer.md#several-audiences-for-one-issuer).
+
 **Can one identity map to several groups?** Yes. A groups expression may
 return a list, and that is the recommended way to give one token several
 tiers of access; see the

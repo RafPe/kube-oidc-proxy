@@ -36,8 +36,10 @@ The same three steps apply to every provider:
 GitHub mints an OIDC token for a workflow job on request
 (`permissions: id-token: write`, then `core.getIDToken('<audience>')` in
 `actions/github-script`, or the equivalent in your action of choice). The
-audience you pass must equal the issuer's `audiences` entry below. Tokens live
-about five minutes.
+audience you pass must be one of the issuer's `audiences` below (several are
+allowed with `audienceMatchPolicy: MatchAny`, see
+[multi-issuer](./multi-issuer.md#several-audiences-for-one-issuer)). Tokens
+live about five minutes.
 
 ### What a token contains
 

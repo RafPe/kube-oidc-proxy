@@ -158,6 +158,101 @@ jwt: []
 `,
 			wantErr: "must not be empty",
 		},
+		{
+			name: "multiple audiences accepted with audienceMatchPolicy MatchAny",
+			config: `apiVersion: apiserver.config.k8s.io/v1
+kind: AuthenticationConfiguration
+jwt:
+- issuer:
+    url: https://issuer1.example.com
+    audiences: ["aud-one", "aud-two"]
+    audienceMatchPolicy: MatchAny
+  claimMappings:
+    username:
+      claim: sub
+      prefix: "one:"
+`,
+			wantIssuers: 1,
+		},
+		{
+			name: "multiple audiences accepted with MatchAny in v1beta1",
+			config: `apiVersion: apiserver.config.k8s.io/v1beta1
+kind: AuthenticationConfiguration
+jwt:
+- issuer:
+    url: https://issuer1.example.com
+    audiences: ["aud-one", "aud-two"]
+    audienceMatchPolicy: MatchAny
+  claimMappings:
+    username:
+      claim: sub
+      prefix: "one:"
+`,
+			wantIssuers: 1,
+		},
+		{
+			name: "single audience accepted with explicit MatchAny",
+			config: `apiVersion: apiserver.config.k8s.io/v1
+kind: AuthenticationConfiguration
+jwt:
+- issuer:
+    url: https://issuer1.example.com
+    audiences: ["aud-one"]
+    audienceMatchPolicy: MatchAny
+  claimMappings:
+    username:
+      claim: sub
+      prefix: "one:"
+`,
+			wantIssuers: 1,
+		},
+		{
+			name: "multiple audiences rejected without audienceMatchPolicy",
+			config: `apiVersion: apiserver.config.k8s.io/v1
+kind: AuthenticationConfiguration
+jwt:
+- issuer:
+    url: https://issuer1.example.com
+    audiences: ["aud-one", "aud-two"]
+  claimMappings:
+    username:
+      claim: sub
+      prefix: "one:"
+`,
+			wantErr: "audienceMatchPolicy must be MatchAny for multiple audiences",
+		},
+		{
+			name: "unknown audienceMatchPolicy rejected",
+			config: `apiVersion: apiserver.config.k8s.io/v1
+kind: AuthenticationConfiguration
+jwt:
+- issuer:
+    url: https://issuer1.example.com
+    audiences: ["aud-one", "aud-two"]
+    audienceMatchPolicy: MatchAll
+  claimMappings:
+    username:
+      claim: sub
+      prefix: "one:"
+`,
+			wantErr: "audienceMatchPolicy",
+		},
+		{
+			name: "duplicate audiences within one issuer rejected",
+			config: `apiVersion: apiserver.config.k8s.io/v1
+kind: AuthenticationConfiguration
+jwt:
+- issuer:
+    url: https://issuer1.example.com
+    audiences: ["aud-one", "aud-one"]
+    audienceMatchPolicy: MatchAny
+  claimMappings:
+    username:
+      claim: sub
+      prefix: "one:"
+`,
+			wantErr: "Duplicate value",
+		},
 	}
 
 	for _, tc := range tests {
