@@ -7,6 +7,7 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 [![Go Report Card](https://goreportcard.com/badge/github.com/rafpe/kube-oidc-proxy)](https://goreportcard.com/report/github.com/rafpe/kube-oidc-proxy)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/RafPe/kube-oidc-proxy/badge)](https://securityscorecards.dev/viewer/?uri=github.com/RafPe/kube-oidc-proxy)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/14117/badge)](https://www.bestpractices.dev/projects/14117)
 [![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/kube-oidc-proxy)](https://artifacthub.io/packages/search?repo=kube-oidc-proxy)
 
 # kube-oidc-proxy
@@ -143,6 +144,6 @@ Format, readiness and the per-issuer prefix rule: [multi-issuer authentication](
 
 ## Contributing
 
-Contributions are welcome — issues and pull requests both. Building requires Go 1.26. [Development](./docs/development.md) covers running the proxy from source, the hermetic `make e2e` end-to-end suite and a local multi-issuer test against a real GitHub Actions token; the [demo](./demo/README.md) stands the whole flow up with one command.
+Contributions are welcome — issues and pull requests both; [CONTRIBUTING.md](./CONTRIBUTING.md) has the requirements. Report bugs in the [issue tracker](https://github.com/RafPe/kube-oidc-proxy/issues/new/choose) and vulnerabilities privately as described in [SECURITY.md](./SECURITY.md). Building requires Go 1.26. [Development](./docs/development.md) covers running the proxy from source, the hermetic `make e2e` end-to-end suite and a local multi-issuer test against a real GitHub Actions token; the [demo](./demo/README.md) stands the whole flow up with one command.
 
 Releases are review-gated and label-driven: every ordinary PR carries exactly one `release/*` label and every non-skip PR adds a changelog fragment, and ordinary merges never publish. A maintainer runs **Prepare Release** to open the automation-owned `release/next` PR, and merging that PR is what tags and publishes. The exact flow and its recovery procedure are in the [maintainer runbook](./docs/releases.md).

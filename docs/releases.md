@@ -38,7 +38,9 @@ body: Preserve request cancellation while an authorization review is running.
 
 Allowed kinds are `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`,
 `Security`, and `Dependencies`. Keep the body user-facing and never include
-credentials. The required **PR Release Metadata** check enforces the label and
+credentials. A change that fixes a vulnerability uses kind `Security` and
+names the advisory (`CVE-…`, `GHSA-…` or `GO-…`) in the body, so every
+release's notes identify the vulnerabilities it fixes. The required **PR Release Metadata** check enforces the label and
 fragment relationship. The generated release PR is narrowly exempt only when
 its repository, branch, and `autorelease: pending` label all match.
 
