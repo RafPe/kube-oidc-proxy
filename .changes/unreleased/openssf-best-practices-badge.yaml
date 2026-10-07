@@ -1,0 +1,2 @@
+kind: Added
+body: Enrol in the OpenSSF Best Practices Badge, with proposed answers in `.bestpractices.json`, the badge in the README, explicit bug and vulnerability reporting links, and a release-notes rule that security fixes name their advisory.
