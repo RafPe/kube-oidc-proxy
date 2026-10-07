@@ -1,0 +1,37 @@
+---
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const version = import.meta.env.PUBLIC_DOCS_VERSION ?? 'main';
+const isRelease = import.meta.env.PUBLIC_DOCS_IS_RELEASE === 'true';
+---
+<footer class="kop-foot">
+  <div class="kop-wrap">
+    <div class="cols">
+      <div>
+        <span class="kop-brand"><span class="b">kube</span>-oidc-proxy</span>
+        <p class="lineage">A fork of TremoloSecurity/kube-oidc-proxy, itself a fork of jetstack/kube-oidc-proxy. This fork adds multi-issuer authentication via <code>--authentication-config</code>. Apache-2.0.</p>
+      </div>
+      <div><h4>Start</h4><ul>
+        <li><a href={`${base}/start/getting-started/`}>Getting started</a></li>
+        <li><a href={`${base}/start/multi-issuer-demo/`}>Multi-issuer demo on kind</a></li>
+        <li><a href={`${base}/concepts/architecture/`}>Architecture</a></li>
+      </ul></div>
+      <div><h4>Guides</h4><ul>
+        <li><a href={`${base}/guides/authentication/`}>Authentication modes</a></li>
+        <li><a href={`${base}/guides/integrations/`}>Connect an identity provider</a></li>
+        <li><a href={`${base}/guides/operations/`}>Operations</a></li>
+        <li><a href={`${base}/guides/metrics/`}>Metrics and dashboards</a></li>
+        <li><a href={`${base}/guides/auditing/`}>Auditing</a></li>
+      </ul></div>
+      <div><h4>Project</h4><ul>
+        <li><a href="https://github.com/RafPe/kube-oidc-proxy">GitHub</a></li>
+        <li><a href="https://github.com/RafPe/kube-oidc-proxy/releases">Releases</a></li>
+        <li><a href={`${base}/project/security/`}>Security policy</a></li>
+        <li><a href={`${base}/project/contributing/`}>Contributing</a></li>
+      </ul></div>
+    </div>
+    <div class="bottom">
+      <span>{isRelease ? `Documented against ${version}` : `Development docs · last release ${version}`}</span>
+      <span>Built with Astro Starlight · hosted on GitHub Pages</span>
+    </div>
+  </div>
+</footer>

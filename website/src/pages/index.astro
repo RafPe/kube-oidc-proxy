@@ -1,0 +1,67 @@
+---
+// The landing page. Rendered inside Starlight's frame (header, search,
+// theme toggle) with the `splash` template and a `hero`, which makes
+// Starlight render our Hero override; the remaining sections come through
+// the slot.
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+import HowItWorks from '../components/landing/HowItWorks.astro';
+import FeatureTabs from '../components/landing/FeatureTabs.astro';
+import Quickstart from '../components/landing/Quickstart.astro';
+import FooterLinks from '../components/landing/FooterLinks.astro';
+---
+<StarlightPage
+  frontmatter={{
+    title: 'kube-oidc-proxy',
+    description: 'OIDC login for managed Kubernetes clusters. One proxy, many issuers, RBAC stays authoritative.',
+    template: 'splash',
+    hero: { title: 'kube-oidc-proxy' },
+    tableOfContents: false,
+    pagefind: false,
+  }}
+  hasSidebar={false}
+>
+  <div class="kop-landing not-content">
+    <HowItWorks />
+    <FeatureTabs />
+    <Quickstart />
+    <FooterLinks />
+  </div>
+</StarlightPage>
+
+<script>
+  // Feature tabs: click and arrow-key navigation, WAI-ARIA tabs pattern.
+  const tabs = Array.from(document.querySelectorAll<HTMLButtonElement>('.kop-ftab'));
+  function select(tab: HTMLButtonElement) {
+    const key = tab.dataset.ft;
+    for (const t of tabs) {
+      const on = t === tab;
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+      t.tabIndex = on ? 0 : -1;
+    }
+    for (const p of document.querySelectorAll<HTMLElement>('.kop-fpanel')) p.hidden = p.id !== `fp-${key}`;
+  }
+  tabs.forEach((t, i) => {
+    t.addEventListener('click', () => select(t));
+    t.addEventListener('keydown', (e) => {
+      const next = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? tabs[(i + 1) % tabs.length]
+        : e.key === 'ArrowUp' || e.key === 'ArrowLeft' ? tabs[(i - 1 + tabs.length) % tabs.length]
+        : null;
+      if (next) { e.preventDefault(); next.focus(); select(next); }
+    });
+  });
+
+  // Copy buttons on code panels; falls back to selecting the text.
+  for (const b of document.querySelectorAll<HTMLButtonElement>('.kop-codebox .copy')) {
+    b.addEventListener('click', () => {
+      const el = document.getElementById(b.dataset.copy ?? '');
+      if (!el) return;
+      const done = () => { b.textContent = 'Copied'; setTimeout(() => (b.textContent = 'Copy'), 1400); };
+      const fallback = () => {
+        const r = document.createRange(); r.selectNodeContents(el);
+        const s = window.getSelection(); s?.removeAllRanges(); s?.addRange(r);
+        done();
+      };
+      navigator.clipboard?.writeText(el.innerText).then(done).catch(fallback) ?? fallback();
+    });
+  }
+</script>

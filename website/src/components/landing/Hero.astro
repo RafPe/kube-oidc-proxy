@@ -1,0 +1,36 @@
+---
+// Starlight `Hero` override. Starlight renders this component only on pages
+// whose frontmatter declares `hero`, which is the landing page alone, so
+// the docs pages keep their default layout.
+import RequestFlow from './RequestFlow.astro';
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+---
+<section class="kop-hero">
+  <div class="kop-wrap">
+    <div class="copy">
+      <span class="kop-eyebrow">Kubernetes · OIDC authentication proxy</span>
+      <h1>OIDC login for the clusters that won't let you set <code>--oidc</code> flags.</h1>
+      <p class="lede">A reverse proxy in front of the API server. It validates bearer tokens from one or many OIDC issuers, then impersonates the user. Your RBAC stays authoritative on every request.</p>
+      <div class="kop-cta">
+        <a class="kop-btn primary" href="#quickstart">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4 17l6-5-6-5M12 19h8"/></svg>
+          Quickstart
+        </a>
+        <a class="kop-btn ghost" href={`${base}/start/getting-started/`}>Read the docs</a>
+      </div>
+      <div class="kop-badges" aria-label="Project facts">
+        <span class="kop-badge"><span class="dot"></span>Apache-2.0</span>
+        <a class="kop-badge" href="https://securityscorecards.dev/viewer/?uri=github.com/RafPe/kube-oidc-proxy"><span class="dot"></span>OpenSSF Scorecard</a>
+        <span class="kop-badge amber"><span class="dot"></span>Signed OCI chart</span>
+        <span class="kop-badge blue"><span class="dot"></span>Tested on 3 Kubernetes minors</span>
+        <a class="kop-badge blue" href="https://artifacthub.io/packages/search?repo=kube-oidc-proxy"><span class="dot"></span>Artifact Hub</a>
+      </div>
+      <div class="kop-fit">
+        <div><b>Built for</b> EKS, GKE, AKS and any cluster where the API server flags are out of reach.</div>
+        <div><b>Not for</b> deciding what an identity may do. Authorization never leaves RBAC.</div>
+      </div>
+    </div>
+    <RequestFlow />
+  </div>
+</section>
