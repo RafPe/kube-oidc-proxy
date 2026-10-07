@@ -85,8 +85,15 @@ do not reflect real risk for this project:
   there are no separate approving reviewers for Scorecard to credit.
 - **Maintained** — flagged only because the fork's repository is recent; it
   clears on its own as history accrues.
-- **Fuzzing** / **CII-Best-Practices** — aspirational; no fuzz targets or
-  best-practices enrolment yet.
+- **Fuzzing** — Scorecard only credits OSS-Fuzz or ClusterFuzzLite. This
+  project fuzzes with Go's native fuzzer instead: the parsers that take
+  attacker-controlled input run weekly in `.github/workflows/fuzz.yaml`, and
+  their seed corpora run on every pull request.
+- **CII-Best-Practices** — the project is enrolled in the
+  [OpenSSF Best Practices Badge](https://www.bestpractices.dev/projects/14117);
+  the check clears once the passing level is achieved. The proposed answers
+  live in `.bestpractices.json` at the repository root, which bestpractices.dev
+  reads on each automated re-analysis.
 
 ## Upstream
 

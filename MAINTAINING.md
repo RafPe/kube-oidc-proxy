@@ -12,7 +12,7 @@ own automation is the primary security channel:
 - **`.github/dependabot.yml`** — weekly dependency update PRs for Go modules
   (`gomod`) and the GitHub Actions used by the workflows (`github-actions`).
 - **`.github/workflows/security.yaml`** — runs `govulncheck ./...` on every
-  pull request, on every push to `master`, and on a weekly schedule, so newly
+  pull request, on every push to `main`, and on a weekly schedule, so newly
   disclosed vulnerabilities are surfaced even without repository activity.
 
 Treat a failing `security` workflow or an open Dependabot PR as the signal to
