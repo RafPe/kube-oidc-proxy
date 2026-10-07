@@ -1,0 +1,28 @@
+---
+// Starlight `SiteTitle` override: the default title plus the top-level
+// navigation the landing page design calls for. Hidden on narrow screens,
+// where Starlight's mobile menu exposes the full sidebar instead.
+import Default from '@astrojs/starlight/components/SiteTitle.astro';
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const here = Astro.url.pathname;
+const links = [
+  { label: 'Docs', href: `${base}/start/getting-started/`, match: `${base}/start/` },
+  { label: 'Guides', href: `${base}/guides/authentication/`, match: `${base}/guides/` },
+  { label: 'Reference', href: `${base}/reference/configuration/`, match: `${base}/reference/` },
+  { label: 'Releases', href: 'https://github.com/RafPe/kube-oidc-proxy/releases' },
+];
+---
+<Default />
+<nav class="kop-topnav sl-hidden lg:sl-flex" aria-label="Site sections">
+  {links.map((l) => (
+    <a href={l.href} aria-current={l.match && here.startsWith(l.match) ? 'page' : undefined}>{l.label}</a>
+  ))}
+</nav>
+
+<style>
+  .kop-topnav { align-items: center; gap: 1.1rem; margin-inline-start: 1.25rem; font-size: var(--sl-text-sm); font-weight: 500; white-space: nowrap; }
+  .kop-topnav a { color: var(--sl-color-gray-2); text-decoration: none; padding-block: .25rem; border-bottom: 2px solid transparent; }
+  .kop-topnav a:hover { color: var(--sl-color-white); }
+  .kop-topnav a[aria-current="page"] { color: var(--sl-color-text-accent); border-bottom-color: var(--sl-color-accent); }
+</style>
