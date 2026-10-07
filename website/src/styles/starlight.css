@@ -1,0 +1,32 @@
+/* Map Starlight's theme variables onto the shared tokens so the docs and the
+   landing page read as one site. Overrides stay minimal on purpose. */
+:root {
+  --sl-font: var(--kop-font-body);
+  --sl-font-mono: var(--kop-font-mono);
+  --sl-color-accent-low: var(--kop-blue-soft);
+  --sl-color-accent: var(--kop-blue);
+  --sl-color-accent-high: var(--kop-blue-ink);
+  --sl-color-white: var(--kop-ink);
+  --sl-color-gray-1: var(--kop-ink-2);
+  --sl-color-gray-2: var(--kop-ink-2);
+  --sl-color-gray-3: var(--kop-muted);
+  --sl-color-gray-4: var(--kop-line-2);
+  --sl-color-gray-5: var(--kop-line);
+  --sl-color-gray-6: var(--kop-bg-2);
+  --sl-color-gray-7: var(--kop-bg-2);
+  --sl-color-black: var(--kop-bg);
+  --sl-color-bg: var(--kop-bg);
+  --sl-color-bg-nav: var(--kop-bg-2);
+  --sl-color-bg-sidebar: var(--kop-bg);
+  --sl-color-hairline: var(--kop-line);
+  --sl-color-hairline-light: var(--kop-line);
+  --sl-color-hairline-shade: var(--kop-line-2);
+  --sl-color-text: var(--kop-ink-2);
+  --sl-color-text-accent: var(--kop-blue-ink);
+}
+:root[data-theme="dark"] {
+  --sl-color-white: var(--kop-ink);
+  --sl-color-black: var(--kop-bg);
+}
+.sl-markdown-content h1, .sl-markdown-content h2, .sl-markdown-content h3, .site-title { font-family: var(--kop-font-display); letter-spacing: -0.01em; }
+.sl-markdown-content :not(pre) > code { background: var(--kop-blue-soft); color: var(--kop-blue-ink); border-radius: 5px; padding: .1em .35em; }

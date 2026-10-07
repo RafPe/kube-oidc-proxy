@@ -1,0 +1,48 @@
+/* Design tokens shared by the landing page and the Starlight docs.
+   Light palette on :root; Starlight stamps data-theme="dark" on <html>. */
+:root {
+  --kop-bg: #F6F0E1;
+  --kop-bg-2: #FBF7EC;
+  --kop-panel: #FFFDF7;
+  --kop-ink: #1B2A4A;
+  --kop-ink-2: #3A4766;
+  --kop-muted: #6E6A60;
+  --kop-line: #E2DAC6;
+  --kop-line-2: #CFC4A8;
+  --kop-blue: #2E63F0;
+  --kop-blue-soft: #E3EAFE;
+  --kop-blue-ink: #1E47B8;
+  --kop-amber: #C9821A;
+  --kop-amber-soft: #FBEBD0;
+  --kop-green: #2F9E62;
+  --kop-green-soft: #DDF3E6;
+  --kop-code-bg: #1B2A4A;
+  --kop-code-fg: #E8E1CE;
+  --kop-grid: rgba(27, 42, 74, .09);
+  --kop-shadow: 0 10px 30px rgba(27, 42, 74, .10);
+  --kop-font-display: "Bricolage Grotesque", "IBM Plex Sans", system-ui, sans-serif;
+  --kop-font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --kop-font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+:root[data-theme="dark"] {
+  --kop-bg: #0F1522;
+  --kop-bg-2: #131B2B;
+  --kop-panel: #161E2E;
+  --kop-ink: #ECE5D2;
+  --kop-ink-2: #C9C2B0;
+  --kop-muted: #9A948A;
+  --kop-line: #2A3447;
+  --kop-line-2: #3A4659;
+  --kop-blue: #7AA2FF;
+  --kop-blue-soft: #1C2A4D;
+  --kop-blue-ink: #A9C0FF;
+  --kop-amber: #E7A64A;
+  --kop-amber-soft: #3A2C14;
+  --kop-green: #5CC48C;
+  --kop-green-soft: #153324;
+  --kop-code-bg: #0B1020;
+  --kop-code-fg: #E8E1CE;
+  --kop-grid: rgba(236, 229, 210, .07);
+  --kop-shadow: 0 10px 30px rgba(0, 0, 0, .35);
+}
+
