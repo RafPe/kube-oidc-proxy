@@ -45,6 +45,8 @@ export default defineConfig({
         Hero: './src/components/landing/Hero.astro',
         // Version line on every docs page.
         Banner: './src/components/overrides/Banner.astro',
+        // Site title plus the Docs / Guides / Reference / Releases links.
+        SiteTitle: './src/components/overrides/SiteTitle.astro',
       },
       // The docs use promql and logql fences, which Shiki does not ship; render
       // them as plain text instead of warning on every build.
