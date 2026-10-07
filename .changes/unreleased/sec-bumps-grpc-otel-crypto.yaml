@@ -1,0 +1,2 @@
+kind: Dependencies
+body: Bump google.golang.org/grpc from 1.83.1 to 1.83.2 (the gRPC server now rejects requests missing both `:authority` and `Host` headers), go.opentelemetry.io/otel, otel/sdk, otel/exporters/otlp/otlptrace and otlptracegrpc from 1.44.0 to 1.45.0, and golang.org/x/crypto from 0.55.0 to 0.56.0 to remediate GO-2026-6354 and GO-2026-6355.
