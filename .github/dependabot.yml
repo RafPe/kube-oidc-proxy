@@ -21,3 +21,16 @@ updates:
       - "/test/tools/audit-webhook"
     schedule:
       interval: "weekly"
+
+  # The website (Astro Starlight) in website/. Framework bumps arrive as one PR.
+  - package-ecosystem: "npm"
+    directory: "/website"
+    schedule:
+      interval: "weekly"
+    groups:
+      astro:
+        patterns:
+          - "astro"
+          - "@astrojs/*"
+          - "starlight-*"
+          - "astro-mermaid"
