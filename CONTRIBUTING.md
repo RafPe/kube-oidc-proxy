@@ -17,7 +17,7 @@ logs.
   [docs/development.md](./docs/development.md#end-to-end-tests)).
 - Documentation site: `make site_dev` serves the landing page and the docs
   under `docs/` at <http://localhost:4321/kube-oidc-proxy/> with live reload
-  (needs Node 22+). A new page under `docs/` must also be listed in
+  (needs Node 22.12+). A new page under `docs/` must also be listed in
   `website/site.manifest.json`, which places it in the navigation.
 
 ## Pull requests

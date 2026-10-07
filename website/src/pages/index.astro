@@ -55,11 +55,14 @@ import FooterLinks from '../components/landing/FooterLinks.astro';
     b.addEventListener('click', () => {
       const el = document.getElementById(b.dataset.copy ?? '');
       if (!el) return;
-      const done = () => { b.textContent = 'Copied'; setTimeout(() => (b.textContent = 'Copy'), 1400); };
+      const reset = () => setTimeout(() => (b.textContent = 'Copy'), 1800);
+      const done = () => { b.textContent = 'Copied'; reset(); };
+      // Without clipboard access the text is only selected; say so rather
+      // than claiming it was copied.
       const fallback = () => {
         const r = document.createRange(); r.selectNodeContents(el);
         const s = window.getSelection(); s?.removeAllRanges(); s?.addRange(r);
-        done();
+        b.textContent = 'Selected, press Ctrl/Cmd+C'; reset();
       };
       navigator.clipboard?.writeText(el.innerText).then(done).catch(fallback) ?? fallback();
     });

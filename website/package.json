@@ -3,13 +3,13 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12.0"
   },
   "scripts": {
     "stage": "node scripts/stage.mjs",
     "prebuild": "node scripts/version.mjs && node scripts/stage.mjs",
     "build": "astro build",
-    "dev": "node scripts/version.mjs && node scripts/stage.mjs && astro dev",
+    "dev": "node scripts/dev.mjs",
     "preview": "astro preview",
     "test": "node --test scripts/*.test.mjs",
     "check": "node scripts/check-dist.mjs",

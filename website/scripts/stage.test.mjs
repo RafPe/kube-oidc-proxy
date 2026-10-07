@@ -151,3 +151,18 @@ test('without git history lastUpdated is omitted rather than invented', () => {
 });
 
 function require_child() { return { execFileSync: _execFileSync }; }
+
+test('staging twice after a page is removed or renamed leaves no stale output or images', () => {
+  run();
+  assert.ok(existsSync(path.join(outDir, 'guides/operations.md')));
+  assert.ok(existsSync(path.join(imgDir, 'docs/c4/diagrams/ctx.png')));
+  write('docs/getting-started.md', '# Getting started\n\nNo image any more.\n');
+  manifest([
+    { source: 'docs/getting-started.md', route: 'start/getting-started', group: 'Start', label: 'Getting started', order: 1 },
+    { source: 'docs/operations.md', route: 'guides/ops', group: 'Guides', label: 'Operations', order: 1 },
+  ]);
+  run();
+  assert.ok(!existsSync(path.join(outDir, 'guides/operations.md')), 'renamed route must not linger');
+  assert.ok(existsSync(path.join(outDir, 'guides/ops.md')));
+  assert.ok(!existsSync(path.join(imgDir, 'docs/c4/diagrams/ctx.png')), 'unreferenced image must not linger');
+});

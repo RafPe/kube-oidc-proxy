@@ -76,7 +76,7 @@ Groups     [gha:org:rafpe system:authenticated]</pre>
           <p>A workflow's OIDC token carries the repository, ref and environment. CEL expressions turn those claims into a username, groups and audit extras, so RBAC can be as narrow as one repo on one branch.</p>
           <ul>
             <li>No deploy keys or long-lived kubeconfigs in CI secrets.</li>
-            <li>Trust tiers by claim: a protected branch gets more than a pull request.</li>
+            <li>Trust boundary by immutable owner ID, then tiers by claim: a protected branch gets more than a pull request.</li>
             <li>Hard gates with validation rules, for example rejecting tokens from pull requests.</li>
             <li>Recipes for GitHub Actions, GitLab CI, TeamCity, Google service accounts and private issuers.</li>
           </ul>
@@ -84,12 +84,17 @@ Groups     [gha:org:rafpe system:authenticated]</pre>
         </div>
         <div class="art">
           <CodeBlock id="kop-cel" label="claim mapping · GitHub Actions">
-<Fragment set:html={`<span class="k">claimMappings</span>:
+<Fragment set:html={`<span class="k">claimValidationRules</span>:
+  <span class="c"># Trust boundary first: only this owner's repositories, by immutable ID.</span>
+  - <span class="k">expression</span>: <span class="s">'claims.repository_owner_id == "1234567"'</span>
+    <span class="k">message</span>: <span class="s">token is not from a trusted organisation</span>
+<span class="k">claimMappings</span>:
   <span class="k">username</span>:
     <span class="k">expression</span>: <span class="s">'"gha:" + claims.repository + ":" + claims.ref'</span>
   <span class="k">groups</span>:
+    <span class="c"># The release tier needs a protected main branch, not just a branch named main.</span>
     <span class="k">expression</span>: <span class="s">>-
-      claims.ref == "refs/heads/main"
+      claims.ref == "refs/heads/main" &amp;&amp; claims.ref_protected == "true"
         ? ["gha:org:" + claims.repository_owner, "gha:tier:release"]
         : ["gha:org:" + claims.repository_owner]</span>
   <span class="k">extra</span>:

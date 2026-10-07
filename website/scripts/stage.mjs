@@ -5,7 +5,7 @@
 // first paragraph, editUrl), rewrites relative links to site routes or GitHub
 // URLs, and copies referenced images into imgDir. Fails loudly on anything it
 // cannot resolve so a broken link never reaches the published site.
-import { readFileSync, writeFileSync, mkdirSync, existsSync, copyFileSync, statSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, copyFileSync, statSync, readdirSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +18,11 @@ export function stage({ repoRoot, manifestPath, outDir, imgDir }) {
   const bySource = new Map(manifest.pages.map((p) => [p.source, p]));
 
   checkCoverage(repoRoot, manifest, bySource);
+
+  // Start from empty output so a removed or renamed page, or an image no
+  // page references any more, cannot linger from a previous run.
+  rmSync(outDir, { recursive: true, force: true });
+  rmSync(imgDir, { recursive: true, force: true });
 
   const pages = manifest.pages.map((page) => {
     const abs = path.join(repoRoot, page.source);
