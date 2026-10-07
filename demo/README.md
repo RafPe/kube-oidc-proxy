@@ -19,23 +19,9 @@ accounts, no DNS, no browser.
 
 ## What it shows
 
-```
-                         ┌──────────────────────────────┐
-  alice@example.com ───► │ dex-a (issuer A)              │
-  (password grant)       │ https://dex-a.dex.svc...:5556 │──┐
-                         └──────────────────────────────┘  │  id_token A
-                                                            ▼
-                                              ┌─────────────────────────┐      impersonate
-   kubectl (token A) ───────────────────────►│                         │────► kube-apiserver
-                                              │     kube-oidc-proxy     │      as
-   kubectl (token B) ───────────────────────►│  --authentication-config│────► oidc-a:alice@example.com
-                                              │   (issuer A + issuer B) │      oidc-b:bob@example.com
-                                                            ▲
-                         ┌──────────────────────────────┐  │  id_token B
-  bob@example.com ─────► │ dex-b (issuer B)              │──┘
-  (password grant)       │ https://dex-b.dex.svc...:5556 │
-                         └──────────────────────────────┘
-```
+![Two Dex issuers mint tokens for alice and bob; kubectl presents each token to one kube-oidc-proxy configured with --authentication-config for both issuers, which impersonates oidc-a:alice@example.com or oidc-b:bob@example.com to the kube-apiserver](./diagrams/multi-issuer-demo.svg)
+
+<!-- Source: ./diagrams/multi-issuer-demo.archify.json; see docs/development.md, Architecture diagrams. -->
 
 - Two Dex issuers, each with its own TLS-served OIDC discovery endpoint and one
   static user (`alice@example.com` on A, `bob@example.com` on B).
