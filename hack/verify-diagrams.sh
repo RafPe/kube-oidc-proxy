@@ -7,8 +7,8 @@ set -euo pipefail
 # for them and currentColor resolves to black on a dark theme). Archify
 # exports (marked by data-preset on the root) define their own custom
 # properties in an embedded stylesheet with a prefers-color-scheme switch, so
-# they may use var(--…); they must stay self-contained: no scripts and no
-# external resources.
+# they may use var(--…). No SVG may load an external resource or run a
+# script.
 [ -d docs/diagrams ] || { echo "docs/diagrams missing" >&2; exit 1; }
 
 # Without nullglob an unmatched glob stays literal and the loop below runs
@@ -31,12 +31,28 @@ if root.tagName != "svg" or not root.getAttribute("viewBox"):
 if not root.getElementsByTagName("title"):
     print(f"{path}: missing <title>"); sys.exit(1)
 text = open(path).read()
+# No SVG may load anything: every href/xlink:href and every CSS url() or
+# @import must be a fragment (#id) or a data: URL.
+def external(ref):
+    ref = ref.strip().strip("'\"")
+    return ref and not (ref.startswith("#") or ref.startswith("data:"))
+def walk(node):
+    for child in node.childNodes:
+        if child.nodeType != child.ELEMENT_NODE:
+            continue
+        for attr in ("href", "xlink:href"):
+            if child.hasAttribute(attr) and external(child.getAttribute(attr)):
+                print(f"{path}: <{child.tagName} {attr}> loads an external resource"); sys.exit(1)
+        walk(child)
+walk(root)
+for m in re.finditer(r"url\(([^)]*)\)|@import\s+([^;]+);", text):
+    ref = m.group(1) if m.group(1) is not None else m.group(2)
+    if external(ref.replace("url(", "")):
+        print(f"{path}: stylesheet loads an external resource: {ref.strip()[:60]}"); sys.exit(1)
 if root.getAttribute("data-preset"):
-    # Archify export: self-contained, so it must not load anything or run code.
+    # Archify export: carries its own custom properties and theme switch.
     if root.getElementsByTagName("script"):
         print(f"{path}: archify export contains a <script>"); sys.exit(1)
-    if re.search(r"url\(\s*['\"]?https?://", text):
-        print(f"{path}: archify export references an external URL"); sys.exit(1)
     if "prefers-color-scheme" not in text:
         print(f"{path}: archify export lacks the prefers-color-scheme switch; export with the dual-theme 'svg' format"); sys.exit(1)
 else:

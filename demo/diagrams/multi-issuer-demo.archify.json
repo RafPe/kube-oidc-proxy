@@ -71,7 +71,7 @@
       "label": "kube-apiserver",
       "sublabel": "RBAC for the mapped user",
       "pos": [
-        1130,
+        1380,
         300
       ],
       "size": [
@@ -184,7 +184,7 @@
       "id": "impersonate",
       "from": "proxy",
       "to": "apiserver",
-      "label": "impersonate oidc-a:alice / oidc-b:bob",
+      "label": "impersonate oidc-a:alice@example.com or oidc-b:bob@example.com",
       "variant": "security"
     }
   ],

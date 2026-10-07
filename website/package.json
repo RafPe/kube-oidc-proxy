@@ -29,6 +29,7 @@
     "starlight-github-alerts": "0.5.0"
   },
   "devDependencies": {
-    "@lhci/cli": "0.15.1"
+    "@lhci/cli": "0.15.1",
+    "puppeteer-core": "24.43.1"
   }
 }

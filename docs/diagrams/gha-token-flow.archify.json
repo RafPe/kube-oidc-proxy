@@ -7,23 +7,139 @@
     "quality_profile": "showcase"
   },
   "components": [
-    { "id": "gha", "type": "cloud", "label": "GitHub Actions", "sublabel": "workflow_dispatch mints an ID token (TTL ~5 min)", "pos": [40, 40], "size": [250, 72] },
-    { "id": "terminal", "type": "frontend", "label": "local terminal", "sublabel": "gh run download → kubectl --token=…", "pos": [40, 230], "size": [250, 72] },
-    { "id": "proxy", "type": "backend", "label": "kube-oidc-proxy", "sublabel": "validates the JWT, maps claims", "tag": "kind", "pos": [560, 230], "size": [240, 80] },
-    { "id": "issuer", "type": "security", "label": "token.actions.githubusercontent.com", "sublabel": "OIDC discovery + JWKS", "pos": [560, 40], "size": [300, 72] },
-    { "id": "apiserver", "type": "backend", "label": "kind API server", "sublabel": "RBAC decides for the mapped identity", "pos": [1060, 230], "size": [250, 80] }
+    {
+      "id": "gha",
+      "type": "cloud",
+      "label": "GitHub Actions",
+      "sublabel": "workflow_dispatch mints an ID token (TTL ~5 min)",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        250,
+        72
+      ]
+    },
+    {
+      "id": "terminal",
+      "type": "frontend",
+      "label": "local terminal",
+      "sublabel": "gh run download \u2192 kubectl --token=\u2026",
+      "pos": [
+        40,
+        230
+      ],
+      "size": [
+        250,
+        72
+      ]
+    },
+    {
+      "id": "proxy",
+      "type": "backend",
+      "label": "kube-oidc-proxy",
+      "sublabel": "validates the JWT, maps claims",
+      "tag": "kind",
+      "pos": [
+        560,
+        230
+      ],
+      "size": [
+        240,
+        80
+      ]
+    },
+    {
+      "id": "issuer",
+      "type": "security",
+      "label": "token.actions.githubusercontent.com",
+      "sublabel": "OIDC discovery + JWKS",
+      "pos": [
+        560,
+        40
+      ],
+      "size": [
+        300,
+        72
+      ]
+    },
+    {
+      "id": "apiserver",
+      "type": "backend",
+      "label": "kind API server",
+      "sublabel": "RBAC decides for the mapped identity",
+      "pos": [
+        1100,
+        230
+      ],
+      "size": [
+        250,
+        80
+      ]
+    }
   ],
   "boundaries": [
-    { "kind": "region", "label": "kind cluster (local)", "wraps": ["proxy", "apiserver"] }
+    {
+      "kind": "region",
+      "label": "kind cluster (local)",
+      "wraps": [
+        "proxy",
+        "apiserver"
+      ]
+    }
   ],
   "connections": [
-    { "id": "download", "from": "gha", "to": "terminal", "label": "token artifact", "variant": "dashed", "fromSide": "bottom", "toSide": "top" },
-    { "id": "request", "from": "terminal", "to": "proxy", "label": "Bearer <GitHub token>", "variant": "emphasis" },
-    { "id": "verify", "from": "proxy", "to": "issuer", "label": "verify signature via JWKS", "variant": "security", "fromSide": "top", "toSide": "bottom" },
-    { "id": "impersonate", "from": "proxy", "to": "apiserver", "label": "impersonate gha:<repo>:<ref>", "variant": "security" }
+    {
+      "id": "download",
+      "from": "gha",
+      "to": "terminal",
+      "label": "token artifact",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "request",
+      "from": "terminal",
+      "to": "proxy",
+      "label": "Bearer <GitHub token>",
+      "variant": "emphasis"
+    },
+    {
+      "id": "verify",
+      "from": "proxy",
+      "to": "issuer",
+      "label": "verify signature via JWKS",
+      "variant": "security",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "impersonate",
+      "from": "proxy",
+      "to": "apiserver",
+      "label": "impersonate gha:<GitHub sub>",
+      "variant": "security"
+    }
   ],
   "cards": [
-    { "dot": "cyan", "title": "Why this test", "items": ["A real GitHub Actions token, not a Dex stand-in", "Exercises the CEL claim mapping end to end", "No deploy keys or long-lived kubeconfig in CI"] },
-    { "dot": "rose", "title": "Sharp edge", "items": ["The token lives about five minutes: download and use it promptly", "Every gh call needs an explicit --repo"] }
+    {
+      "dot": "cyan",
+      "title": "Why this test",
+      "items": [
+        "A real GitHub Actions token, not a Dex stand-in",
+        "The test maps sub with the gha: prefix, so the user is gha:repo:Owner@<owner-id>/repo@<repo-id>:ref:refs/heads/<branch>",
+        "No deploy keys or long-lived kubeconfig in CI"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Sharp edge",
+      "items": [
+        "The token lives about five minutes: download and use it promptly",
+        "Every gh call needs an explicit --repo"
+      ]
+    }
   ]
 }

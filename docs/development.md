@@ -287,11 +287,15 @@ PNGs. [Architecture](./architecture.md#diagrams) shows them.
 - Hand-authored SVGs (`metrics-data-flow.svg`): literal colours, a `<title>`,
   no CSS variables.
 - Archify exports (`gha-token-flow.svg`, `demo/diagrams/multi-issuer-demo.svg`):
-  built from the `*.archify.json` next to each SVG. To change one, edit the
-  JSON, run `archify finalize architecture <name>.archify.json <name>.html`,
-  then `node website/scripts/export-diagram-svg.mjs <name>.html <name>.svg`
-  from `website/` after `npm ci`. The export follows the reader's colour
-  scheme and embeds its fonts.
+  built from the `*.archify.json` next to each SVG with Archify 3.0.1, a
+  local tool that is not a dependency of this repository (it ships as the
+  `archify` agent skill; its CLI is `node <skill-dir>/bin/archify.mjs`). To
+  change one, edit the JSON, run
+  `archify finalize architecture <name>.archify.json <name>.html`, then
+  `node website/scripts/export-diagram-svg.mjs <name>.html <name>.svg` from
+  `website/` after `npm ci`. Use the same Archify version so the output only
+  changes where the JSON did. The export follows the reader's colour scheme
+  and embeds its fonts.
 
 ## Metrics demo
 

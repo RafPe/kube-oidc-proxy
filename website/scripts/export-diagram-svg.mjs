@@ -1,6 +1,5 @@
 // Re-export an archify diagram as a standalone SVG by driving the viewer's
-// own "Download SVG" action in headless Chrome (puppeteer-core comes with
-// the Lighthouse dev dependency). Usage, from website/:
+// own "Download SVG" action in headless Chrome. Usage, from website/:
 //
 //   node scripts/export-diagram-svg.mjs <diagram.html> <out.svg> [svg|svg-light|svg-dark]
 //
