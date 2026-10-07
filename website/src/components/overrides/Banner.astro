@@ -1,0 +1,29 @@
+---
+// Starlight `Banner` override: a version line on every docs page. Falls back
+// to Starlight's default banner for pages that declare one in frontmatter.
+import Default from '@astrojs/starlight/components/Banner.astro';
+import versions from '../../../../test/e2e/versions/kubernetes-versions.json';
+
+const { entry } = Astro.locals.starlightRoute;
+const isDocs = entry.data.template !== 'splash';
+const version = import.meta.env.PUBLIC_DOCS_VERSION ?? 'main';
+const isRelease = import.meta.env.PUBLIC_DOCS_IS_RELEASE === 'true';
+const minors = versions.supported.map((v: { version: string }) => v.version.split('.').slice(0, 2).join('.'));
+const k8s = `Kubernetes ${minors[minors.length - 1]} to ${minors[0]}`;
+---
+{entry.data.banner ? <Default /> : isDocs && (
+  <div class="kop-version" role="note">
+    <span class="dot" aria-hidden="true"></span>
+    {isRelease
+      ? <span>Documented against <b>{version}</b> · tested on {k8s}</span>
+      : <span>Development docs · last release <b>{version}</b> · tested on {k8s}</span>}
+    <a href="https://github.com/RafPe/kube-oidc-proxy/releases">Release notes</a>
+  </div>
+)}
+
+<style>
+  .kop-version { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; font-size: .82rem; color: var(--sl-color-gray-2); background: var(--kop-panel); border: 1px solid var(--sl-color-hairline); border-radius: 10px; padding: .45rem .8rem; margin: 0 var(--sl-content-pad-x) 1rem; }
+  .kop-version b { color: var(--sl-color-white); font-weight: 600; }
+  .kop-version .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--kop-green); }
+  .kop-version a { margin-left: auto; }
+</style>

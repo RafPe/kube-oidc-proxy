@@ -12,7 +12,7 @@ export GO111MODULE=on
 help:  ## display this help
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n\nTargets:\n"} /^[a-zA-Z0-9_-]+:.*?##/ { printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
-.PHONY: help build docker_build test depend verify all clean generate eventdoc verify_eventdoc metricdoc verify_metricdoc e2e e2e-clean verify-e2e-shards metrics_demo_up metrics_demo_load metrics_demo_verify metrics_demo_down
+.PHONY: help build docker_build test depend verify all clean generate eventdoc verify_eventdoc metricdoc verify_metricdoc e2e e2e-clean verify-e2e-shards metrics_demo_up metrics_demo_load metrics_demo_verify metrics_demo_down site site_dev site_test
 
 # golangci-lint is installed via the upstream, GOOS/GOARCH-aware installer,
 # pinned to a supported v2 release. Keep this in lockstep with the version the
@@ -186,3 +186,12 @@ dev_cluster_deploy: depend ## deploy into dev cluster
 
 dev_cluster_destroy: depend ## destroy dev cluster
 	KUBE_OIDC_PROXY_ROOT_PATH="$$(pwd)" go run -v ./test/environment/dev destroy
+
+site: ## build the website (landing page + docs) into website/dist
+	cd website && npm ci --no-audit --no-fund && npm run build
+
+site_dev: ## serve the website locally with live reload on http://localhost:4321/kube-oidc-proxy/
+	cd website && npm install --no-audit --no-fund && npm run dev
+
+site_test: ## run the website's staging and sidebar unit tests
+	cd website && npm test

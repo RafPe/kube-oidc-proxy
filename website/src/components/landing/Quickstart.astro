@@ -1,0 +1,40 @@
+---
+import CodeBlock from './CodeBlock.astro';
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+---
+<section class="kop-block" id="quickstart">
+  <div class="kop-wrap">
+    <div class="kop-sechead">
+      <span class="kop-eyebrow">Quickstart</span>
+      <h2>Install the chart, ask the cluster who you are.</h2>
+      <p>A smoke test, not a production install. The full first installation with ingress, TLS and RBAC is in <a href={`${base}/start/getting-started/`}>Getting started</a>.</p>
+    </div>
+    <div class="kop-quick">
+      <div style="display:grid;gap:18px">
+        <div class="kop-prereq" aria-label="Prerequisites">
+          <div><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg><span>A cluster, <code>kubectl</code> and Helm 3 or newer.</span></div>
+          <div><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg><span>An OIDC issuer and an ID token from it in <code>$ID_TOKEN</code>.</span></div>
+          <div class="warn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 9v4M12 17h.01M10.3 3.9 2.6 17.2A2 2 0 0 0 4.3 20h15.4a2 2 0 0 0 1.7-2.8L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg><span>The chart grants the proxy's ServiceAccount cluster-wide impersonation. Review the RBAC it renders before installing on a shared cluster.</span></div>
+        </div>
+        <div class="kop-note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg><span>No identity provider at hand? The <a href={`${base}/start/multi-issuer-demo/`}>kind demo</a> stands up two Dex issuers and the proxy locally with one command.</span></div>
+        <pre class="kop-out">ATTRIBUTE   VALUE
+Username    google:alice@example.com
+Groups      [system:authenticated]</pre>
+      </div>
+      <CodeBlock id="kop-sh" label="Helm (OCI)" copy>
+<Fragment set:html={`<span class="c"># install from the signed OCI chart</span>
+<span class="cmd">helm install</span> kube-oidc-proxy oci://ghcr.io/rafpe/charts/kube-oidc-proxy \\
+  --namespace kube-oidc-proxy --create-namespace \\
+  --set oidc.clientId=<span class="s">&lt;client-id&gt;</span> \\
+  --set oidc.issuerUrl=<span class="s">https://&lt;issuer-url&gt;</span> \\
+  --set oidc.usernameClaim=email \\
+  --set oidc.usernamePrefix=<span class="s">google:</span>
+
+<span class="c"># verify: port-forward and ask the cluster who you are</span>
+<span class="cmd">kubectl</span> -n kube-oidc-proxy port-forward svc/kube-oidc-proxy 8443:443 &amp;
+<span class="cmd">kubectl</span> --server=https://127.0.0.1:8443 --insecure-skip-tls-verify \\
+  --token=<span class="v">"$ID_TOKEN"</span> auth whoami`} />
+      </CodeBlock>
+    </div>
+  </div>
+</section>

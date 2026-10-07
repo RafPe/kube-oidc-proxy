@@ -1,0 +1,46 @@
+---
+// The animated request-flow panel in the hero. Pure SVG + CSS; the token
+// animation stops and the diagram renders complete under reduced motion.
+---
+<div class="kop-flowpanel" aria-label="Request flow">
+  <div class="head"><span>request flow · one token, one request</span><span>kubectl → proxy → kube-apiserver</span></div>
+  <svg class="kop-flow" viewBox="0 0 640 230" role="img" aria-label="A kubectl request with an ID token reaches kube-oidc-proxy, which validates it against the issuer's signing keys, then forwards it to kube-apiserver with impersonation headers; RBAC decides.">
+    <defs>
+      <marker id="kop-arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--kop-line-2)"/></marker>
+    </defs>
+    <g>
+      <rect x="246" y="22" width="150" height="46" rx="10" fill="var(--kop-panel)" stroke="var(--kop-line-2)"/>
+      <text x="321" y="41" text-anchor="middle" font-size="12" font-weight="600" fill="var(--kop-ink)">OIDC issuers</text>
+      <text class="mono" x="321" y="57" text-anchor="middle" font-size="10" fill="var(--kop-muted)">google · github-actions · dex</text>
+      <path class="kop-jwks" d="M321 68v48" stroke="var(--kop-amber)" stroke-width="1.6" fill="none"/>
+      <text class="mono" x="332" y="98" font-size="9.5" fill="var(--kop-amber-ink)">JWKS (cached)</text>
+    </g>
+    <rect x="18" y="130" width="74" height="56" rx="10" fill="var(--kop-panel)" stroke="var(--kop-line-2)"/>
+    <text x="55" y="153" text-anchor="middle" font-size="12" font-weight="600" fill="var(--kop-ink)">kubectl</text>
+    <text class="mono" x="55" y="169" text-anchor="middle" font-size="9.5" fill="var(--kop-muted)">or CI job</text>
+    <rect x="236" y="116" width="182" height="84" rx="12" fill="var(--kop-blue-soft)" stroke="var(--kop-blue)" stroke-width="1.5"/>
+    <text class="display" x="327" y="143" text-anchor="middle" font-size="14" font-weight="700" fill="var(--kop-blue-ink)">kube-oidc-proxy</text>
+    <text class="mono" x="327" y="161" text-anchor="middle" font-size="9.5" fill="var(--kop-ink-2)">verify sig · iss · aud · exp</text>
+    <text class="mono" x="327" y="177" text-anchor="middle" font-size="9.5" fill="var(--kop-ink-2)">map claims → user, groups</text>
+    <text class="mono" x="327" y="192" text-anchor="middle" font-size="9" fill="var(--kop-muted)">own ServiceAccount + Impersonate-*</text>
+    <rect x="562" y="116" width="66" height="84" rx="12" fill="var(--kop-panel)" stroke="var(--kop-line-2)"/>
+    <text x="595" y="146" text-anchor="middle" font-size="11.5" font-weight="600" fill="var(--kop-ink)">kube-</text>
+    <text x="595" y="160" text-anchor="middle" font-size="11.5" font-weight="600" fill="var(--kop-ink)">apiserver</text>
+    <g class="allow">
+      <rect x="570" y="170" width="50" height="18" rx="6" fill="var(--kop-green-soft)" stroke="var(--kop-green)"/>
+      <text class="mono" x="595" y="183" text-anchor="middle" font-size="9.5" font-weight="500" fill="var(--kop-green-ink)">RBAC ✓</text>
+    </g>
+    <path d="M92 158H234" stroke="var(--kop-line-2)" stroke-width="1.6" marker-end="url(#kop-arr)"/>
+    <path d="M418 158H560" stroke="var(--kop-line-2)" stroke-width="1.6" marker-end="url(#kop-arr)"/>
+    <text class="mono" x="163" y="149" text-anchor="middle" font-size="9.5" fill="var(--kop-muted)">Bearer ID token</text>
+    <text class="mono" x="489" y="149" text-anchor="middle" font-size="9.5" fill="var(--kop-muted)">Impersonate-User</text>
+    <g class="kop-token"><circle r="7" fill="var(--kop-amber)" stroke="var(--kop-panel)" stroke-width="2"/><text class="mono" y="3.5" text-anchor="middle" font-size="8" font-weight="600" fill="#fff">jwt</text></g>
+    <text class="mono" x="20" y="218" font-size="9.5" fill="var(--kop-muted)">no --oidc-* flags on the API server · no credential sharing · impersonation is gated by SubjectAccessReview</text>
+  </svg>
+  <div class="kop-steps" aria-label="Steps">
+    <div><b>01 token</b>kubectl sends the request with an OIDC ID token.</div>
+    <div><b>02 verify</b>Proxy checks signature, issuer, audience, expiry.</div>
+    <div><b>03 impersonate</b>Claims become a username and groups.</div>
+    <div><b>04 authorize</b>API server evaluates RBAC for that user.</div>
+  </div>
+</div>

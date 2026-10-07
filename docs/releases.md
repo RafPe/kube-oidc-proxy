@@ -123,6 +123,38 @@ own `permissions:` block. The same flag also permits Actions to approve pull
 requests, so protecting `main` is what keeps a release PR from being approved
 by automation.
 
+## Website
+
+The site at <https://rafpe.github.io/kube-oidc-proxy/> is built by the
+**pages** workflow from `website/` (Astro Starlight) with the markdown under
+`docs/` staged in by `website/site.manifest.json`; the manifest is the only
+place a page is added to the navigation, and a doc that is not listed there
+fails the build. Pull requests build the site and upload it as a `site`
+workflow artifact; pushes to `main` deploy it.
+
+Two repository settings are not in this repository and must be in place
+before the first pull request that touches the site merges: without Pages
+enabled, `actions/configure-pages` fails the build job on every such PR.
+
+```sh
+# Publish from the workflow rather than from a branch.
+gh api --method POST "repos/${OWNER}/${REPO}/pages" -f build_type=workflow
+
+# Only main may deploy through the github-pages environment.
+gh api --method PUT "repos/${OWNER}/${REPO}/environments/github-pages" \
+  --input - <<'JSON'
+{ "deployment_branch_policy": { "protected_branches": false, "custom_branch_policies": true } }
+JSON
+gh api --method POST "repos/${OWNER}/${REPO}/environments/github-pages/deployment-branch-policies" \
+  -f name=main -f type=branch
+```
+
+A custom domain is configured in **Settings > Pages** only; the build takes
+its base path from `actions/configure-pages`, so no code changes when the
+domain changes. To preview locally, run `make site_dev`. Do not make
+**site:build** a required check: the workflow is path-filtered, so a PR that
+does not touch the site would wait on it forever.
+
 ## Maintainer checks
 
 Keep actions and Kind pinned, protect `main`, require **PR Release Metadata**,

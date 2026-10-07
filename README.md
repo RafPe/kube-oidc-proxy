@@ -14,6 +14,8 @@
 
 A reverse proxy that brings OIDC login to managed Kubernetes clusters, and accepts tokens from several issuers through one proxy.
 
+Documentation and guides: <https://rafpe.github.io/kube-oidc-proxy/>
+
 ## Why
 
 - **The problem:** managed clusters (EKS, GKE, AKS, …) don't let you set the API server's `--oidc-*` flags, so you can't wire in your own OIDC provider.

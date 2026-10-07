@@ -2,3 +2,12 @@
 /bin
 /demo/config.jsonnet
 /artifacts/
+/website/node_modules/
+/website/dist/
+/website/.astro/
+/website/.env
+/website/src/content/docs/
+/website/src/assets/img/
+/website/.site-root/
+/website/.lighthouseci/
+/.lighthouseci/

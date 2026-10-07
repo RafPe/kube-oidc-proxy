@@ -1,0 +1,11 @@
+---
+// A dark code panel with a label and an optional copy button. The code is
+// passed as pre-highlighted HTML through the default slot; `copy` copies the
+// slot's text content.
+interface Props { id: string; label: string; copy?: boolean; class?: string }
+const { id, label, copy = false, class: cls = '' } = Astro.props;
+---
+<div class:list={['kop-codebox', cls]}>
+  <div class="bar"><span>{label}</span>{copy && <button class="copy" type="button" data-copy={id} aria-label={`Copy ${label}`}>Copy</button>}</div>
+  <pre id={id}><code><slot /></code></pre>
+</div>

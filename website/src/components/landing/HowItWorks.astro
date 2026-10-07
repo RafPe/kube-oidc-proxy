@@ -1,0 +1,40 @@
+---
+import CodeBlock from './CodeBlock.astro';
+---
+<section class="kop-block" id="how">
+  <div class="kop-wrap">
+    <div class="kop-sechead">
+      <span class="kop-eyebrow">How it works</span>
+      <h2>Authentication moves to the proxy. Authorization never moves.</h2>
+    </div>
+    <div class="kop-how">
+      <div>
+        <ol class="kop-olist">
+          <li><div><b>Point kubectl at the proxy</b><span>Clients get a kubeconfig whose server is the proxy. The API server's own endpoint keeps working for everyone else.</span></div></li>
+          <li><div><b>The proxy validates the token</b><span>Signature, issuer, audience and expiry are checked against cached JWKS. Non-OIDC tokens can pass through via TokenReview.</span></div></li>
+          <li><div><b>Claims become a Kubernetes identity</b><span>Username, groups and extras are mapped by claim or by CEL expression, with a prefix per issuer.</span></div></li>
+          <li><div><b>The API server decides</b><span>The request is forwarded with the proxy's own ServiceAccount plus Impersonate headers. RBAC runs for the mapped user, and the audit log records them.</span></div></li>
+        </ol>
+        <div class="kop-callout"><b>What it changes:</b> the proxy's ServiceAccount may impersonate any user, so its Deployment and RBAC are privileged. Treat it like the API server itself.</div>
+      </div>
+      <CodeBlock id="kop-yaml" label="authentication-config.yaml" copy>
+<Fragment set:html={`<span class="k">apiVersion</span>: apiserver.config.k8s.io/v1
+<span class="k">kind</span>: AuthenticationConfiguration
+<span class="k">jwt</span>:
+  - <span class="k">issuer</span>:
+      <span class="k">url</span>: <span class="s">https://accounts.google.com</span>
+      <span class="k">audiences</span>: [my-google-client]
+    <span class="k">claimMappings</span>:
+      <span class="k">username</span>: { claim: email, prefix: <span class="s">"google:"</span> }
+  - <span class="k">issuer</span>:
+      <span class="k">url</span>: <span class="s">https://token.actions.githubusercontent.com</span>
+      <span class="k">audiences</span>: [kube-oidc-proxy.example.com]
+    <span class="k">claimMappings</span>:
+      <span class="k">username</span>:
+        <span class="k">expression</span>: <span class="s">'"gha:" + claims.repository + ":" + claims.ref'</span>
+      <span class="k">groups</span>:
+        <span class="k">expression</span>: <span class="s">'["gha:org:" + claims.repository_owner]'</span>`} />
+      </CodeBlock>
+    </div>
+  </div>
+</section>

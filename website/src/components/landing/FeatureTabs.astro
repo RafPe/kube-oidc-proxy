@@ -1,0 +1,219 @@
+---
+// "What you get": a vertical tab list with one real artifact per capability.
+// The dashboard screenshot is staged from docs/dashboards by scripts/stage.mjs.
+import { Image } from 'astro:assets';
+import CodeBlock from './CodeBlock.astro';
+import overview from '../../assets/img/docs/dashboards/overview.png';
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+// Chart versions carry no v prefix; fall back to the newest tag's number.
+const chartVersion = (import.meta.env.PUBLIC_DOCS_VERSION ?? 'v1.8.1').replace(/^v/, '');
+---
+<section class="kop-block" id="features">
+  <div class="kop-wrap">
+    <div class="kop-sechead">
+      <span class="kop-eyebrow">What you get</span>
+      <h2>More than a login. Identity, evidence and operations in one proxy.</h2>
+      <p>Each capability is documented, tested end to end and exposed through the chart.</p>
+    </div>
+    <div class="kop-feat">
+      <div class="kop-ftabs" role="tablist" aria-label="Features" aria-orientation="vertical">
+        <button class="kop-ftab" role="tab" id="ft-multi" aria-selected="true" aria-controls="fp-multi" data-ft="multi">
+          <span class="kop-ic amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="6" cy="12" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M8.5 10.5l7-3.5M8.5 13.5l7 3.5"/></svg></span>
+          <span><b>Multi-issuer OIDC</b><span>Several identity providers through one endpoint.</span></span>
+        </button>
+        <button class="kop-ftab" role="tab" id="ft-ci" aria-selected="false" aria-controls="fp-ci" data-ft="ci" tabindex="-1">
+          <span class="kop-ic green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="m9 12 2 2 4-4"/></svg></span>
+          <span><b>CI identity</b><span>GitHub Actions, GitLab CI and TeamCity tokens as users.</span></span>
+        </button>
+        <button class="kop-ftab" role="tab" id="ft-metrics" aria-selected="false" aria-controls="fp-metrics" data-ft="metrics" tabindex="-1">
+          <span class="kop-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 19h16M6 16V9M11 16V5M16 16v-6M21 16v-3"/></svg></span>
+          <span><b>Metrics and dashboards</b><span>Prometheus endpoint, three Grafana dashboards.</span></span>
+        </button>
+        <button class="kop-ftab" role="tab" id="ft-audit" aria-selected="false" aria-controls="fp-audit" data-ft="audit" tabindex="-1">
+          <span class="kop-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M8 3h8l4 4v14H4V3h4z"/><path d="M8 12h8M8 16h5"/></svg></span>
+          <span><b>Auditing and logging</b><span>Two audit trails joined by one request ID.</span></span>
+        </button>
+        <button class="kop-ftab" role="tab" id="ft-chart" aria-selected="false" aria-controls="fp-chart" data-ft="chart" tabindex="-1">
+          <span class="kop-ic green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 2 3 7v10l9 5 9-5V7z"/><path d="M3 7l9 5 9-5M12 12v10"/></svg></span>
+          <span><b>Hardened Helm chart</b><span>Signed OCI, locked-down defaults, one switch per feature.</span></span>
+        </button>
+      </div>
+
+      <div class="kop-fpanel" id="fp-multi" role="tabpanel" aria-labelledby="ft-multi">
+        <div class="txt">
+          <h3>One proxy, many issuers, distinct identities</h3>
+          <p>A Kubernetes <code>AuthenticationConfiguration</code> lists every issuer with its own audiences, CEL claim mappings and validation rules. The same proxy accepts tokens from all of them.</p>
+          <ul>
+            <li>Per-issuer username and group prefixes keep <code>alice</code> from Google and <code>alice</code> from Dex apart.</li>
+            <li>Several audiences per issuer with <code>audienceMatchPolicy: MatchAny</code>.</li>
+            <li>Readiness you choose: ready on the first issuer, or wait for all with <code>readinessRequireAllIssuers</code>.</li>
+            <li>Refuses to start when two issuers share a host, so every log line and metric names its issuer unambiguously.</li>
+          </ul>
+          <a href={`${base}/guides/multi-issuer/`}>Multi-issuer guide →</a>
+        </div>
+        <div class="art">
+          <div class="kop-whoami">
+            <pre class="kop-out"><b>token from Google</b>ATTRIBUTE  VALUE
+Username   <span class="hl">google:</span>alice@example.com
+Groups     [google:platform system:authenticated]</pre>
+            <pre class="kop-out"><b>token from GitHub Actions</b>ATTRIBUTE  VALUE
+Username   <span class="hl">gha:</span>rafpe/kube-oidc-proxy:refs/heads/main
+Groups     [gha:org:rafpe system:authenticated]</pre>
+          </div>
+          <CodeBlock id="kop-readiness" label="issuer readiness · log">
+<Fragment set:html={`<span class="c"># one record per change, not per scrape</span>
+{"event_type":"oidc.issuer.pending","issuer_name":"dex-b",
+ "issuer_state":"pending","pending_reason":"discovery",
+ "ready_issuers":2,"total_issuers":3}`} />
+          </CodeBlock>
+        </div>
+      </div>
+
+      <div class="kop-fpanel" id="fp-ci" role="tabpanel" aria-labelledby="ft-ci" hidden>
+        <div class="txt">
+          <h3>Short-lived CI tokens become Kubernetes users</h3>
+          <p>A workflow's OIDC token carries the repository, ref and environment. CEL expressions turn those claims into a username, groups and audit extras, so RBAC can be as narrow as one repo on one branch.</p>
+          <ul>
+            <li>No deploy keys or long-lived kubeconfigs in CI secrets.</li>
+            <li>Trust boundary by immutable owner ID, then tiers by claim: a protected branch gets more than a pull request.</li>
+            <li>Hard gates with validation rules, for example rejecting tokens from pull requests.</li>
+            <li>Recipes for GitHub Actions, GitLab CI, TeamCity, Google service accounts and private issuers.</li>
+          </ul>
+          <a href={`${base}/guides/integrations/`}>CI identity recipes →</a>
+        </div>
+        <div class="art">
+          <CodeBlock id="kop-cel" label="claim mapping · GitHub Actions">
+<Fragment set:html={`<span class="k">claimValidationRules</span>:
+  <span class="c"># Trust boundary first: only this owner's repositories, by immutable ID.</span>
+  - <span class="k">expression</span>: <span class="s">'claims.repository_owner_id == "1234567"'</span>
+    <span class="k">message</span>: <span class="s">token is not from a trusted organisation</span>
+<span class="k">claimMappings</span>:
+  <span class="k">username</span>:
+    <span class="k">expression</span>: <span class="s">'"gha:" + claims.repository + ":" + claims.ref'</span>
+  <span class="k">groups</span>:
+    <span class="c"># The release tier needs a protected main branch, not just a branch named main.</span>
+    <span class="k">expression</span>: <span class="s">>-
+      claims.ref == "refs/heads/main" &amp;&amp; claims.ref_protected == "true"
+        ? ["gha:org:" + claims.repository_owner, "gha:tier:release"]
+        : ["gha:org:" + claims.repository_owner]</span>
+  <span class="k">extra</span>:
+    - <span class="k">key</span>: <span class="s">gha.example.com/run_id</span>
+      <span class="k">valueExpression</span>: claims.run_id
+<span class="k">userValidationRules</span>:
+  - <span class="k">expression</span>: <span class="s">'!user.username.contains(":refs/pull/")'</span>
+    <span class="k">message</span>: <span class="s">pull request tokens are not allowed</span>`} />
+          </CodeBlock>
+        </div>
+      </div>
+
+      <div class="kop-fpanel" id="fp-metrics" role="tabpanel" aria-labelledby="ft-metrics" hidden>
+        <div class="txt">
+          <h3>Know what the proxy is doing before someone asks</h3>
+          <p>An opt-in Prometheus endpoint on its own listener. Every label value comes from a closed set, so no identity, path or client-chosen value ever becomes a series.</p>
+          <ul>
+            <li>Authentication attempts by method and outcome; access decisions by reason.</li>
+            <li>Request latency histogram, in-flight gauge and open long-running streams.</li>
+            <li>TokenReview and SubjectAccessReview calls, latency and cache hit ratio.</li>
+            <li>Three Grafana dashboards shipped by the chart: overview, security and identity, capacity.</li>
+          </ul>
+          <a href={`${base}/guides/metrics/`}>Metrics reference →</a>
+        </div>
+        <div class="art">
+          <figure class="kop-shot">
+            <Image src={overview} width={1400} alt="Grafana overview dashboard shipped by the chart: ready replicas, issuers initialized, requests per second by verb, in-flight and open streams, latency percentiles, denial ratio and responses by code class" loading="lazy" />
+            <figcaption>Overview dashboard, as shipped by the chart. Two more cover security and identity, and capacity.</figcaption>
+          </figure>
+          <CodeBlock id="kop-metrics" label="GET /metrics">
+<Fragment set:html={`kube_oidc_proxy_authentication_attempts_total{auth_method="oidc",outcome="accepted"} 1842
+kube_oidc_proxy_authentication_attempts_total{auth_method="oidc",outcome="rejected"} 7
+kube_oidc_proxy_access_decisions_total{auth_method="oidc",decision="deny",reason="impersonation_denied"} 2
+kube_oidc_proxy_request_duration_seconds_bucket{le="0.05"} 1799
+kube_oidc_proxy_cache_lookups_total{cache="tokenreview",result="hit"} 913
+kube_oidc_proxy_long_running_requests 4
+kube_oidc_proxy_oidc_issuer_initialized{issuer_name="dex-b"} 1
+kube_oidc_proxy_ready 1`} />
+          </CodeBlock>
+          <CodeBlock id="kop-metrics-values" label="values.yaml">
+<Fragment set:html={`<span class="k">metrics</span>:
+  <span class="k">enabled</span>: true
+  <span class="k">serviceMonitor</span>: { <span class="k">enabled</span>: true }
+  <span class="k">dashboards</span>: { <span class="k">enabled</span>: true }`} />
+          </CodeBlock>
+        </div>
+      </div>
+
+      <div class="kop-fpanel" id="fp-audit" role="tabpanel" aria-labelledby="ft-audit" hidden>
+        <div class="txt">
+          <h3>Who did what, before and after impersonation</h3>
+          <p>Every request can leave two audit events: the proxy's, with the identity your claim mappings produced, and the API server's, with the authorization decision. The same ID is on both, and on every log record in between.</p>
+          <ul>
+            <li>One structured JSON log stream with a frozen <code>event_type</code> contract for alerts and SIEM queries.</li>
+            <li>Security denials at default verbosity as <code>AuFail</code> records with a reason.</li>
+            <li>An optional Kubernetes audit log of the proxy's own, with your audit policy.</li>
+            <li>Worked example for shipping logs and audit events to Kinesis.</li>
+          </ul>
+          <a href={`${base}/guides/auditing/`}>Auditing guide →</a>
+        </div>
+        <div class="art">
+          <CodeBlock id="kop-access" label="request.access.decided">
+<Fragment set:html={`{"time":"2026-09-04T10:53:24.615Z","level":"INFO","msg":"access decision",
+ "component":"request","event_type":"request.access.decided",
+ "request_id":"<span class="hl">7f1a9c1e-6a2b-4a1f-9f0e-3d9d1c2b5a04</span>","event":"AuSuccess",
+ "auth_method":"oidc","issuer_name":"corp",
+ "k8s_verb":"list","k8s_resource":"pods","k8s_namespace":"default",
+ "decision":"allow","inbound_user":"alice@example.com",
+ "inbound_groups":["platform-admins","system:authenticated"]}`} />
+          </CodeBlock>
+          <CodeBlock id="kop-audit" label="kube-apiserver audit event">
+<Fragment set:html={`{"auditID":"<span class="hl">7f1a9c1e-6a2b-4a1f-9f0e-3d9d1c2b5a04</span>",
+ "user":{"username":"system:serviceaccount:kube-oidc-proxy:kube-oidc-proxy"},
+ "impersonatedUser":{"username":"alice@example.com","groups":["platform-admins"]},
+ "verb":"list","objectRef":{"resource":"pods","namespace":"default"},
+ "responseStatus":{"code":200}}`} />
+          </CodeBlock>
+        </div>
+      </div>
+
+      <div class="kop-fpanel" id="fp-chart" role="tabpanel" aria-labelledby="ft-chart" hidden>
+        <div class="txt">
+          <h3>Production defaults, not a starting point</h3>
+          <p>The chart is published as a signed OCI artifact to ghcr.io and listed on Artifact Hub. Each feature is one value away.</p>
+          <ul>
+            <li>Locked-down SecurityContext, distroless image, PodDisruptionBudget for multiple replicas.</li>
+            <li>Issuer configuration from an existing Secret, for single and multi-issuer setups.</li>
+            <li>Flexible TLS: cert-manager, your own Secret, or terminate at the ingress.</li>
+            <li>Metrics Service, ServiceMonitor, dashboards and a NetworkPolicy for the metrics port.</li>
+            <li>RBAC rendered from your claim mappings, including <code>userextras</code> for every extra key.</li>
+          </ul>
+          <a href={`${base}/reference/chart-values/`}>Chart values reference →</a>
+        </div>
+        <div class="art">
+          <CodeBlock id="kop-values" label="values.yaml">
+<Fragment set:html={`<span class="k">replicaCount</span>: 2
+<span class="k">podDisruptionBudget</span>: { <span class="k">enabled</span>: true, <span class="k">minAvailable</span>: 1 }
+<span class="k">authenticationConfig</span>:
+  <span class="k">existingSecret</span>: kube-oidc-proxy-issuers   <span class="c"># managed outside Helm</span>
+<span class="k">tls</span>:
+  <span class="k">certManager</span>: true
+  <span class="k">selfSigned</span>: false
+  <span class="k">issuerName</span>: internal-ca
+<span class="k">metrics</span>:
+  <span class="k">enabled</span>: true
+<span class="k">networkPolicy</span>:
+  <span class="k">enabled</span>: true
+  <span class="k">metrics</span>:
+    <span class="k">from</span>: [{ <span class="k">namespaceSelector</span>: { <span class="k">matchLabels</span>: { <span class="k">kubernetes.io/metadata.name</span>: monitoring } } }]
+<span class="k">rbac</span>:
+  <span class="k">userExtras</span>: [gha.example.com/run_id]`} />
+          </CodeBlock>
+          <CodeBlock id="kop-cosign" label="verify the signature">
+<Fragment set:html={`<span class="cmd">cosign verify</span> ghcr.io/rafpe/charts/kube-oidc-proxy:${chartVersion} \\
+  --certificate-identity-regexp <span class="s">'^https://github.com/RafPe/kube-oidc-proxy/'</span> \\
+  --certificate-oidc-issuer <span class="s">https://token.actions.githubusercontent.com</span>`} />
+          </CodeBlock>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
