@@ -16,6 +16,10 @@
   --kop-amber-soft: #FBEBD0;
   --kop-green: #2F9E62;
   --kop-green-soft: #DDF3E6;
+  --kop-cta: #2E63F0;
+  --kop-cta-ink: #FFFFFF;
+  --kop-amber-ink: #8F5A0C;
+  --kop-green-ink: #1F7347;
   --kop-code-bg: #1B2A4A;
   --kop-code-fg: #E8E1CE;
   --kop-grid: rgba(27, 42, 74, .09);
@@ -40,6 +44,10 @@
   --kop-amber-soft: #3A2C14;
   --kop-green: #5CC48C;
   --kop-green-soft: #153324;
+  --kop-cta: #2F5FD6;
+  --kop-cta-ink: #FFFFFF;
+  --kop-amber-ink: #E7A64A;
+  --kop-green-ink: #5CC48C;
   --kop-code-bg: #0B1020;
   --kop-code-fg: #E8E1CE;
   --kop-grid: rgba(236, 229, 210, .07);

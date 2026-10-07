@@ -131,7 +131,8 @@ fails the build. Pull requests build the site and upload it as a `site`
 workflow artifact; pushes to `main` deploy it.
 
 Two repository settings are not in this repository and must be in place
-before the first deploy:
+before the first pull request that touches the site merges: without Pages
+enabled, `actions/configure-pages` fails the build job on every such PR.
 
 ```sh
 # Publish from the workflow rather than from a branch.
@@ -148,7 +149,9 @@ gh api --method POST "repos/${OWNER}/${REPO}/environments/github-pages/deploymen
 
 A custom domain is configured in **Settings > Pages** only; the build takes
 its base path from `actions/configure-pages`, so no code changes when the
-domain changes. To preview locally, run `make site_dev`.
+domain changes. To preview locally, run `make site_dev`. Do not make
+**site:build** a required check: the workflow is path-filtered, so a PR that
+does not touch the site would wait on it forever.
 
 ## Maintainer checks
 

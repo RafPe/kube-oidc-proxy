@@ -32,6 +32,10 @@ on:
       - 'CONTRIBUTING.md'
       - 'test/e2e/versions/kubernetes-versions.json'
       - '.github/workflows/pages.yaml'
+  # Rebuild after a release so the version banner picks up the new tag.
+  workflow_run:
+    workflows: ['Release']
+    types: [completed]
   workflow_dispatch:
 
 permissions: {}
@@ -44,6 +48,7 @@ concurrency:
 jobs:
   build:
     name: "site:build"
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -71,7 +76,10 @@ jobs:
         run: npm ci --no-audit --no-fund
         working-directory: website
 
-      - name: Unit tests (staging, sidebar, version)
+      # helm renders the landing page's values example in the snippet test.
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+
+      - name: Unit tests (staging, sidebar, version, landing snippets)
         run: npm test
         working-directory: website
 
@@ -130,7 +138,9 @@ jobs:
 
   deploy:
     name: "site:deploy"
-    if: github.event_name != 'pull_request'
+    # Only main deploys; the github-pages environment rule enforces the same
+    # outside the repository.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10

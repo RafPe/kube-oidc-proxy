@@ -6,6 +6,8 @@ import CodeBlock from './CodeBlock.astro';
 import overview from '../../assets/img/docs/dashboards/overview.png';
 
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+// Chart versions carry no v prefix; fall back to the newest tag's number.
+const chartVersion = (import.meta.env.PUBLIC_DOCS_VERSION ?? 'v1.8.1').replace(/^v/, '');
 ---
 <section class="kop-block" id="features">
   <div class="kop-wrap">
@@ -105,7 +107,7 @@ Groups     [gha:org:rafpe system:authenticated]</pre>
           <h3>Know what the proxy is doing before someone asks</h3>
           <p>An opt-in Prometheus endpoint on its own listener. Every label value comes from a closed set, so no identity, path or client-chosen value ever becomes a series.</p>
           <ul>
-            <li>Authentication attempts and access decisions by reason, per issuer.</li>
+            <li>Authentication attempts by method and outcome; access decisions by reason.</li>
             <li>Request latency histogram, in-flight gauge and open long-running streams.</li>
             <li>TokenReview and SubjectAccessReview calls, latency and cache hit ratio.</li>
             <li>Three Grafana dashboards shipped by the chart: overview, security and identity, capacity.</li>
@@ -118,13 +120,13 @@ Groups     [gha:org:rafpe system:authenticated]</pre>
             <figcaption>Overview dashboard, as shipped by the chart. Two more cover security and identity, and capacity.</figcaption>
           </figure>
           <CodeBlock id="kop-metrics" label="GET /metrics">
-<Fragment set:html={`kube_oidc_proxy_authentication_attempts_total{issuer="google",result="success"} 1842
-kube_oidc_proxy_authentication_attempts_total{issuer="gha",result="failure",reason="audience"} 7
-kube_oidc_proxy_access_decisions_total{decision="deny",reason="impersonation_forbidden"} 2
+<Fragment set:html={`kube_oidc_proxy_authentication_attempts_total{auth_method="oidc",outcome="accepted"} 1842
+kube_oidc_proxy_authentication_attempts_total{auth_method="oidc",outcome="rejected"} 7
+kube_oidc_proxy_access_decisions_total{auth_method="oidc",decision="deny",reason="impersonation_denied"} 2
 kube_oidc_proxy_request_duration_seconds_bucket{le="0.05"} 1799
 kube_oidc_proxy_cache_lookups_total{cache="tokenreview",result="hit"} 913
 kube_oidc_proxy_long_running_requests 4
-kube_oidc_proxy_oidc_issuer_initialized{issuer="dex-b"} 1
+kube_oidc_proxy_oidc_issuer_initialized{issuer_name="dex-b"} 1
 kube_oidc_proxy_ready 1`} />
           </CodeBlock>
           <CodeBlock id="kop-metrics-values" label="values.yaml">
@@ -188,16 +190,21 @@ kube_oidc_proxy_ready 1`} />
 <span class="k">authenticationConfig</span>:
   <span class="k">existingSecret</span>: kube-oidc-proxy-issuers   <span class="c"># managed outside Helm</span>
 <span class="k">tls</span>:
-  <span class="k">certManager</span>: { <span class="k">enabled</span>: true, <span class="k">issuerRef</span>: { <span class="k">name</span>: internal-ca } }
+  <span class="k">certManager</span>: true
+  <span class="k">selfSigned</span>: false
+  <span class="k">issuerName</span>: internal-ca
 <span class="k">metrics</span>:
   <span class="k">enabled</span>: true
-  <span class="k">networkPolicy</span>: { <span class="k">enabled</span>: true, <span class="k">from</span>: [{ <span class="k">namespaceSelector</span>: { <span class="k">matchLabels</span>: { <span class="k">name</span>: monitoring } } }] }
+<span class="k">networkPolicy</span>:
+  <span class="k">enabled</span>: true
+  <span class="k">metrics</span>:
+    <span class="k">from</span>: [{ <span class="k">namespaceSelector</span>: { <span class="k">matchLabels</span>: { <span class="k">kubernetes.io/metadata.name</span>: monitoring } } }]
 <span class="k">rbac</span>:
   <span class="k">userExtras</span>: [gha.example.com/run_id]`} />
           </CodeBlock>
           <CodeBlock id="kop-cosign" label="verify the signature">
-<Fragment set:html={`<span class="cmd">cosign verify</span> ghcr.io/rafpe/charts/kube-oidc-proxy:1.8.1 \\
-  --certificate-identity-regexp <span class="s">'github.com/RafPe/kube-oidc-proxy'</span> \\
+<Fragment set:html={`<span class="cmd">cosign verify</span> ghcr.io/rafpe/charts/kube-oidc-proxy:${chartVersion} \\
+  --certificate-identity-regexp <span class="s">'^https://github.com/RafPe/kube-oidc-proxy/'</span> \\
   --certificate-oidc-issuer <span class="s">https://token.actions.githubusercontent.com</span>`} />
           </CodeBlock>
         </div>

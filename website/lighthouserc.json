@@ -1,7 +1,8 @@
 {
   "ci": {
     "collect": {
-      "staticDistDir": "./.site-root",
+      "staticDistDir": "./website/.site-root",
+      "staticDirFileDiscoveryDepth": 4,
       "maxAutodiscoverUrls": 4,
       "numberOfRuns": 1,
       "settings": { "onlyCategories": ["accessibility", "best-practices", "seo"] }

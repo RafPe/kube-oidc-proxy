@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { stage } from './stage.mjs';
+import { execFileSync as _execFileSync } from 'node:child_process';
 
 let root, manifestPath, outDir, imgDir;
 
@@ -125,3 +126,28 @@ test('a first paragraph that starts with inline code is still the description', 
   run();
   assert.match(staged('guides/operations'), /^description: "kube-oidc-proxy is a reverse proxy\."$/m);
 });
+
+test('a manifest title overrides the H1, which then stays in the body as a heading', () => {
+  write('CHANGELOG.md', '# Unreleased\n\n- pending\n\n## [1.8.1] - 2026-09-13\n\n- fixed\n');
+  manifest([...basePages, { source: 'CHANGELOG.md', route: 'project/changelog', group: 'Guides', label: 'Changelog', order: 9, title: 'Changelog' }]);
+  run();
+  const out = staged('project/changelog');
+  assert.match(out, /^title: "Changelog"$/m);
+  assert.match(out, /^## Unreleased$/m);
+  assert.match(out, /^## \[1\.8\.1\]/m);
+});
+
+test('lastUpdated comes from the git commit date of the source when the repo has history', () => {
+  const { execFileSync } = require_child();
+  const git = (...a) => execFileSync('git', ['-C', root, ...a], { stdio: 'pipe', env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t', GIT_AUTHOR_DATE: '2026-09-13T10:00:00Z', GIT_COMMITTER_DATE: '2026-09-13T10:00:00Z' } });
+  git('init', '-q'); git('add', '.'); git('commit', '-q', '-m', 'docs');
+  run();
+  assert.match(staged('start/getting-started'), /^lastUpdated: 2026-09-13$/m);
+});
+
+test('without git history lastUpdated is omitted rather than invented', () => {
+  run();
+  assert.doesNotMatch(staged('start/getting-started'), /^lastUpdated:/m);
+});
+
+function require_child() { return { execFileSync: _execFileSync }; }

@@ -9,3 +9,5 @@
 /website/src/content/docs/
 /website/src/assets/img/
 /website/.site-root/
+/website/.lighthouseci/
+/.lighthouseci/

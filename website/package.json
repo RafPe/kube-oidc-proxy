@@ -12,7 +12,8 @@
     "dev": "node scripts/version.mjs && node scripts/stage.mjs && astro dev",
     "preview": "astro preview",
     "test": "node --test scripts/*.test.mjs",
-    "check": "node scripts/check-dist.mjs"
+    "check": "node scripts/check-dist.mjs",
+    "lighthouse": "node scripts/lighthouse.mjs"
   },
   "dependencies": {
     "@astrojs/markdown-remark": "7.3.2",
@@ -26,5 +27,8 @@
     "mermaid": "11.12.2",
     "sharp": "0.35.5",
     "starlight-github-alerts": "0.5.0"
+  },
+  "devDependencies": {
+    "@lhci/cli": "0.15.1"
   }
 }

@@ -29,8 +29,8 @@ main:has(.kop-landing) .sl-markdown-content > * + * { margin-top: 0; }
 .kop-cta { display: flex; gap: 12px; flex-wrap: wrap; }
 .kop-btn { display: inline-flex; align-items: center; gap: 8px; border-radius: 10px; padding: 12px 18px; font-weight: 600; font-size: .95rem; border: 1px solid transparent; cursor: pointer; transition: transform .15s, box-shadow .15s; }
 .kop-btn:hover { text-decoration: none; transform: translateY(-1px); }
-.kop-btn.primary { background: var(--kop-blue); color: #fff; box-shadow: 0 6px 18px rgba(46, 99, 240, .3); }
-.kop-btn.primary:hover { color: #fff; }
+.kop-btn.primary { background: var(--kop-cta); color: var(--kop-cta-ink); box-shadow: 0 6px 18px rgba(46, 99, 240, .3); }
+.kop-btn.primary:hover { color: var(--kop-cta-ink); }
 .kop-btn.ghost { background: var(--kop-panel); color: var(--kop-ink); border-color: var(--kop-line-2); }
 .kop-btn svg { width: 16px; height: 16px; }
 .kop-badges { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -84,7 +84,7 @@ main:has(.kop-landing) .sl-markdown-content > * + * { margin-top: 0; }
 .kop-olist b { display: block; font-weight: 600; }
 .kop-olist span { color: var(--kop-ink-2); font-size: .95rem; }
 .kop-callout { margin-top: 18px; border-left: 3px solid var(--kop-green); background: var(--kop-green-soft); padding: 12px 14px; border-radius: 0 10px 10px 0; font-size: .92rem; color: var(--kop-ink); }
-.kop-callout b { color: var(--kop-green); }
+.kop-callout b { color: var(--kop-green-ink); }
 
 /* code boxes */
 .kop-codebox { background: var(--kop-code-bg); color: var(--kop-code-fg); border-radius: 14px; overflow: hidden; box-shadow: var(--kop-shadow); border: 1px solid var(--kop-line); }
@@ -121,7 +121,7 @@ main:has(.kop-landing) .sl-markdown-content > * + * { margin-top: 0; }
 .kop-out { margin: 0; background: var(--kop-bg-2); border: 1px dashed var(--kop-line-2); border-radius: 10px; padding: 12px 14px; font: .8rem/1.5 var(--kop-font-mono); color: var(--kop-ink-2); overflow-x: auto; white-space: pre; }
 .kop-whoami .kop-out { font-size: .74rem; }
 .kop-whoami .kop-out b { display: block; color: var(--kop-ink); font-weight: 500; margin-bottom: 4px; }
-.kop-out .hl { color: var(--kop-amber); }
+.kop-out .hl { color: var(--kop-amber-ink); }
 .kop-shot { margin: 0; display: grid; gap: 8px; }
 .kop-shot img { width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--kop-line); display: block; }
 .kop-shot figcaption { font-size: .8rem; color: var(--kop-muted); }

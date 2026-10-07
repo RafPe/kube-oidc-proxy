@@ -6,6 +6,7 @@
 // URLs, and copies referenced images into imgDir. Fails loudly on anything it
 // cannot resolve so a broken link never reaches the published site.
 import { readFileSync, writeFileSync, mkdirSync, existsSync, copyFileSync, statSync, readdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -22,10 +23,12 @@ export function stage({ repoRoot, manifestPath, outDir, imgDir }) {
     const abs = path.join(repoRoot, page.source);
     if (!existsSync(abs)) throw new Error(`stage: source ${page.source} does not exist`);
     const raw = readFileSync(abs, 'utf8');
-    const { title, body } = splitTitle(raw, page.source);
+    // A manifest `title` wins over the H1; the H1 then stays in the body as a
+    // section heading (CHANGELOG.md starts with "# Unreleased").
+    const { title, body } = page.title ? { title: page.title, body: demoteH1(raw) } : splitTitle(raw, page.source);
     const outFile = path.join(outDir, `${page.route}.md`);
     const rewritten = rewrite(body, { page, abs, repoRoot, bySource, outFile, imgDir });
-    const fm = frontmatter({ title, description: describe(rewritten), editUrl: `${GITHUB}/edit/main/${page.source}`, order: page.order });
+    const fm = frontmatter({ title, description: describe(rewritten), editUrl: `${GITHUB}/edit/main/${page.source}`, order: page.order, lastUpdated: lastUpdated(repoRoot, page.source) });
     mkdirSync(path.dirname(outFile), { recursive: true });
     writeFileSync(outFile, `${fm}\n${rewritten}`);
     return { route: page.route, title, group: page.group, label: page.label, order: page.order, source: page.source };
@@ -60,6 +63,22 @@ function splitTitle(raw, source) {
   return { title: m[1].trim(), body };
 }
 
+function demoteH1(raw) {
+  return raw.replace(/^# /gm, '## ');
+}
+
+// The source's last commit date, so Starlight can show "Last updated" for
+// staged files, which are not themselves tracked by git. Undefined when the
+// repository has no history for the file.
+function lastUpdated(repoRoot, source) {
+  try {
+    const iso = execFileSync('git', ['-C', repoRoot, 'log', '-1', '--format=%cI', '--', source], { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+    return iso ? iso.slice(0, 10) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function describe(body) {
   const lines = body.split('\n');
   let para = [];
@@ -79,11 +98,13 @@ function describe(body) {
   return text;
 }
 
-function frontmatter({ title, description, editUrl, order }) {
+function frontmatter({ title, description, editUrl, order, lastUpdated }) {
   const q = (s) => JSON.stringify(s);
   const lines = ['---', `title: ${q(title)}`];
   if (description) lines.push(`description: ${q(description)}`);
-  lines.push(`editUrl: ${q(editUrl)}`, 'sidebar:', `  order: ${order}`, '---');
+  lines.push(`editUrl: ${q(editUrl)}`);
+  if (lastUpdated) lines.push(`lastUpdated: ${lastUpdated}`);
+  lines.push('sidebar:', `  order: ${order}`, '---');
   return lines.join('\n');
 }
 

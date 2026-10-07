@@ -1,29 +1,150 @@
 {
-  "exclude": ["docs/testing/", "docs/superpowers/", "docs/artifact-hub.md"],
-  "groups": ["Start", "Guides", "Concepts", "Reference", "Project"],
+  "exclude": [
+    "docs/testing/",
+    "docs/superpowers/",
+    "docs/artifact-hub.md"
+  ],
+  "groups": [
+    "Start",
+    "Guides",
+    "Concepts",
+    "Reference",
+    "Project"
+  ],
   "pages": [
-    { "source": "docs/getting-started.md", "route": "start/getting-started", "group": "Start", "label": "Getting started", "order": 1 },
-    { "source": "demo/README.md", "route": "start/multi-issuer-demo", "group": "Start", "label": "Multi-issuer demo on kind", "order": 2 },
-
-    { "source": "docs/authentication.md", "route": "guides/authentication", "group": "Guides", "label": "Authentication modes", "order": 1 },
-    { "source": "docs/multi-issuer.md", "route": "guides/multi-issuer", "group": "Guides", "label": "Multi-issuer authentication", "order": 2 },
-    { "source": "docs/integrations.md", "route": "guides/integrations", "group": "Guides", "label": "Connect an identity provider", "order": 3 },
-    { "source": "docs/operations.md", "route": "guides/operations", "group": "Guides", "label": "Operations", "order": 4 },
-    { "source": "docs/metrics.md", "route": "guides/metrics", "group": "Guides", "label": "Metrics and dashboards", "order": 5 },
-    { "source": "docs/auditing.md", "route": "guides/auditing", "group": "Guides", "label": "Auditing", "order": 6 },
-    { "source": "docs/log-shipping.md", "route": "guides/log-shipping", "group": "Guides", "label": "Shipping logs and audit events", "order": 7 },
-
-    { "source": "docs/architecture.md", "route": "concepts/architecture", "group": "Concepts", "label": "Architecture and request flow", "order": 1 },
-    { "source": "docs/caching.md", "route": "concepts/caching", "group": "Concepts", "label": "Caching and API-server protection", "order": 2 },
-
-    { "source": "docs/configuration.md", "route": "reference/configuration", "group": "Reference", "label": "Configuration flags", "order": 1 },
-    { "source": "chart/kube-oidc-proxy/README.md", "route": "reference/chart-values", "group": "Reference", "label": "Chart values", "order": 2 },
-    { "source": "docs/logging.md", "route": "reference/logging", "group": "Reference", "label": "Logging reference", "order": 3 },
-
-    { "source": "docs/development.md", "route": "project/development", "group": "Project", "label": "Development", "order": 1 },
-    { "source": "docs/releases.md", "route": "project/maintainer-runbook", "group": "Project", "label": "Maintainer runbook", "order": 2 },
-    { "source": "CHANGELOG.md", "route": "project/changelog", "group": "Project", "label": "Changelog", "order": 3 },
-    { "source": "SECURITY.md", "route": "project/security", "group": "Project", "label": "Security policy", "order": 4 },
-    { "source": "CONTRIBUTING.md", "route": "project/contributing", "group": "Project", "label": "Contributing", "order": 5 }
+    {
+      "source": "docs/getting-started.md",
+      "route": "start/getting-started",
+      "group": "Start",
+      "label": "Getting started",
+      "order": 1
+    },
+    {
+      "source": "demo/README.md",
+      "route": "start/multi-issuer-demo",
+      "group": "Start",
+      "label": "Multi-issuer demo on kind",
+      "order": 2
+    },
+    {
+      "source": "docs/authentication.md",
+      "route": "guides/authentication",
+      "group": "Guides",
+      "label": "Authentication modes",
+      "order": 1
+    },
+    {
+      "source": "docs/multi-issuer.md",
+      "route": "guides/multi-issuer",
+      "group": "Guides",
+      "label": "Multi-issuer authentication",
+      "order": 2
+    },
+    {
+      "source": "docs/integrations.md",
+      "route": "guides/integrations",
+      "group": "Guides",
+      "label": "Connect an identity provider",
+      "order": 3
+    },
+    {
+      "source": "docs/operations.md",
+      "route": "guides/operations",
+      "group": "Guides",
+      "label": "Operations",
+      "order": 4
+    },
+    {
+      "source": "docs/metrics.md",
+      "route": "guides/metrics",
+      "group": "Guides",
+      "label": "Metrics and dashboards",
+      "order": 5
+    },
+    {
+      "source": "docs/auditing.md",
+      "route": "guides/auditing",
+      "group": "Guides",
+      "label": "Auditing",
+      "order": 6
+    },
+    {
+      "source": "docs/log-shipping.md",
+      "route": "guides/log-shipping",
+      "group": "Guides",
+      "label": "Shipping logs and audit events",
+      "order": 7
+    },
+    {
+      "source": "docs/architecture.md",
+      "route": "concepts/architecture",
+      "group": "Concepts",
+      "label": "Architecture and request flow",
+      "order": 1
+    },
+    {
+      "source": "docs/caching.md",
+      "route": "concepts/caching",
+      "group": "Concepts",
+      "label": "Caching and API-server protection",
+      "order": 2
+    },
+    {
+      "source": "docs/configuration.md",
+      "route": "reference/configuration",
+      "group": "Reference",
+      "label": "Configuration flags",
+      "order": 1
+    },
+    {
+      "source": "chart/kube-oidc-proxy/README.md",
+      "route": "reference/chart-values",
+      "group": "Reference",
+      "label": "Chart values",
+      "order": 2
+    },
+    {
+      "source": "docs/logging.md",
+      "route": "reference/logging",
+      "group": "Reference",
+      "label": "Logging reference",
+      "order": 3
+    },
+    {
+      "source": "docs/development.md",
+      "route": "project/development",
+      "group": "Project",
+      "label": "Development",
+      "order": 1
+    },
+    {
+      "source": "docs/releases.md",
+      "route": "project/maintainer-runbook",
+      "group": "Project",
+      "label": "Maintainer runbook",
+      "order": 2
+    },
+    {
+      "source": "CHANGELOG.md",
+      "route": "project/changelog",
+      "group": "Project",
+      "label": "Changelog",
+      "order": 3,
+      "title": "Changelog"
+    },
+    {
+      "source": "SECURITY.md",
+      "route": "project/security",
+      "group": "Project",
+      "label": "Security policy",
+      "order": 4
+    },
+    {
+      "source": "CONTRIBUTING.md",
+      "route": "project/contributing",
+      "group": "Project",
+      "label": "Contributing",
+      "order": 5
+    }
   ]
 }
