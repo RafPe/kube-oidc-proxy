@@ -166,3 +166,12 @@ test('staging twice after a page is removed or renamed leaves no stale output or
   assert.ok(existsSync(path.join(outDir, 'guides/ops.md')));
   assert.ok(!existsSync(path.join(imgDir, 'docs/c4/diagrams/ctx.png')), 'unreferenced image must not linger');
 });
+
+test('a link to the same source file stays on the page, with or without a fragment', () => {
+  write('docs/operations.md', '# Operations\n\n## First checks\n\nSee [checks](./operations.md#first-checks) and [this page](./operations.md).\n');
+  run();
+  const out = staged('guides/operations');
+  assert.match(out, /\[checks\]\(#first-checks\)/);
+  assert.match(out, /\[this page\]\(\.\/\)/);
+  assert.doesNotMatch(out, /\]\(\/#/);
+});

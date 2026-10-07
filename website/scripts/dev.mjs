@@ -55,7 +55,10 @@ function snapshot() {
 restage('start');
 let last = snapshot();
 setInterval(() => {
-  const now = snapshot();
+  // A half-saved manifest must not kill the watcher: keep the last snapshot
+  // and try again on the next tick.
+  let now;
+  try { now = snapshot(); } catch (err) { console.error(`[stage] ${err.message}`); return; }
   let changed;
   for (const [p, m] of now) if (last.get(p) !== m) { changed = p; break; }
   if (!changed) for (const p of last.keys()) if (!now.has(p)) { changed = p; break; }

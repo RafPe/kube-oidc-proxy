@@ -137,6 +137,9 @@ function rewrite(body, ctx) {
       const from = `/${ctx.page.route}`;
       const to = `/${page.route}`;
       const relRoute = path.posix.relative(from, to);
+      // A link to its own file: stay on the page (an empty relative route
+      // would become "/", the host root, and lose the base path).
+      if (relRoute === '') return `[${text}](${frag || './'}${titlePart})`;
       return `[${text}](${relRoute}/${frag}${titlePart})`;
     }
     const kind = statSync(resolvedAbs).isDirectory() ? 'tree' : 'blob';
