@@ -1,0 +1,10 @@
+{
+  "name": "kube-oidc-proxy-website",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "stage": "node scripts/stage.mjs",
+    "test": "node --test scripts/*.test.mjs"
+  }
+}
