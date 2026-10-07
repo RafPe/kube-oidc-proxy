@@ -38,7 +38,14 @@ export default defineConfig({
         '@fontsource/ibm-plex-mono/500.css',
         './src/styles/tokens.css',
         './src/styles/starlight.css',
+        './src/styles/landing.css',
       ],
+      components: {
+        // Rendered only on pages that declare a hero, i.e. the landing page.
+        Hero: './src/components/landing/Hero.astro',
+        // Version line on every docs page.
+        Banner: './src/components/overrides/Banner.astro',
+      },
       // The docs use promql and logql fences, which Shiki does not ship; render
       // them as plain text instead of warning on every build.
       expressiveCode: { shiki: { langAlias: { promql: 'text', logql: 'text' } } },

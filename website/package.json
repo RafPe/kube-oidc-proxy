@@ -7,11 +7,12 @@
   },
   "scripts": {
     "stage": "node scripts/stage.mjs",
-    "prebuild": "node scripts/stage.mjs",
+    "prebuild": "node scripts/version.mjs && node scripts/stage.mjs",
     "build": "astro build",
-    "dev": "npm run stage && astro dev",
+    "dev": "node scripts/version.mjs && node scripts/stage.mjs && astro dev",
     "preview": "astro preview",
-    "test": "node --test scripts/*.test.mjs"
+    "test": "node --test scripts/*.test.mjs",
+    "check": "node scripts/check-dist.mjs"
   },
   "dependencies": {
     "@astrojs/markdown-remark": "7.3.2",
