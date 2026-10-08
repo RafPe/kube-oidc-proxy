@@ -1,0 +1,220 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Multi-issuer demo on kind",
+    "output": "multi-issuer-demo.html",
+    "quality_profile": "showcase"
+  },
+  "components": [
+    {
+      "id": "alice",
+      "type": "external",
+      "label": "alice@example.com",
+      "sublabel": "password grant",
+      "icon": "person",
+      "pos": [
+        40,
+        170
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "dex-a",
+      "type": "security",
+      "label": "dex-a (issuer A)",
+      "sublabel": "https://dex-a.dex.svc\u2026:5556",
+      "pos": [
+        300,
+        170
+      ],
+      "size": [
+        210,
+        64
+      ]
+    },
+    {
+      "id": "kubectl-a",
+      "type": "frontend",
+      "label": "kubectl",
+      "sublabel": "--token=<id_token A>",
+      "pos": [
+        300,
+        40
+      ],
+      "size": [
+        210,
+        64
+      ]
+    },
+    {
+      "id": "proxy",
+      "type": "backend",
+      "label": "kube-oidc-proxy",
+      "sublabel": "--authentication-config: issuer A + issuer B",
+      "tag": "multi-issuer",
+      "pos": [
+        640,
+        300
+      ],
+      "size": [
+        270,
+        90
+      ]
+    },
+    {
+      "id": "apiserver",
+      "type": "backend",
+      "label": "kube-apiserver",
+      "sublabel": "RBAC for the mapped user",
+      "pos": [
+        1380,
+        300
+      ],
+      "size": [
+        190,
+        90
+      ]
+    },
+    {
+      "id": "kubectl-b",
+      "type": "frontend",
+      "label": "kubectl",
+      "sublabel": "--token=<id_token B>",
+      "pos": [
+        300,
+        560
+      ],
+      "size": [
+        210,
+        64
+      ]
+    },
+    {
+      "id": "bob",
+      "type": "external",
+      "label": "bob@example.com",
+      "sublabel": "password grant",
+      "icon": "person",
+      "pos": [
+        40,
+        430
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "dex-b",
+      "type": "security",
+      "label": "dex-b (issuer B)",
+      "sublabel": "https://dex-b.dex.svc\u2026:5556",
+      "pos": [
+        300,
+        430
+      ],
+      "size": [
+        210,
+        64
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "kind cluster (local, no cloud accounts)",
+      "wraps": [
+        "dex-a",
+        "dex-b",
+        "proxy",
+        "apiserver"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "alice-login",
+      "from": "alice",
+      "to": "dex-a",
+      "label": "login"
+    },
+    {
+      "id": "token-a",
+      "from": "dex-a",
+      "to": "kubectl-a",
+      "label": "id_token A",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "request-a",
+      "from": "kubectl-a",
+      "to": "proxy",
+      "label": "Bearer id_token A",
+      "variant": "emphasis"
+    },
+    {
+      "id": "bob-login",
+      "from": "bob",
+      "to": "dex-b",
+      "label": "login"
+    },
+    {
+      "id": "token-b",
+      "from": "dex-b",
+      "to": "kubectl-b",
+      "label": "id_token B",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "request-b",
+      "from": "kubectl-b",
+      "to": "proxy",
+      "label": "Bearer id_token B",
+      "variant": "emphasis"
+    },
+    {
+      "id": "impersonate",
+      "from": "proxy",
+      "to": "apiserver",
+      "label": "impersonate oidc-a:alice@example.com or oidc-b:bob@example.com",
+      "variant": "security"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Two issuers, one proxy",
+      "items": [
+        "Each Dex serves its own TLS discovery endpoint and one static user",
+        "One AuthenticationConfiguration lists both issuers",
+        "readinessRequireAllIssuers: true, so Ready means both JWKS fetched"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Distinct identities",
+      "items": [
+        "Token from A \u2192 oidc-a:alice@example.com",
+        "Token from B \u2192 oidc-b:bob@example.com",
+        "Prefix per issuer keeps the two apart in RBAC"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "What stays put",
+      "items": [
+        "The API server's --oidc flags are never set",
+        "Authorization is still the API server's RBAC",
+        "No cloud accounts, DNS or browser needed"
+      ]
+    }
+  ]
+}

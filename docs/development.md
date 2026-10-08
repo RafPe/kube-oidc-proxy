@@ -85,16 +85,9 @@ This runs the proxy in a local [kind](https://kind.sigs.k8s.io/) cluster and
 authenticates with a **real GitHub Actions OIDC token**. GitHub only mints these
 tokens inside a workflow run, so the flow is:
 
-```text
-GitHub Actions (mint token, TTL ~5 min)
-        │  gh run download
-        ▼
-local terminal ── kubectl --token=... ──► kube-oidc-proxy (kind)
-                                              │ validates JWT against
-                                              │ token.actions.githubusercontent.com
-                                              ▼ impersonates mapped identity
-                                          kind API server ── RBAC decides
-```
+![GitHub Actions mints a short-lived ID token; the local terminal downloads it and calls kubectl with it against kube-oidc-proxy in kind, which verifies the JWT via token.actions.githubusercontent.com and impersonates the mapped identity to the kind API server, where RBAC decides](./diagrams/gha-token-flow.svg)
+
+<!-- Source: ./diagrams/gha-token-flow.archify.json; see docs/development.md, Architecture diagrams. -->
 
 ### Prerequisites
 
@@ -288,9 +281,21 @@ The C4 diagrams under [`docs/c4/`](./c4/) are generated from
 [`workspace.dsl`](./c4/workspace.dsl) with Structurizr; edit the DSL, not the
 PNGs. [Architecture](./architecture.md#diagrams) shows them.
 
-`docs/diagrams/*.svg` are hand-authored inline SVGs (literal colours, a
-`<title>`, no CSS variables, so GitHub renders them in both themes);
-`hack/verify-diagrams.sh` checks them and CI runs it.
+`docs/diagrams/*.svg` and `demo/diagrams/*.svg` are checked by
+`hack/verify-diagrams.sh` in CI. Two kinds exist:
+
+- Hand-authored SVGs (`metrics-data-flow.svg`): literal colours, a `<title>`,
+  no CSS variables.
+- Archify exports (`gha-token-flow.svg`, `demo/diagrams/multi-issuer-demo.svg`):
+  built from the `*.archify.json` next to each SVG with Archify 3.0.1, a
+  local tool that is not a dependency of this repository (it ships as the
+  `archify` agent skill; its CLI is `node <skill-dir>/bin/archify.mjs`). To
+  change one, edit the JSON, run
+  `archify finalize architecture <name>.archify.json <name>.html`, then
+  `node website/scripts/export-diagram-svg.mjs <name>.html <name>.svg` from
+  `website/` after `npm ci`. Use the same Archify version so the output only
+  changes where the JSON did. The export follows the reader's colour scheme
+  and embeds its fonts.
 
 ## Metrics demo
 

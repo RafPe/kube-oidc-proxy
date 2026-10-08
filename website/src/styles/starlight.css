@@ -30,3 +30,27 @@
 }
 .sl-markdown-content h1, .sl-markdown-content h2, .sl-markdown-content h3, .site-title { font-family: var(--kop-font-display); letter-spacing: -0.01em; }
 .sl-markdown-content :not(pre) > code { background: var(--kop-blue-soft); color: var(--kop-blue-ink); border-radius: 5px; padding: .1em .35em; }
+
+/* Wide screens: a fluid content column next to the sidebar instead of
+   Starlight's centred 45rem column. Capped at 120rem. */
+@media (min-width: 72rem) {
+  :root {
+    --sl-content-width: min(120rem, calc(100vw - 2 * var(--sl-sidebar-width) - 2 * var(--sl-content-pad-x)));
+  }
+  [data-has-sidebar][data-has-toc] .main-pane {
+    --sl-content-margin-inline: 0 auto;
+    width: min(calc(100% - var(--sl-sidebar-width)), calc(var(--sl-content-width) + 2 * var(--sl-content-pad-x)));
+    flex: none;
+  }
+  /* The table of contents follows the content; spare space stays on its right. */
+  [data-has-sidebar][data-has-toc] .right-sidebar-container {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: var(--sl-sidebar-width);
+  }
+  /* The version banner lines up with the content column. */
+  .kop-version {
+    max-width: var(--sl-content-width);
+    box-sizing: border-box;
+  }
+}
