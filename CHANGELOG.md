@@ -1,6 +1,16 @@
 # Unreleased
 <!-- next-release -->
 
+## [1.9.0] - 2026-10-21
+
+- Enable the metrics listener and dedicated Service automatically when the Helm ServiceMonitor switch is enabled, with setup guidance and unchanged opt-out defaults.
+- Bump golang.org/x/net from 0.58.0 to 0.60.0 to fix 5 govulncheck findings in the HTTP/2 code that the proxy calls. Also bump golang.org/x/crypto to 0.57.0, x/mod to 0.41.0, x/sync to 0.23.0, x/sys to 0.48.0, x/term to 0.46.0 and x/text to 0.42.0.
+- A documentation website with a product landing page, the guides and references from docs/ and a version banner, published to GitHub Pages from a gated workflow.
+- The Helm chart renders the `helm test` connection hook image from `test.image.repository` and `test.image.tag` (default `docker.io/library/busybox:1.37.0`) instead of a bare `busybox` literal, so image mirrors can redirect it.
+- Enrol in the OpenSSF Best Practices Badge, with proposed answers in `.bestpractices.json`, the badge in the README, explicit bug and vulnerability reporting links, and a release-notes rule that security fixes name their advisory.
+- Bump google.golang.org/grpc from 1.83.1 to 1.83.2 (the gRPC server now rejects requests missing both `:authority` and `Host` headers), go.opentelemetry.io/otel, otel/sdk, otel/exporters/otlp/otlptrace and otlptracegrpc from 1.44.0 to 1.45.0, and golang.org/x/crypto from 0.55.0 to 0.56.0 to remediate GO-2026-6354 and GO-2026-6355.
+- Build against Go 1.26.10, which fixes a crypto/x509 certificate verification vulnerability (CVE-2026-111943, golang/go#82345). The proxy uses crypto/x509 to verify client TLS certificates and the TLS certificates of OIDC issuers.
+
 - Document that an issuer entry in `--authentication-config` may list several `audiences` with `audienceMatchPolicy: MatchAny`, and cover it in the unit and end-to-end suites: a token carrying any listed audience is accepted, one carrying none is rejected, and an audience listed for one issuer does not admit tokens from another.
 
 ## [1.8.1] - 2026-09-13

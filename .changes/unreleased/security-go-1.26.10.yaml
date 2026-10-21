@@ -1,2 +1,0 @@
-kind: Security
-body: Build against Go 1.26.10, which fixes a crypto/x509 certificate verification vulnerability (CVE-2026-111943, golang/go#82345). The proxy uses crypto/x509 to verify client TLS certificates and the TLS certificates of OIDC issuers.

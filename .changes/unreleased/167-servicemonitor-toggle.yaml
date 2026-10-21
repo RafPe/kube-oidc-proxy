@@ -1,2 +1,0 @@
-kind: Changed
-body: Enable the metrics listener and dedicated Service automatically when the Helm ServiceMonitor switch is enabled, with setup guidance and unchanged opt-out defaults.
