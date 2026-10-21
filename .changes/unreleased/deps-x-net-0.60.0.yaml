@@ -1,0 +1,2 @@
+kind: Dependencies
+body: Bump golang.org/x/net from 0.58.0 to 0.60.0 to fix 5 govulncheck findings in the HTTP/2 code that the proxy calls. Also bump golang.org/x/crypto to 0.57.0, x/mod to 0.41.0, x/sync to 0.23.0, x/sys to 0.48.0, x/term to 0.46.0 and x/text to 0.42.0.
