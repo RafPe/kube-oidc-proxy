@@ -13,7 +13,8 @@ const root = path.join(website, '.site-root');
 rmSync(root, { recursive: true, force: true });
 mkdirSync(path.join(root, base), { recursive: true });
 cpSync(path.join(website, 'dist'), path.join(root, base), { recursive: true });
-const lhci = path.join(website, 'node_modules/.bin/lhci');
+// @lhci/cli is not a devDependency: its dependency tree has open advisories.
+// npx fetches the pinned version on demand.
 for (const step of ['collect', 'assert']) {
-  execFileSync(lhci, [step, '--config=website/lighthouserc.json'], { cwd: repo, stdio: 'inherit' });
+  execFileSync('npx', ['--yes', '@lhci/cli@0.15.1', step, '--config=website/lighthouserc.json'], { cwd: repo, stdio: 'inherit' });
 }
