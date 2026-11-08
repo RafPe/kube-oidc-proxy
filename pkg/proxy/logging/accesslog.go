@@ -4,26 +4,18 @@
 // request.access.decided per request, carrying the authentication,
 // authorization and admission outcome.
 //
-// # Client-IP and trusted-proxy semantics (see issue #56)
-//
-// The immediate peer (req.RemoteAddr) is always authoritative for the client
-// IP. X-Forwarded-For is honoured ONLY to the extent that the hops closest to
-// the proxy are themselves within a configured trusted-proxy network: the chain
-// is walked right-to-left, trusted hops are skipped, and the first untrusted
-// address is taken as the client. When no trusted proxies are configured (the
-// default), forwarded headers are never trusted and the direct peer is used, so
-// an untrusted client cannot spoof its resolved IP. The networks are held by
-// the AccessLogger, not by a package global, so a test can build one without
-// disturbing the process. The raw forwarded chain is still emitted for
-// observability under the explicitly-untrusted "forwarded_for_untrusted" field
-// and must not be treated as identity.
+// The record's src_ip is the client IP the proxy/context package resolved
+// under the trusted-proxy contract (see that package's documentation); this
+// package does not resolve addresses itself, so the access record, the audit
+// log and the Remote-Client-IP impersonation extra can never disagree. The raw
+// forwarded chain is still emitted for observability under the
+// explicitly-untrusted "forwarded_for_untrusted" field and must not be treated
+// as identity.
 package logging
 
 import (
 	"log/slog"
-	"net"
 	"net/http"
-	"strings"
 
 	"k8s.io/apiserver/pkg/authentication/user"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
@@ -76,25 +68,18 @@ var loggableExtraKeys = map[string]struct{}{
 }
 
 // AccessLogger writes the access record. It is an injected collaborator rather
-// than a package global so that the destination, the component and the trusted
-// proxies are decided once at construction and a test can hold its own.
+// than a package global so that the destination and the component are decided
+// once at construction and a test can hold its own.
 type AccessLogger struct {
 	logger *slog.Logger
-
-	// trustedProxies holds the networks whose forwarded headers are honoured
-	// when resolving the client IP. Empty (the default) trusts no proxy.
-	trustedProxies []*net.IPNet
 }
 
 // NewAccessLogger returns an AccessLogger emitting through logger, which the
 // caller has already bound to the request component. A nil logger yields one
 // that discards every record, so a partially wired caller cannot panic the
 // request path.
-func NewAccessLogger(logger *slog.Logger, trustedProxies []*net.IPNet) *AccessLogger {
-	if logger == nil {
-		logger = slog.New(slog.DiscardHandler)
-	}
-	return &AccessLogger{logger: logger, trustedProxies: trustedProxies}
+func NewAccessLogger(logger *slog.Logger) *AccessLogger {
+	return &AccessLogger{logger: logging.OrDiscard(logger)}
 }
 
 // Decision is the outcome the access record reports. Reason, TargetKind and
@@ -141,7 +126,7 @@ func (a *AccessLogger) LogDecision(req *http.Request, d Decision) {
 
 	attrs = append(attrs,
 		slog.String("event", event),
-		slog.String("src_ip", resolveClientIP(req.RemoteAddr, forwardedFor(req.Header), a.trustedProxies)),
+		slog.String("src_ip", proxycontext.ClientIP(req)),
 		slog.String("path", sanitizePath(req)),
 	)
 	if fwd := untrustedForwardedFor(req); fwd != "" {
@@ -187,13 +172,14 @@ func (a *AccessLogger) LogDecision(req *http.Request, d Decision) {
 }
 
 // untrustedForwardedFor returns the raw forwarded chain the client actually
-// sent, sanitized. It is forensic: SanitizeForwardHeaders preserved the inbound
+// sent, sanitized. It is forensic: WithResolvedClient preserved the inbound
 // value on the context before rewriting the header, so the record reports what
-// arrived rather than what was forwarded.
+// arrived rather than what was forwarded. A request that never passed through
+// it still has the header itself.
 func untrustedForwardedFor(req *http.Request) string {
 	raw := proxycontext.OriginalForwardedFor(req)
 	if raw == "" {
-		raw = forwardedFor(req.Header)
+		raw = req.Header.Get("X-Forwarded-For")
 	}
 	return logging.Sanitize(raw)
 }
@@ -281,41 +267,4 @@ func sanitizePath(req *http.Request) string {
 		return ""
 	}
 	return logging.Sanitize(req.URL.Path)
-}
-
-// forwardedFor returns the raw X-Forwarded-For header value.
-func forwardedFor(headers http.Header) string {
-	return headers.Get("X-Forwarded-For")
-}
-
-// resolveClientIP returns the authoritative client IP for a request given the
-// peer address, the X-Forwarded-For chain, and the set of trusted proxy
-// networks. See the package documentation for the full contract. It is
-// IPv4/IPv6 aware and ignores malformed forwarded entries.
-func resolveClientIP(remoteAddr, xff string, trusted []*net.IPNet) string {
-	peer := proxycontext.PeerHost(remoteAddr)
-
-	// Without trust, or when the peer itself is not a trusted proxy, forwarded
-	// headers are ignored entirely: the direct peer is the client.
-	if xff == "" || !proxycontext.IPInNetworks(peer, trusted) {
-		return peer
-	}
-
-	// The peer is a trusted proxy. Walk the forwarded chain from the hop
-	// nearest the proxy toward the origin, skipping trusted hops, and take the
-	// first untrusted (or malformed-but-parseable) address as the client.
-	hops := strings.Split(xff, ",")
-	for i := len(hops) - 1; i >= 0; i-- {
-		ip := strings.TrimSpace(hops[i])
-		if net.ParseIP(ip) == nil {
-			// Malformed hop: cannot trust anything further left through it.
-			return peer
-		}
-		if proxycontext.IPInNetworks(ip, trusted) {
-			continue
-		}
-		return ip
-	}
-
-	return peer
 }

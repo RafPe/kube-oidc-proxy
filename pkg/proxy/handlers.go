@@ -29,10 +29,6 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 )
 
-// reservedIdentityPrefix is the username/group prefix Kubernetes reserves for
-// its own identities.
-const reservedIdentityPrefix = "system:"
-
 // The inbound forwarding headers the trusted-proxy contract owns.
 const (
 	headerForwardedFor = "X-Forwarded-For"
@@ -147,12 +143,10 @@ func (p *Proxy) withHandlers(handler http.Handler) http.Handler {
 // sees sanitized headers.
 func (p *Proxy) withSanitizedForwardHeaders(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-		// Snapshot the values, not the header map: SanitizeForwardHeaders
-		// rewrites the map in place even though it returns a new request.
 		inboundXFF := req.Header.Get(headerForwardedFor)
 		inboundRealIP := req.Header.Get(headerRealIP)
 
-		req = context.SanitizeForwardHeaders(req)
+		req = context.WithResolvedClient(req, p.trustedProxies)
 
 		if inboundXFF != "" || inboundRealIP != "" {
 			req = p.logForwardHeaders(req, inboundXFF, inboundRealIP)
@@ -172,7 +166,7 @@ func (p *Proxy) withSanitizedForwardHeaders(handler http.Handler) http.Handler {
 // Only the drop is token-bucketed; it is the one an untrusted client can
 // produce on every request.
 func (p *Proxy) logForwardHeaders(req *http.Request, inboundXFF, inboundRealIP string) *http.Request {
-	req, srcIP := context.RemoteAddr(req)
+	srcIP := context.ClientIP(req)
 	forwardedFor := slog.String("forwarded_for_untrusted", logging.Sanitize(inboundXFF))
 
 	if outboundXFF := req.Header.Get(headerForwardedFor); outboundXFF != "" && outboundXFF != inboundXFF {
@@ -227,10 +221,8 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 			// is reported by reason, and a validation message is attacker
 			// influenced.
 			p.metrics.AuthenticationAttempt(authMethodOIDC, metrics.AuthRejected)
-			var srcIP string
-			req, srcIP = context.RemoteAddr(req)
-			logging.Emit(req.Context(), componentLogger(p.oidcLog), logging.EventAuthnOIDCFailed,
-				slog.String("src_ip", srcIP), slog.String("reason", reasonUnauthorized))
+			logging.Emit(req.Context(), logging.OrDiscard(p.oidcLog), logging.EventAuthnOIDCFailed,
+				slog.String("src_ip", context.ClientIP(req)), slog.String("reason", reasonUnauthorized))
 
 			// Since we have failed OIDC auth, we will try a token review, if enabled.
 			// Routing is deliberately unchanged: falling through to token
@@ -252,7 +244,7 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 		// record and for every access record the request goes on to produce.
 		req = context.WithIssuerName(req, issuer.name)
 
-		logging.Emit(req.Context(), componentLogger(p.oidcLog), logging.EventAuthnOIDCSucceeded,
+		logging.Emit(req.Context(), logging.OrDiscard(p.oidcLog), logging.EventAuthnOIDCSucceeded,
 			slog.String("issuer_name", logging.Bound(issuer.name, logging.MaxIdentity)))
 
 		// The token was accepted, so every record from here on -- including a
@@ -298,7 +290,7 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 // It applies to groups only: a reserved username has no legitimate use, so
 // there is deliberately no way to allow one short of disabling the guard.
 func checkReservedIdentity(info authuser.Info, allowedGroups sets.Set[string]) error {
-	if strings.HasPrefix(info.GetName(), reservedIdentityPrefix) {
+	if strings.HasPrefix(info.GetName(), ReservedIdentityPrefix) {
 		return fmt.Errorf("%w: username %q", errReservedIdentity, info.GetName())
 	}
 
@@ -306,7 +298,7 @@ func checkReservedIdentity(info authuser.Info, allowedGroups sets.Set[string]) e
 		if group == authuser.AllAuthenticated || allowedGroups.Has(group) {
 			continue
 		}
-		if strings.HasPrefix(group, reservedIdentityPrefix) {
+		if strings.HasPrefix(group, ReservedIdentityPrefix) {
 			return fmt.Errorf("%w: group %q", errReservedIdentity, group)
 		}
 	}
@@ -352,9 +344,6 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 
 		var targetForContext authuser.Info
 
-		var remoteAddr string
-		req, remoteAddr = context.RemoteAddr(req)
-
 		// If we have disabled impersonation we can forward the request right away
 		if p.config.DisableImpersonation {
 			logging.Emit(req.Context(), logging.FromContext(req.Context()), logging.EventRequestImpersonationSkipped,
@@ -385,7 +374,6 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 			}
 
 			if target != nil {
-				// TODO - store original context for logging
 				user = target
 				targetForContext = target
 			}
@@ -406,7 +394,7 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 		// If client IP user extra header option set then append the remote client
 		// address.
 		if p.config.ExtraUserHeadersClientIPEnabled {
-			extra[UserHeaderClientIPKey] = append(extra[UserHeaderClientIPKey], remoteAddr)
+			extra[accesslogging.UserHeaderClientIPKey] = append(extra[accesslogging.UserHeaderClientIPKey], context.ClientIP(req))
 		}
 
 		// Add custom extra user headers to impersonation request. append copies
@@ -446,8 +434,8 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 				Groups:   groups,
 				Extra:    extra,
 			},
-			InboundUser:      &userForContext,
-			ImpersonatedUser: &targetForContext,
+			InboundUser:      userForContext,
+			ImpersonatedUser: targetForContext,
 		}
 
 		logging.Emit(req.Context(), logging.FromContext(req.Context()), logging.EventRequestImpersonationApplied,
@@ -504,7 +492,7 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 		if err == nil {
 			// Nothing was decided about a request, so nothing is recorded about
 			// one; the proxy bug is still reported.
-			logging.EmitLevel(r.Context(), componentLogger(p.logger), logging.EventRequestHandlerFailed, slog.LevelError,
+			logging.EmitLevel(r.Context(), logging.OrDiscard(p.logger), logging.EventRequestHandlerFailed, slog.LevelError,
 				slog.String("reason", reasonInternalError),
 				slog.String("error_message", "error handler called with nil error"))
 			http.Error(rw, "", http.StatusInternalServerError)
@@ -571,7 +559,7 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			// Client canceled the request (SAR or reverse-proxy). Nothing to
 			// write back; the connection is already going away.
 		case errors.Is(err, stdcontext.Canceled):
-			logging.Emit(r.Context(), componentLogger(p.upstreamLog), logging.EventUpstreamRequestCanceled,
+			logging.Emit(r.Context(), logging.OrDiscard(p.upstreamLog), logging.EventUpstreamRequestCanceled,
 				slog.String("reason", reasonClientCanceled))
 			p.logDenied(r, reasonClientCanceled, err)
 			return
@@ -596,8 +584,8 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			// to the lifecycle filter for the terminal record.
 		case isUpstreamTransportError(err):
 			term := upstreamTermination(err)
-			context.WithTermination(r, term, reasonUpstreamError)
-			logging.Emit(r.Context(), componentLogger(p.upstreamLog), logging.EventUpstreamRequestFailed,
+			context.RecordTermination(r, term, reasonUpstreamError)
+			logging.Emit(r.Context(), logging.OrDiscard(p.upstreamLog), logging.EventUpstreamRequestFailed,
 				slog.String("reason", reasonUpstreamError), slog.String("termination", term),
 				logging.ErrAttr(err))
 			http.Error(rw, "", http.StatusBadGateway)
@@ -654,7 +642,7 @@ func upstreamTermination(err error) string {
 // error text is kept out of the client-facing body and recorded here instead,
 // bounded and sanitized; the access record carries reason=internal_error.
 func (p *Proxy) logHandlerFailed(r *http.Request, err error) {
-	logging.EmitLevel(r.Context(), componentLogger(p.logger), logging.EventRequestHandlerFailed, slog.LevelError,
+	logging.EmitLevel(r.Context(), logging.OrDiscard(p.logger), logging.EventRequestHandlerFailed, slog.LevelError,
 		slog.String("reason", reasonInternalError), logging.ErrAttr(err))
 }
 
@@ -667,9 +655,8 @@ func (p *Proxy) logAnomaly(r *http.Request, reason string) {
 		return
 	}
 
-	_, srcIP := context.RemoteAddr(r)
-	logging.Emit(r.Context(), componentLogger(p.logger), logging.EventRequestAnomalyDetected,
-		slog.String("src_ip", srcIP), slog.String("reason", reason))
+	logging.Emit(r.Context(), logging.OrDiscard(p.logger), logging.EventRequestAnomalyDetected,
+		slog.String("src_ip", context.ClientIP(r)), slog.String("reason", reason))
 }
 
 // logDenied writes the access record for a refused request. The impersonation

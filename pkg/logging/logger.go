@@ -108,10 +108,19 @@ func NewContext(ctx context.Context, l *slog.Logger) context.Context {
 // discards every record when there is none. It never returns nil, so call
 // sites need no guard.
 func FromContext(ctx context.Context) *slog.Logger {
-	if l, ok := ctx.Value(ctxKey{}).(*slog.Logger); ok && l != nil {
-		return l
+	l, _ := ctx.Value(ctxKey{}).(*slog.Logger)
+	return OrDiscard(l)
+}
+
+// OrDiscard returns l, or a logger that discards every record when l is nil.
+// Every constructor that accepts a logger defaults through it, so a partially
+// wired caller -- a unit test building a struct by hand, a binary run without
+// a destination -- can never panic a code path by logging.
+func OrDiscard(l *slog.Logger) *slog.Logger {
+	if l == nil {
+		return slog.New(slog.DiscardHandler)
 	}
-	return slog.New(slog.DiscardHandler)
+	return l
 }
 
 // Emit logs one registered event at the level and with the message its

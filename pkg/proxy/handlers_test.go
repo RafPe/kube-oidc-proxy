@@ -651,8 +651,6 @@ func TestRealIPOnlyDroppedCarriesNoForwardedChain(t *testing.T) {
 func TestTrustedForwardedHeadersRewritten(t *testing.T) {
 	p := newTestProxy(t)
 	p.trustedProxies = mustCIDRs(t, "10.0.0.0/8")
-	proxycontext.SetTrustedProxies(p.trustedProxies)
-	t.Cleanup(func() { proxycontext.SetTrustedProxies(nil) })
 	h := p.withSanitizedForwardHeaders(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "10.0.0.7:1"

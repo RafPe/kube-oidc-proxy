@@ -45,3 +45,20 @@ func TestSanitizeList(t *testing.T) {
 		t.Fatalf("SanitizeList left an element of %d runes, want %d", len([]rune(got[0])), MaxIdentity)
 	}
 }
+
+func TestSanitize(t *testing.T) {
+	tests := map[string]struct{ in, exp string }{
+		"plain":            {"alice@example.com", "alice@example.com"},
+		"newline to space": {"a\nb", "a b"},
+		"crlf to spaces":   {"a\r\nb", "a  b"},
+		"tab to space":     {"a\tb", "a b"},
+		"drops control":    {"a\x00\x1bb", "ab"},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := Sanitize(tc.in); got != tc.exp {
+				t.Errorf("Sanitize(%q) = %q, want %q", tc.in, got, tc.exp)
+			}
+		})
+	}
+}

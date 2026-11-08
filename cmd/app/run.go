@@ -47,11 +47,6 @@ import (
 
 const oidcHTTPTimeout = 30 * time.Second
 
-// reservedIdentityPrefix is the username/group prefix Kubernetes reserves for
-// its own identities. Kept in sync with the runtime guard in
-// pkg/proxy/handlers.go (checkReservedIdentity), which is the load-bearing one.
-const reservedIdentityPrefix = "system:"
-
 // checkReservedIdentityPrefixes refuses to start when the operator's own
 // username or group prefix would itself mint reserved identities for every
 // authenticated user. It is a startup nicety, not the guard: the runtime check
@@ -73,10 +68,10 @@ func checkReservedIdentityPrefixes(opts *options.Options) error {
 		{flag: "--oidc-username-prefix", value: opts.OIDCAuthentication.UsernamePrefix},
 		{flag: "--oidc-groups-prefix", value: opts.OIDCAuthentication.GroupsPrefix},
 	} {
-		if strings.HasPrefix(prefix.value, reservedIdentityPrefix) {
+		if strings.HasPrefix(prefix.value, proxy.ReservedIdentityPrefix) {
 			return fmt.Errorf("%s=%q would prefix every authenticated identity with the "+
 				"Kubernetes-reserved %q; refusing to start",
-				prefix.flag, prefix.value, reservedIdentityPrefix)
+				prefix.flag, prefix.value, proxy.ReservedIdentityPrefix)
 		}
 	}
 
@@ -541,9 +536,7 @@ func caContentProvider(path string, logger *slog.Logger) oidc.CAContentProvider 
 	if path == "" {
 		return nil
 	}
-	if logger == nil {
-		logger = slog.New(slog.DiscardHandler)
-	}
+	logger = logging.OrDiscard(logger)
 	return caFromFile{path: path, logger: logger}
 }
 
@@ -616,7 +609,7 @@ func buildSingleAuther(o *options.OIDCAuthenticationOptions, oidcLogger, startup
 	}
 	logIssuersConfigured(oidcLogger, issuerNames([]string{o.IssuerURL}))
 
-	return proxy.WithIssuerName(probe.IssuerName(o.IssuerURL), auther), []string{o.IssuerURL}, nil
+	return proxy.AttributeToIssuer(probe.IssuerName(o.IssuerURL), auther), []string{o.IssuerURL}, nil
 }
 
 func buildUnionAuther(opts *options.Options, oidcLogger *slog.Logger) (authenticator.Token, []string, error) {
@@ -647,7 +640,7 @@ func buildUnionAuther(opts *options.Options, oidcLogger *slog.Logger) (authentic
 		if err != nil {
 			return nil, nil, fmt.Errorf("building authenticator for issuer %q: %w", jwtEntry.Issuer.URL, err)
 		}
-		authers = append(authers, proxy.WithIssuerName(issuerNameFor(jwtEntry), auther))
+		authers = append(authers, proxy.AttributeToIssuer(issuerNameFor(jwtEntry), auther))
 	}
 
 	logIssuersConfigured(oidcLogger, issuerNames(issuerURLs))

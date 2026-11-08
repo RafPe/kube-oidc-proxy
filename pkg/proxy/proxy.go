@@ -34,13 +34,10 @@ import (
 	utiltoken "github.com/rafpe/kube-oidc-proxy/pkg/util/token"
 )
 
-const (
-	// UserHeaderClientIPKey is the logging package's constant re-exported for
-	// the callers that historically reached it here; the canonical list of
-	// keys the proxy sets is accesslogging.FixedImpersonationExtraKeys.
-	UserHeaderClientIPKey = accesslogging.UserHeaderClientIPKey
-	timestampLayout       = "2006-01-02T15:04:05-0700"
-)
+// ReservedIdentityPrefix is the username/group prefix Kubernetes reserves for
+// its own identities. checkReservedIdentity refuses to mint one from a token
+// claim; the command layer uses it to refuse an operator prefix that would.
+const ReservedIdentityPrefix = "system:"
 
 // The token bucket the two client-driven warning records draw from: a steady
 // one record per second per reason, room for a burst of ten, and one
@@ -117,7 +114,8 @@ type Proxy struct {
 	upstreamLog    *slog.Logger
 
 	// trustedProxies is the parsed form of config.TrustedProxies, resolved once
-	// at construction and applied to the client-IP resolvers when Run starts.
+	// at construction. The request-id and forward-header filters are the only
+	// readers; everything after them takes the client IP they resolved.
 	trustedProxies []*net.IPNet
 
 	// allowedReservedGroups is the set form of config.AllowedReservedGroups,
@@ -125,8 +123,7 @@ type Proxy struct {
 	allowedReservedGroups sets.Set[string]
 
 	// access writes the one access record per request. Injected rather than a
-	// package global so the destination and the trusted-proxy networks are
-	// fixed at construction.
+	// package global so the destination is fixed at construction.
 	access *accesslogging.AccessLogger
 
 	// warnLimiter token-buckets the only two records a client can produce
@@ -255,19 +252,9 @@ func New(deps Dependencies) (*Proxy, error) {
 		oidcRequestAuther:     bearertoken.New(deps.TokenAuthenticator),
 		tokenAuthenticator:    deps.TokenAuthenticator,
 		auditor:               auditor,
-		access:                accesslogging.NewAccessLogger(requestLogger, trustedProxies),
+		access:                accesslogging.NewAccessLogger(requestLogger),
 		warnLimiter:           logging.NewLimiter(warnLimiterRate, warnLimiterBurst, warnLimiterInterval, nil),
 	}, nil
-}
-
-// componentLogger returns l, or a logger that discards every record when a
-// partially wired Proxy has none. It mirrors NewAccessLogger's nil handling:
-// missing wiring must never panic the request path.
-func componentLogger(l *slog.Logger) *slog.Logger {
-	if l == nil {
-		return slog.New(slog.DiscardHandler)
-	}
-	return l
 }
 
 // parseAllowedReservedGroups turns the configured allowlist into a set. Every
@@ -285,9 +272,9 @@ func parseAllowedReservedGroups(groups []string) (sets.Set[string], error) {
 		switch {
 		case strings.TrimSpace(group) == "":
 			return nil, fmt.Errorf("allowed reserved group must not be empty")
-		case !strings.HasPrefix(group, reservedIdentityPrefix):
+		case !strings.HasPrefix(group, ReservedIdentityPrefix):
 			return nil, fmt.Errorf("allowed reserved group %q does not carry the reserved %q prefix, so listing it has no effect",
-				group, reservedIdentityPrefix)
+				group, ReservedIdentityPrefix)
 		}
 		allowed.Insert(group)
 	}
@@ -335,13 +322,6 @@ func cloneHeaderMap(in map[string][]string) map[string][]string {
 // is closed. It returns a channel that is closed once serving has fully stopped
 // and a second channel that is closed once the listener has stopped accepting.
 func (p *Proxy) Run(stopCh <-chan struct{}) (<-chan struct{}, <-chan struct{}, error) {
-	// Apply the trusted-proxy networks to the context resolver so the audit
-	// log's src_ip and the Remote-Client-IP impersonation extra resolve
-	// identically to the access record, which took the same networks at
-	// construction. Done here (rather than in New) to keep the package-global
-	// setter out of construction-time unit tests.
-	context.SetTrustedProxies(p.trustedProxies)
-
 	// standard round tripper for proxy to API Server
 	clientRT, err := p.roundTripperForRestConfig(p.restConfig)
 	if err != nil {
@@ -401,9 +381,9 @@ func (p *Proxy) flushWarnLimiter(stopCh <-chan struct{}) {
 	for {
 		select {
 		case <-ticker.C:
-			p.warnLimiter.Flush(stdcontext.Background(), componentLogger(p.logger))
+			p.warnLimiter.Flush(stdcontext.Background(), logging.OrDiscard(p.logger))
 		case <-stopCh:
-			p.warnLimiter.Flush(stdcontext.Background(), componentLogger(p.logger))
+			p.warnLimiter.Flush(stdcontext.Background(), logging.OrDiscard(p.logger))
 			return
 		}
 	}
@@ -432,11 +412,11 @@ func (p *Proxy) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Here we have successfully authenticated so now need to determine whether
 	// we need use impersonation or not.
 
-	// If no impersonation then we return here without setting impersonation
-	// header but re-introduce the token we removed.
+	// With impersonation disabled or the token passed through, the request is
+	// forwarded as it stands: the passthrough path left the client's bearer
+	// token in place, and the disabled path forwards the authenticated request
+	// without credentials of its own.
 	if context.NoImpersonation(req) {
-		token := context.BearerToken(req)
-		req.Header.Add("Authorization", token)
 		p.recordDecision(req, accesslogging.Decision{
 			Allowed:    true,
 			AuthMethod: authMethodFrom(req),
@@ -459,8 +439,8 @@ func (p *Proxy) RoundTrip(req *http.Request) (*http.Response, error) {
 	p.recordDecision(req, accesslogging.Decision{
 		Allowed:    true,
 		AuthMethod: authMethodFrom(req),
-		Inbound:    *impersonationConf.InboundUser,
-		Outbound:   *impersonationConf.ImpersonatedUser,
+		Inbound:    impersonationConf.InboundUser,
+		Outbound:   impersonationConf.ImpersonatedUser,
 	})
 
 	// Push request through round trippers to the API server.
@@ -472,7 +452,7 @@ func (p *Proxy) reviewToken(rw http.ResponseWriter, req *http.Request) bool {
 
 	bearer, found := utiltoken.ParseFromRequest(req)
 	if !found {
-		logging.Emit(ctx, componentLogger(p.tokenReviewLog), logging.EventAuthnTokenMissing)
+		logging.Emit(ctx, logging.OrDiscard(p.tokenReviewLog), logging.EventAuthnTokenMissing)
 		p.metrics.AuthenticationAttempt(authMethodTokenReview, metrics.AuthRejected)
 		return false
 	}
@@ -481,7 +461,7 @@ func (p *Proxy) reviewToken(rw http.ResponseWriter, req *http.Request) bool {
 	if err != nil {
 		// The reviewer could not answer. That is a dependency failure, not a
 		// verdict on the token: the caller fails closed.
-		logging.Emit(ctx, componentLogger(p.tokenReviewLog), logging.EventAuthnTokenReviewFailed,
+		logging.Emit(ctx, logging.OrDiscard(p.tokenReviewLog), logging.EventAuthnTokenReviewFailed,
 			slog.String("reason", reasonAuthenticationDependencyError), logging.ErrAttr(err))
 		p.metrics.AuthenticationAttempt(authMethodTokenReview, metrics.AuthError)
 		return false

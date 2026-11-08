@@ -167,9 +167,7 @@ type Server struct {
 // nil logger yields one that discards every record, so a partially wired caller
 // cannot panic on a probe.
 func NewServer(port string, issuers []IssuerReadiness, requireAll bool, oidcAuther authenticator.Token, logger *slog.Logger) *Server {
-	if logger == nil {
-		logger = slog.New(slog.DiscardHandler)
-	}
+	logger = logging.OrDiscard(logger)
 
 	h := &HealthCheck{
 		readinessLogger: logging.ForComponent(logger, logging.ComponentReadiness),

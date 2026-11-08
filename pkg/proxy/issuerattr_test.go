@@ -52,7 +52,7 @@ func (c *capturingRT) RoundTrip(req *http.Request) (*http.Response, error) {
 // Response.User.Extra would fail both halves.
 func TestIssuerNameNeverReachesImpersonationHeaders(t *testing.T) {
 	p := newTestProxy(t)
-	p.oidcRequestAuther = bearertoken.New(WithIssuerName(leakProbeIssuerName, p.fakeToken))
+	p.oidcRequestAuther = bearertoken.New(AttributeToIssuer(leakProbeIssuerName, p.fakeToken))
 
 	// An identity extra and the client-IP extra guarantee the round tripper
 	// really builds Impersonate-Extra- headers, so the scan below has
@@ -142,10 +142,10 @@ func mentionsIssuer(s string) bool {
 	return strings.Contains(s, leakProbeIssuerName) || strings.Contains(s, "issuer")
 }
 
-// TestWithIssuerNameAttributesOnlyAcceptedTokens pins what the wrapper reports.
+// TestAttributeToIssuerAttributesOnlyAcceptedTokens pins what the wrapper reports.
 // A rejected or errored token was not accepted by this issuer, so naming it
 // would attribute a request to an issuer that refused it.
-func TestWithIssuerNameAttributesOnlyAcceptedTokens(t *testing.T) {
+func TestAttributeToIssuerAttributesOnlyAcceptedTokens(t *testing.T) {
 	accepted := &authenticator.Response{User: &authuser.DefaultInfo{Name: "alice"}}
 
 	tests := map[string]struct {
@@ -167,7 +167,7 @@ func TestWithIssuerNameAttributesOnlyAcceptedTokens(t *testing.T) {
 			inner.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(test.resp, test.ok, test.err)
 
 			ctx, holder := withIssuerHolder(context.Background())
-			if _, _, err := WithIssuerName("corp", inner).AuthenticateToken(ctx, "fake-token"); !errors.Is(err, test.err) {
+			if _, _, err := AttributeToIssuer("corp", inner).AuthenticateToken(ctx, "fake-token"); !errors.Is(err, test.err) {
 				t.Fatalf("AuthenticateToken error = %v, want %v", err, test.err)
 			}
 

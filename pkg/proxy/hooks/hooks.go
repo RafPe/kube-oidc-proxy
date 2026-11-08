@@ -50,9 +50,7 @@ type Hooks struct {
 // discards every record, so a partially wired caller cannot panic during
 // teardown.
 func New(logger *slog.Logger) *Hooks {
-	if logger == nil {
-		logger = slog.New(slog.DiscardHandler)
-	}
+	logger = logging.OrDiscard(logger)
 	return &Hooks{
 		logger:  logger,
 		indexOf: make(map[string]int),

@@ -130,9 +130,7 @@ func (r *Recorder) Handler(logger *slog.Logger) http.Handler {
 	if r == nil {
 		return http.NotFoundHandler()
 	}
-	if logger == nil {
-		logger = slog.New(slog.DiscardHandler)
-	}
+	logger = logging.OrDiscard(logger)
 	exposition := promhttp.HandlerFor(r.reg, promhttp.HandlerOpts{
 		ErrorLog:            scrapeErrorLog{logger: logger},
 		ErrorHandling:       promhttp.HTTPErrorOnError,

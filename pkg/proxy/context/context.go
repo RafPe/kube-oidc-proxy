@@ -11,16 +11,18 @@
 // is walked right-to-left, trusted hops are skipped, and the first untrusted
 // address is taken as the client. When no trusted proxies are configured (the
 // default), forwarded headers are never trusted and the direct peer is used, so
-// an untrusted client cannot spoof its resolved IP. Configure trusted networks
-// with SetTrustedProxies. SanitizeForwardHeaders applies this contract to the
-// headers themselves, so audit sourceIPs and the upstream API server see only
-// validated forwarding information.
+// an untrusted client cannot spoof its resolved IP.
+//
+// WithResolvedClient applies this contract once per request: it records the
+// resolved client IP on the context, where ClientIP reads it back, and reduces
+// the forwarding headers to what the contract allows, so audit sourceIPs, the
+// access record, the Remote-Client-IP impersonation extra and the upstream API
+// server all see the same validated client. The trusted networks are passed in
+// by the caller that owns them; this package holds no process-wide state.
 //
 // Only X-Forwarded-For is parsed; the RFC 7239 Forwarded header is not honoured.
 // On a malformed forwarded hop, or when the entire chain is itself trusted, the
-// direct peer is returned. This contract is intentionally identical to the
-// resolver in the logging package so that the audit-log client IP and the
-// Remote-Client-IP impersonation extra never disagree.
+// direct peer is returned.
 package context
 
 import (
@@ -44,19 +46,12 @@ const (
 	// impersonationConfigKey is the context key for the impersonation config.
 	impersonationConfigKey
 
-	// bearerTokenKey is the context key for the bearer token.
-	bearerTokenKey
-
-	// bearerTokenKey is the context key for the client address.
-	clientAddressKey
+	// clientIPKey is the context key for the resolved client IP.
+	clientIPKey
 
 	// originalForwardedForKey is the context key preserving the raw inbound
 	// X-Forwarded-For chain before sanitization, for forensic logging.
 	originalForwardedForKey
-
-	// requestIDKey is the context key for the request's authoritative
-	// correlation id, minted or adopted by the request-id filter.
-	requestIDKey
 
 	// clientRequestIDKey is the context key for a well-formed request id the
 	// client supplied that was NOT adopted as the authoritative id.
@@ -76,67 +71,79 @@ const (
 	terminationKey
 )
 
-// trustedProxies holds the networks whose forwarded headers are honoured when
-// resolving the client IP. Empty (the default) means no proxy is trusted, so
-// the direct peer is always used.
-var trustedProxies []*net.IPNet
+// The inbound forwarding headers the trusted-proxy contract owns.
+const (
+	headerForwardedFor = "X-Forwarded-For"
+	headerRealIP       = "X-Real-Ip"
+)
 
-// SetTrustedProxies configures the trusted-proxy networks used when resolving
-// the client IP from forwarded headers. Passing nil (the default) disables
-// forwarded-header trust entirely. Intended to be called once at startup before
-// requests are served.
-func SetTrustedProxies(nets []*net.IPNet) {
-	trustedProxies = nets
-}
-
-// SanitizeForwardHeaders enforces the trusted-proxy contract on the inbound
-// forwarding headers before anything downstream reads them: the audit filters
-// (which fill the event's sourceIPs from these headers via utilnet.SourceIPs),
-// the access log, and the upstream API server the request is forwarded to.
+// WithResolvedClient returns a copy of the request that carries the client IP
+// resolved under the trusted-proxy contract, and whose forwarding headers have
+// been reduced to what that contract allows. It is the one place the contract
+// is applied; everything downstream reads the result through ClientIP and the
+// headers.
 //
-// X-Real-Ip is always removed — the proxy never honours it. X-Forwarded-For is
+// X-Real-Ip is always removed: the proxy never honours it. X-Forwarded-For is
 // removed when the resolver would ignore it (untrusted peer, fully trusted
 // chain, or malformed hop) and collapsed to the single resolved client IP when
 // the peer is a trusted proxy. The raw inbound chain is preserved on the
-// request context and available via OriginalForwardedFor so forensic logging
-// keeps seeing what the client actually sent.
-func SanitizeForwardHeaders(req *http.Request) *http.Request {
-	xff := forwardedFor(req.Header)
-	if xff == "" && req.Header.Get("X-Real-Ip") == "" {
-		return req
-	}
+// context and available via OriginalForwardedFor so forensic logging keeps
+// seeing what the client actually sent.
+//
+// The returned request owns a copy of the header map, so the caller's request
+// is left exactly as it arrived.
+func WithResolvedClient(req *http.Request, trusted []*net.IPNet) *http.Request {
+	xff := req.Header.Get(headerForwardedFor)
+	clientIP := ResolveClientIP(req.RemoteAddr, xff, trusted)
 
+	ctx := request.WithValue(req.Context(), clientIPKey, clientIP)
 	if xff != "" {
-		req = req.WithContext(request.WithValue(req.Context(), originalForwardedForKey, xff))
-	}
-	req.Header.Del("X-Real-Ip")
-	if xff == "" {
-		return req
+		ctx = request.WithValue(ctx, originalForwardedForKey, xff)
 	}
 
-	resolved := ResolveClientIP(req.RemoteAddr, xff, trustedProxies)
-	if resolved == PeerHost(req.RemoteAddr) {
+	out := req.WithContext(ctx)
+	out.Header = req.Header.Clone()
+	out.Header.Del(headerRealIP)
+
+	switch {
+	case xff == "":
+	case clientIP == PeerHost(req.RemoteAddr):
 		// The resolver fell back to the direct peer: nothing in the
 		// forwarded chain is trustworthy.
-		req.Header.Del("X-Forwarded-For")
-		return req
+		out.Header.Del(headerForwardedFor)
+	default:
+		out.Header.Set(headerForwardedFor, clientIP)
 	}
 
-	req.Header.Set("X-Forwarded-For", resolved)
-	return req
+	return out
+}
+
+// ClientIP returns the client IP WithResolvedClient recorded for the request.
+// A request that never passed through it reports the direct peer, which is
+// what the contract resolves to when no proxy is trusted, so a caller outside
+// the filter chain still gets a safe answer.
+func ClientIP(req *http.Request) string {
+	if ip, ok := req.Context().Value(clientIPKey).(string); ok {
+		return ip
+	}
+	return PeerHost(req.RemoteAddr)
 }
 
 // OriginalForwardedFor returns the raw inbound X-Forwarded-For chain as it was
-// before SanitizeForwardHeaders rewrote it, or "" when there was none.
+// before WithResolvedClient rewrote it, or "" when there was none.
 func OriginalForwardedFor(req *http.Request) string {
 	xff, _ := req.Context().Value(originalForwardedForKey).(string)
 	return xff
 }
 
+// ImpersonationRequest is the outbound identity the impersonation filter
+// resolved for a request, together with the inbound identity it was derived
+// from. ImpersonatedUser is nil when the request impersonates nobody and the
+// inbound identity is forwarded as itself.
 type ImpersonationRequest struct {
 	ImpersonationConfig *transport.ImpersonationConfig
-	InboundUser         *user.Info
-	ImpersonatedUser    *user.Info
+	InboundUser         user.Info
+	ImpersonatedUser    user.Info
 }
 
 // WithNoImpersonation returns a copy of the request in which the noImpersonation context value is set.
@@ -151,19 +158,17 @@ func NoImpersonation(req *http.Request) bool {
 }
 
 // WithRequestID returns a copy of the request carrying id as the request's
-// authoritative correlation id. The id is stored twice on purpose: under this
-// package's key, which the access record reads, and under the logging package's
-// key, which Emit reads to supply request_id to any event that requires it.
+// authoritative correlation id. The id lives under the logging package's key,
+// the one Emit reads to supply request_id to any event that requires it, so
+// the access record and every other record agree on it by construction.
 func WithRequestID(req *http.Request, id string) *http.Request {
-	return req.WithContext(logging.WithRequestID(
-		request.WithValue(req.Context(), requestIDKey, id), id))
+	return req.WithContext(logging.WithRequestID(req.Context(), id))
 }
 
 // RequestID returns the request's authoritative correlation id, or "" when the
 // request-id filter has not run.
 func RequestID(req *http.Request) string {
-	id, _ := req.Context().Value(requestIDKey).(string)
-	return id
+	return logging.RequestIDFrom(req.Context())
 }
 
 // WithClientRequestID returns a copy of the request carrying the request id the
@@ -243,11 +248,12 @@ func WithTerminationHolder(req *http.Request) *http.Request {
 	return req.WithContext(request.WithValue(req.Context(), terminationKey, new(Termination)))
 }
 
-// WithTermination records how the request ended on the holder the lifecycle
-// filter installed. It is a no-op when the request carries no holder, so a
-// handler called outside that filter -- a test, or an error on a request that
-// never reached it -- needs no special case.
-func WithTermination(req *http.Request, termination, reason string) {
+// RecordTermination writes how the request ended onto the holder the lifecycle
+// filter installed. Like MarkDecisionRecorded it mutates shared state rather
+// than deriving a request, and it is a no-op when the request carries no
+// holder, so a handler called outside that filter -- a test, or an error on a
+// request that never reached it -- needs no special case.
+func RecordTermination(req *http.Request, termination, reason string) {
 	if h, ok := req.Context().Value(terminationKey).(*Termination); ok {
 		h.Termination = termination
 		h.Reason = reason
@@ -265,11 +271,13 @@ func TerminationFrom(req *http.Request) Termination {
 	return *h
 }
 
-// WithImpersonationConfig returns a copy of parent in which contains the impersonation configuration.
+// WithImpersonationConfig returns a copy of the request carrying the resolved
+// outbound identity. When the request impersonates someone, that identity also
+// becomes the request's user so the audit chain records who was acted as.
 func WithImpersonationConfig(req *http.Request, conf *ImpersonationRequest) *http.Request {
 	ctxToReturn := request.WithValue(req.Context(), impersonationConfigKey, conf)
-	if *conf.ImpersonatedUser != nil {
-		ctxToReturn = request.WithUser(ctxToReturn, *conf.ImpersonatedUser)
+	if conf.ImpersonatedUser != nil {
+		ctxToReturn = request.WithUser(ctxToReturn, conf.ImpersonatedUser)
 	}
 	return req.WithContext(ctxToReturn)
 }
@@ -280,48 +288,10 @@ func ImpersonationConfig(req *http.Request) *ImpersonationRequest {
 	return conf
 }
 
-// WithBearerToken will add the bearer token to the request context from an http.Header to the request context.
-func WithBearerToken(req *http.Request, header http.Header) *http.Request {
-	return req.WithContext(request.WithValue(req.Context(), bearerTokenKey, header.Get("Authorization")))
-}
-
-// BearerToken will return the bearer token stored in the request context.
-func BearerToken(req *http.Request) string {
-	token, _ := req.Context().Value(bearerTokenKey).(string)
-	return token
-}
-
-// RemoteAddr returns the authoritative source client address for the request.
-// The value is resolved once (honouring the configured trusted proxies) and
-// cached on the request context so repeated calls within a request are
-// consistent and cheap.
-func RemoteAddr(req *http.Request) (*http.Request, string) {
-	ctx := req.Context()
-
-	clientAddress, ok := ctx.Value(clientAddressKey).(string)
-	if !ok {
-		clientAddress = ResolveClientIP(req.RemoteAddr, forwardedFor(req.Header), trustedProxies)
-		req = req.WithContext(request.WithValue(ctx, clientAddressKey, clientAddress))
-	}
-
-	return req, clientAddress
-}
-
-// forwardedFor returns the raw X-Forwarded-For header value.
-func forwardedFor(headers http.Header) string {
-	return headers.Get("X-Forwarded-For")
-}
-
 // ResolveClientIP returns the authoritative client IP for a request given the
 // peer address, the X-Forwarded-For chain, and the set of trusted proxy
 // networks. See the package documentation for the full contract. It is
 // IPv4/IPv6 aware and ignores malformed forwarded entries.
-//
-// This contract is intentionally identical to resolveClientIP in
-// pkg/proxy/logging/accesslog.go so the audit-log src_ip and the
-// Remote-Client-IP impersonation extra never disagree; the two are duplicated
-// only because of package/lane boundaries and MUST be kept in sync until they
-// are unified into one shared resolver.
 func ResolveClientIP(remoteAddr, xff string, trusted []*net.IPNet) string {
 	peer := PeerHost(remoteAddr)
 

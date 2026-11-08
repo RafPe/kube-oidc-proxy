@@ -153,9 +153,7 @@ func New(reviewer clientazv1.SubjectAccessReviewInterface, sarTimeout, allowCach
 	if maxHeaderValues <= 0 {
 		return nil, fmt.Errorf("maxHeaderValues must be greater than 0, got %d", maxHeaderValues)
 	}
-	if logger == nil {
-		logger = slog.New(slog.DiscardHandler)
-	}
+	logger = logging.OrDiscard(logger)
 	return &SubjectAccessReview{
 		logger:          logger,
 		reviewer:        reviewer,
@@ -378,10 +376,7 @@ func (s *SubjectAccessReview) checkRbacImpersonationAuthorization(ctx context.Co
 // zero-valued reviewer tests build directly, which New would have given a
 // discarding logger.
 func (s *SubjectAccessReview) log() *slog.Logger {
-	if s.logger == nil {
-		return slog.New(slog.DiscardHandler)
-	}
-	return s.logger
+	return logging.OrDiscard(s.logger)
 }
 
 // targetKind maps a review resource onto the closed target_kind value the

@@ -59,17 +59,17 @@ type fakeProxy struct {
 func newAccessLogger(t *testing.T) (*accesslogging.AccessLogger, *logtest.Capture) {
 	t.Helper()
 	root, records := logtest.New(t, 0)
-	return accesslogging.NewAccessLogger(logging.ForComponent(root, logging.ComponentRequest), nil), records
+	return accesslogging.NewAccessLogger(logging.ForComponent(root, logging.ComponentRequest)), records
 }
 
 // testIssuerName is the issuer the fake OIDC authenticator attributes an
-// accepted token to, standing in for the WithIssuerName wrapper run.go puts
+// accepted token to, standing in for the AttributeToIssuer wrapper run.go puts
 // around every configured issuer's authenticator.
 const testIssuerName = "corp"
 
 // oidcAnswer returns a fake AuthenticateToken body that answers with resp and,
 // when it accepted the token, names testIssuerName on the request the way the
-// WithIssuerName wrapper does in production. Every success path needs it:
+// AttributeToIssuer wrapper does in production. Every success path needs it:
 // authn.oidc.succeeded requires a non-empty issuer_name.
 func oidcAnswer(resp *authenticator.Response, ok bool, err error) func(stdcontext.Context, string) (*authenticator.Response, bool, error) {
 	return func(ctx stdcontext.Context, _ string) (*authenticator.Response, bool, error) {
@@ -81,11 +81,8 @@ func oidcAnswer(resp *authenticator.Response, ok bool, err error) func(stdcontex
 }
 
 // withTestRequestID stamps the correlation id the request-id filter mints in
-// production, on both channels the filter uses: the proxy context the access
-// record reads, and the logging context Emit reads to supply request_id to any
-// event that requires it. Every access record is required to carry one.
+// production. Every access record is required to carry one.
 func withTestRequestID(req *http.Request) *http.Request {
-	req = req.WithContext(logging.WithRequestID(req.Context(), "test-request-id"))
 	return proxycontext.WithRequestID(req, "test-request-id")
 }
 
@@ -336,7 +333,7 @@ func TestErrorHandlerInternalFailureEmitsHandlerFailed(t *testing.T) {
 			requestLogger := logging.ForComponent(root, logging.ComponentRequest)
 			p := &Proxy{
 				logger: requestLogger,
-				access: accesslogging.NewAccessLogger(requestLogger, nil),
+				access: accesslogging.NewAccessLogger(requestLogger),
 			}
 			p.handleError = p.newErrorHandler()
 
@@ -610,7 +607,7 @@ func newTestProxy(t *testing.T) *fakeProxy {
 			oidcLog:               logging.ForComponent(root, logging.ComponentOIDC),
 			tokenReviewLog:        logging.ForComponent(root, logging.ComponentTokenReview),
 			upstreamLog:           logging.ForComponent(root, logging.ComponentUpstream),
-			access:                accesslogging.NewAccessLogger(requestLogger, nil),
+			access:                accesslogging.NewAccessLogger(requestLogger),
 			oidcRequestAuther:     bearertoken.New(fakeToken),
 			tokenReviewer:         fakeReviewer,
 			subjectAccessReviewer: subjectAccessReview,

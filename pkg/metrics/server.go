@@ -49,9 +49,7 @@ type Server struct {
 // NewServer builds a Server exposing rec on addr. It does not bind until
 // Start. A nil logger discards every record.
 func NewServer(addr string, rec *Recorder, logger *slog.Logger) *Server {
-	if logger == nil {
-		logger = slog.New(slog.DiscardHandler)
-	}
+	logger = logging.OrDiscard(logger)
 	return &Server{
 		logger:          logger,
 		shutdownTimeout: shutdownTimeout,

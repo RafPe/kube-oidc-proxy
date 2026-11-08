@@ -71,9 +71,7 @@ type Audit struct {
 // logger is the audit-component logger; a nil logger yields one that discards
 // every record, so a partially wired caller cannot panic on the request path.
 func New(opts *options.AuditOptions, externalAddress string, secureServingInfo *server.SecureServingInfo, logger *slog.Logger) (*Audit, error) {
-	if logger == nil {
-		logger = slog.New(slog.DiscardHandler)
-	}
+	logger = logging.OrDiscard(logger)
 
 	serverConfig := &server.Config{
 		ExternalAddress: externalAddress,

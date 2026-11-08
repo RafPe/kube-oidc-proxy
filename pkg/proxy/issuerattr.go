@@ -42,12 +42,12 @@ func setIssuerName(ctx context.Context, name string) {
 	}
 }
 
-// WithIssuerName returns inner wrapped so that a token it accepts is
+// AttributeToIssuer returns inner wrapped so that a token it accepts is
 // attributed to name, which is the issuer's configured name or the host of its
 // URL — never the full issuer URL. Wrap every per-issuer authenticator before
 // they are combined into a union, so the record names the issuer that actually
 // accepted the token rather than the set that was tried.
-func WithIssuerName(name string, inner authenticator.Token) authenticator.Token {
+func AttributeToIssuer(name string, inner authenticator.Token) authenticator.Token {
 	return &namedIssuer{name: name, inner: inner}
 }
 

@@ -150,87 +150,81 @@ func TestResolveClientIP(t *testing.T) {
 	}
 }
 
-// TestRemoteAddr_DefaultTrustsNothing verifies the request-level entry point
+// TestClientIP_DefaultTrustsNothing verifies the request-level entry point
 // uses the direct peer by default and does not honour a forged XFF header.
-func TestRemoteAddr_DefaultTrustsNothing(t *testing.T) {
-	SetTrustedProxies(nil)
-	t.Cleanup(func() { SetTrustedProxies(nil) })
-
+func TestClientIP_DefaultTrustsNothing(t *testing.T) {
 	req := &http.Request{
 		RemoteAddr: "203.0.113.7:5555",
 		Header:     http.Header{"X-Forwarded-For": []string{"1.2.3.4"}},
 	}
 
-	_, got := RemoteAddr(req)
-	if got != "203.0.113.7" {
-		t.Fatalf("RemoteAddr = %q, want %q", got, "203.0.113.7")
+	if got := ClientIP(WithResolvedClient(req, nil)); got != "203.0.113.7" {
+		t.Fatalf("ClientIP = %q, want %q", got, "203.0.113.7")
 	}
 }
 
-// TestRemoteAddr_TrustedPeerHonoursXFF verifies XFF is honoured when the peer is
+// TestClientIP_TrustedPeerHonoursXFF verifies XFF is honoured when the peer is
 // a configured trusted proxy. The returned value is exactly what handlers.go
 // writes into extra[UserHeaderClientIPKey] (the Remote-Client-IP impersonation
 // extra), so this also pins the impersonation-extra client IP.
-func TestRemoteAddr_TrustedPeerHonoursXFF(t *testing.T) {
-	SetTrustedProxies(mustCIDRs(t, "10.0.0.0/8"))
-	t.Cleanup(func() { SetTrustedProxies(nil) })
-
+func TestClientIP_TrustedPeerHonoursXFF(t *testing.T) {
 	req := &http.Request{
 		RemoteAddr: "10.0.0.1:5555",
 		Header:     http.Header{"X-Forwarded-For": []string{"203.0.113.7"}},
 	}
 
-	_, got := RemoteAddr(req)
-	if got != "203.0.113.7" {
-		t.Fatalf("RemoteAddr = %q, want %q", got, "203.0.113.7")
+	if got := ClientIP(WithResolvedClient(req, mustCIDRs(t, "10.0.0.0/8"))); got != "203.0.113.7" {
+		t.Fatalf("ClientIP = %q, want %q", got, "203.0.113.7")
 	}
 }
 
-// TestRemoteAddr_CachesResolvedValue verifies the resolved address is cached on
-// the request context: a second call returns the cached value even if the
-// header or trusted set later changes, keeping the value stable within a
-// request.
-func TestRemoteAddr_CachesResolvedValue(t *testing.T) {
-	SetTrustedProxies(nil)
-	t.Cleanup(func() { SetTrustedProxies(nil) })
-
+// TestClientIP_UnresolvedRequestReportsPeer pins the fallback for a request
+// that never passed through WithResolvedClient: the direct peer, which is what
+// the contract resolves to when no proxy is trusted, so a caller outside the
+// filter chain never sees a forwarded address it did not validate.
+func TestClientIP_UnresolvedRequestReportsPeer(t *testing.T) {
 	req := &http.Request{
 		RemoteAddr: "203.0.113.7:5555",
 		Header:     http.Header{"X-Forwarded-For": []string{"1.2.3.4"}},
 	}
 
-	req, first := RemoteAddr(req)
-	if first != "203.0.113.7" {
-		t.Fatalf("first RemoteAddr = %q, want %q", first, "203.0.113.7")
-	}
-
-	// Change trust config and header; the cached value must not change.
-	SetTrustedProxies(mustCIDRs(t, "0.0.0.0/0"))
-	req.Header.Set("X-Forwarded-For", "5.6.7.8")
-
-	_, second := RemoteAddr(req)
-	if second != first {
-		t.Errorf("cached RemoteAddr changed: got %q, want %q", second, first)
+	if got := ClientIP(req); got != "203.0.113.7" {
+		t.Fatalf("ClientIP = %q, want %q", got, "203.0.113.7")
 	}
 }
 
-// TestSanitizeForwardHeaders pins the trusted-proxy contract as applied to the
+// TestWithResolvedClient_LeavesCallerRequestUntouched pins that the
+// derivation owns its header map: the caller's request still carries exactly
+// what arrived, so a filter can report the inbound headers after resolving.
+func TestWithResolvedClient_LeavesCallerRequestUntouched(t *testing.T) {
+	req := &http.Request{
+		RemoteAddr: "203.0.113.7:5555",
+		Header: http.Header{
+			"X-Forwarded-For": []string{"1.2.3.4"},
+			"X-Real-Ip":       []string{"9.9.9.9"},
+		},
+	}
+
+	out := WithResolvedClient(req, nil)
+
+	if got := out.Header.Get("X-Forwarded-For"); got != "" {
+		t.Errorf("derived X-Forwarded-For = %q, want dropped", got)
+	}
+	if got := req.Header.Get("X-Forwarded-For"); got != "1.2.3.4" {
+		t.Errorf("caller's X-Forwarded-For = %q, want untouched 1.2.3.4", got)
+	}
+	if got := req.Header.Get("X-Real-Ip"); got != "9.9.9.9" {
+		t.Errorf("caller's X-Real-Ip = %q, want untouched 9.9.9.9", got)
+	}
+}
+
+// TestWithResolvedClient pins the trusted-proxy contract as applied to the
 // inbound forwarding headers. The final assertion runs the apiserver's own
 // utilnet.SourceIPs over the sanitized request — that function is what the
 // audit filter uses to fill sourceIPs, so it is the audit-visible outcome that
 // is pinned, not just the header rewrite.
-func TestSanitizeForwardHeaders(t *testing.T) {
-	mustCIDRs := func(cidrs ...string) []*net.IPNet {
-		var nets []*net.IPNet
-		for _, c := range cidrs {
-			_, n, err := net.ParseCIDR(c)
-			if err != nil {
-				t.Fatalf("parsing test CIDR %q: %s", c, err)
-			}
-			nets = append(nets, n)
-		}
-		return nets
-	}
+func TestWithResolvedClient(t *testing.T) {
+	mustCIDRs := func(cidrs ...string) []*net.IPNet { return mustCIDRs(t, cidrs...) }
 
 	tests := map[string]struct {
 		trusted      []*net.IPNet
@@ -286,10 +280,6 @@ func TestSanitizeForwardHeaders(t *testing.T) {
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			oldTrusted := trustedProxies
-			t.Cleanup(func() { trustedProxies = oldTrusted })
-			trustedProxies = test.trusted
-
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil)
 			req.RemoteAddr = "10.0.0.5:12345"
 			if test.xff != "" {
@@ -299,7 +289,7 @@ func TestSanitizeForwardHeaders(t *testing.T) {
 				req.Header.Set("X-Real-Ip", test.realIP)
 			}
 
-			req = SanitizeForwardHeaders(req)
+			req = WithResolvedClient(req, test.trusted)
 
 			if got := req.Header.Get("X-Forwarded-For"); got != test.expXFF {
 				t.Errorf("unexpected X-Forwarded-For after sanitizing, exp=%q got=%q", test.expXFF, got)
@@ -350,5 +340,21 @@ func TestRequestScopedIDAccessors(t *testing.T) {
 	}
 	if got := IssuerName(req); got != "corp-idp" {
 		t.Errorf("IssuerName = %q, want corp-idp", got)
+	}
+}
+
+func TestPeerHost(t *testing.T) {
+	tests := map[string]struct{ in, exp string }{
+		"ipv4 host port":    {"1.2.3.4:8080", "1.2.3.4"},
+		"ipv6 host port":    {"[::1]:8080", "::1"},
+		"bare ipv4 no port": {"1.2.3.4", "1.2.3.4"},
+		"empty":             {"", ""},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := PeerHost(tc.in); got != tc.exp {
+				t.Errorf("PeerHost(%q) = %q, want %q", tc.in, got, tc.exp)
+			}
+		})
 	}
 }
