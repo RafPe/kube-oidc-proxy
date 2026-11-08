@@ -14,7 +14,6 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"net/http"
 	"os"
 	"runtime"
 	"sort"
@@ -24,17 +23,13 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
-	apiserverapi "k8s.io/apiserver/pkg/apis/apiserver"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
-	authenticationcel "k8s.io/apiserver/pkg/authentication/cel"
-	tokenunion "k8s.io/apiserver/pkg/authentication/token/union"
 	"k8s.io/apiserver/pkg/server"
-	"k8s.io/apiserver/pkg/server/dynamiccertificates"
-	"k8s.io/apiserver/plugin/pkg/authenticator/token/oidc"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
 	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
+	"github.com/rafpe/kube-oidc-proxy/pkg/authn"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/probe"
@@ -44,8 +39,6 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/util/signals"
 	"github.com/rafpe/kube-oidc-proxy/pkg/util/token"
 )
-
-const oidcHTTPTimeout = 30 * time.Second
 
 // checkReservedIdentityPrefixes refuses to start when the operator's own
 // username or group prefix would itself mint reserved identities for every
@@ -126,48 +119,94 @@ func logConfigLoaded(l *slog.Logger, summary configSummary) {
 		slog.String("readiness_mode", summary.readinessMode))
 }
 
-// logIssuersConfigured reports one record per configured issuer, so a query on
-// oidc.issuer.configured lists what this pod accepts without decomposing a
-// slice interpolated into a message. It takes issuer names, never URLs: see
-// issuerNames.
-func logIssuersConfigured(l *slog.Logger, names []string) {
-	ctx := context.Background()
-	for _, name := range names {
-		logging.Emit(ctx, l, logging.EventOIDCIssuerConfigured,
-			slog.String("issuer_name", name),
-			slog.Int("issuer_count", len(names)))
+// startMetrics builds the recorder and starts the metrics listener when
+// metrics are enabled. Both are nil when they are not; every collaborator
+// treats a nil recorder as a no-op.
+func startMetrics(ctx context.Context, opts *options.Options, root *slog.Logger) (*metrics.Recorder, *metrics.Server, error) {
+	if !opts.Metrics.Enabled() {
+		return nil, nil, nil
 	}
+	recorder, err := metrics.New(metrics.BuildInfo{
+		Version:   opts.Version.Version(),
+		Revision:  opts.Version.Commit(),
+		GoVersion: runtime.Version(),
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	server := metrics.NewServer(opts.Metrics.BindAddress, recorder,
+		logging.ForComponent(root, logging.ComponentMetrics))
+	if err := server.Start(ctx); err != nil {
+		return nil, nil, err
+	}
+	return recorder, server, nil
 }
 
-// issuerNames maps configured issuer URLs onto the names the records carry.
-// The full issuer URL is never logged, so a URL with no host becomes the
-// placeholder rather than the URL itself.
-func issuerNames(issuerURLs []string) []string {
-	if len(issuerURLs) == 0 {
-		return nil
+// buildRESTConfig selects the API server client configuration: the explicit
+// client flags when any was given, the in-cluster configuration otherwise,
+// with the configured client throttling applied to either.
+func buildRESTConfig(opts *options.Options, cmd *cobra.Command) (*rest.Config, error) {
+	var restConfig *rest.Config
+	var err error
+	if opts.Client.ClientFlagsChanged(cmd) {
+		restConfig, err = opts.Client.ToRESTConfig()
+	} else {
+		restConfig, err = rest.InClusterConfig()
 	}
-	names := make([]string, len(issuerURLs))
-	for i, issuerURL := range issuerURLs {
-		names[i] = probe.IssuerName(issuerURL)
+	if err != nil {
+		return nil, err
 	}
-	return names
+
+	if opts.Client.KubeClientBurst > 0 {
+		restConfig.Burst = opts.Client.KubeClientBurst
+	}
+	if opts.Client.KubeClientQPS > 0 {
+		restConfig.QPS = opts.Client.KubeClientQPS
+	}
+	return restConfig, nil
 }
 
-// duplicateIssuerName reports the first issuer name two configured issuer URLs
-// map onto, together with the URL already stored under that name and the one
-// that collided with it. Names are hosts (see probe.IssuerName), so issuers
-// that differ only by path collide -- and then the name alone does not say
-// which two configuration entries have to change.
-func duplicateIssuerName(issuerURLs []string) (name, first, other string, dup bool) {
-	seen := make(map[string]string, len(issuerURLs))
-	names := issuerNames(issuerURLs)
-	for i, n := range names {
-		if firstURL, ok := seen[n]; ok {
-			return n, firstURL, issuerURLs[i], true
-		}
-		seen[n] = issuerURLs[i]
+// buildTokenReviewer builds the token passthrough reviewer, or returns nil
+// when passthrough is disabled. The reviewer is wrapped in a token result
+// cache so repeated reviews of the same token (e.g. request storms during an
+// OIDC issuer outage) do not each cost an API server round trip; NewCached
+// returns the bare reviewer when both TTLs are zero.
+func buildTokenReviewer(opts *options.Options, restConfig *rest.Config, recorder *metrics.Recorder, root *slog.Logger) (authenticator.Token, error) {
+	if !opts.App.TokenPassthrough.Enabled {
+		return nil, nil
 	}
-	return "", "", "", false
+	reviewer, err := tokenreview.New(restConfig, opts.App.TokenPassthrough.Audiences,
+		opts.App.TokenPassthrough.RequestTimeout,
+		logging.ForComponent(root, logging.ComponentTokenReview))
+	if err != nil {
+		return nil, err
+	}
+	reviewer.WithMetrics(recorder)
+	return tokenreview.NewCached(reviewer,
+		opts.App.TokenPassthrough.CacheSuccessTTL,
+		opts.App.TokenPassthrough.CacheFailureTTL), nil
+}
+
+// authenticatorConfig maps the parsed flags onto the authenticator package's
+// configuration, which is the only thing that package needs from the command.
+func authenticatorConfig(opts *options.Options) authn.Config {
+	o := opts.OIDCAuthentication
+	return authn.Config{
+		ConfigFile: opts.AuthenticationConfig.ConfigFile,
+		Issuer: authn.IssuerConfig{
+			URL:            o.IssuerURL,
+			ClientID:       o.ClientID,
+			CAFile:         o.CAFile,
+			UsernameClaim:  o.UsernameClaim,
+			UsernamePrefix: o.UsernamePrefix,
+			GroupsClaim:    o.GroupsClaim,
+			GroupsPrefix:   o.GroupsPrefix,
+			SigningAlgs:    o.SigningAlgs,
+			RequiredClaims: o.RequiredClaims,
+		},
+		TLSClientCertFile: o.TLSClientCertFile,
+		TLSClientKeyFile:  o.TLSClientKeyFile,
+	}
 }
 
 // drain runs the shutdown sequence and joins every failure it collects, so a
@@ -287,22 +326,11 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 			metricsCtx, cancelMetrics := context.WithCancel(context.Background())
 			defer cancelMetrics()
 
-			var recorder *metrics.Recorder
-			var metricsServer *metrics.Server
-			if opts.Metrics.Enabled() {
-				recorder, err = metrics.New(metrics.BuildInfo{
-					Version:   opts.Version.Version(),
-					Revision:  opts.Version.Commit(),
-					GoVersion: runtime.Version(),
-				})
-				if err != nil {
-					return fail(err)
-				}
-				metricsServer = metrics.NewServer(opts.Metrics.BindAddress, recorder,
-					logging.ForComponent(root, logging.ComponentMetrics))
-				if err := metricsServer.Start(metricsCtx); err != nil {
-					return fail(err)
-				}
+			recorder, metricsServer, err := startMetrics(metricsCtx, opts, root)
+			if err != nil {
+				return fail(err)
+			}
+			if metricsServer != nil {
 				defer func() {
 					cancelMetrics()
 					// Reported as metrics.server.failed by the server itself;
@@ -315,49 +343,14 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 				return fail(err)
 			}
 
-			// Here we determine to either use custom or 'in-cluster' client configuration
-			var restConfig *rest.Config
-			if opts.Client.ClientFlagsChanged(cmd) {
-				// One or more client flags have been set to use client flag built
-				// config
-				restConfig, err = opts.Client.ToRESTConfig()
-				if err != nil {
-					return fail(err)
-				}
-
-			} else {
-				// No client flags have been set so default to in-cluster config
-				restConfig, err = rest.InClusterConfig()
-				if err != nil {
-					return fail(err)
-				}
+			restConfig, err := buildRESTConfig(opts, cmd)
+			if err != nil {
+				return fail(err)
 			}
 
-			// Set client throttling settings for Kubernetes clients.
-			if opts.Client.KubeClientBurst > 0 {
-				restConfig.Burst = opts.Client.KubeClientBurst
-			}
-			if opts.Client.KubeClientQPS > 0 {
-				restConfig.QPS = opts.Client.KubeClientQPS
-			}
-
-			// Initialise token reviewer if enabled. The reviewer is wrapped in
-			// a token result cache so repeated reviews of the same token
-			// (e.g. request storms during an OIDC issuer outage) do not each
-			// cost an API server round trip; NewCached returns the bare
-			// reviewer when both TTLs are zero.
-			var tokenReviewer authenticator.Token
-			if opts.App.TokenPassthrough.Enabled {
-				reviewer, err := tokenreview.New(restConfig, opts.App.TokenPassthrough.Audiences,
-					opts.App.TokenPassthrough.RequestTimeout,
-					logging.ForComponent(root, logging.ComponentTokenReview))
-				if err != nil {
-					return fail(err)
-				}
-				reviewer.WithMetrics(recorder)
-				tokenReviewer = tokenreview.NewCached(reviewer,
-					opts.App.TokenPassthrough.CacheSuccessTTL,
-					opts.App.TokenPassthrough.CacheFailureTTL)
+			tokenReviewer, err := buildTokenReviewer(opts, restConfig, recorder, root)
+			if err != nil {
+				return fail(err)
 			}
 
 			secureServingInfo := new(server.SecureServingInfo)
@@ -400,9 +393,8 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 			}
 			subjectAccessReviewer.WithMetrics(recorder)
 
-			oidcLogger := logging.ForComponent(root, logging.ComponentOIDC)
-
-			tokenAuthenticator, issuerURLs, err := buildTokenAuthenticator(opts, oidcLogger, startupLogger)
+			tokenAuthenticator, issuerURLs, err := authn.Build(authenticatorConfig(opts),
+				logging.ForComponent(root, logging.ComponentOIDC), startupLogger)
 			if err != nil {
 				return fail(err)
 			}
@@ -502,202 +494,4 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 			return nil
 		},
 	}
-}
-
-// caFromFile implements oidc.CAContentProvider backed by a PEM file. The
-// bundle is re-read on every call, so a file that becomes unreadable after
-// startup silently yields an empty bundle; the record below is the only signal
-// an operator gets.
-type caFromFile struct {
-	path string
-
-	// logger is the startup-component logger the unreadable-CA record goes to.
-	// Never nil: caContentProvider substitutes a discarding logger.
-	logger *slog.Logger
-}
-
-func (c caFromFile) CurrentCABundleContent() []byte {
-	data, err := os.ReadFile(c.path)
-	if err != nil {
-		logging.Emit(context.Background(), c.logger, logging.EventProxyConfigInvalid,
-			slog.String("reason", "ca_file_unreadable"),
-			logging.ErrAttr(err))
-	}
-	return data
-}
-
-// caContentProvider returns the CAContentProvider to use for a given path.
-// When path is empty it returns nil, signalling oidc.New() to use the system certificate pool.
-func caContentProvider(path string, logger *slog.Logger) oidc.CAContentProvider {
-	if path == "" {
-		return nil
-	}
-	logger = logging.OrDiscard(logger)
-	return caFromFile{path: path, logger: logger}
-}
-
-// buildTokenAuthenticator builds the token authenticator and returns the issuer URLs
-// backing it. oidcLogger carries the per-issuer configuration records and
-// startupLogger the configuration failures a CA file can raise later.
-func buildTokenAuthenticator(opts *options.Options, oidcLogger, startupLogger *slog.Logger) (authenticator.Token, []string, error) {
-	if opts.AuthenticationConfig.ConfigFile != "" {
-		return buildUnionAuthenticator(opts, oidcLogger)
-	}
-	return buildSingleAuthenticator(opts.OIDCAuthentication, oidcLogger, startupLogger)
-}
-
-// jwtAuthenticatorFromOIDCOptions builds the internal JWTAuthenticator config
-// for the single-issuer (--oidc-*) path. Any --oidc-required-claim key=value
-// pairs are mapped into ClaimValidationRules so the OIDC authenticator enforces
-// them; without this mapping the flag is silently ignored.
-func jwtAuthenticatorFromOIDCOptions(o *options.OIDCAuthenticationOptions) apiserverapi.JWTAuthenticator {
-	usernamePrefix := o.UsernamePrefix
-	groupsPrefix := o.GroupsPrefix
-
-	rules := make([]apiserverapi.ClaimValidationRule, 0, len(o.RequiredClaims))
-	for claim, value := range o.RequiredClaims {
-		rules = append(rules, apiserverapi.ClaimValidationRule{
-			Claim:         claim,
-			RequiredValue: value,
-		})
-	}
-	// Map iteration order is randomized; sort for deterministic construction.
-	sort.Slice(rules, func(i, j int) bool { return rules[i].Claim < rules[j].Claim })
-
-	return apiserverapi.JWTAuthenticator{
-		Issuer: apiserverapi.Issuer{
-			URL:       o.IssuerURL,
-			Audiences: []string{o.ClientID},
-		},
-		ClaimMappings: apiserverapi.ClaimMappings{
-			Username: apiserverapi.PrefixedClaimOrExpression{
-				Claim:  o.UsernameClaim,
-				Prefix: &usernamePrefix,
-			},
-			Groups: apiserverapi.PrefixedClaimOrExpression{
-				Claim:  o.GroupsClaim,
-				Prefix: &groupsPrefix,
-			},
-		},
-		ClaimValidationRules: rules,
-	}
-}
-
-func buildSingleAuthenticator(o *options.OIDCAuthenticationOptions, oidcLogger, startupLogger *slog.Logger) (authenticator.Token, []string, error) {
-	jwtConfig := jwtAuthenticatorFromOIDCOptions(o)
-	client, err := oidcHTTPClient(o.CAFile, nil, o.TLSClientCertFile, o.TLSClientKeyFile)
-	if err != nil {
-		return nil, nil, fmt.Errorf("creating OIDC HTTP client for issuer %q: %w", o.IssuerURL, err)
-	}
-
-	// A client certificate means a dedicated HTTP client that already carries
-	// the CA; the authenticator takes the CA directly only when it builds the
-	// client itself.
-	var provider oidc.CAContentProvider
-	if client == nil {
-		provider = caContentProvider(o.CAFile, startupLogger)
-	}
-	authn, err := oidc.New(context.Background(), oidc.Options{
-		CAContentProvider:    provider,
-		Client:               client,
-		SupportedSigningAlgs: o.SigningAlgs,
-		JWTAuthenticator:     jwtConfig,
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("creating OIDC authenticator for issuer %q: %w", o.IssuerURL, err)
-	}
-	logIssuersConfigured(oidcLogger, issuerNames([]string{o.IssuerURL}))
-
-	return proxy.AttributeToIssuer(probe.IssuerName(o.IssuerURL), authn), []string{o.IssuerURL}, nil
-}
-
-func buildUnionAuthenticator(opts *options.Options, oidcLogger *slog.Logger) (authenticator.Token, []string, error) {
-	// One CEL compiler shared by document validation and every authenticator:
-	// CEL environments are expensive to construct.
-	compiler := authenticationcel.NewDefaultCompiler()
-
-	authCfg, err := opts.AuthenticationConfig.Load(compiler)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// Issuers are named by host in every record and every metric series. Two
-	// issuers on one host with different paths would share a name, and a
-	// per-issuer gauge cannot tell them apart, so the configuration is refused
-	// here, before any authenticator is built or any issuer is reported.
-	issuerURLs := make([]string, 0, len(authCfg.JWT))
-	for _, jwtEntry := range authCfg.JWT {
-		issuerURLs = append(issuerURLs, jwtEntry.Issuer.URL)
-	}
-	if name, first, other, dup := duplicateIssuerName(issuerURLs); dup {
-		return nil, nil, fmt.Errorf("two configured issuers share the name %q (%q and %q); issuers must differ by host", name, first, other)
-	}
-
-	authenticators := make([]authenticator.Token, 0, len(authCfg.JWT))
-	for _, jwtEntry := range authCfg.JWT {
-		authn, err := oidcAuthenticatorFromJWT(jwtEntry, compiler, oidc.AllValidSigningAlgorithms(), opts.OIDCAuthentication)
-		if err != nil {
-			return nil, nil, fmt.Errorf("building authenticator for issuer %q: %w", jwtEntry.Issuer.URL, err)
-		}
-		authenticators = append(authenticators, proxy.AttributeToIssuer(probe.IssuerName(jwtEntry.Issuer.URL), authn))
-	}
-
-	logIssuersConfigured(oidcLogger, issuerNames(issuerURLs))
-
-	return tokenunion.NewFailOnError(authenticators...), issuerURLs, nil
-}
-
-func oidcAuthenticatorFromJWT(
-	jwtConfig apiserverapi.JWTAuthenticator,
-	compiler authenticationcel.Compiler,
-	signingAlgs []string,
-	transportOptions *options.OIDCAuthenticationOptions,
-) (authenticator.Token, error) {
-	client, err := oidcHTTPClient(
-		"",
-		[]byte(jwtConfig.Issuer.CertificateAuthority),
-		transportOptions.TLSClientCertFile,
-		transportOptions.TLSClientKeyFile,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("creating OIDC HTTP client for issuer %q: %w", jwtConfig.Issuer.URL, err)
-	}
-
-	// As in buildSingleAuthenticator: a dedicated client already carries the CA, so
-	// the authenticator takes it directly only when there is no client.
-	var provider oidc.CAContentProvider
-	if client == nil && jwtConfig.Issuer.CertificateAuthority != "" {
-		provider, err = dynamiccertificates.NewStaticCAContent("oidc-authenticator", []byte(jwtConfig.Issuer.CertificateAuthority))
-		if err != nil {
-			return nil, fmt.Errorf("invalid certificateAuthority for issuer %q: %w", jwtConfig.Issuer.URL, err)
-		}
-	}
-
-	return oidc.New(context.Background(), oidc.Options{
-		CAContentProvider:    provider,
-		Client:               client,
-		SupportedSigningAlgs: signingAlgs,
-		JWTAuthenticator:     jwtConfig,
-		Compiler:             compiler,
-	})
-}
-
-func oidcHTTPClient(caFile string, caData []byte, certFile, keyFile string) (*http.Client, error) {
-	if certFile == "" {
-		return nil, nil
-	}
-
-	roundTripper, err := rest.TransportFor(&rest.Config{
-		TLSClientConfig: rest.TLSClientConfig{
-			CAFile:   caFile,
-			CAData:   caData,
-			CertFile: certFile,
-			KeyFile:  keyFile,
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("building OIDC TLS transport: %w", err)
-	}
-
-	return &http.Client{Transport: roundTripper, Timeout: oidcHTTPTimeout}, nil
 }

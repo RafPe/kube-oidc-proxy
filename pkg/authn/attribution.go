@@ -1,5 +1,5 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
-package proxy
+package authn
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 )
 
-// issuerHolder carries the name of the issuer that accepted a token back out
+// IssuerHolder carries the name of the issuer that accepted a token back out
 // of the authenticator. authenticator.Token is handed a context and returns a
 // *authenticator.Response, so it has no way to name itself on the request:
 // writing the name into Response.User.Extra would be the only alternative, and
@@ -18,26 +18,32 @@ import (
 // once, by the single authenticator that accepted the token: the union
 // authenticator tries its members in sequence, and the ones that refuse the
 // token never reach the wrapper's success path.
-type issuerHolder struct {
+type IssuerHolder struct {
 	name string
 }
 
-// issuerHolderKey is the proxy-private context key the holder travels under.
+// Name returns the issuer recorded on the holder, or "" when no authenticator
+// accepted the token.
+func (h *IssuerHolder) Name() string {
+	return h.name
+}
+
+// issuerHolderKey is the context key the holder travels under.
 type issuerHolderKey struct{}
 
-// withIssuerHolder returns a context carrying a fresh holder for the
+// WithIssuerHolder returns a context carrying a fresh holder for the
 // authenticator to name itself on, and the holder to read back afterwards.
-func withIssuerHolder(ctx context.Context) (context.Context, *issuerHolder) {
-	holder := new(issuerHolder)
+func WithIssuerHolder(ctx context.Context) (context.Context, *IssuerHolder) {
+	holder := new(IssuerHolder)
 	return context.WithValue(ctx, issuerHolderKey{}, holder), holder
 }
 
-// setIssuerName records the issuer that accepted the token on the holder the
+// RecordIssuer records the issuer that accepted the token on the holder the
 // context carries. A context without one is not an error: the readiness probe
 // drives the same authenticators with a fake JWT outside any request, and
 // there is nothing there to attribute.
-func setIssuerName(ctx context.Context, name string) {
-	if holder, ok := ctx.Value(issuerHolderKey{}).(*issuerHolder); ok {
+func RecordIssuer(ctx context.Context, name string) {
+	if holder, ok := ctx.Value(issuerHolderKey{}).(*IssuerHolder); ok {
 		holder.name = name
 	}
 }
@@ -63,7 +69,7 @@ type namedIssuer struct {
 func (n *namedIssuer) AuthenticateToken(ctx context.Context, token string) (*authenticator.Response, bool, error) {
 	resp, ok, err := n.inner.AuthenticateToken(ctx, token)
 	if ok && err == nil {
-		setIssuerName(ctx, n.name)
+		RecordIssuer(ctx, n.name)
 	}
 	return resp, ok, err
 }

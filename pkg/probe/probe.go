@@ -12,7 +12,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,6 +22,7 @@ import (
 
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/authn"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/util/httpserve"
@@ -47,28 +47,6 @@ const (
 	pendingTransient      = "transient"
 	pendingError          = "error"
 )
-
-// unknownIssuerName is what an issuer whose host cannot be determined is
-// called in the log stream. It is a fixed literal rather than anything derived
-// from the input: falling back to the raw value would put the full issuer URL
-// in the record, which is exactly what the logging contract forbids.
-const unknownIssuerName = "unknown"
-
-// IssuerName derives the name an issuer is known by in the log stream. The full
-// issuer URL is never logged, so the host alone identifies the issuer, and
-// anything that does not yield a host — an unparsable value, a schemeless path,
-// an opaque URI, the empty string — becomes unknownIssuerName. The raw input is
-// never returned.
-func IssuerName(issuerURL string) string {
-	u, err := url.Parse(issuerURL)
-	if err != nil || u.Host == "" {
-		return unknownIssuerName
-	}
-	if host := strings.TrimSpace(logging.Bound(u.Host, logging.MaxIdentity)); host != "" {
-		return host
-	}
-	return unknownIssuerName
-}
 
 // pendingIssuer is one issuer that failed its probe, with the classification
 // of why. The reason is part of the state the pending record reports on
@@ -189,7 +167,7 @@ func (s *Server) WithMetrics(r *metrics.Recorder) *Server {
 	s.hc.metrics = r
 	r.SetReady(false)
 	for _, issuer := range s.hc.issuers {
-		r.SetIssuerInitialized(IssuerName(issuer.IssuerURL), false)
+		r.SetIssuerInitialized(authn.IssuerName(issuer.IssuerURL), false)
 	}
 	return s
 }
@@ -402,9 +380,9 @@ func (h *HealthCheck) recordProbeResults(ctx context.Context, newlyInitialized [
 			continue
 		}
 		h.initialized[issuerURL] = true
-		h.metrics.SetIssuerInitialized(IssuerName(issuerURL), true)
+		h.metrics.SetIssuerInitialized(authn.IssuerName(issuerURL), true)
 		logging.Emit(ctx, h.oidcLogger, logging.EventOIDCIssuerInitialized,
-			slog.String("issuer_name", IssuerName(issuerURL)),
+			slog.String("issuer_name", authn.IssuerName(issuerURL)),
 			slog.String("issuer_state", "initialized"),
 			slog.Int("ready_issuers", len(h.initialized)),
 			slog.Int("total_issuers", len(h.issuers)))
@@ -423,7 +401,7 @@ func (h *HealthCheck) recordProbeResults(ctx context.Context, newlyInitialized [
 	if key := pendingKey(pending); key != h.lastPending {
 		for _, p := range pending {
 			logging.Emit(ctx, h.oidcLogger, logging.EventOIDCIssuerPending,
-				slog.String("issuer_name", IssuerName(p.issuerURL)),
+				slog.String("issuer_name", authn.IssuerName(p.issuerURL)),
 				slog.String("issuer_state", "pending"),
 				slog.String("pending_reason", p.reason),
 				slog.Int("ready_issuers", len(h.initialized)),

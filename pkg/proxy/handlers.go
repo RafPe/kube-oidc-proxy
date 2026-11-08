@@ -21,6 +21,7 @@ import (
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/client-go/transport"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/authn"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/accesslog"
@@ -148,7 +149,7 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 		// how the issuer that accepts the token reports its name back, without
 		// it travelling in the identity's extras and out as an impersonation
 		// header; it is read back below.
-		ctx, issuer := withIssuerHolder(req.Context())
+		ctx, issuer := authn.WithIssuerHolder(req.Context())
 		req = req.WithContext(ctx)
 
 		// Auth request and handle unauthed
@@ -181,10 +182,10 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 
 		// Attribute the request to the issuer that accepted its token, for this
 		// record and for every access record the request goes on to produce.
-		req = reqctx.WithIssuerName(req, issuer.name)
+		req = reqctx.WithIssuerName(req, issuer.Name())
 
 		logging.Emit(req.Context(), logging.OrDiscard(p.oidcLog), logging.EventAuthnOIDCSucceeded,
-			slog.String("issuer_name", logging.Bound(issuer.name, logging.MaxIdentity)))
+			slog.String("issuer_name", logging.Bound(issuer.Name(), logging.MaxIdentity)))
 
 		// The token was accepted, so every record from here on -- including a
 		// rejection by the reserved-identity guard -- reports the OIDC path.

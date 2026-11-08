@@ -29,6 +29,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/cert"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/authn"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
@@ -73,7 +74,7 @@ const testIssuerName = "corp"
 func oidcAnswer(resp *authenticator.Response, ok bool, err error) func(stdcontext.Context, string) (*authenticator.Response, bool, error) {
 	return func(ctx stdcontext.Context, _ string) (*authenticator.Response, bool, error) {
 		if ok && err == nil {
-			setIssuerName(ctx, testIssuerName)
+			authn.RecordIssuer(ctx, testIssuerName)
 		}
 		return resp, ok, err
 	}
