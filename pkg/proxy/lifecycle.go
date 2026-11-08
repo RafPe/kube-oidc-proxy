@@ -14,7 +14,7 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/audit"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 )
 
 // responseRecorder wraps the ResponseWriter for the length of one request so
@@ -146,8 +146,8 @@ func isAbortHandler(panicked any) bool {
 func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		start := time.Now()
-		req = context.WithTerminationHolder(req)
-		req = context.WithDecisionHolder(req)
+		req = reqctx.WithTerminationHolder(req)
+		req = reqctx.WithDecisionHolder(req)
 		ctx := req.Context()
 		l := logging.FromContext(ctx)
 
@@ -191,7 +191,7 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 
 		defer func() {
 			panicked := recover()
-			classified := context.TerminationFrom(req)
+			classified := reqctx.TerminationFrom(req)
 
 			term := metrics.TerminationNormal
 			switch {

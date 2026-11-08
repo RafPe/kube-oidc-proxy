@@ -11,7 +11,7 @@
 // forwarded chain is still emitted for observability under the
 // explicitly-untrusted "forwarded_for_untrusted" field and must not be treated
 // as identity.
-package logging
+package accesslog
 
 import (
 	"log/slog"
@@ -22,7 +22,7 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
-	proxycontext "github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 )
 
 // Extra keys the proxy itself puts on an outbound impersonated request. They
@@ -119,15 +119,15 @@ func (a *AccessLogger) LogDecision(req *http.Request, d Decision) {
 	}
 
 	attrs := []slog.Attr{
-		slog.String("request_id", logging.Bound(proxycontext.RequestID(req), logging.MaxRequestID)),
+		slog.String("request_id", logging.Bound(reqctx.RequestID(req), logging.MaxRequestID)),
 	}
-	if id := proxycontext.ClientRequestID(req); id != "" {
+	if id := reqctx.ClientRequestID(req); id != "" {
 		attrs = append(attrs, slog.String("client_request_id", logging.Bound(id, logging.MaxRequestID)))
 	}
 
 	attrs = append(attrs,
 		slog.String("event", event),
-		slog.String("src_ip", proxycontext.ClientIP(req)),
+		slog.String("src_ip", reqctx.ClientIP(req)),
 		slog.String("path", sanitizePath(req)),
 	)
 	if fwd := untrustedForwardedFor(req); fwd != "" {
@@ -138,7 +138,7 @@ func (a *AccessLogger) LogDecision(req *http.Request, d Decision) {
 		slog.String("http_method", req.Method),
 		slog.String("auth_method", string(d.AuthMethod)),
 	)
-	if name := proxycontext.IssuerName(req); name != "" {
+	if name := reqctx.IssuerName(req); name != "" {
 		attrs = append(attrs, slog.String("issuer_name", logging.Bound(name, logging.MaxIdentity)))
 	}
 
@@ -169,7 +169,7 @@ func (a *AccessLogger) LogDecision(req *http.Request, d Decision) {
 	// Marked after the record is out, so a handler further down the chain that
 	// would otherwise write a second decision for the same request -- a client
 	// that cancelled after admission, say -- can see that one already exists.
-	proxycontext.MarkDecisionRecorded(req)
+	reqctx.MarkDecisionRecorded(req)
 }
 
 // untrustedForwardedFor returns the raw forwarded chain the client actually
@@ -178,7 +178,7 @@ func (a *AccessLogger) LogDecision(req *http.Request, d Decision) {
 // arrived rather than what was forwarded. A request that never passed through
 // it still has the header itself.
 func untrustedForwardedFor(req *http.Request) string {
-	raw := proxycontext.OriginalForwardedFor(req)
+	raw := reqctx.OriginalForwardedFor(req)
 	if raw == "" {
 		raw = req.Header.Get("X-Forwarded-For")
 	}

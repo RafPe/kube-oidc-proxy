@@ -5,7 +5,7 @@
 package proxy
 
 import (
-	stdcontext "context"
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -26,10 +26,10 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/accesslog"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/audit"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/hooks"
-	accesslogging "github.com/rafpe/kube-oidc-proxy/pkg/proxy/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 	utiltoken "github.com/rafpe/kube-oidc-proxy/pkg/util/token"
 )
@@ -100,7 +100,7 @@ type Proxy struct {
 
 	// logger is the request-component logger every request-path record is
 	// emitted through, and the logger the request filter puts on the request
-	// context. Never nil: New requires a root logger.
+	// reqctx. Never nil: New requires a root logger.
 	logger *slog.Logger
 
 	// oidcLog, tokenReviewLog and upstreamLog are the component loggers for the
@@ -124,7 +124,7 @@ type Proxy struct {
 
 	// access writes the one access record per request. Injected rather than a
 	// package global so the destination is fixed at construction.
-	access *accesslogging.AccessLogger
+	access *accesslog.AccessLogger
 
 	// warnLimiter token-buckets the only two records a client can produce
 	// without bound, request.anomaly.detected and request.headers.dropped, and
@@ -255,7 +255,7 @@ func New(deps Dependencies) (*Proxy, error) {
 		oidcRequestAuther:     bearertoken.New(deps.TokenAuthenticator),
 		tokenAuthenticator:    deps.TokenAuthenticator,
 		auditor:               auditor,
-		access:                accesslogging.NewAccessLogger(requestLogger),
+		access:                accesslog.NewAccessLogger(requestLogger),
 		warnLimiter:           logging.NewLimiter(warnLimiterRate, warnLimiterBurst, warnLimiterInterval, nil),
 	}, nil
 }
@@ -321,10 +321,10 @@ func cloneHeaderMap(in map[string][]string) map[string][]string {
 	return out
 }
 
-// Run wires up the reverse-proxy handler chain and starts serving until stopCh
-// is closed. It returns a channel that is closed once serving has fully stopped
+// Run wires up the reverse-proxy handler chain and starts serving until ctx is
+// cancelled. It returns a channel that is closed once serving has fully stopped
 // and a second channel that is closed once the listener has stopped accepting.
-func (p *Proxy) Run(stopCh <-chan struct{}) (<-chan struct{}, <-chan struct{}, error) {
+func (p *Proxy) Run(ctx context.Context) (<-chan struct{}, <-chan struct{}, error) {
 	// standard round tripper for proxy to API Server
 	clientRT, err := p.roundTripperForRestConfig(p.restConfig)
 	if err != nil {
@@ -364,9 +364,9 @@ func (p *Proxy) Run(stopCh <-chan struct{}) (<-chan struct{}, <-chan struct{}, e
 	proxyHandler.ErrorHandler = p.handleError
 	proxyHandler.FlushInterval = p.config.FlushInterval
 
-	go p.flushWarnLimiter(stopCh)
+	go p.flushWarnLimiter(ctx) //nolint:gosec // G118: the final flush runs after ctx is cancelled and must not be scoped to it.
 
-	waitCh, listenerStoppedCh, err := p.serve(proxyHandler, stopCh)
+	waitCh, listenerStoppedCh, err := p.serve(proxyHandler, ctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -377,32 +377,33 @@ func (p *Proxy) Run(stopCh <-chan struct{}) (<-chan struct{}, <-chan struct{}, e
 // flushWarnLimiter reports what the warning limiter dropped, once per interval
 // and once more as the proxy stops so a burst suppressed just before shutdown
 // is still accounted for.
-func (p *Proxy) flushWarnLimiter(stopCh <-chan struct{}) {
+func (p *Proxy) flushWarnLimiter(ctx context.Context) {
 	ticker := time.NewTicker(warnLimiterInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			p.warnLimiter.Flush(stdcontext.Background(), logging.OrDiscard(p.logger))
-		case <-stopCh:
-			p.warnLimiter.Flush(stdcontext.Background(), logging.OrDiscard(p.logger))
+			p.warnLimiter.Flush(context.Background(), logging.OrDiscard(p.logger))
+		case <-ctx.Done():
+			p.warnLimiter.Flush(context.Background(), logging.OrDiscard(p.logger))
 			return
 		}
 	}
 }
 
-func (p *Proxy) serve(handler http.Handler, stopCh <-chan struct{}) (<-chan struct{}, <-chan struct{}, error) {
+func (p *Proxy) serve(handler http.Handler, ctx context.Context) (<-chan struct{}, <-chan struct{}, error) {
 	// Setup proxy handlers
 	handler = p.withHandlers(handler)
 
 	// Run auditor
-	if err := p.auditor.Run(stopCh); err != nil {
+	if err := p.auditor.Run(ctx); err != nil {
 		return nil, nil, err
 	}
 
-	// securely serve using serving config
-	waitCh, listenerStoppedCh, err := p.secureServingInfo.Serve(handler, time.Second*60, stopCh)
+	// securely serve using serving config. The apiserver's Serve stops on a
+	// closed channel, which is what the context's Done channel is.
+	waitCh, listenerStoppedCh, err := p.secureServingInfo.Serve(handler, time.Second*60, ctx.Done())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -410,7 +411,7 @@ func (p *Proxy) serve(handler http.Handler, stopCh <-chan struct{}) (<-chan stru
 	return waitCh, listenerStoppedCh, nil
 }
 
-// RoundTrip is called last and is used to manipulate the forwarded request using context.
+// RoundTrip is called last and is used to manipulate the forwarded request using reqctx.
 func (p *Proxy) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Here we have successfully authenticated so now need to determine whether
 	// we need use impersonation or not.
@@ -419,17 +420,17 @@ func (p *Proxy) RoundTrip(req *http.Request) (*http.Response, error) {
 	// forwarded as it stands: the passthrough path left the client's bearer
 	// token in place, and the disabled path forwards the authenticated request
 	// without credentials of its own.
-	if context.NoImpersonation(req) {
-		p.recordDecision(req, accesslogging.Decision{
+	if reqctx.NoImpersonation(req) {
+		p.recordDecision(req, accesslog.Decision{
 			Allowed:    true,
-			AuthMethod: context.AuthMethod(req),
+			AuthMethod: reqctx.AuthMethod(req),
 			Inbound:    userFromContext(req),
 		})
 		return p.noAuthClientTransport.RoundTrip(req)
 	}
 
-	// Get the impersonation headers from the context.
-	impersonationConf := context.ImpersonationConfig(req)
+	// Get the impersonation headers from the reqctx.
+	impersonationConf := reqctx.ImpersonationConfig(req)
 	if impersonationConf == nil {
 		return nil, errNoImpersonationConfig
 	}
@@ -439,9 +440,9 @@ func (p *Proxy) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	// Record the admitted request. Written before the upstream call so a watch
 	// or exec that runs for hours still produces its access record immediately.
-	p.recordDecision(req, accesslogging.Decision{
+	p.recordDecision(req, accesslog.Decision{
 		Allowed:    true,
-		AuthMethod: context.AuthMethod(req),
+		AuthMethod: reqctx.AuthMethod(req),
 		Inbound:    impersonationConf.InboundUser,
 		Outbound:   impersonationConf.ImpersonatedUser,
 	})
@@ -485,7 +486,7 @@ func (p *Proxy) reviewToken(rw http.ResponseWriter, req *http.Request) bool {
 // recordDecision writes the one access record a request produces and counts
 // it. Every decision goes through here, so the metric and the record can
 // never disagree about what was decided.
-func (p *Proxy) recordDecision(req *http.Request, d accesslogging.Decision) {
+func (p *Proxy) recordDecision(req *http.Request, d accesslog.Decision) {
 	p.access.LogDecision(req, d)
 	p.metrics.AccessDecision(d.AuthMethod, d.Allowed, d.Reason)
 }

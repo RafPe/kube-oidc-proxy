@@ -11,7 +11,7 @@ import (
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/user"
 
-	"github.com/rafpe/kube-oidc-proxy/pkg/mocks"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/mocks"
 )
 
 // TestReviewToken pins the fail-closed contract of the token-review fallback:

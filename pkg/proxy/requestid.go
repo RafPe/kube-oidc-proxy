@@ -10,7 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/uuid"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 )
 
 const (
@@ -37,7 +37,7 @@ func (p *Proxy) withRequestID(next http.Handler) http.Handler {
 
 		id := string(uuid.NewUUID())
 		if inbound != "" {
-			r = context.WithClientRequestID(r, inbound)
+			r = reqctx.WithClientRequestID(r, inbound)
 			if peerIsTrusted(r.RemoteAddr, p.trustedProxies) {
 				id = inbound
 			}
@@ -49,7 +49,7 @@ func (p *Proxy) withRequestID(next http.Handler) http.Handler {
 
 		r = r.WithContext(logging.NewContext(r.Context(), p.logger))
 
-		next.ServeHTTP(w, context.WithRequestID(r, id))
+		next.ServeHTTP(w, reqctx.WithRequestID(r, id))
 	})
 }
 
@@ -72,5 +72,5 @@ func validRequestID(v string) string {
 // correlation id; for anyone else the inbound value is kept as
 // client_request_id and the proxy mints its own.
 func peerIsTrusted(remoteAddr string, trusted []*net.IPNet) bool {
-	return context.IPInNetworks(context.PeerHost(remoteAddr), trusted)
+	return reqctx.IPInNetworks(reqctx.PeerHost(remoteAddr), trusted)
 }

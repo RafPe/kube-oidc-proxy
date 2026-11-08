@@ -2,6 +2,7 @@
 package audit
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -64,9 +65,9 @@ func newForbiddenTestAudit(t *testing.T) (*Audit, string) {
 		t.Fatalf("creating auditor: %s", err)
 	}
 
-	stopCh := make(chan struct{})
-	t.Cleanup(func() { close(stopCh) })
-	if err := a.Run(stopCh); err != nil {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if err := a.Run(ctx); err != nil {
 		t.Fatalf("running audit backend: %s", err)
 	}
 

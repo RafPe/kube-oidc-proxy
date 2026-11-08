@@ -1,5 +1,5 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
-package logging
+package accesslog
 
 import (
 	"encoding/json"
@@ -14,7 +14,7 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
-	proxycontext "github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 )
 
 // TestFrozenAccessContract pins the access-log fields issue #129 freezes. The
@@ -97,8 +97,8 @@ func emitFixture(t *testing.T, name string) map[string]any {
 	// Run the header through the real sanitizer so the fixture pins the path
 	// production takes: the raw chain is stashed on the context and the header
 	// itself is dropped for this untrusted peer.
-	req = proxycontext.WithResolvedClient(req, nil)
-	req = proxycontext.WithRequestID(req, "fixture-request-id")
+	req = reqctx.WithResolvedClient(req, nil)
+	req = reqctx.WithRequestID(req, "fixture-request-id")
 
 	d := Decision{
 		AuthMethod: "oidc",

@@ -31,7 +31,7 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
-	proxycontext "github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 	fakesubjectaccessreview "github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview/fake"
 )
@@ -171,7 +171,7 @@ func TestImpersonationSkippedOnTokenReviewPassthrough(t *testing.T) {
 	handler := p.withImpersonateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req = req.WithContext(logging.NewContext(logging.WithRequestID(req.Context(), "rid-passthrough"), p.logger))
-	req = proxycontext.WithNoImpersonation(req)
+	req = reqctx.WithNoImpersonation(req)
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
 	rec := p.logs.Only(t, logging.EventRequestImpersonationSkipped)
@@ -250,7 +250,7 @@ func TestOIDCFailureEmitsAuthnOIDCFailed(t *testing.T) {
 	handler := p.withAuthenticateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("reached inner") }))
 	req := reservedIdentityRequest(t, nil)
 	req.RemoteAddr = "8.8.8.8:1234"
-	req = proxycontext.WithRequestID(req, "rid-1")
+	req = reqctx.WithRequestID(req, "rid-1")
 	req = req.WithContext(logging.NewContext(logging.WithRequestID(req.Context(), "rid-1"), p.logger))
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
@@ -724,13 +724,13 @@ func TestFlushWarnLimiterSummarisesOnShutdown(t *testing.T) {
 		p.warnLimiter.Allow(string(metrics.ReasonReservedIdentity))
 	}
 
-	stopCh := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		p.flushWarnLimiter(stopCh)
+		p.flushWarnLimiter(ctx)
 	}()
-	close(stopCh)
+	cancel()
 	<-done
 
 	rec := p.logs.Only(t, logging.EventLogWarningSuppressed)

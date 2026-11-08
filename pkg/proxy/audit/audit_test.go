@@ -2,6 +2,7 @@
 package audit
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -376,7 +377,7 @@ func TestRunReportsBackendStarted(t *testing.T) {
 	defer logtest.AssertRegistered(t, cap)
 	a := newTestAuditWithBackend(t, root, &fakeBackend{})
 
-	if err := a.Run(make(chan struct{})); err != nil {
+	if err := a.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -397,7 +398,7 @@ func TestRunReportsBackendFailed(t *testing.T) {
 	defer logtest.AssertRegistered(t, cap)
 	a := newTestAuditWithBackend(t, root, &fakeBackend{runErr: errors.New("webhook unreachable")})
 
-	err := a.Run(make(chan struct{}))
+	err := a.Run(context.Background())
 	if err == nil {
 		t.Fatal("Run reported success for a backend that failed to start")
 	}
@@ -422,7 +423,7 @@ func TestRunWithoutBackendIsSilent(t *testing.T) {
 	defer logtest.AssertRegistered(t, cap)
 	a := newTestAuditWithBackend(t, root, nil)
 
-	if err := a.Run(make(chan struct{})); err != nil {
+	if err := a.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.Shutdown(); err != nil {

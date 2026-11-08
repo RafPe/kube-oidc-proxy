@@ -32,11 +32,11 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
-	"github.com/rafpe/kube-oidc-proxy/pkg/mocks"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/accesslog"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/audit"
-	proxycontext "github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/hooks"
-	accesslogging "github.com/rafpe/kube-oidc-proxy/pkg/proxy/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/mocks"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 	fakesubjectaccessreview "github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview/fake"
 )
@@ -55,10 +55,10 @@ type fakeProxy struct {
 
 // newAccessLogger builds an access logger writing into a capture, so a test can
 // assert on the records a request produced.
-func newAccessLogger(t *testing.T) (*accesslogging.AccessLogger, *logtest.Capture) {
+func newAccessLogger(t *testing.T) (*accesslog.AccessLogger, *logtest.Capture) {
 	t.Helper()
 	root, records := logtest.New(t, 0)
-	return accesslogging.NewAccessLogger(logging.ForComponent(root, logging.ComponentRequest)), records
+	return accesslog.NewAccessLogger(logging.ForComponent(root, logging.ComponentRequest)), records
 }
 
 // testIssuerName is the issuer the fake OIDC authenticator attributes an
@@ -82,7 +82,7 @@ func oidcAnswer(resp *authenticator.Response, ok bool, err error) func(stdcontex
 // withTestRequestID stamps the correlation id the request-id filter mints in
 // production. Every access record is required to carry one.
 func withTestRequestID(req *http.Request) *http.Request {
-	return proxycontext.WithRequestID(req, "test-request-id")
+	return reqctx.WithRequestID(req, "test-request-id")
 }
 
 func TestRoundTripperForRestConfigReloadsClientCertificate(t *testing.T) {
@@ -332,7 +332,7 @@ func TestErrorHandlerInternalFailureEmitsHandlerFailed(t *testing.T) {
 			requestLogger := logging.ForComponent(root, logging.ComponentRequest)
 			p := &Proxy{
 				logger: requestLogger,
-				access: accesslogging.NewAccessLogger(requestLogger),
+				access: accesslog.NewAccessLogger(requestLogger),
 			}
 			p.handleError = p.newErrorHandler()
 
@@ -514,7 +514,7 @@ func newTestProxy(t *testing.T) *fakeProxy {
 			oidcLog:               logging.ForComponent(root, logging.ComponentOIDC),
 			tokenReviewLog:        logging.ForComponent(root, logging.ComponentTokenReview),
 			upstreamLog:           logging.ForComponent(root, logging.ComponentUpstream),
-			access:                accesslogging.NewAccessLogger(requestLogger),
+			access:                accesslog.NewAccessLogger(requestLogger),
 			oidcRequestAuther:     bearertoken.New(fakeToken),
 			tokenReviewer:         fakeReviewer,
 			subjectAccessReviewer: subjectAccessReview,

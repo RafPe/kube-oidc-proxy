@@ -12,8 +12,8 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics/metricstest"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
-	accesslogging "github.com/rafpe/kube-oidc-proxy/pkg/proxy/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/accesslog"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 )
 
 const (
@@ -83,8 +83,8 @@ func TestTokenReviewDependencyFailureIsAnErrorAttempt(t *testing.T) {
 
 func TestRecordDecisionCountsAnAllowOnce(t *testing.T) {
 	p := newTestProxy(t)
-	req := context.WithDecisionHolder(newFakeR())
-	p.recordDecision(req, accesslogging.Decision{Allowed: true, AuthMethod: metrics.AuthMethodOIDC})
+	req := reqctx.WithDecisionHolder(newFakeR())
+	p.recordDecision(req, accesslog.Decision{Allowed: true, AuthMethod: metrics.AuthMethodOIDC})
 	if v, _ := metricstest.Value(t, p.metrics.Gatherer(), metricAccessDecisions, map[string]string{"auth_method": "oidc", "decision": "allow", "reason": ""}); v != 1 {
 		t.Fatalf("decisions{oidc,allow} = %v, want 1", v)
 	}

@@ -1,5 +1,5 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
-package context
+package reqctx
 
 import (
 	"net"

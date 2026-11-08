@@ -2,6 +2,7 @@
 package audit
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"testing"
@@ -27,7 +28,7 @@ func newAuditWithBackend(t *testing.T, b *fakeBackend, rec *metrics.Recorder) *A
 func TestAuditRunFailureIsCounted(t *testing.T) {
 	rec, _ := metrics.New(metrics.BuildInfo{Version: "test"})
 	a := newAuditWithBackend(t, &fakeBackend{runErr: errors.New("cannot start")}, rec)
-	if err := a.Run(make(chan struct{})); err == nil {
+	if err := a.Run(context.Background()); err == nil {
 		t.Fatal("Run should fail")
 	}
 	if v, _ := metricstest.Value(t, rec.Gatherer(), metricAuditFailures, map[string]string{"operation": "run"}); v != 1 {
@@ -49,7 +50,7 @@ func TestAuditShutdownFailureIsCounted(t *testing.T) {
 func TestAuditCleanShutdownCountsNothing(t *testing.T) {
 	rec, _ := metrics.New(metrics.BuildInfo{Version: "test"})
 	a := newAuditWithBackend(t, &fakeBackend{}, rec)
-	if err := a.Run(make(chan struct{})); err != nil {
+	if err := a.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.Shutdown(); err != nil {

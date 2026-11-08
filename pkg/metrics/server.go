@@ -3,14 +3,13 @@ package metrics
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"time"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/util/httpserve"
 )
 
 // Listener timeouts. ReadHeaderTimeout matches the probe listener (gosec
@@ -32,18 +31,16 @@ const (
 // blocks until the graceful shutdown has finished and reports its terminal
 // error. Start is called once.
 type Server struct {
-	srv      *http.Server
-	logger   *slog.Logger
-	listener net.Listener
+	srv    *http.Server
+	logger *slog.Logger
 
+	// shutdownTimeout bounds the graceful shutdown. It is a field rather than
+	// the package constant so a test can exercise the timeout path without
+	// waiting out the production budget.
 	shutdownTimeout time.Duration
 
-	// done is closed once serving and shutdown have both finished; err holds
-	// the terminal error (nil after a clean shutdown). Closing done
-	// happens-after the write to err, so Wait reads it without further
-	// synchronisation.
-	done chan struct{}
-	err  error
+	// serving is the bound server once Start has succeeded.
+	serving *httpserve.Serving
 }
 
 // NewServer builds a Server exposing rec on addr. It does not bind until
@@ -62,17 +59,16 @@ func NewServer(addr string, rec *Recorder, logger *slog.Logger) *Server {
 			IdleTimeout:       idleTimeout,
 			MaxHeaderBytes:    maxHeaderBytes,
 		},
-		done: make(chan struct{}),
 	}
 }
 
 // Addr returns the address the listener is bound to, which differs from the
 // configured one when the port was 0. Empty before Start.
 func (s *Server) Addr() string {
-	if s.listener == nil {
+	if s.serving == nil {
 		return ""
 	}
-	return s.listener.Addr().String()
+	return s.serving.Addr()
 }
 
 // Start binds the listener synchronously so a port-in-use failure surfaces at
@@ -80,48 +76,13 @@ func (s *Server) Addr() string {
 // starts a graceful shutdown bounded by shutdownTimeout; a scrape that does not
 // finish inside it is closed and the timeout is reported through Wait.
 func (s *Server) Start(ctx context.Context) error {
-	ln, err := net.Listen("tcp", s.srv.Addr)
+	serving, err := httpserve.Start(ctx, s.srv, s.shutdownTimeout, func(err error) {
+		logging.Emit(context.Background(), s.logger, logging.EventMetricsServerFailed, logging.ErrAttr(err))
+	})
 	if err != nil {
 		return fmt.Errorf("metrics listener failed to listen on %s: %w", s.srv.Addr, err)
 	}
-	s.listener = ln
-
-	// Serve's result travels on a channel so the single owner goroutine
-	// below can join it whichever way serving ended.
-	serveResult := make(chan error, 1)
-	go func() { serveResult <- s.srv.Serve(ln) }()
-
-	// One goroutine owns shutdown and the terminal error. Shutdown makes
-	// Serve return at once; net/http requires waiting for Shutdown itself,
-	// which is why done is closed here and not when Serve returns.
-	//
-	//nolint:gosec // G118: this goroutine runs because ctx was cancelled; a context derived from it would be dead on arrival and Shutdown would not drain in-flight scrapes (TestServerWaitDrainsAnActiveScrape pins this).
-	go func() {
-		defer close(s.done)
-
-		var serveErr, shutdownErr error
-		select {
-		case serveErr = <-serveResult:
-			// Serving stopped on its own (listener error): nothing is
-			// draining, but any open connection is closed for hygiene.
-			shutdownErr = s.srv.Close()
-		case <-ctx.Done():
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
-			shutdownErr = s.srv.Shutdown(shutdownCtx)
-			cancel()
-			if shutdownErr != nil {
-				shutdownErr = errors.Join(shutdownErr, s.srv.Close())
-			}
-			serveErr = <-serveResult
-		}
-		if errors.Is(serveErr, http.ErrServerClosed) {
-			serveErr = nil
-		}
-		s.err = errors.Join(serveErr, shutdownErr)
-		if s.err != nil {
-			logging.Emit(context.Background(), s.logger, logging.EventMetricsServerFailed, logging.ErrAttr(s.err))
-		}
-	}()
+	s.serving = serving
 
 	logging.Emit(ctx, s.logger, logging.EventMetricsServerStarted, slog.String("address", s.Addr()))
 	return nil
@@ -131,6 +92,5 @@ func (s *Server) Start(ctx context.Context) error {
 // terminal error: a listener failure, a shutdown that overran its budget, or
 // nil after a clean stop.
 func (s *Server) Wait() error {
-	<-s.done
-	return s.err
+	return s.serving.Wait()
 }

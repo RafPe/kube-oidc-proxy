@@ -16,8 +16,8 @@ import (
 	"k8s.io/client-go/transport"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
-	"github.com/rafpe/kube-oidc-proxy/pkg/mocks"
-	proxycontext "github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/mocks"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 )
 
 // leakProbeIssuerName is deliberately distinctive: the assertions below scan
@@ -75,7 +75,7 @@ func TestIssuerNameNeverReachesImpersonationHeaders(t *testing.T) {
 	chain := p.withAuthenticateRequest(p.withImpersonateRequest(http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
 		served = true
 
-		conf := proxycontext.ImpersonationConfig(req)
+		conf := reqctx.ImpersonationConfig(req)
 		if conf == nil {
 			t.Fatal("no impersonation config on an authenticated request")
 		}
@@ -199,7 +199,7 @@ func TestWithAuthenticateRequestPublishesIssuerName(t *testing.T) {
 
 	var got string
 	p.withAuthenticateRequest(http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
-		got = proxycontext.IssuerName(req)
+		got = reqctx.IssuerName(req)
 	})).ServeHTTP(httptest.NewRecorder(), reservedIdentityRequest(t, nil))
 
 	if got != testIssuerName {

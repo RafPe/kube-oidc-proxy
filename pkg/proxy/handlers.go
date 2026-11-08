@@ -2,7 +2,7 @@
 package proxy
 
 import (
-	stdcontext "context"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -23,9 +23,9 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/accesslog"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/audit"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
-	accesslogging "github.com/rafpe/kube-oidc-proxy/pkg/proxy/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 )
 
@@ -87,7 +87,7 @@ func (p *Proxy) withSanitizedForwardHeaders(handler http.Handler) http.Handler {
 		inboundXFF := req.Header.Get(headerForwardedFor)
 		inboundRealIP := req.Header.Get(headerRealIP)
 
-		req = context.WithResolvedClient(req, p.trustedProxies)
+		req = reqctx.WithResolvedClient(req, p.trustedProxies)
 
 		if inboundXFF != "" || inboundRealIP != "" {
 			req = p.logForwardHeaders(req, inboundXFF, inboundRealIP)
@@ -107,7 +107,7 @@ func (p *Proxy) withSanitizedForwardHeaders(handler http.Handler) http.Handler {
 // Only the drop is token-bucketed; it is the one an untrusted client can
 // produce on every request.
 func (p *Proxy) logForwardHeaders(req *http.Request, inboundXFF, inboundRealIP string) *http.Request {
-	srcIP := context.ClientIP(req)
+	srcIP := reqctx.ClientIP(req)
 	forwardedFor := slog.String("forwarded_for_untrusted", logging.Sanitize(inboundXFF))
 
 	if outboundXFF := req.Header.Get(headerForwardedFor); outboundXFF != "" && outboundXFF != inboundXFF {
@@ -163,7 +163,7 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 			// influenced.
 			p.metrics.AuthenticationAttempt(metrics.AuthMethodOIDC, metrics.AuthRejected)
 			logging.Emit(req.Context(), logging.OrDiscard(p.oidcLog), logging.EventAuthnOIDCFailed,
-				slog.String("src_ip", context.ClientIP(req)), slog.String("reason", string(metrics.ReasonUnauthorized)))
+				slog.String("src_ip", reqctx.ClientIP(req)), slog.String("reason", string(metrics.ReasonUnauthorized)))
 
 			// Since we have failed OIDC auth, we will try a token review, if enabled.
 			// Routing is deliberately unchanged: falling through to token
@@ -183,16 +183,16 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 
 		// Attribute the request to the issuer that accepted its token, for this
 		// record and for every access record the request goes on to produce.
-		req = context.WithIssuerName(req, issuer.name)
+		req = reqctx.WithIssuerName(req, issuer.name)
 
 		logging.Emit(req.Context(), logging.OrDiscard(p.oidcLog), logging.EventAuthnOIDCSucceeded,
 			slog.String("issuer_name", logging.Bound(issuer.name, logging.MaxIdentity)))
 
 		// The token was accepted, so every record from here on -- including a
 		// rejection by the reserved-identity guard -- reports the OIDC path.
-		req = context.WithAuthMethod(req, metrics.AuthMethodOIDC)
+		req = reqctx.WithAuthMethod(req, metrics.AuthMethodOIDC)
 
-		// Add the user info to the request context. Done before the
+		// Add the user info to the request reqctx. Done before the
 		// reserved-identity check so a rejection is audited against the identity
 		// that was presented.
 		req = req.WithContext(genericapirequest.WithUser(req.Context(), info.User))
@@ -265,8 +265,8 @@ func (p *Proxy) withTokenReview(handler http.Handler) http.Handler {
 		}
 
 		// Set no impersonation headers and re-add removed headers.
-		req = context.WithAuthMethod(req, metrics.AuthMethodTokenReview)
-		req = context.WithNoImpersonation(req)
+		req = reqctx.WithAuthMethod(req, metrics.AuthMethodTokenReview)
+		req = reqctx.WithNoImpersonation(req)
 
 		handler.ServeHTTP(rw, req)
 	})
@@ -276,7 +276,7 @@ func (p *Proxy) withTokenReview(handler http.Handler) http.Handler {
 func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		// If no impersonation has already been set, return early
-		if context.NoImpersonation(req) {
+		if reqctx.NoImpersonation(req) {
 			logging.Emit(req.Context(), logging.FromContext(req.Context()), logging.EventRequestImpersonationSkipped,
 				slog.String("skip_reason", skipReasonPassthrough))
 			handler.ServeHTTP(rw, req)
@@ -290,7 +290,7 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 			logging.Emit(req.Context(), logging.FromContext(req.Context()), logging.EventRequestImpersonationSkipped,
 				slog.String("skip_reason", skipReasonDisabled))
 			// Indicate we need to not use impersonation.
-			req = context.WithNoImpersonation(req)
+			req = reqctx.WithNoImpersonation(req)
 			handler.ServeHTTP(rw, req)
 			return
 		}
@@ -341,7 +341,7 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 		// If client IP user extra header option set then append the remote client
 		// address.
 		if p.config.ExtraUserHeadersClientIPEnabled {
-			extra[accesslogging.UserHeaderClientIPKey] = append(extra[accesslogging.UserHeaderClientIPKey], context.ClientIP(req))
+			extra[accesslog.UserHeaderClientIPKey] = append(extra[accesslog.UserHeaderClientIPKey], reqctx.ClientIP(req))
 		}
 
 		// Add custom extra user headers to impersonation request. append copies
@@ -354,14 +354,14 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 		if targetForContext != nil {
 			// add the original user's information as extra headers
 			// so they're recorded in the API server's audit log
-			extra[accesslogging.ExtraKeyOriginalUser] = []string{userForContext.GetName()}
+			extra[accesslog.ExtraKeyOriginalUser] = []string{userForContext.GetName()}
 
 			if origGroups := userForContext.GetGroups(); len(origGroups) > 0 {
-				extra[accesslogging.ExtraKeyOriginalGroups] = slices.Clone(origGroups)
+				extra[accesslog.ExtraKeyOriginalGroups] = slices.Clone(origGroups)
 			}
 
 			if userForContext.GetUID() != "" {
-				extra[accesslogging.ExtraKeyOriginalUID] = []string{userForContext.GetUID()}
+				extra[accesslog.ExtraKeyOriginalUID] = []string{userForContext.GetUID()}
 			}
 
 			if len(userForContext.GetExtra()) > 0 {
@@ -370,11 +370,11 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 					p.handleError(rw, req, errJSONMarshal)
 					return
 				}
-				extra[accesslogging.ExtraKeyOriginalExtra] = []string{string(jsonExtras)}
+				extra[accesslog.ExtraKeyOriginalExtra] = []string{string(jsonExtras)}
 			}
 		}
 
-		conf := &context.ImpersonationRequest{
+		conf := &reqctx.ImpersonationRequest{
 			ImpersonationConfig: &transport.ImpersonationConfig{
 				UserName: user.GetName(),
 				UID:      user.GetUID(),
@@ -389,8 +389,8 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 			slog.String("outbound_user", logging.Bound(user.GetName(), logging.MaxIdentity)),
 			slog.Any("impersonated_header_names", impersonatedHeaderNames(conf.ImpersonationConfig)))
 
-		// Add the impersonation configuration to the context.
-		req = context.WithImpersonationConfig(req, conf)
+		// Add the impersonation configuration to the reqctx.
+		req = reqctx.WithImpersonationConfig(req, conf)
 		handler.ServeHTTP(rw, req)
 	})
 }
@@ -428,7 +428,7 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 	// Audited through the ordinary request chain rather than the
 	// failed-authentication one: the request authenticated successfully and was
 	// then refused, and the caller has already put the identity in the request
-	// context. The client body carries no claim values; they are logged and
+	// reqctx. The client body carries no claim values; they are logged and
 	// audited instead.
 	forbiddenHandler := audit.NewForbiddenHandler(p.auditor, func(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "identities with the reserved \"system:\" prefix are not accepted from an authentication token", http.StatusForbidden)
@@ -505,7 +505,7 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 
 			// Client canceled the request (SAR or reverse-proxy). Nothing to
 			// write back; the connection is already going away.
-		case errors.Is(err, stdcontext.Canceled):
+		case errors.Is(err, context.Canceled):
 			logging.Emit(r.Context(), logging.OrDiscard(p.upstreamLog), logging.EventUpstreamRequestCanceled,
 				slog.String("reason", string(metrics.ReasonClientCanceled)))
 			p.logDenied(r, metrics.ReasonClientCanceled, err)
@@ -531,7 +531,7 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			// to the lifecycle filter for the terminal record.
 		case isUpstreamTransportError(err):
 			term := upstreamTermination(err)
-			context.RecordTermination(r, term, metrics.ReasonUpstreamError)
+			reqctx.RecordTermination(r, term, metrics.ReasonUpstreamError)
 			logging.Emit(r.Context(), logging.OrDiscard(p.upstreamLog), logging.EventUpstreamRequestFailed,
 				slog.String("reason", string(metrics.ReasonUpstreamError)), slog.String("termination", string(term)),
 				logging.ErrAttr(err))
@@ -603,7 +603,7 @@ func (p *Proxy) logAnomaly(r *http.Request, reason metrics.Reason) {
 	}
 
 	logging.Emit(r.Context(), logging.OrDiscard(p.logger), logging.EventRequestAnomalyDetected,
-		slog.String("src_ip", context.ClientIP(r)), slog.String("reason", string(reason)))
+		slog.String("src_ip", reqctx.ClientIP(r)), slog.String("reason", string(reason)))
 }
 
 // logDenied writes the access record for a refused request. The impersonation
@@ -615,14 +615,14 @@ func (p *Proxy) logDenied(r *http.Request, reason metrics.Reason, err error) {
 	// cancelled, an upstream that broke -- has no decision left to make. Every
 	// refusal below the error handler shares this guard, which keeps the
 	// promise of one request.access.decided per request.
-	if context.DecisionRecorded(r) {
+	if reqctx.DecisionRecorded(r) {
 		return
 	}
 
-	d := accesslogging.Decision{
+	d := accesslog.Decision{
 		Allowed:    false,
 		Reason:     reason,
-		AuthMethod: context.AuthMethod(r),
+		AuthMethod: reqctx.AuthMethod(r),
 		Inbound:    userFromContext(r),
 	}
 

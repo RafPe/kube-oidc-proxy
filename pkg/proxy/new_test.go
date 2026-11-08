@@ -11,7 +11,7 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
-	"github.com/rafpe/kube-oidc-proxy/pkg/mocks"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/mocks"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 	fakesubjectaccessreview "github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview/fake"
 )

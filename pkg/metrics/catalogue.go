@@ -37,11 +37,11 @@ const (
 	nameAuditBackendFailures = Namespace + "_audit_backend_failures_total"
 )
 
-// catalogue lists every first-party family, as a fresh literal on every call
-// so nothing package-level is mutable. Order is the order docs/metrics.md
-// renders them in. Append-only: a shipped name, label set or type is never
-// changed in place.
-func catalogue() []Spec {
+// Catalogue lists every first-party family, as a fresh literal on every call
+// so nothing package-level is mutable and the caller owns the slice. Order is
+// the order docs/metrics.md renders them in. Append-only: a shipped name,
+// label set or type is never changed in place.
+func Catalogue() []Spec {
 	return []Spec{
 		{Name: nameBuildInfo, Type: "gauge", Labels: []string{"version", "revision", "go_version"}, Stability: "STABLE",
 			Help: "Build information; always 1."},
@@ -72,16 +72,10 @@ func catalogue() []Spec {
 	}
 }
 
-// Catalogue returns every first-party family, in documentation order. Each
-// call returns a fresh slice the caller owns.
-func Catalogue() []Spec {
-	return catalogue()
-}
-
 // spec returns the catalogue entry for name. A missing entry is a programming
 // error caught by TestEveryCollectorIsInTheCatalogue, so it panics.
 func spec(name string) Spec {
-	for _, s := range catalogue() {
+	for _, s := range Catalogue() {
 		if s.Name == name {
 			return s
 		}

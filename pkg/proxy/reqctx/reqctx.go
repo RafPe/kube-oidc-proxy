@@ -23,7 +23,7 @@
 // Only X-Forwarded-For is parsed; the RFC 7239 Forwarded header is not honoured.
 // On a malformed forwarded hop, or when the entire chain is itself trusted, the
 // direct peer is returned.
-package context
+package reqctx
 
 import (
 	"net"

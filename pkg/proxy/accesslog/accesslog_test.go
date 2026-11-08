@@ -1,5 +1,5 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
-package logging
+package accesslog
 
 import (
 	"fmt"
@@ -14,7 +14,7 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
-	proxycontext "github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 )
 
 // TestSanitizePathNilURL keeps the nil-URL guard covered: some call sites
@@ -37,7 +37,7 @@ func TestLogDecisionDeniedCarriesReasonAndRequestID(t *testing.T) {
 	a, cap := newAccess(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/team-a/pods", nil)
 	req.RemoteAddr = "1.2.3.4:5555"
-	req = proxycontext.WithRequestID(req, "7c1e")
+	req = reqctx.WithRequestID(req, "7c1e")
 
 	a.LogDecision(req, Decision{Allowed: false, Reason: "impersonation_denied", AuthMethod: "oidc",
 		Inbound: &user.DefaultInfo{Name: "alice"}, TargetKind: "group", TargetName: "system:masters"})
@@ -56,7 +56,7 @@ func TestLogDecisionDeniedCarriesReasonAndRequestID(t *testing.T) {
 
 func TestLogDecisionAllowedIsAuSuccessWithoutReason(t *testing.T) {
 	a, cap := newAccess(t)
-	req := proxycontext.WithRequestID(httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil), "id")
+	req := reqctx.WithRequestID(httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil), "id")
 	a.LogDecision(req, Decision{Allowed: true, AuthMethod: "tokenreview", Inbound: &user.DefaultInfo{Name: "sa"}})
 	rec := cap.Only(t, logging.EventRequestAccessDecided)
 	if rec.String("event") != "AuSuccess" || rec.String("decision") != "allow" {
@@ -73,7 +73,7 @@ func TestLogDecisionCarriesKubernetesDimensions(t *testing.T) {
 	info := &genericapirequest.RequestInfo{IsResourceRequest: true, Verb: "get", APIGroup: "", Resource: "pods",
 		Subresource: "log", Namespace: "team-a", Name: "web-1"}
 	req = req.WithContext(genericapirequest.WithRequestInfo(req.Context(), info))
-	req = proxycontext.WithRequestID(req, "id")
+	req = reqctx.WithRequestID(req, "id")
 	a.LogDecision(req, Decision{Allowed: true, AuthMethod: "oidc", Inbound: &user.DefaultInfo{Name: "alice"}})
 	rec := cap.Only(t, logging.EventRequestAccessDecided)
 	if rec.String("k8s_verb") != "get" || rec.String("k8s_resource") != "pods" || rec.String("k8s_subresource") != "log" ||
@@ -88,7 +88,7 @@ func TestGroupsAreCapped(t *testing.T) {
 	for i := range groups {
 		groups[i] = fmt.Sprintf("g%d", i)
 	}
-	req := proxycontext.WithRequestID(httptest.NewRequest(http.MethodGet, "/", nil), "id")
+	req := reqctx.WithRequestID(httptest.NewRequest(http.MethodGet, "/", nil), "id")
 	a.LogDecision(req, Decision{Allowed: true, AuthMethod: "oidc", Inbound: &user.DefaultInfo{Name: "a", Groups: groups}})
 	rec := cap.Only(t, logging.EventRequestAccessDecided)
 	if n, _ := rec.Int("inbound_groups_omitted"); n != 8 {
@@ -101,7 +101,7 @@ func TestGroupsAreCapped(t *testing.T) {
 // so a query on k8s_resource never sees a health or discovery path.
 func TestNonResourceRequestHasNoKubernetesDimensions(t *testing.T) {
 	a, cap := newAccess(t)
-	req := proxycontext.WithRequestID(httptest.NewRequest(http.MethodGet, "/healthz", nil), "id")
+	req := reqctx.WithRequestID(httptest.NewRequest(http.MethodGet, "/healthz", nil), "id")
 	req = req.WithContext(genericapirequest.WithRequestInfo(req.Context(),
 		&genericapirequest.RequestInfo{IsResourceRequest: false, Path: "/healthz", Verb: "get"}))
 	a.LogDecision(req, Decision{Allowed: true, AuthMethod: "none"})
@@ -119,9 +119,9 @@ func TestNonResourceRequestHasNoKubernetesDimensions(t *testing.T) {
 func TestLogDecisionCarriesRequestCorrelation(t *testing.T) {
 	a, cap := newAccess(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil)
-	req = proxycontext.WithRequestID(req, "minted")
-	req = proxycontext.WithClientRequestID(req, "from-client")
-	req = proxycontext.WithIssuerName(req, "corp")
+	req = reqctx.WithRequestID(req, "minted")
+	req = reqctx.WithClientRequestID(req, "from-client")
+	req = reqctx.WithIssuerName(req, "corp")
 
 	a.LogDecision(req, Decision{Allowed: true, AuthMethod: "oidc", Inbound: &user.DefaultInfo{Name: "alice"}})
 
@@ -141,7 +141,7 @@ func TestLogDecisionIsSanitizedAndOmitsClaims(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/pods?token=supersecret", nil)
 	req.RemoteAddr = "1.2.3.4:5555"
-	req = proxycontext.WithRequestID(req, "id")
+	req = reqctx.WithRequestID(req, "id")
 
 	inbound := &user.DefaultInfo{
 		// Attempt to inject a second log line and a fake field via the username.
@@ -194,7 +194,7 @@ func TestOutboundExtraDoesNotLeakOriginalUserClaims(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil)
 	req.RemoteAddr = "1.2.3.4:5555"
-	req = proxycontext.WithRequestID(req, "id")
+	req = reqctx.WithRequestID(req, "id")
 
 	outbound := &user.DefaultInfo{
 		Name: "alice",
@@ -225,7 +225,7 @@ func TestUIDsAreBounded(t *testing.T) {
 	long := strings.Repeat("u", 300)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil)
 	req.RemoteAddr = "1.2.3.4:5555"
-	req = proxycontext.WithRequestID(req, "id")
+	req = reqctx.WithRequestID(req, "id")
 
 	a.LogDecision(req, Decision{Allowed: true, AuthMethod: "oidc",
 		Inbound:  &user.DefaultInfo{Name: "alice", UID: long},
@@ -253,7 +253,7 @@ func TestAllowlistedExtraValuesAreNotTruncated(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil)
 	req.RemoteAddr = "1.2.3.4:5555"
-	req = proxycontext.WithRequestID(req, "id")
+	req = reqctx.WithRequestID(req, "id")
 
 	a.LogDecision(req, Decision{Allowed: true, AuthMethod: "oidc", Inbound: &user.DefaultInfo{
 		Name:  "alice",

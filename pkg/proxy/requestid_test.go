@@ -15,7 +15,7 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 )
 
 var uuidRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -38,7 +38,7 @@ func TestWithRequestIDMintsAndSetsAuditIDHeader(t *testing.T) {
 	var seenHeader, seenCtx string
 	h := p.withRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seenHeader = r.Header.Get("Audit-ID")
-		seenCtx = context.RequestID(r)
+		seenCtx = reqctx.RequestID(r)
 	}))
 	rw := httptest.NewRecorder()
 	h.ServeHTTP(rw, httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil))
@@ -58,8 +58,8 @@ func TestWithRequestIDDoesNotTrustClientHeaderFromUntrustedPeer(t *testing.T) {
 	p := &Proxy{trustedProxies: mustCIDRs(t, "10.0.0.0/8")}
 	var id, clientID string
 	h := p.withRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id = context.RequestID(r)
-		clientID = context.ClientRequestID(r)
+		id = reqctx.RequestID(r)
+		clientID = reqctx.ClientRequestID(r)
 	}))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "203.0.113.9:4444"
@@ -77,7 +77,7 @@ func TestWithRequestIDDoesNotTrustClientHeaderFromUntrustedPeer(t *testing.T) {
 func TestWithRequestIDAdoptsHeaderFromTrustedProxy(t *testing.T) {
 	p := &Proxy{trustedProxies: mustCIDRs(t, "10.0.0.0/8")}
 	var id string
-	h := p.withRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { id = context.RequestID(r) }))
+	h := p.withRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { id = reqctx.RequestID(r) }))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "10.0.0.7:4444"
 	req.Header.Set("X-Request-ID", "ingress-trace-1")
@@ -90,7 +90,7 @@ func TestWithRequestIDAdoptsHeaderFromTrustedProxy(t *testing.T) {
 func TestWithRequestIDBoundsAndSanitisesInbound(t *testing.T) {
 	p := &Proxy{trustedProxies: mustCIDRs(t, "10.0.0.0/8")}
 	var id string
-	h := p.withRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { id = context.RequestID(r) }))
+	h := p.withRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { id = reqctx.RequestID(r) }))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "10.0.0.7:4444"
 	req.Header.Set("Audit-ID", strings.Repeat("a", 100)+"\nAuFail")
@@ -113,7 +113,7 @@ func TestBothAuditChainsAdoptTheSameID(t *testing.T) {
 	}))
 	var minted string
 	h := p.withRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		minted = context.RequestID(r)
+		minted = reqctx.RequestID(r)
 		inner.ServeHTTP(w, r)
 	}))
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
@@ -134,7 +134,7 @@ func TestWithRequestIDInstallsTheRequestScopedLogger(t *testing.T) {
 
 	var minted string
 	h := p.withRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		minted = context.RequestID(r)
+		minted = reqctx.RequestID(r)
 		if got := logging.RequestIDFrom(r.Context()); got != minted {
 			t.Errorf("logging.RequestIDFrom = %q, want the minted id %q", got, minted)
 		}

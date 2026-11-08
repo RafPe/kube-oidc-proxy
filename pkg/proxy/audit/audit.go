@@ -128,19 +128,20 @@ type errorReporter interface {
 	ShutdownErr() error
 }
 
-// Run will run the audit backend if configured. A backend that fails to start
-// is an error the process cannot serve correctly through: without it, proxied
-// requests leave no audit trail.
-func (a *Audit) Run(stopCh <-chan struct{}) error {
+// Run starts the audit backend, if one is configured, and stops it when ctx is
+// cancelled. A backend that fails to start is an error the process cannot
+// serve correctly through: without it, proxied requests leave no audit trail.
+func (a *Audit) Run(ctx context.Context) error {
 	if a.serverConfig.AuditBackend == nil {
 		return nil
 	}
 
-	ctx := context.Background()
-	if err := a.serverConfig.AuditBackend.Run(stopCh); err != nil {
+	// The upstream backend stops on a closed channel, which is what the
+	// context's Done channel is.
+	if err := a.serverConfig.AuditBackend.Run(ctx.Done()); err != nil {
 		logging.Emit(ctx, a.logger, logging.EventAuditBackendFailed, logging.ErrAttr(err))
 		a.metrics.AuditBackendFailure(metrics.AuditRun)
-		return fmt.Errorf("failed to run the audit backend: %s", err)
+		return fmt.Errorf("failed to run the audit backend: %w", err)
 	}
 
 	logging.Emit(ctx, a.logger, logging.EventAuditBackendStarted,

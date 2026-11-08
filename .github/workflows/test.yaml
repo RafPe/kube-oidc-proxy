@@ -32,7 +32,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Generate mocks
-        run: go run go.uber.org/mock/mockgen -package=mocks -destination pkg/mocks/authenticator.go k8s.io/apiserver/pkg/authentication/authenticator Token
+        run: go run go.uber.org/mock/mockgen -package=mocks -destination pkg/proxy/mocks/authenticator.go k8s.io/apiserver/pkg/authentication/authenticator Token
 
       - name: gofmt
         run: |
@@ -121,7 +121,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Generate mocks
-        run: go run go.uber.org/mock/mockgen -package=mocks -destination pkg/mocks/authenticator.go k8s.io/apiserver/pkg/authentication/authenticator Token
+        run: go run go.uber.org/mock/mockgen -package=mocks -destination pkg/proxy/mocks/authenticator.go k8s.io/apiserver/pkg/authentication/authenticator Token
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0

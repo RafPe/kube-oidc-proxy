@@ -457,7 +457,7 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 			}
 
 			// Run proxy
-			waitCh, listenerStoppedCh, err := p.Run(stopCh)
+			waitCh, listenerStoppedCh, err := p.Run(ctx)
 			if err != nil {
 				return fail(err)
 			}
@@ -594,9 +594,12 @@ func buildSingleAuther(o *options.OIDCAuthenticationOptions, oidcLogger, startup
 		return nil, nil, fmt.Errorf("creating OIDC HTTP client for issuer %q: %w", o.IssuerURL, err)
 	}
 
-	provider := caContentProvider(o.CAFile, startupLogger)
-	if client != nil {
-		provider = nil
+	// A client certificate means a dedicated HTTP client that already carries
+	// the CA; the authenticator takes the CA directly only when it builds the
+	// client itself.
+	var provider oidc.CAContentProvider
+	if client == nil {
+		provider = caContentProvider(o.CAFile, startupLogger)
 	}
 	auther, err := oidc.New(context.Background(), oidc.Options{
 		CAContentProvider:    provider,
@@ -640,20 +643,12 @@ func buildUnionAuther(opts *options.Options, oidcLogger *slog.Logger) (authentic
 		if err != nil {
 			return nil, nil, fmt.Errorf("building authenticator for issuer %q: %w", jwtEntry.Issuer.URL, err)
 		}
-		authers = append(authers, proxy.AttributeToIssuer(issuerNameFor(jwtEntry), auther))
+		authers = append(authers, proxy.AttributeToIssuer(probe.IssuerName(jwtEntry.Issuer.URL), auther))
 	}
 
 	logIssuersConfigured(oidcLogger, issuerNames(issuerURLs))
 
 	return tokenunion.NewFailOnError(authers...), issuerURLs, nil
-}
-
-// issuerNameFor returns the name a request authenticated by this
-// authentication-config entry is attributed to. An operator-supplied name
-// would take precedence, but the vendored JWTAuthenticator carries none, so
-// the name is the issuer URL's host: the full URL is never logged.
-func issuerNameFor(jwtEntry apiserverapi.JWTAuthenticator) string {
-	return probe.IssuerName(jwtEntry.Issuer.URL)
 }
 
 func oidcAutherFromJWT(
@@ -662,15 +657,6 @@ func oidcAutherFromJWT(
 	signingAlgs []string,
 	transportOptions *options.OIDCAuthenticationOptions,
 ) (authenticator.Token, error) {
-	var provider oidc.CAContentProvider
-	if jwtConfig.Issuer.CertificateAuthority != "" {
-		var err error
-		provider, err = dynamiccertificates.NewStaticCAContent("oidc-authenticator", []byte(jwtConfig.Issuer.CertificateAuthority))
-		if err != nil {
-			return nil, fmt.Errorf("invalid certificateAuthority for issuer %q: %w", jwtConfig.Issuer.URL, err)
-		}
-	}
-
 	client, err := oidcHTTPClient(
 		"",
 		[]byte(jwtConfig.Issuer.CertificateAuthority),
@@ -680,8 +666,15 @@ func oidcAutherFromJWT(
 	if err != nil {
 		return nil, fmt.Errorf("creating OIDC HTTP client for issuer %q: %w", jwtConfig.Issuer.URL, err)
 	}
-	if client != nil {
-		provider = nil
+
+	// As in buildSingleAuther: a dedicated client already carries the CA, so
+	// the authenticator takes it directly only when there is no client.
+	var provider oidc.CAContentProvider
+	if client == nil && jwtConfig.Issuer.CertificateAuthority != "" {
+		provider, err = dynamiccertificates.NewStaticCAContent("oidc-authenticator", []byte(jwtConfig.Issuer.CertificateAuthority))
+		if err != nil {
+			return nil, fmt.Errorf("invalid certificateAuthority for issuer %q: %w", jwtConfig.Issuer.URL, err)
+		}
 	}
 
 	return oidc.New(context.Background(), oidc.Options{

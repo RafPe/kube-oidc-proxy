@@ -27,9 +27,9 @@ import (
 	// required to register oidc auth plugin for rest client
 	_ "k8s.io/client-go/plugin/pkg/client/auth/oidc"
 
-	"github.com/rafpe/kube-oidc-proxy/pkg/util/port"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
+	"github.com/rafpe/kube-oidc-proxy/test/util/port"
 )
 
 // Both specs stream through the same default proxy deployment to the same echo
