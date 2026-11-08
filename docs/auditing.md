@@ -129,7 +129,11 @@ The proxy embeds the API server's audit stack rather than reimplementing it.
 4. **Failed authentication.** A 401 never reaches the main audit filter, so the
    authentication handler wraps its error path in a second, shorter audit chain
    that records the failed attempt against the anonymous user. Both chains use
-   the same policy.
+   the same policy. A request that authenticated and was then refused by the
+   proxy itself — a reserved identity, an impersonation the
+   `SubjectAccessReview` denied, a malformed impersonation request — never
+   reaches the reverse proxy either, so its error path runs through the main
+   chain with the authenticated identity as the event's `user`.
 5. **Long-running requests.** `exec`, `attach`, `portforward`, `log`, `proxy`
    and every watch are recorded twice, at `ResponseStarted` and
    `ResponseComplete`, using kube-apiserver's own definition of long-running.

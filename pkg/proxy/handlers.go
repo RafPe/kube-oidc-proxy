@@ -48,6 +48,17 @@ const (
 	skipReasonPassthrough = "passthrough"
 )
 
+// deniedResponse is the status and body an audited denial writes once the
+// audit filters have recorded the refusal; it travels on the request context
+// under deniedResponseKey because the audited handler is built once and the
+// response differs per error.
+type deniedResponse struct {
+	status int
+	body   string
+}
+
+type deniedResponseKey struct{}
+
 // userFromContext returns the identity the request presented, or nil when it
 // was refused before one was established.
 func userFromContext(req *http.Request) authuser.Info {
@@ -191,7 +202,7 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 		// rejection by the reserved-identity guard -- reports the OIDC path.
 		req = reqctx.WithAuthMethod(req, metrics.AuthMethodOIDC)
 
-		// Add the user info to the request reqctx. Done before the
+		// Add the user info to the request context. Done before the
 		// reserved-identity check so a rejection is audited against the identity
 		// that was presented.
 		req = req.WithContext(genericapirequest.WithUser(req.Context(), info.User))
@@ -282,8 +293,6 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 			return
 		}
 
-		var targetForContext authuser.Info
-
 		// If we have disabled impersonation we can forward the request right away
 		if p.config.DisableImpersonation {
 			logging.Emit(req.Context(), logging.FromContext(req.Context()), logging.EventRequestImpersonationSkipped,
@@ -294,19 +303,20 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 			return
 		}
 
-		user, ok := genericapirequest.UserFrom(req.Context())
+		inbound, ok := genericapirequest.UserFrom(req.Context())
 		// No name available so reject request
-		if !ok || len(user.GetName()) == 0 {
+		if !ok || len(inbound.GetName()) == 0 {
 			p.handleError(rw, req, errNoName)
 			return
 		}
 
-		userForContext := user
-
+		// target is the identity the client asked to impersonate, once the
+		// SubjectAccessReviews allowed it; nil when the request impersonates
+		// nobody and the inbound identity is forwarded as itself.
+		var target authuser.Info
 		if subjectaccessreview.HasImpersonationHeaders(req.Header) {
-			// if impersonation headers are present, let's check to see
-			// if the user is authorized to perform the impersonation
-			target, err := p.subjectAccessReviewer.CheckAuthorizedForImpersonation(req, user)
+			var err error
+			target, err = p.subjectAccessReviewer.CheckAuthorizedForImpersonation(req, inbound)
 			if err != nil {
 				p.handleError(rw, req, err)
 				return
@@ -318,80 +328,87 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 			// that already carries Impersonate-User untouched, which would
 			// forward them under the proxy's own credentials.
 			req.Header = subjectaccessreview.StripImpersonationHeaders(req.Header)
-
-			if target != nil {
-				user = target
-				targetForContext = target
-			}
 		}
 
-		// Defensively copy the authenticator-owned collections before enriching
-		// them. user.Info implementations are not required to return fresh
-		// slices/maps, so appending to GetGroups() or writing into GetExtra()
-		// could otherwise mutate cached or shared authenticator state.
-		groups := slices.Clone(user.GetGroups())
-		extra := cloneExtra(user.GetExtra())
-
-		// Ensure group contains allauthenticated builtin
-		if !slices.Contains(groups, authuser.AllAuthenticated) {
-			groups = append(groups, authuser.AllAuthenticated)
-		}
-
-		// If client IP user extra header option set then append the remote client
-		// address.
-		if p.config.ExtraUserHeadersClientIPEnabled {
-			extra[accesslog.UserHeaderClientIPKey] = append(extra[accesslog.UserHeaderClientIPKey], reqctx.ClientIP(req))
-		}
-
-		// Add custom extra user headers to impersonation request. append copies
-		// into the freshly cloned value slice, so the configured slice is never
-		// aliased into the outbound request.
-		for k, vs := range p.config.ExtraUserHeaders {
-			extra[k] = append(extra[k], vs...)
-		}
-
-		if targetForContext != nil {
-			// add the original user's information as extra headers
-			// so they're recorded in the API server's audit log
-			extra[accesslog.ExtraKeyOriginalUser] = []string{userForContext.GetName()}
-
-			if origGroups := userForContext.GetGroups(); len(origGroups) > 0 {
-				extra[accesslog.ExtraKeyOriginalGroups] = slices.Clone(origGroups)
-			}
-
-			if userForContext.GetUID() != "" {
-				extra[accesslog.ExtraKeyOriginalUID] = []string{userForContext.GetUID()}
-			}
-
-			if len(userForContext.GetExtra()) > 0 {
-				jsonExtras, errJSONMarshal := json.Marshal(userForContext.GetExtra())
-				if errJSONMarshal != nil {
-					p.handleError(rw, req, errJSONMarshal)
-					return
-				}
-				extra[accesslog.ExtraKeyOriginalExtra] = []string{string(jsonExtras)}
-			}
+		impersonation, err := p.outboundIdentity(req, inbound, target)
+		if err != nil {
+			p.handleError(rw, req, err)
+			return
 		}
 
 		conf := &reqctx.ImpersonationRequest{
-			ImpersonationConfig: &transport.ImpersonationConfig{
-				UserName: user.GetName(),
-				UID:      user.GetUID(),
-				Groups:   groups,
-				Extra:    extra,
-			},
-			InboundUser:      userForContext,
-			ImpersonatedUser: targetForContext,
+			ImpersonationConfig: impersonation,
+			InboundUser:         inbound,
+			ImpersonatedUser:    target,
 		}
 
 		logging.Emit(req.Context(), logging.FromContext(req.Context()), logging.EventRequestImpersonationApplied,
-			slog.String("outbound_user", logging.Bound(user.GetName(), logging.MaxIdentity)),
-			slog.Any("impersonated_header_names", impersonatedHeaderNames(conf.ImpersonationConfig)))
+			slog.String("outbound_user", logging.Bound(impersonation.UserName, logging.MaxIdentity)),
+			slog.Any("impersonated_header_names", impersonatedHeaderNames(impersonation)))
 
-		// Add the impersonation configuration to the reqctx.
-		req = reqctx.WithImpersonationConfig(req, conf)
-		handler.ServeHTTP(rw, req)
+		handler.ServeHTTP(rw, reqctx.WithImpersonationConfig(req, conf))
 	})
+}
+
+// outboundIdentity builds the identity the API server is asked to impersonate
+// for a request authenticated as inbound: target when the client impersonated
+// someone (and the SubjectAccessReviews allowed it), inbound itself otherwise.
+// The identity is enriched with the system:authenticated group, the client IP
+// and configured extras, and, when impersonating, with the original identity
+// so the API server's audit log records who really acted.
+func (p *Proxy) outboundIdentity(req *http.Request, inbound, target authuser.Info) (*transport.ImpersonationConfig, error) {
+	forwarded := inbound
+	if target != nil {
+		forwarded = target
+	}
+
+	// Defensively copy the authenticator-owned collections before enriching
+	// them. user.Info implementations are not required to return fresh
+	// slices/maps, so appending to GetGroups() or writing into GetExtra()
+	// could otherwise mutate cached or shared authenticator state.
+	groups := slices.Clone(forwarded.GetGroups())
+	extra := cloneExtra(forwarded.GetExtra())
+
+	if !slices.Contains(groups, authuser.AllAuthenticated) {
+		groups = append(groups, authuser.AllAuthenticated)
+	}
+
+	if p.config.ExtraUserHeadersClientIPEnabled {
+		extra[accesslog.UserHeaderClientIPKey] = append(extra[accesslog.UserHeaderClientIPKey], reqctx.ClientIP(req))
+	}
+
+	// append copies into the freshly cloned value slice, so the configured
+	// slice is never aliased into the outbound request.
+	for k, vs := range p.config.ExtraUserHeaders {
+		extra[k] = append(extra[k], vs...)
+	}
+
+	if target != nil {
+		extra[accesslog.ExtraKeyOriginalUser] = []string{inbound.GetName()}
+
+		if origGroups := inbound.GetGroups(); len(origGroups) > 0 {
+			extra[accesslog.ExtraKeyOriginalGroups] = slices.Clone(origGroups)
+		}
+
+		if inbound.GetUID() != "" {
+			extra[accesslog.ExtraKeyOriginalUID] = []string{inbound.GetUID()}
+		}
+
+		if len(inbound.GetExtra()) > 0 {
+			jsonExtras, err := json.Marshal(inbound.GetExtra())
+			if err != nil {
+				return nil, err
+			}
+			extra[accesslog.ExtraKeyOriginalExtra] = []string{string(jsonExtras)}
+		}
+	}
+
+	return &transport.ImpersonationConfig{
+		UserName: forwarded.GetName(),
+		UID:      forwarded.GetUID(),
+		Groups:   groups,
+		Extra:    extra,
+	}, nil
 }
 
 // impersonatedHeaderNames returns the sorted names of the impersonation headers
@@ -424,14 +441,19 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 		http.Error(rw, "Unauthorized", http.StatusUnauthorized)
 	})
 
-	// Audited through the ordinary request chain rather than the
-	// failed-authentication one: the request authenticated successfully and was
-	// then refused, and the caller has already put the identity in the request
-	// reqctx. The client body carries no claim values; they are logged and
-	// audited instead.
-	forbiddenHandler := audit.NewForbiddenHandler(p.auditor, func(rw http.ResponseWriter, r *http.Request) {
-		http.Error(rw, "identities with the reserved \"system:\" prefix are not accepted from an authentication token", http.StatusForbidden)
+	// Every refusal of a request that did authenticate is audited through the
+	// ordinary request chain rather than the failed-authentication one: the
+	// caller has already put the identity in the request context, so the
+	// event names who was refused. The response is decided per error below
+	// and travels to the audited handler on the request context.
+	auditedDenial := audit.NewForbiddenHandler(p.auditor, func(rw http.ResponseWriter, r *http.Request) {
+		d, _ := r.Context().Value(deniedResponseKey{}).(deniedResponse)
+		http.Error(rw, d.body, d.status)
 	})
+	deny := func(rw http.ResponseWriter, r *http.Request, status int, body string) {
+		r = r.WithContext(context.WithValue(r.Context(), deniedResponseKey{}, deniedResponse{status: status, body: body}))
+		auditedDenial.ServeHTTP(rw, r)
+	}
 
 	return func(rw http.ResponseWriter, r *http.Request, err error) {
 
@@ -462,19 +484,21 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			// badly broken claim mapping, not an ordinary denial.
 			p.logAnomaly(r, metrics.ReasonReservedIdentity)
 			p.logDenied(r, metrics.ReasonReservedIdentity, err)
-			forbiddenHandler.ServeHTTP(rw, r)
+			// The client body carries no claim values; they are logged and
+			// audited instead.
+			deny(rw, r, http.StatusForbidden, "identities with the reserved \"system:\" prefix are not accepted from an authentication token")
 			return
 
 			// No name given or available in oidc request
 		case errors.Is(err, errNoName):
 			p.logDenied(r, metrics.ReasonNoUsernameClaim, err)
-			http.Error(rw, "Username claim not available in OIDC Issuer response", http.StatusForbidden)
+			deny(rw, r, http.StatusForbidden, "Username claim not available in OIDC Issuer response")
 			return
 
 			// No impersonation user found
 		case errors.Is(err, subjectaccessreview.ErrNoImpersonationUser):
 			p.logDenied(r, metrics.ReasonInternalError, err)
-			http.Error(rw, subjectaccessreview.ErrNoImpersonationUser.Error(), http.StatusInternalServerError)
+			deny(rw, r, http.StatusInternalServerError, subjectaccessreview.ErrNoImpersonationUser.Error())
 			return
 
 			// Request carries more impersonation header values than the
@@ -485,14 +509,14 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			// a resource-exhaustion attempt against the SubjectAccessReview path.
 			p.logAnomaly(r, metrics.ReasonTooManyImpersonationValues)
 			p.logDenied(r, metrics.ReasonTooManyImpersonationValues, err)
-			http.Error(rw, err.Error(), http.StatusRequestHeaderFieldsTooLarge)
+			deny(rw, r, http.StatusRequestHeaderFieldsTooLarge, err.Error())
 			return
 
 			// Requester is not authorized to impersonate the requested identity.
 			// Classified by typed error (errors.Is), not by message text.
 		case errors.Is(err, subjectaccessreview.ErrImpersonationNotAllowed):
 			p.logDenied(r, metrics.ReasonImpersonationDenied, err)
-			http.Error(rw, err.Error(), http.StatusForbidden)
+			deny(rw, r, http.StatusForbidden, err.Error())
 			return
 
 			// Client canceled the request (SAR or reverse-proxy). Nothing to

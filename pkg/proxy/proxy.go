@@ -100,7 +100,7 @@ type Proxy struct {
 
 	// logger is the request-component logger every request-path record is
 	// emitted through, and the logger the request filter puts on the request
-	// reqctx. Never nil: New requires a root logger.
+	// context. Never nil: New requires a root logger.
 	logger *slog.Logger
 
 	// oidcLog, tokenReviewLog and upstreamLog are the component loggers for the
@@ -411,7 +411,7 @@ func (p *Proxy) serve(handler http.Handler, ctx context.Context) (<-chan struct{
 	return waitCh, listenerStoppedCh, nil
 }
 
-// RoundTrip is called last and is used to manipulate the forwarded request using reqctx.
+// RoundTrip is called last and is used to manipulate the forwarded request using context.
 func (p *Proxy) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Here we have successfully authenticated so now need to determine whether
 	// we need use impersonation or not.
@@ -429,7 +429,7 @@ func (p *Proxy) RoundTrip(req *http.Request) (*http.Response, error) {
 		return p.noAuthClientTransport.RoundTrip(req)
 	}
 
-	// Get the impersonation headers from the reqctx.
+	// Get the impersonation headers from the context.
 	impersonationConf := reqctx.ImpersonationConfig(req)
 	if impersonationConf == nil {
 		return nil, errNoImpersonationConfig

@@ -166,6 +166,12 @@ type SubjectAccessReview struct {
 	// burst of identical requests results in a single SubjectAccessReview call.
 	// Only used when the cache is enabled.
 	flight singleflight.Group
+
+	// beforeFlight, when set, is called just before a caller joins the flight
+	// for its key. It exists for the tests that pin coalescing: they release
+	// the in-flight review only once every joiner has reached this point,
+	// instead of sleeping and hoping. Nil in production.
+	beforeFlight func()
 }
 
 // Config is the operator-facing configuration of a SubjectAccessReview.
@@ -525,6 +531,9 @@ func (s *SubjectAccessReview) observeLiveCheck(ctx context.Context, kind string,
 func (s *SubjectAccessReview) sharedLiveCheck(ctx context.Context, kind, key string, spec *v1.SubjectAccessReviewSpec) (bool, error) {
 	start := time.Now()
 
+	if s.beforeFlight != nil {
+		s.beforeFlight()
+	}
 	ch := s.flight.DoChan(key, func() (interface{}, error) {
 		allowed, err := s.liveCheck(ctx, spec)
 		if err != nil {

@@ -14,13 +14,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
-	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview/fake"
 	v1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apiserver/pkg/authentication/user"
 	clientazv1 "k8s.io/client-go/kubernetes/typed/authorization/v1"
+
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview/fake"
 )
 
 // testRequestContext returns a context carrying a request id, exactly as the
@@ -1096,6 +1097,11 @@ func TestCoalescedLiveCheckEvent(t *testing.T) {
 	s := newLoggingSAR(t, root, reviewer, DefaultTimeout, DefaultAllowCacheTTL, DefaultDenyCacheTTL)
 	ctx := logging.WithRequestID(context.Background(), "r1")
 
+	// Both callers report when they are about to join the flight, so the gate
+	// opens only once the second one is in: no sleep decides the outcome.
+	joined := make(chan struct{}, 2)
+	s.beforeFlight = func() { joined <- struct{}{} }
+
 	check := func(wg *sync.WaitGroup, err *error) {
 		defer wg.Done()
 		_, e := s.checkRbacImpersonationAuthorization(ctx, userTarget("bob"), loggingTestRequester())
@@ -1117,8 +1123,13 @@ func TestCoalescedLiveCheckEvent(t *testing.T) {
 	wg.Add(1)
 	go check(&wg, &errs[1])
 
-	// Give the second caller time to join the in-flight call before it answers.
-	time.Sleep(300 * time.Millisecond)
+	for i := 0; i < 2; i++ {
+		select {
+		case <-joined:
+		case <-time.After(2 * time.Second):
+			t.Fatal("a caller never reached the singleflight boundary")
+		}
+	}
 	close(reviewer.release)
 	wg.Wait()
 

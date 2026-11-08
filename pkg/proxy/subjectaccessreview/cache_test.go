@@ -600,6 +600,11 @@ func TestSingleflightDedup(t *testing.T) {
 	}
 	sar := newCachedSAR(reviewer, 10*time.Second, 30*time.Second, clk)
 
+	// Every caller reports when it is about to join the flight, so the gate
+	// opens only once all of them are in: no sleep decides the outcome.
+	joined := make(chan struct{}, concurrent)
+	sar.beforeFlight = func() { joined <- struct{}{} }
+
 	results := make(chan error, concurrent)
 	check := func() {
 		target, err := sar.CheckAuthorizedForImpersonation(impersonateUserRequest("bob"), cacheTestRequester())
@@ -621,7 +626,13 @@ func TestSingleflightDedup(t *testing.T) {
 	for i := 1; i < concurrent; i++ {
 		go check()
 	}
-	time.Sleep(300 * time.Millisecond)
+	for i := 0; i < concurrent; i++ {
+		select {
+		case <-joined:
+		case <-time.After(2 * time.Second):
+			t.Fatal("not every caller reached the singleflight boundary")
+		}
+	}
 	close(reviewer.release)
 
 	for i := 0; i < concurrent; i++ {

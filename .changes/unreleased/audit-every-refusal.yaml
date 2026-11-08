@@ -1,0 +1,3 @@
+kind: Changed
+body: |-
+  Every refusal of an authenticated request (reserved identity, SubjectAccessReview denial, missing `Impersonate-User`, too many impersonation values, no username claim) is written through one audited handler, so the audit event names the identity that was refused.
