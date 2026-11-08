@@ -29,7 +29,6 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/cert"
 
-	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
@@ -622,7 +621,7 @@ func newTestProxy(t *testing.T) *fakeProxy {
 		},
 	}
 
-	auditor, err := audit.New(new(options.AuditOptions), "0.0.0.0:1234", new(server.SecureServingInfo),
+	auditor, err := audit.New(nil, "0.0.0.0:1234", new(server.SecureServingInfo),
 		logging.ForComponent(root, logging.ComponentAudit))
 	if err != nil {
 		t.Fatalf("failed to create auditor: %s", err)

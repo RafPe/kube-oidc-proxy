@@ -11,16 +11,17 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
-	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
-	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"k8s.io/apimachinery/pkg/util/sets"
 	genericapifilters "k8s.io/apiserver/pkg/endpoints/filters"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/server"
 	genericfilters "k8s.io/apiserver/pkg/server/filters"
+	apiserveroptions "k8s.io/apiserver/pkg/server/options"
 	"k8s.io/component-base/compatibility"
 	"k8s.io/component-base/version"
+
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 )
 
 // longRunningRequests reports whether a request streams for as long as the
@@ -60,7 +61,6 @@ type Audit struct {
 	// metrics receives the observable backend failures; nil records nothing.
 	metrics *metrics.Recorder
 
-	opts         *options.AuditOptions
 	serverConfig *server.CompletedConfig
 }
 
@@ -68,9 +68,12 @@ type Audit struct {
 // is mostly a wrapper for the apiserver auditing handlers to combine them with
 // the proxy.
 //
-// logger is the audit-component logger; a nil logger yields one that discards
-// every record, so a partially wired caller cannot panic on the request path.
-func New(opts *options.AuditOptions, externalAddress string, secureServingInfo *server.SecureServingInfo, logger *slog.Logger) (*Audit, error) {
+// opts is the apiserver's own audit configuration, as bound to the command's
+// flags; nil configures no backend, so a request chain built for a test still
+// has every filter in place. logger is the audit-component logger; a nil
+// logger yields one that discards every record, so a partially wired caller
+// cannot panic on the request path.
+func New(opts *apiserveroptions.AuditOptions, externalAddress string, secureServingInfo *server.SecureServingInfo, logger *slog.Logger) (*Audit, error) {
 	logger = logging.OrDiscard(logger)
 
 	serverConfig := &server.Config{
@@ -104,7 +107,6 @@ func New(opts *options.AuditOptions, externalAddress string, secureServingInfo *
 
 	return &Audit{
 		logger:       logger,
-		opts:         opts,
 		serverConfig: &completed,
 	}, nil
 }

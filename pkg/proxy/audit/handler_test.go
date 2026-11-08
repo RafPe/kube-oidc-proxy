@@ -15,8 +15,6 @@ import (
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/server"
 	apiserveroptions "k8s.io/apiserver/pkg/server/options"
-
-	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
 )
 
 // forbiddenAuditEvent is the subset of an audit.k8s.io/v1 Event this test
@@ -57,7 +55,7 @@ func newForbiddenTestAudit(t *testing.T) (*Audit, string) {
 	}
 	logPath := filepath.Join(dir, "audit.log")
 
-	opts := &options.AuditOptions{AuditOptions: apiserveroptions.NewAuditOptions()}
+	opts := apiserveroptions.NewAuditOptions()
 	opts.PolicyFile = policyPath
 	opts.LogOptions.Path = logPath
 

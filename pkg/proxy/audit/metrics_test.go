@@ -8,7 +8,6 @@ import (
 
 	"k8s.io/apiserver/pkg/server"
 
-	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics/metricstest"
 )
@@ -17,7 +16,7 @@ const metricAuditFailures = "kube_oidc_proxy_audit_backend_failures_total"
 
 func newAuditWithBackend(t *testing.T, b *fakeBackend, rec *metrics.Recorder) *Audit {
 	t.Helper()
-	a, err := New(new(options.AuditOptions), "0.0.0.0:1234", new(server.SecureServingInfo), slog.New(slog.DiscardHandler))
+	a, err := New(nil, "0.0.0.0:1234", new(server.SecureServingInfo), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}

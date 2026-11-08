@@ -20,10 +20,10 @@ import (
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/request/bearertoken"
 	"k8s.io/apiserver/pkg/server"
+	apiserveroptions "k8s.io/apiserver/pkg/server/options"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/transport"
 
-	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/audit"
@@ -161,7 +161,10 @@ type Dependencies struct {
 
 	RestConfig         *rest.Config
 	TokenAuthenticator authenticator.Token
-	AuditOptions       *options.AuditOptions
+
+	// AuditOptions is the apiserver audit configuration the auditor applies.
+	// Optional: nil configures no audit backend.
+	AuditOptions *apiserveroptions.AuditOptions
 
 	// TokenReviewer authenticates passthrough bearer tokens, typically a
 	// tokenreview.TokenReview optionally wrapped by tokenreview.NewCached.

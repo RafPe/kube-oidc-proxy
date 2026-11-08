@@ -414,7 +414,7 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 				Logger:                root,
 				RestConfig:            restConfig,
 				TokenAuthenticator:    tokenAuther,
-				AuditOptions:          opts.Audit,
+				AuditOptions:          opts.Audit.AuditOptions,
 				TokenReviewer:         tokenReviewer,
 				SubjectAccessReviewer: subjectAccessReviewer,
 				SecureServingInfo:     secureServingInfo,
