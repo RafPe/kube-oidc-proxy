@@ -8,12 +8,26 @@
 package docsync
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/pmezard/go-difflib/difflib"
 )
+
+// Main is the whole of a doc-generating command: it parses the -check flag,
+// renders the table and syncs the section, reporting a failure under name and
+// exiting non-zero so CI fails on a stale document.
+func Main(name string, s Section, render func() string) {
+	check := flag.Bool("check", false, "report a diff and exit 1 instead of writing")
+	flag.Parse()
+
+	if err := Sync(s, render(), *check); err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", name, err)
+		os.Exit(1)
+	}
+}
 
 // Section names the document and the markers a generated table lives between.
 type Section struct {
