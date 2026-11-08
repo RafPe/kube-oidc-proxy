@@ -20,6 +20,7 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/suite/cases/sharedtests"
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
+	"github.com/rafpe/kube-oidc-proxy/test/util"
 )
 
 const (
@@ -189,11 +190,11 @@ func grantPodList(f *framework.Framework, username string) {
 // signedTokenFor mints a token for the given identity, signed by the suite's
 // mock issuer.
 func signedTokenFor(f *framework.Framework, username string, groups []string) string {
-	payload, err := f.Helper().NewTokenPayloadForIdentity(f.IssuerURL(), f.ClientID(),
+	payload, err := util.NewTokenPayloadForIdentity(f.IssuerURL(), f.ClientID(),
 		username, groups, time.Now().Add(time.Minute*10))
 	Expect(err).NotTo(HaveOccurred())
 
-	signedToken, err := f.Helper().SignToken(f.IssuerKeyBundle(), payload)
+	signedToken, err := util.SignToken(f.IssuerKeyBundle(), payload)
 	Expect(err).NotTo(HaveOccurred())
 
 	return signedToken

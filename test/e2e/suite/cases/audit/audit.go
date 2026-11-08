@@ -28,6 +28,7 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/helper"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/suite/cases/sharedtests"
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
+	"github.com/rafpe/kube-oidc-proxy/test/util"
 )
 
 const (
@@ -236,8 +237,8 @@ var _ = framework.CasesDescribe("Audit", Label("shard-b"), func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		By("Watching pods through the proxy")
-		token := f.Helper().NewTokenPayload(f.IssuerURL(), f.ClientID(), time.Now().Add(time.Minute*10))
-		signedToken, err := f.Helper().SignToken(f.IssuerKeyBundle(), token)
+		token := util.NewTokenPayload(f.IssuerURL(), f.ClientID(), time.Now().Add(time.Minute*10))
+		signedToken, err := util.SignToken(f.IssuerKeyBundle(), token)
 		Expect(err).NotTo(HaveOccurred())
 
 		proxyConfig := f.NewProxyRestConfig()
@@ -445,8 +446,8 @@ rules:
 // proxy. SPDY builds its own transport from TLSClientConfig, so unlike
 // Framework.NewProxyRestConfig this cannot hand over a prebuilt transport.
 func newExecRestConfig(f *framework.Framework) *rest.Config {
-	payload := f.Helper().NewTokenPayload(f.IssuerURL(), f.ClientID(), time.Now().Add(time.Minute*10))
-	signedToken, err := f.Helper().SignToken(f.IssuerKeyBundle(), payload)
+	payload := util.NewTokenPayload(f.IssuerURL(), f.ClientID(), time.Now().Add(time.Minute*10))
+	signedToken, err := util.SignToken(f.IssuerKeyBundle(), payload)
 	Expect(err).NotTo(HaveOccurred())
 
 	return &rest.Config{
@@ -507,8 +508,8 @@ func readAuditLog(f *framework.Framework, podLabelSelector, containerName, logPa
 // container, otherwise from the pod's default container.
 func testAuditLogs(f *framework.Framework, podLabelSelector, containerName, logPath string) {
 	By("Making calls to proxy to ensure audit get created")
-	token := f.Helper().NewTokenPayload(f.IssuerURL(), f.ClientID(), time.Now().Add(time.Second*5))
-	signedToken, err := f.Helper().SignToken(f.IssuerKeyBundle(), token)
+	token := util.NewTokenPayload(f.IssuerURL(), f.ClientID(), time.Now().Add(time.Second*5))
+	signedToken, err := util.SignToken(f.IssuerKeyBundle(), token)
 	Expect(err).NotTo(HaveOccurred())
 
 	proxyConfig := f.NewProxyRestConfig()

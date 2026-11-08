@@ -29,6 +29,7 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
+	"github.com/rafpe/kube-oidc-proxy/test/util"
 	"github.com/rafpe/kube-oidc-proxy/test/util/port"
 )
 
@@ -295,8 +296,8 @@ func forwardPorts(method string, url *url.URL, opts *portForwardOptions) error {
 }
 
 func newRestConfig(f *framework.Framework) *rest.Config {
-	payload := f.Helper().NewTokenPayload(f.IssuerURL(), f.ClientID(), time.Now().Add(time.Minute))
-	signedToken, err := f.Helper().SignToken(f.IssuerKeyBundle(), payload)
+	payload := util.NewTokenPayload(f.IssuerURL(), f.ClientID(), time.Now().Add(time.Minute))
+	signedToken, err := util.SignToken(f.IssuerKeyBundle(), payload)
 	Expect(err).NotTo(HaveOccurred())
 
 	return &rest.Config{

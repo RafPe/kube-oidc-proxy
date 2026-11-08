@@ -37,17 +37,17 @@ func RunTokenValidationTests(f *framework.Framework) {
 		badURL, err := url.Parse("incorrect-issuer.io")
 		Expect(err).NotTo(HaveOccurred())
 		expectUnauthorized(f, f.IssuerKeyBundle(),
-			f.Helper().NewTokenPayload(badURL, f.ClientID(), time.Now().Add(time.Minute)))
+			util.NewTokenPayload(badURL, f.ClientID(), time.Now().Add(time.Minute)))
 	})
 
 	It("rejects a token with a wrong audience", func() {
 		expectUnauthorized(f, f.IssuerKeyBundle(),
-			f.Helper().NewTokenPayload(f.IssuerURL(), "wrong-aud", time.Now().Add(time.Minute)))
+			util.NewTokenPayload(f.IssuerURL(), "wrong-aud", time.Now().Add(time.Minute)))
 	})
 
 	It("rejects an expired token", func() {
 		expectUnauthorized(f, f.IssuerKeyBundle(),
-			f.Helper().NewTokenPayload(f.IssuerURL(), f.ClientID(), time.Now()))
+			util.NewTokenPayload(f.IssuerURL(), f.ClientID(), time.Now()))
 	})
 
 	It("accepts a valid token from the primary issuer", func() {
@@ -83,7 +83,7 @@ func expectUnauthorized(f *framework.Framework, keyBundle *util.KeyBundle, paylo
 }
 
 func proxyGetPods(f *framework.Framework, keyBundle *util.KeyBundle, payload []byte) ([]byte, *http.Response) {
-	signedToken, err := f.Helper().SignToken(keyBundle, payload)
+	signedToken, err := util.SignToken(keyBundle, payload)
 	Expect(err).NotTo(HaveOccurred())
 
 	proxyConfig := f.NewProxyRestConfig()

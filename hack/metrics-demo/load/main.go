@@ -47,8 +47,6 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/remotecommand"
 
-	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/config"
-	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/helper"
 	"github.com/rafpe/kube-oidc-proxy/test/util"
 )
 
@@ -542,7 +540,6 @@ func readForwardedPort(stdout io.Reader) (int, error) {
 type generator struct {
 	logger    *slog.Logger
 	st        *state
-	helper    *helper.Helper
 	cluster   kubernetes.Interface
 	namespace string
 	tunnel    *tunnel
@@ -617,7 +614,7 @@ func (g *generator) pin(ctx context.Context, logger *slog.Logger) (*pinnedPod, e
 }
 
 // scrape reads the pinned replica's exposition.
-func (g *generator) scrape(ctx context.Context) ([]helper.Sample, error) {
+func (g *generator) scrape(ctx context.Context) ([]util.Sample, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.pinned.metrics.URL()+"/metrics", nil)
 	if err != nil {
 		return nil, err
@@ -635,7 +632,7 @@ func (g *generator) scrape(ctx context.Context) ([]helper.Sample, error) {
 		return nil, fmt.Errorf("scraping %s answered %d", g.pinned.name, resp.StatusCode)
 	}
 
-	return helper.ParseMetrics(string(body))
+	return util.ParseMetrics(string(body))
 }
 
 // sarMissLabels selects the SAR decision cache's misses. A fresh literal on
@@ -643,10 +640,10 @@ func (g *generator) scrape(ctx context.Context) ([]helper.Sample, error) {
 func sarMissLabels() map[string]string { return map[string]string{"cache": "sar", "result": "miss"} }
 
 // seriesSum totals every series of name whose labels include the given pairs,
-// which is what a delta assertion needs: helper.SampleValue answers with the
+// which is what a delta assertion needs: util.SampleValue answers with the
 // first matching series only, and a denial reason or a review outcome is
 // spread over several.
-func seriesSum(samples []helper.Sample, name string, labels map[string]string) float64 {
+func seriesSum(samples []util.Sample, name string, labels map[string]string) float64 {
 	var total float64
 	for _, s := range samples {
 		if s.Name != name {
@@ -678,13 +675,9 @@ func newGenerator(logger *slog.Logger, st *state, namespace string, tun *tunnel)
 		return nil, fmt.Errorf("failed to build a kubernetes client: %s", err)
 	}
 
-	h := helper.NewHelper(&config.Config{KubeConfigPath: st.kubeconfig, RepoRoot: "."})
-	h.KubeClient = cluster
-
 	return &generator{
 		logger:    logger,
 		st:        st,
-		helper:    h,
 		cluster:   cluster,
 		namespace: namespace,
 		tunnel:    tun,
@@ -699,12 +692,12 @@ func newGenerator(logger *slog.Logger, st *state, namespace string, tun *tunnel)
 
 // token mints an OIDC token for an identity the demo issuer will vouch for.
 func (g *generator) token(username string, groups []string, exp time.Time) (string, error) {
-	payload, err := g.helper.NewTokenPayloadForIdentity(g.st.issuerURL, demoClientID, username, groups, exp)
+	payload, err := util.NewTokenPayloadForIdentity(g.st.issuerURL, demoClientID, username, groups, exp)
 	if err != nil {
 		return "", err
 	}
 
-	return g.helper.SignToken(g.st.issuerBundle, payload)
+	return util.SignToken(g.st.issuerBundle, payload)
 }
 
 func (g *generator) validToken() (string, error) {
@@ -712,7 +705,7 @@ func (g *generator) validToken() (string, error) {
 }
 
 // tokenWithoutUsername mints a token the demo issuer signs and the proxy
-// accepts, whose username claim is empty. helper.NewTokenPayloadForIdentity
+// accepts, whose username claim is empty. util.NewTokenPayloadForIdentity
 // always writes an "email", so the payload is built here instead.
 func (g *generator) tokenWithoutUsername(exp time.Time) (string, error) {
 	payload, err := json.Marshal(map[string]interface{}{
@@ -726,7 +719,7 @@ func (g *generator) tokenWithoutUsername(exp time.Time) (string, error) {
 		return "", fmt.Errorf("failed to marshal the token payload: %s", err)
 	}
 
-	return g.helper.SignToken(g.st.issuerBundle, payload)
+	return util.SignToken(g.st.issuerBundle, payload)
 }
 
 // restConfig points client-go at the proxy with a bearer token, verifying the

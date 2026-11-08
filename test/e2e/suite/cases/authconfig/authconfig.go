@@ -71,7 +71,7 @@ var _ = framework.CasesDescribe("AuthenticationConfiguration multi-issuer", Orde
 	sharedtests.RunTokenValidationTests(f)
 
 	It("accepts a valid token from the second configured issuer", func() {
-		payload := f.Helper().NewTokenPayload(issuer2URL, f.ClientID(), time.Now().Add(time.Minute))
+		payload := util.NewTokenPayload(issuer2URL, f.ClientID(), time.Now().Add(time.Minute))
 		sharedtests.ExpectProxyAuthenticated(f, issuer2Bundle, payload)
 	})
 
