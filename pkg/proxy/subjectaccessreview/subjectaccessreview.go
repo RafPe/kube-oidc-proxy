@@ -15,18 +15,24 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
-	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"golang.org/x/sync/singleflight"
 	v1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilcache "k8s.io/apimachinery/pkg/util/cache"
 	"k8s.io/apiserver/pkg/authentication/user"
 	clientazv1 "k8s.io/client-go/kubernetes/typed/authorization/v1"
+	"k8s.io/client-go/transport"
+
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 )
 
 var (
-	ErrorNoImpersonationUserFound = errors.New("no Impersonation-User header found for request")
+	// ErrNoImpersonationUser is the sentinel for a request that carries
+	// Impersonate-Group, -Uid or -Extra-* headers but no Impersonate-User: the
+	// other kinds refine a user, so without one there is nothing to
+	// impersonate. The message is client-facing and stable.
+	ErrNoImpersonationUser = errors.New("no Impersonation-User header found for request")
 
 	// ErrCreateSubjectAccessReview is the sentinel wrapping a failure to submit a
 	// SubjectAccessReview to the API server. Callers can match it with errors.Is;
@@ -51,26 +57,51 @@ var (
 	ErrTooManyImpersonationHeaderValues = errors.New("too many impersonation header values")
 )
 
+// The closed set of impersonation target kinds, as the access record's
+// target_kind reports them. They are also the vocabulary ImpersonationAuthError
+// speaks, so the proxy never has to recover a kind from message text.
+const (
+	TargetUser  = "user"
+	TargetGroup = "group"
+	TargetUID   = "uid"
+	TargetExtra = "extra"
+)
+
 // ImpersonationAuthError reports that a requester is not authorized to
-// impersonate a particular resource (user, group, uid, or extra info). It
-// classifies as ErrImpersonationNotAllowed through errors.Is so callers can
-// select an HTTP 403 without inspecting the message string, while Error()
-// preserves the human-readable, client-facing wording.
+// impersonate a particular target. It classifies as ErrImpersonationNotAllowed
+// through errors.Is so callers can select an HTTP 403 without inspecting the
+// message string, and it carries the refused target as structured fields so
+// the access record never parses the client-facing message.
 type ImpersonationAuthError struct {
 	// Requester is the name of the authenticated user attempting impersonation.
 	Requester string
 
-	// Kind is the impersonated resource kind as rendered in the message, e.g.
-	// "user", "group", "uid", or "extra info".
+	// Kind is one of TargetUser, TargetGroup, TargetUID or TargetExtra.
 	Kind string
 
-	// Target is the quoted resource identifier as rendered in the message, e.g.
-	// "'a-user'" or "'foo'='bar'".
+	// Target is the refused name: the user, group or uid, or for TargetExtra
+	// the refused value of the extra.
 	Target string
+
+	// ExtraKey is the extra's key when Kind is TargetExtra, and "" otherwise.
+	ExtraKey string
 }
 
+// Error renders the stable, client-facing denial.
 func (e *ImpersonationAuthError) Error() string {
-	return fmt.Sprintf("%s is not allowed to impersonate %s %s", e.Requester, e.Kind, e.Target)
+	if e.Kind == TargetExtra {
+		return fmt.Sprintf("%s is not allowed to impersonate extra info '%s'='%s'", e.Requester, e.ExtraKey, e.Target)
+	}
+	return fmt.Sprintf("%s is not allowed to impersonate %s '%s'", e.Requester, e.Kind, e.Target)
+}
+
+// TargetName is the refused target as the access record's target_name reports
+// it: the bare name, or key=value for an extra.
+func (e *ImpersonationAuthError) TargetName() string {
+	if e.Kind == TargetExtra {
+		return e.ExtraKey + "=" + e.Target
+	}
+	return e.Target
 }
 
 // Is reports whether e should be treated as ErrImpersonationNotAllowed, letting
@@ -178,12 +209,40 @@ func (realClock) Now() time.Time { return time.Now() }
 
 var _ utilcache.Clock = realClock{}
 
+// impersonationTarget is one identity attribute a request asks to impersonate:
+// the SubjectAccessReview resource that authorizes it, the kind the record
+// reports it under, and the name being asked for.
+type impersonationTarget struct {
+	kind     string
+	resource string
+	name     string
+
+	// extraKey is the extra's key when kind is TargetExtra.
+	extraKey string
+}
+
+// denial is the typed error a refused target is reported through.
+func (t impersonationTarget) denial(requester user.Info) error {
+	return &ImpersonationAuthError{
+		Requester: requester.GetName(),
+		Kind:      t.kind,
+		Target:    t.name,
+		ExtraKey:  t.extraKey,
+	}
+}
+
 // CheckAuthorizedForImpersonation inspects the request's impersonation headers,
 // verifies via SubjectAccessReview that requester is allowed to impersonate
 // each requested target, and returns the resulting impersonated user. It
 // returns a nil user.Info when the request carries no impersonation headers. An
 // authorization denial is returned as an *ImpersonationAuthError, which matches
 // ErrImpersonationNotAllowed via errors.Is.
+//
+// The request is read, never modified. The caller forwards the request, so the
+// caller removes the consumed headers (StripImpersonationHeaders) before client-go's
+// impersonating round tripper sees it: that round tripper leaves a request
+// that already carries Impersonate-User untouched, which would forward the
+// client's raw headers under the proxy's own credentials.
 func (s *SubjectAccessReview) CheckAuthorizedForImpersonation(req *http.Request, requester user.Info) (user.Info, error) {
 	// Refuse over-wide requests before spending anything: every impersonation
 	// header value below costs one serial SAR round trip, and the value count
@@ -196,6 +255,15 @@ func (s *SubjectAccessReview) CheckAuthorizedForImpersonation(req *http.Request,
 			ErrTooManyImpersonationHeaderValues, count, s.maxHeaderValues)
 	}
 
+	if !HasImpersonationHeaders(req.Header) {
+		return nil, nil
+	}
+	// Groups, uids and extras refine a user; without one there is nothing to
+	// impersonate.
+	if req.Header.Get(transport.ImpersonateUserHeader) == "" {
+		return nil, ErrNoImpersonationUser
+	}
+
 	// Derive one shared budget for the whole SAR sequence from the inbound
 	// request context, so client cancellation propagates and a stalled API
 	// server cannot stall the request indefinitely.
@@ -203,137 +271,125 @@ func (s *SubjectAccessReview) CheckAuthorizedForImpersonation(req *http.Request,
 	defer cancel()
 	ctx = withRequesterErr(ctx, req.Context().Err)
 
-	impersonatedUser := req.Header.Get("impersonate-user")
-
-	hasImpersonatedUser := impersonatedUser != ""
-
-	hasImpersonation := false
-
 	targetUser := &user.DefaultInfo{
-		Name:   "",
 		Groups: make([]string, 0),
 		Extra:  map[string][]string{},
-		UID:    "",
 	}
-
-	headersToRemove := make(map[string]string)
 
 	for key, values := range req.Header {
-		keyToCheck := strings.ToLower(key)
-		if strings.HasPrefix(keyToCheck, "impersonate-") {
-			if !hasImpersonatedUser {
-				// found impersonation header, but not a user
-				return nil, ErrorNoImpersonationUserFound
-			}
+		if !IsImpersonationHeader(key) {
+			continue
+		}
 
-			headersToRemove[key] = key
-			hasImpersonation = true
-			if keyToCheck == "impersonate-user" {
-				userToImpersonate := values[0]
-				if userToImpersonate != "" {
-					result, err := s.checkRbacImpersonationAuthorization(ctx, "users", userToImpersonate, requester)
-					if err != nil {
-						return nil, err
-					}
-					if !result {
-						return nil, &ImpersonationAuthError{
-							Requester: requester.GetName(),
-							Kind:      "user",
-							Target:    fmt.Sprintf("'%s'", userToImpersonate),
-						}
-					}
-					targetUser.Name = userToImpersonate
-				}
-			} else if keyToCheck == "impersonate-group" {
-				for i := range values {
-					groupName := values[i]
-					result, err := s.checkRbacImpersonationAuthorization(ctx, "groups", groupName, requester)
-					if err != nil {
-						return nil, err
-					}
-					if !result {
-						return nil, &ImpersonationAuthError{
-							Requester: requester.GetName(),
-							Kind:      "group",
-							Target:    fmt.Sprintf("'%s'", groupName),
-						}
-					}
-					targetUser.Groups = append(targetUser.Groups, groupName)
-				}
-			} else if keyToCheck == "impersonate-uid" {
-				uidToImpersonate := values[0]
-				result, err := s.checkRbacImpersonationAuthorization(ctx, "uids", uidToImpersonate, requester)
-				if err != nil {
+		switch {
+		case strings.EqualFold(key, transport.ImpersonateUserHeader):
+			target := impersonationTarget{kind: TargetUser, resource: "users", name: values[0]}
+			if err := s.authorize(ctx, target, requester); err != nil {
+				return nil, err
+			}
+			targetUser.Name = target.name
+
+		case strings.EqualFold(key, transport.ImpersonateUIDHeader):
+			target := impersonationTarget{kind: TargetUID, resource: "uids", name: values[0]}
+			if err := s.authorize(ctx, target, requester); err != nil {
+				return nil, err
+			}
+			targetUser.UID = target.name
+
+		case strings.EqualFold(key, transport.ImpersonateGroupHeader):
+			for _, group := range values {
+				target := impersonationTarget{kind: TargetGroup, resource: "groups", name: group}
+				if err := s.authorize(ctx, target, requester); err != nil {
 					return nil, err
 				}
-				if !result {
-					return nil, &ImpersonationAuthError{
-						Requester: requester.GetName(),
-						Kind:      "uid",
-						Target:    fmt.Sprintf("'%s'", uidToImpersonate),
-					}
-				}
-				targetUser.UID = uidToImpersonate
-			} else if strings.HasPrefix(keyToCheck, "impersonate-extra-") {
-				// according to https://github.com/kubernetes/kubernetes/blob/555623c07eabf22864f6147736fa191e020cca25/staging/src/k8s.io/apiserver/pkg/authentication/user/user.go#L31-L41
-				// the extra name MUST be lowercase...so we'll force to lowercase for the rbac check
-				extraName := strings.ToLower(key[18:])
-				for i := range values {
-					result, err := s.checkRbacImpersonationAuthorization(ctx, "userextras/"+extraName, values[i], requester)
-					if err != nil {
-						return nil, err
-					}
-					if !result {
-						return nil, &ImpersonationAuthError{
-							Requester: requester.GetName(),
-							Kind:      "extra info",
-							Target:    fmt.Sprintf("'%s'='%s'", extraName, values[i]),
-						}
-					}
-					targetUser.Extra[extraName] = append(targetUser.Extra[extraName], values[i])
-				}
-			} else if strings.HasPrefix(keyToCheck, "impersonate-") {
-				// unknown impersonation header, fail
-				return nil, fmt.Errorf("unknown impersonation header '%s'", key)
+				targetUser.Groups = append(targetUser.Groups, group)
 			}
 
-		}
-
-	}
-
-	if !hasImpersonation {
-		// no impersonation, no user to return
-		return nil, nil
-	}
-
-	// Clear out the impersonation headers we consumed before forwarding.
-	newHeaders := http.Header{}
-	for k := range req.Header {
-		if _, ok := headersToRemove[k]; !ok {
-			for _, v := range req.Header.Values(k) {
-				newHeaders.Add(k, v)
+		case hasPrefixFold(key, transport.ImpersonateUserExtraHeaderPrefix):
+			// Extra keys are lower-case by definition (user.Info documents it),
+			// so the RBAC check and the forwarded identity both use that form.
+			extraKey := strings.ToLower(key[len(transport.ImpersonateUserExtraHeaderPrefix):])
+			for _, value := range values {
+				target := impersonationTarget{kind: TargetExtra, resource: "userextras/" + extraKey, name: value, extraKey: extraKey}
+				if err := s.authorize(ctx, target, requester); err != nil {
+					return nil, err
+				}
+				targetUser.Extra[extraKey] = append(targetUser.Extra[extraKey], value)
 			}
+
+		default:
+			return nil, fmt.Errorf("unknown impersonation header '%s'", key)
 		}
 	}
-
-	// Authorized: forward the request with the impersonation target.
-	req.Header = newHeaders
 
 	logging.Emit(ctx, s.log(), logging.EventAuthzImpersonationResolved,
-		slog.String("target_kind", "user"),
+		slog.String("target_kind", TargetUser),
 		slog.String("target_name", logging.Bound(targetUser.Name, logging.MaxIdentity)))
 
 	return targetUser, nil
 }
 
+// authorize asks the API server whether requester may impersonate target and
+// returns the typed denial when it may not. A dependency failure is returned
+// as is: it is not a verdict on the request.
+func (s *SubjectAccessReview) authorize(ctx context.Context, target impersonationTarget, requester user.Info) error {
+	allowed, err := s.checkRbacImpersonationAuthorization(ctx, target, requester)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return target.denial(requester)
+	}
+	return nil
+}
+
+// IsImpersonationHeader reports whether key names an impersonation header.
+// The match is on the Impersonate- prefix, case-insensitively: a header a
+// client spells unusually, or one of a kind this proxy does not know, is still
+// an impersonation attempt and must be authorized or refused, never forwarded.
+func IsImpersonationHeader(key string) bool {
+	return hasPrefixFold(key, "Impersonate-")
+}
+
+// HasImpersonationHeaders reports whether the headers carry any impersonation
+// header at all, which is what decides whether a request goes through
+// CheckAuthorizedForImpersonation.
+func HasImpersonationHeaders(headers http.Header) bool {
+	for key := range headers {
+		if IsImpersonationHeader(key) {
+			return true
+		}
+	}
+	return false
+}
+
+// StripImpersonationHeaders returns a copy of headers without the
+// impersonation headers, for the request that is forwarded once they have
+// been authorized and turned into the outbound identity.
+func StripImpersonationHeaders(headers http.Header) http.Header {
+	out := make(http.Header, len(headers))
+	for key, values := range headers {
+		if IsImpersonationHeader(key) {
+			continue
+		}
+		out[key] = append([]string(nil), values...)
+	}
+	return out
+}
+
+// hasPrefixFold is strings.HasPrefix without regard to case.
+func hasPrefixFold(s, prefix string) bool {
+	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
+}
+
 // countImpersonationHeaderValues returns the total number of impersonation
-// header values the request carries: every value of every header whose key
-// matches the Impersonate- prefix case-insensitively, exactly as the
-// consumption loop in CheckAuthorizedForImpersonation matches them.
+// header values the request carries: every value of every header
+// IsImpersonationHeader matches, exactly as the consumption loop in
+// CheckAuthorizedForImpersonation matches them.
 func countImpersonationHeaderValues(headers http.Header) int {
 	count := 0
 	for key, values := range headers {
-		if strings.HasPrefix(strings.ToLower(key), "impersonate-") {
+		if IsImpersonationHeader(key) {
 			count += len(values)
 		}
 	}
@@ -348,9 +404,9 @@ func countImpersonationHeaderValues(headers http.Header) int {
 // build byte-identical *ImpersonationAuthError denials either way. Errors are
 // never cached: a transient API-server failure fails only the requests that
 // observed it.
-func (s *SubjectAccessReview) checkRbacImpersonationAuthorization(ctx context.Context, resource string, name string, requester user.Info) (bool, error) {
-	spec := impersonationReviewSpec(resource, name, requester)
-	kind := targetKind(resource)
+func (s *SubjectAccessReview) checkRbacImpersonationAuthorization(ctx context.Context, target impersonationTarget, requester user.Info) (bool, error) {
+	spec := impersonationReviewSpec(target.resource, target.name, requester)
+	kind := target.kind
 
 	key, cacheable := s.cache.key(&spec)
 	if !cacheable {
@@ -377,27 +433,6 @@ func (s *SubjectAccessReview) checkRbacImpersonationAuthorization(ctx context.Co
 // discarding logger.
 func (s *SubjectAccessReview) log() *slog.Logger {
 	return logging.OrDiscard(s.logger)
-}
-
-// targetKind maps a review resource onto the closed target_kind value the
-// record schema uses. The four caller forms are exhaustive today; anything else
-// reports "unknown" rather than being labelled as an extra it is not, so the
-// value set stays closed by construction instead of by assumption.
-func targetKind(resource string) string {
-	switch resource {
-	case "users":
-		return "user"
-	case "groups":
-		return "group"
-	case "uids":
-		return "uid"
-	}
-
-	if strings.HasPrefix(resource, "userextras/") {
-		return "extra"
-	}
-
-	return "unknown"
 }
 
 // decision renders an authorization outcome as the schema's decision value.

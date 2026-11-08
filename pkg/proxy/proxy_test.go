@@ -390,7 +390,7 @@ func TestErrorClassifiesEveryReason(t *testing.T) {
 		"too many impersonation values": {fmt.Errorf("%w: 5 > 2", subjectaccessreview.ErrTooManyImpersonationHeaderValues),
 			http.StatusRequestHeaderFieldsTooLarge, reasonTooManyImpersonationValues},
 		"impersonation denied": {&subjectaccessreview.ImpersonationAuthError{
-			Requester: "mmosley", Kind: "group", Target: "'system:masters'"},
+			Requester: "mmosley", Kind: subjectaccessreview.TargetGroup, Target: "system:masters"},
 			http.StatusForbidden, reasonImpersonationDenied},
 		"no impersonation config": {errNoImpersonationConfig, http.StatusInternalServerError, reasonInternalError},
 		// A SubjectAccessReview that could not be submitted wraps a client-go
@@ -399,7 +399,7 @@ func TestErrorClassifiesEveryReason(t *testing.T) {
 		"subjectaccessreview unavailable": {fmt.Errorf("%w: %w", subjectaccessreview.ErrCreateSubjectAccessReview,
 			&net.OpError{Op: "dial", Err: errors.New("connection refused")}),
 			http.StatusInternalServerError, reasonInternalError},
-		"no impersonation user": {subjectaccessreview.ErrorNoImpersonationUserFound, http.StatusInternalServerError, reasonInternalError},
+		"no impersonation user": {subjectaccessreview.ErrNoImpersonationUser, http.StatusInternalServerError, reasonInternalError},
 		"unknown":               {errors.New("boom"), http.StatusInternalServerError, reasonInternalError},
 	}
 
@@ -450,22 +450,19 @@ func TestErrorCanceledIsRecordedWithoutAResponse(t *testing.T) {
 // parse it back out of the client-facing message.
 func TestErrorImpersonationDenialNamesTheTarget(t *testing.T) {
 	tests := map[string]struct {
-		kind, target         string
+		err                  *subjectaccessreview.ImpersonationAuthError
 		expKind, expTargetNm string
 	}{
-		"group": {"group", "'system:masters'", "group", "system:masters"},
-		"user":  {"user", "'a-user'", "user", "a-user"},
-		"uid":   {"uid", "'bar'", "uid", "bar"},
-		// "extra info" is how the client-facing message renders it; the record
-		// carries the closed target_kind value.
-		"extra": {"extra info", "'foo'='bar'", "extra", "foo'='bar"},
+		"group": {&subjectaccessreview.ImpersonationAuthError{Kind: subjectaccessreview.TargetGroup, Target: "system:masters"}, "group", "system:masters"},
+		"user":  {&subjectaccessreview.ImpersonationAuthError{Kind: subjectaccessreview.TargetUser, Target: "a-user"}, "user", "a-user"},
+		"uid":   {&subjectaccessreview.ImpersonationAuthError{Kind: subjectaccessreview.TargetUID, Target: "bar"}, "uid", "bar"},
+		"extra": {&subjectaccessreview.ImpersonationAuthError{Kind: subjectaccessreview.TargetExtra, ExtraKey: "foo", Target: "bar"}, "extra", "foo=bar"},
 	}
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			_, records := tryError(t, http.StatusForbidden, &subjectaccessreview.ImpersonationAuthError{
-				Requester: "mmosley", Kind: test.kind, Target: test.target,
-			})
+			test.err.Requester = "mmosley"
+			_, records := tryError(t, http.StatusForbidden, test.err)
 			rec := records.Only(t, logging.EventRequestAccessDecided)
 			if got := rec.String("target_kind"); got != test.expKind {
 				t.Errorf("target_kind = %q, want %q", got, test.expKind)
@@ -474,95 +471,6 @@ func TestErrorImpersonationDenialNamesTheTarget(t *testing.T) {
 				t.Errorf("target_name = %q, want %q", got, test.expTargetNm)
 			}
 		})
-	}
-}
-
-func TestHasImpersonation(t *testing.T) {
-	p := new(Proxy)
-
-	// no impersonation headers
-	noImpersonation := []http.Header{
-		{},
-		{
-			"foo": []string{"bar", "foo"},
-		},
-		{
-			"impersonation": []string{"bar"},
-			"impersonate":   []string{"bar"},
-		},
-		{
-			"Impersonate": []string{"bar", "foo"},
-		},
-
-		{
-			"-impersonate-Extra-": []string{"bar", "foo"},
-		},
-		{
-			"a": []string{"Impersonate-User"},
-			"b": []string{"Impersonate-Group"},
-			"c": []string{"Impersonate-Extra-"},
-		},
-	}
-
-	// impersonation headers
-	hasImpersonation := []http.Header{
-		{
-			"Impersonate-User": []string{"bar", "foo"},
-		},
-		{
-			"impersonate-user": []string{"bar", "foo"},
-		},
-		{
-			"impersonate-user": nil,
-		},
-		{
-			"impersonate-group": nil,
-		},
-		{
-			"impersonate-Group": []string{"bar", "foo"},
-		},
-		{
-			"impersonate-Extra-foobar___foo": []string{"bar", "foo"},
-		},
-		{
-			"impersonate-Extra-": []string{"bar", "foo"},
-		},
-		{
-			"impersonate-Extra-": []string{"bar", "foo"},
-			"impersonate-Group":  []string{"bar", "foo"},
-			"impersonate-User":   []string{"bar"},
-		},
-		{
-			"impersonate-Extra-": []string{"bar", "foo"},
-			"foo":                []string{"bar", "foo"},
-			"bar":                []string{"bar"},
-		},
-		{
-			"foo":                []string{"bar", "foo"},
-			"impersonate-Extra-": []string{"bar", "foo"},
-			"bar":                []string{"bar"},
-			"impersonate-Group":  []string{"bar", "foo"},
-			"foo2":               []string{"bar", "foo"},
-			"impersonate-User":   []string{"bar"},
-			"bar2":               []string{"bar"},
-		},
-		// any attempt to user impersonate- should be interpreted as
-		// an impersonation header since it could be in the future
-		{
-			"impersonate-Extra": []string{"bar", "foo"},
-		},
-	}
-
-	for _, h := range noImpersonation {
-		if p.hasImpersonation(h) {
-			t.Errorf("expected no impersonation but got true, '%s'", h)
-		}
-	}
-
-	for _, h := range hasImpersonation {
-		if !p.hasImpersonation(h) {
-			t.Errorf("expected impersonation but got false, '%s'", h)
-		}
 	}
 }
 

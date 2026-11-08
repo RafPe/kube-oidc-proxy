@@ -107,15 +107,6 @@ func userFromContext(req *http.Request) authuser.Info {
 	return info
 }
 
-// impersonationTargetKind maps the kind as the client-facing denial message
-// renders it onto the closed target_kind value set.
-func impersonationTargetKind(kind string) string {
-	if kind == "extra info" {
-		return "extra"
-	}
-	return kind
-}
-
 func (p *Proxy) withHandlers(handler http.Handler) http.Handler {
 	// Set up proxy handlers
 	handler = p.auditor.WithRequest(handler)
@@ -363,15 +354,21 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 
 		userForContext := user
 
-		if p.hasImpersonation(req.Header) {
+		if subjectaccessreview.HasImpersonationHeaders(req.Header) {
 			// if impersonation headers are present, let's check to see
 			// if the user is authorized to perform the impersonation
 			target, err := p.subjectAccessReviewer.CheckAuthorizedForImpersonation(req, user)
-
 			if err != nil {
 				p.handleError(rw, req, err)
 				return
 			}
+
+			// The client's headers have been authorized and become the
+			// outbound identity below. They must not travel on the forwarded
+			// request: client-go's impersonating round tripper leaves a request
+			// that already carries Impersonate-User untouched, which would
+			// forward them under the proxy's own credentials.
+			req.Header = subjectaccessreview.StripImpersonationHeaders(req.Header)
 
 			if target != nil {
 				user = target
@@ -533,9 +530,9 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			return
 
 			// No impersonation user found
-		case errors.Is(err, subjectaccessreview.ErrorNoImpersonationUserFound):
+		case errors.Is(err, subjectaccessreview.ErrNoImpersonationUser):
 			p.logDenied(r, reasonInternalError, err)
-			http.Error(rw, subjectaccessreview.ErrorNoImpersonationUserFound.Error(), http.StatusInternalServerError)
+			http.Error(rw, subjectaccessreview.ErrNoImpersonationUser.Error(), http.StatusInternalServerError)
 			return
 
 			// Request carries more impersonation header values than the
@@ -681,8 +678,8 @@ func (p *Proxy) logDenied(r *http.Request, reason string, err error) {
 
 	var authErr *subjectaccessreview.ImpersonationAuthError
 	if errors.As(err, &authErr) {
-		d.TargetKind = impersonationTargetKind(authErr.Kind)
-		d.TargetName = strings.Trim(authErr.Target, "'")
+		d.TargetKind = authErr.Kind
+		d.TargetName = authErr.TargetName()
 	}
 
 	p.recordDecision(r, d)
@@ -699,14 +696,4 @@ func cloneExtra(in map[string][]string) map[string][]string {
 		out[k] = slices.Clone(v)
 	}
 	return out
-}
-
-func (p *Proxy) hasImpersonation(header http.Header) bool {
-	for h := range header {
-		if strings.HasPrefix(strings.ToLower(h), "impersonate-") {
-			return true
-		}
-	}
-
-	return false
 }

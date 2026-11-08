@@ -294,7 +294,7 @@ func TestCacheDenyThenAllowAfterRBACChange(t *testing.T) {
 	reviewer.set(denyAll)
 	sar := newCachedSAR(reviewer, 10*time.Second, 30*time.Second, clk)
 
-	wantDenial := ImpersonationAuthError{Requester: "mmosley", Kind: "user", Target: "'bob'"}
+	wantDenial := ImpersonationAuthError{Requester: "mmosley", Kind: TargetUser, Target: "bob"}
 
 	target, err := sar.CheckAuthorizedForImpersonation(impersonateUserRequest("bob"), cacheTestRequester())
 	if target != nil {
