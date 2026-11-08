@@ -13,7 +13,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
-	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
@@ -326,119 +325,6 @@ func (h *Helper) DeployNamedIssuer(ns, name string) (*util.KeyBundle, *url.URL, 
 	return bundle, appURL, nil
 }
 
-func (h *Helper) DeployFakeAPIServer(ns string) ([]corev1.Volume, *url.URL, error) {
-	cnt := corev1.Container{
-		Name:            kind.FakeAPIServerImageName,
-		Image:           kind.FakeAPIServerImageName,
-		ImagePullPolicy: corev1.PullNever,
-		Args: []string{
-			"fake-apiserver",
-			"--secure-port=6443",
-			"--tls-cert-file=/tls/cert.pem",
-			"--tls-private-key-file=/tls/key.pem",
-		},
-		VolumeMounts: []corev1.VolumeMount{
-			{
-				MountPath: "/tls",
-				Name:      "tls",
-				ReadOnly:  true,
-			},
-		},
-		Ports: []corev1.ContainerPort{
-			{
-				ContainerPort: 6443,
-			},
-		},
-	}
-
-	bundle, appURL, err := h.deployApp(ns, kind.FakeAPIServerImageName, corev1.ServiceTypeClusterIP, []corev1.Container{cnt})
-	if err != nil {
-		return nil, nil, err
-	}
-
-	sec, err := h.KubeClient.CoreV1().Secrets(ns).Create(context.TODO(), &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: "fake-apiserver-ca-",
-			Namespace:    ns,
-		},
-		Data: map[string][]byte{
-			"ca.pem": bundle.CertBytes,
-		},
-	}, metav1.CreateOptions{})
-	if err != nil {
-		return nil, nil, err
-	}
-
-	extraVolumes := []corev1.Volume{
-		{
-			Name: "fake-apiserver",
-			VolumeSource: corev1.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{
-					SecretName: sec.Name,
-				},
-			},
-		},
-	}
-
-	return extraVolumes, appURL, nil
-}
-
-func (h *Helper) DeployAuditWebhook(ns, logPath string) (corev1.Volume, *url.URL, error) {
-	cnt := corev1.Container{
-		Name:            kind.AuditWebhookImageName,
-		Image:           kind.AuditWebhookImageName,
-		ImagePullPolicy: corev1.PullNever,
-		Args: []string{
-			"audit-webhook",
-			"--secure-port=6443",
-			"--tls-cert-file=/tls/cert.pem",
-			"--tls-private-key-file=/tls/key.pem",
-			"--audit-file-path=" + logPath,
-		},
-		VolumeMounts: []corev1.VolumeMount{
-			{
-				MountPath: "/tls",
-				Name:      "tls",
-				ReadOnly:  true,
-			},
-		},
-		Ports: []corev1.ContainerPort{
-			{
-				ContainerPort: 6443,
-			},
-		},
-	}
-
-	bundle, appURL, err := h.deployApp(ns, kind.AuditWebhookImageName, corev1.ServiceTypeClusterIP, []corev1.Container{cnt})
-	if err != nil {
-		return corev1.Volume{}, nil, err
-	}
-
-	sec, err := h.KubeClient.CoreV1().Secrets(ns).Create(context.TODO(), &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: "audit-webhook-ca-",
-			Namespace:    ns,
-		},
-		Data: map[string][]byte{
-			"ca.pem": bundle.CertBytes,
-		},
-	}, metav1.CreateOptions{})
-	if err != nil {
-		return corev1.Volume{}, nil, err
-	}
-
-	auditWebhookCAVol := corev1.Volume{
-		Name: "audit-webhook-ca",
-		VolumeSource: corev1.VolumeSource{
-			Secret: &corev1.SecretVolumeSource{
-				SecretName: sec.Name,
-			},
-		},
-	}
-
-	return auditWebhookCAVol, appURL, nil
-}
-
 func (h *Helper) deployApp(ns, name string, serviceType corev1.ServiceType, containers []corev1.Container, volumes ...corev1.Volume) (*util.KeyBundle, *url.URL, error) {
 	host, appURL := h.appURL(ns, name, "6443")
 
@@ -578,45 +464,6 @@ func (h *Helper) deployApp(ns, name string, serviceType corev1.ServiceType, cont
 	time.Sleep(2 * time.Second)
 
 	return keyBundle, appNetURL, nil
-}
-
-func (h *Helper) DeleteProxy(ns string) error {
-	return h.deleteApp(ns, kind.ProxyImageName, "oidc-ca")
-}
-func (h *Helper) DeleteIssuer(ns string) error {
-	return h.DeleteNamedIssuer(ns, kind.IssuerImageName)
-}
-func (h *Helper) DeleteNamedIssuer(ns, name string) error {
-	return h.deleteApp(ns, name)
-}
-func (h *Helper) DeleteFakeAPIServer(ns string) error {
-	return h.deleteApp(ns, kind.FakeAPIServerImageName)
-}
-
-func (h *Helper) deleteApp(ns, name string, extraSecrets ...string) error {
-	err := h.KubeClient.AppsV1().Deployments(ns).Delete(context.TODO(), name, metav1.DeleteOptions{})
-	if err != nil && !k8sErrors.IsNotFound(err) {
-		return err
-	}
-
-	for _, s := range append(extraSecrets, name) {
-		err = h.KubeClient.CoreV1().Secrets(ns).Delete(context.TODO(), s, metav1.DeleteOptions{})
-		if err != nil && !k8sErrors.IsNotFound(err) {
-			return err
-		}
-	}
-
-	err = h.KubeClient.CoreV1().Services(ns).Delete(context.TODO(), name, metav1.DeleteOptions{})
-	if err != nil && !k8sErrors.IsNotFound(err) {
-		return err
-	}
-
-	err = h.KubeClient.CoreV1().ServiceAccounts(ns).Delete(context.TODO(), name, metav1.DeleteOptions{})
-	if err != nil && !k8sErrors.IsNotFound(err) {
-		return err
-	}
-
-	return nil
 }
 
 func (h *Helper) appURL(ns, serviceName, port string) (string, string) {

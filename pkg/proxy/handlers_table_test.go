@@ -18,606 +18,41 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 )
 
-func TestHandlers(t *testing.T) {
-	type authResponse struct {
-		resp *authenticator.Response
-		pass bool
-		err  error
-	}
+// handlersCase is one end-to-end case through the proxy's handler chain: the
+// inbound request, the authenticator's answer, and the response, outbound
+// identity and access record expected.
+type handlersCase struct {
+	req    *http.Request
+	config *Config
 
-	tests := map[string]struct {
-		req    *http.Request
-		config *Config
+	expAuthToken string
+	authResponse *authResponse
 
-		expAuthToken string
-		authResponse *authResponse
+	expCode int
+	expBody string
 
-		expCode int
-		expBody string
+	expUser  string
+	expGroup []string
+	expExtra map[string][]string
+	expUID   string
 
-		expUser  string
-		expGroup []string
-		expExtra map[string][]string
-		expUID   string
+	// expEvent is the access record's event field, expReason its reason
+	// (empty on an allow) and expAuthMethod how the request authenticated.
+	expEvent      string
+	expReason     metrics.Reason
+	expAuthMethod metrics.AuthMethod
+}
 
-		// expEvent is the access record's event field, expReason its reason
-		// (empty on an allow) and expAuthMethod how the request authenticated.
-		expEvent      string
-		expReason     metrics.Reason
-		expAuthMethod metrics.AuthMethod
-	}{
-		"an empty request should 401": {
-			expEvent:      "AuFail",
-			expReason:     metrics.ReasonUnauthorized,
-			expAuthMethod: metrics.AuthMethodNone,
-			req:           new(http.Request),
-			expCode:       http.StatusUnauthorized,
-			expBody:       "Unauthorized",
-		},
-		"a request with a badly formed token should 401": {
-			expEvent:      "AuFail",
-			expReason:     metrics.ReasonUnauthorized,
-			expAuthMethod: metrics.AuthMethodNone,
-			req: &http.Request{
-				Header: http.Header{
-					"Authorization": []string{"foo"},
-				},
-			},
-			expCode: http.StatusUnauthorized,
-			expBody: "Unauthorized",
-		},
-		"a request with a unauthed token should 401": {
-			expEvent:      "AuFail",
-			expReason:     metrics.ReasonUnauthorized,
-			expAuthMethod: metrics.AuthMethodNone,
-			req: &http.Request{
-				Header: http.Header{
-					"Authorization": []string{"bearer fake-token"},
-				},
-			},
-			expAuthToken: "fake-token",
-			authResponse: &authResponse{
-				resp: nil,
-				pass: false,
-				err:  nil,
-			},
-			expCode: http.StatusUnauthorized,
-			expBody: "Unauthorized",
-		},
-		"a request with an error during token auth should 401": {
-			expEvent:      "AuFail",
-			expReason:     metrics.ReasonUnauthorized,
-			expAuthMethod: metrics.AuthMethodNone,
-			req: &http.Request{
-				Header: http.Header{
-					"Authorization": []string{"bearer fake-token"},
-				},
-			},
-			expAuthToken: "fake-token",
-			authResponse: &authResponse{
-				resp: nil,
-				pass: false,
-				err:  errors.New("some error"),
-			},
-			expCode: http.StatusUnauthorized,
-			expBody: "Unauthorized",
-		},
-		"a request with an error but passes during token auth should still 401": {
-			expEvent:      "AuFail",
-			expReason:     metrics.ReasonUnauthorized,
-			expAuthMethod: metrics.AuthMethodNone,
-			req: &http.Request{
-				Header: http.Header{
-					"Authorization": []string{"bearer fake-token"},
-				},
-			},
-			expAuthToken: "fake-token",
-			authResponse: &authResponse{
-				resp: nil,
-				pass: true,
-				err:  errors.New("some error"),
-			},
-			expCode: http.StatusUnauthorized,
-			expBody: "Unauthorized",
-		},
-		"a request with unauth with impersonation should 401": {
-			expEvent:      "AuFail",
-			expReason:     metrics.ReasonUnauthorized,
-			expAuthMethod: metrics.AuthMethodNone,
-			req: &http.Request{
-				Header: http.Header{
-					"Authorization":    []string{"bearer fake-token"},
-					"Impersonate-User": []string{"a-user"},
-				},
-			},
-			expAuthToken: "fake-token",
-			authResponse: &authResponse{
-				resp: nil,
-				pass: false,
-				err:  nil,
-			},
-			expCode: http.StatusUnauthorized,
-			expBody: "Unauthorized",
-		},
+type authResponse struct {
+	resp *authenticator.Response
+	pass bool
+	err  error
+}
 
-		// BEGIN IMPERSONATION TESTS
-
-		"an authed request with authorized impersonation user should succeed": {
-			expEvent:      "AuSuccess",
-			expAuthMethod: metrics.AuthMethodOIDC,
-			req: &http.Request{
-				Header: http.Header{
-					"Authorization":    []string{"bearer fake-token"},
-					"Impersonate-User": []string{"jjackson"},
-				},
-			},
-			expUser:      "jjackson",
-			expGroup:     []string{"system:authenticated"},
-			expAuthToken: "fake-token",
-			authResponse: &authResponse{
-				resp: &authenticator.Response{
-					User: &user.DefaultInfo{
-						Name:   "mmosley",
-						Groups: []string{"group1"},
-					},
-				},
-				pass: true,
-				err:  nil,
-			},
-			expCode: http.StatusOK,
-			expExtra: map[string][]string{
-				"Impersonate-Extra-Originaluser.jetstack.io-User":   {"mmosley"},
-				"Impersonate-Extra-Originaluser.jetstack.io-Groups": {"group1"},
-			},
-			expBody: "",
-		},
-		"an authed request with authorized impersonation group should succeed": {
-			expEvent:      "AuSuccess",
-			expAuthMethod: metrics.AuthMethodOIDC,
-			req: &http.Request{
-				Header: http.Header{
-					"Authorization":     []string{"bearer fake-token"},
-					"Impersonate-User":  []string{"jjackson"},
-					"Impersonate-Group": []string{"group3"},
-				},
-			},
-			expAuthToken: "fake-token",
-			authResponse: &authResponse{
-				resp: &authenticator.Response{
-					User: &user.DefaultInfo{
-						Name:   "mmosley",
-						Groups: []string{"group1"},
-					},
-				},
-				pass: true,
-				err:  nil,
-			},
-			expUser:  "jjackson",
-			expGroup: []string{"group3", "system:authenticated"},
-			expExtra: map[string][]string{
-				"Impersonate-Extra-Originaluser.jetstack.io-User":   {"mmosley"},
-				"Impersonate-Extra-Originaluser.jetstack.io-Groups": {"group1"},
-			},
-			expCode: http.StatusOK,
-			expBody: "",
-		},
-		"an authed request with authorized impersonation extra should succeed": {
-			expEvent:      "AuSuccess",
-			expAuthMethod: metrics.AuthMethodOIDC,
-			req: &http.Request{
-				Header: http.Header{
-					"Authorization":                []string{"bearer fake-token"},
-					"Impersonate-User":             []string{"jjackson"},
-					"Impersonate-Group":            []string{"group3"},
-					"Impersonate-Extra-remoteaddr": []string{"1.2.3.4"},
-				},
-			},
-			expAuthToken: "fake-token",
-			authResponse: &authResponse{
-				resp: &authenticator.Response{
-					User: &user.DefaultInfo{
-						Name:   "mmosley",
-						Groups: []string{"group1"},
-						Extra:  map[string][]string{"someextra": {"someval1", "someval2"}, "someextra2": {"foo", "bar"}},
-					},
-				},
-				pass: true,
-				err:  nil,
-			},
-			expCode:  http.StatusOK,
-			expUser:  "jjackson",
-			expGroup: []string{"group3", "system:authenticated"},
-			expExtra: map[string][]string{
-				"Impersonate-Extra-Remoteaddr":                      {"1.2.3.4"},
-				"Impersonate-Extra-Originaluser.jetstack.io-User":   {"mmosley"},
-				"Impersonate-Extra-Originaluser.jetstack.io-Groups": {"group1"},
-				"Impersonate-Extra-Originaluser.jetstack.io-Extra":  {"{\"someextra\":[\"someval1\",\"someval2\"],\"someextra2\":[\"foo\",\"bar\"]}"},
-			},
-			expBody: "",
-		},
-
-		"an authed request with authorized impersonation extra should succeed, with an empty X-Forwarded-For header": {
-			expEvent:      "AuSuccess",
-			expAuthMethod: metrics.AuthMethodOIDC,
-			req: &http.Request{
-				Header: http.Header{
-					"Authorization":                []string{"bearer fake-token"},
-					"Impersonate-User":             []string{"jjackson"},
-					"Impersonate-Group":            []string{"group3"},
-					"Impersonate-Extra-remoteaddr": []string{"1.2.3.4"},
-					"X-Forwarded-For":              []string{""},
-				},
-			},
-			expAuthToken: "fake-token",
-			authResponse: &authResponse{
-				resp: &authenticator.Response{
-					User: &user.DefaultInfo{
-						Name:   "mmosley",
-						Groups: []string{"group1"},
-						Extra:  map[string][]string{"someextra": {"someval1", "someval2"}, "someextra2": {"foo", "bar"}},
-					},
-				},
-				pass: true,
-				err:  nil,
-			},
-			expCode:  http.StatusOK,
-			expUser:  "jjackson",
-			expGroup: []string{"group3", "system:authenticated"},
-			expExtra: map[string][]string{
-				"Impersonate-Extra-Remoteaddr":                      {"1.2.3.4"},
-				"Impersonate-Extra-Originaluser.jetstack.io-User":   {"mmosley"},
-				"Impersonate-Extra-Originaluser.jetstack.io-Groups": {"group1"},
-				"Impersonate-Extra-Originaluser.jetstack.io-Extra":  {"{\"someextra\":[\"someval1\",\"someval2\"],\"someextra2\":[\"foo\",\"bar\"]}"},
-			},
-			expBody: "",
-		},
-
-		"an authed request with authorized impersonation uid should succeed": {
-			expEvent:      "AuSuccess",
-			expAuthMethod: metrics.AuthMethodOIDC,
-			req: &http.Request{
-				Header: http.Header{
-					"Authorization":     []string{"bearer fake-token"},
-					"Impersonate-Uid":   []string{"1-2-3-4"},
-					"Impersonate-User":  []string{"jjackson"},
-					"Impersonate-Group": []string{"group3"},
-				},
-			},
-			expAuthToken: "fake-token",
-			authResponse: &authResponse{
-				resp: &authenticator.Response{
-					User: &user.DefaultInfo{
-						Name:   "mmosley",
-						Groups: []string{"group1"},
-					},
-				},
-				pass: true,
-				err:  nil,
-			},
-			expCode:  http.StatusOK,
-			expUser:  "jjackson",
-			expUID:   "1-2-3-4",
-			expGroup: []string{"group3", "system:authenticated"},
-			expExtra: map[string][]string{
-				"Impersonate-Extra-Originaluser.jetstack.io-User":   {"mmosley"},
-				"Impersonate-Extra-Originaluser.jetstack.io-Groups": {"group1"},
-			},
-			expBody: "",
-		},
-
-		"an authed request with unauthorized impersonation user should error unauthorized": {
-			expEvent:      "AuFail",
-			expReason:     metrics.ReasonImpersonationDenied,
-			expAuthMethod: metrics.AuthMethodOIDC,
-			req: &http.Request{
-				Header: http.Header{
-					"Authorization":    []string{"bearer fake-token"},
-					"Impersonate-User": []string{"a-user"},
-				},
-			},
-			expAuthToken: "fake-token",
-			authResponse: &authResponse{
-				resp: &authenticator.Response{
-					User: &user.DefaultInfo{
-						Name:   "mmosley",
-						Groups: []string{"group1"},
-					},
-				},
-				pass: true,
-				err:  nil,
-			},
-			expCode: http.StatusForbidden,
-			expBody: "mmosley is not allowed to impersonate user 'a-user'",
-		},
-		"an authed request with unauthorized impersonation group should error unauthorized": {
-			expEvent:      "AuFail",
-			expReason:     metrics.ReasonImpersonationDenied,
-			expAuthMethod: metrics.AuthMethodOIDC,
-			req: &http.Request{
-				Header: http.Header{
-					"Authorization":     []string{"bearer fake-token"},
-					"Impersonate-User":  []string{"jjackson"},
-					"Impersonate-Group": []string{"a-group"},
-				},
-			},
-			expAuthToken: "fake-token",
-			authResponse: &authResponse{
-				resp: &authenticator.Response{
-					User: &user.DefaultInfo{
-						Name:   "mmosley",
-						Groups: []string{"group1"},
-					},
-				},
-				pass: true,
-				err:  nil,
-			},
-			expCode: http.StatusForbidden,
-			expBody: "mmosley is not allowed to impersonate group 'a-group'",
-		},
-		"an authed request with unauthorized impersonation extra should error unauthorized": {
-			expEvent:      "AuFail",
-			expReason:     metrics.ReasonImpersonationDenied,
-			expAuthMethod: metrics.AuthMethodOIDC,
-			req: &http.Request{
-				Header: http.Header{
-					"Authorization":         []string{"bearer fake-token"},
-					"Impersonate-User":      []string{"jjackson"},
-					"Impersonate-Extra-foo": []string{"bar"},
-				},
-			},
-			expAuthToken: "fake-token",
-			authResponse: &authResponse{
-				resp: &authenticator.Response{
-					User: &user.DefaultInfo{
-						Name:   "mmosley",
-						Groups: []string{"group1"},
-					},
-				},
-				pass: true,
-				err:  nil,
-			},
-			expCode: http.StatusForbidden,
-			expBody: "mmosley is not allowed to impersonate extra info 'foo'='bar'",
-		},
-		"an authed request with unauthorized impersonation uid should error unauthorized": {
-			expEvent:      "AuFail",
-			expReason:     metrics.ReasonImpersonationDenied,
-			expAuthMethod: metrics.AuthMethodOIDC,
-			req: &http.Request{
-				Header: http.Header{
-					"Authorization":    []string{"bearer fake-token"},
-					"Impersonate-User": []string{"jjackson"},
-					"Impersonate-Uid":  []string{"bar"},
-				},
-			},
-			expAuthToken: "fake-token",
-			authResponse: &authResponse{
-				resp: &authenticator.Response{
-					User: &user.DefaultInfo{
-						Name:   "mmosley",
-						Groups: []string{"group1"},
-					},
-				},
-				pass: true,
-				err:  nil,
-			},
-			expCode: http.StatusForbidden,
-			expBody: "mmosley is not allowed to impersonate uid 'bar'",
-		},
-
-		"an authed request with impersonation groups missing user should fail": {
-			expEvent:      "AuFail",
-			expReason:     metrics.ReasonInternalError,
-			expAuthMethod: metrics.AuthMethodOIDC,
-			req: &http.Request{
-				Header: http.Header{
-					"Authorization":      []string{"bearer fake-token"},
-					"Impersonate-Groups": []string{"bar"},
-				},
-			},
-			expAuthToken: "fake-token",
-			authResponse: &authResponse{
-				resp: &authenticator.Response{
-					User: &user.DefaultInfo{
-						Name:   "mmosley",
-						Groups: []string{"group1"},
-					},
-				},
-				pass: true,
-				err:  nil,
-			},
-			expCode: http.StatusInternalServerError,
-			expBody: "no Impersonation-User header found for request",
-		},
-
-		"an authed request with impersonation extra missing user should fail": {
-			expEvent:      "AuFail",
-			expReason:     metrics.ReasonInternalError,
-			expAuthMethod: metrics.AuthMethodOIDC,
-			req: &http.Request{
-				Header: http.Header{
-					"Authorization":         []string{"bearer fake-token"},
-					"Impersonate-Extra-foo": []string{"bar"},
-				},
-			},
-			expAuthToken: "fake-token",
-			authResponse: &authResponse{
-				resp: &authenticator.Response{
-					User: &user.DefaultInfo{
-						Name:   "mmosley",
-						Groups: []string{"group1"},
-					},
-				},
-				pass: true,
-				err:  nil,
-			},
-			expCode: http.StatusInternalServerError,
-			expBody: "no Impersonation-User header found for request",
-		},
-
-		"an authed request with impersonation uid missing user should fail": {
-			expEvent:      "AuFail",
-			expReason:     metrics.ReasonInternalError,
-			expAuthMethod: metrics.AuthMethodOIDC,
-			req: &http.Request{
-				Header: http.Header{
-					"Authorization":   []string{"bearer fake-token"},
-					"Impersonate-Uid": []string{"bar"},
-				},
-			},
-			expAuthToken: "fake-token",
-			authResponse: &authResponse{
-				resp: &authenticator.Response{
-					User: &user.DefaultInfo{
-						Name:   "mmosley",
-						Groups: []string{"group1"},
-					},
-				},
-				pass: true,
-				err:  nil,
-			},
-			expCode: http.StatusInternalServerError,
-			expBody: "no Impersonation-User header found for request",
-		},
-
-		"an authed request with an invalid impersonation header should fail": {
-			expEvent:      "AuFail",
-			expReason:     metrics.ReasonInternalError,
-			expAuthMethod: metrics.AuthMethodOIDC,
-			req: &http.Request{
-				Header: http.Header{
-					"Authorization":        []string{"bearer fake-token"},
-					"Impersonate-User":     []string{"jjackson"},
-					"Impersonate-Not-Real": []string{"bar"},
-				},
-			},
-			expAuthToken: "fake-token",
-			authResponse: &authResponse{
-				resp: &authenticator.Response{
-					User: &user.DefaultInfo{
-						Name:   "mmosley",
-						Groups: []string{"group1"},
-					},
-				},
-				pass: true,
-				err:  nil,
-			},
-			expCode: http.StatusInternalServerError,
-			expBody: "",
-		},
-
-		// END IMPERSONATION TESTS
-
-		"an authed request with no username is token should 403": {
-			expEvent:      "AuFail",
-			expReason:     metrics.ReasonNoUsernameClaim,
-			expAuthMethod: metrics.AuthMethodOIDC,
-			req: &http.Request{
-				Header: http.Header{
-					"Authorization": []string{"bearer fake-token"},
-				},
-			},
-			expAuthToken: "fake-token",
-			authResponse: &authResponse{
-				resp: &authenticator.Response{
-					User: &user.DefaultInfo{Name: ""},
-				},
-				pass: true,
-				err:  nil,
-			},
-			expCode: http.StatusForbidden,
-			expBody: "Username claim not available in OIDC Issuer response",
-		},
-		"an authed request with user should 200": {
-			expEvent:      "AuSuccess",
-			expAuthMethod: metrics.AuthMethodOIDC,
-			req: &http.Request{
-				Header: http.Header{
-					"Authorization": []string{"bearer fake-token"},
-				},
-			},
-			expAuthToken: "fake-token",
-			authResponse: &authResponse{
-				resp: &authenticator.Response{
-					User: &user.DefaultInfo{Name: "a-user"},
-				},
-				pass: true,
-				err:  nil,
-			},
-			expCode:  http.StatusOK,
-			expBody:  "",
-			expUser:  "a-user",
-			expGroup: []string{"system:authenticated"},
-		},
-		"an authed request with user, group, extra should 200": {
-			expEvent:      "AuSuccess",
-			expAuthMethod: metrics.AuthMethodOIDC,
-			req: &http.Request{
-				Header: http.Header{
-					"Authorization": []string{"bearer fake-token"},
-				},
-			},
-			expAuthToken: "fake-token",
-			authResponse: &authResponse{
-				resp: &authenticator.Response{
-					User: &user.DefaultInfo{
-						Name:   "a-user",
-						Groups: []string{"my-group"},
-						Extra: map[string][]string{
-							"foo":     {"a", "b"},
-							"bar":     {"c", "d"},
-							"foo-bar": {"e", "f"},
-						},
-					},
-				},
-				pass: true,
-				err:  nil,
-			},
-			expCode:  http.StatusOK,
-			expBody:  "",
-			expUser:  "a-user",
-			expGroup: []string{"my-group", "system:authenticated"},
-			expExtra: map[string][]string{
-				"Impersonate-Extra-Foo":     {"a", "b"},
-				"Impersonate-Extra-Bar":     {"c", "d"},
-				"Impersonate-Extra-Foo-Bar": {"e", "f"},
-			},
-		},
-		"an authed request with user, group, extra but disabled impersonation should return no impersonation and should 200": {
-			expEvent:      "AuSuccess",
-			expAuthMethod: metrics.AuthMethodOIDC,
-			req: &http.Request{
-				Header: http.Header{
-					"Authorization": []string{"bearer fake-token"},
-				},
-			},
-			expAuthToken: "fake-token",
-			authResponse: &authResponse{
-				resp: &authenticator.Response{
-					User: &user.DefaultInfo{
-						Name:   "a-user",
-						Groups: []string{"my-group"},
-						Extra: map[string][]string{
-							"foo":     {"a", "b"},
-							"bar":     {"c", "d"},
-							"foo-bar": {"e", "f"},
-						},
-					},
-				},
-				pass: true,
-				err:  nil,
-			},
-			config: &Config{
-				DisableImpersonation: true,
-			},
-			expCode:  http.StatusOK,
-			expBody:  "",
-			expUser:  "",
-			expGroup: nil,
-			expExtra: nil,
-		},
-	}
-
+// runHandlersCases drives each case through a proxy wired with a fake
+// authenticator and transport, and checks the response, the forwarded
+// identity and the access record.
+func runHandlersCases(t *testing.T, tests map[string]handlersCase) {
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			p := newTestProxy(t)
@@ -703,4 +138,160 @@ func TestHandlers(t *testing.T) {
 			p.ctrl.Finish()
 		})
 	}
+}
+
+// TestHandlersAuthentication covers the chain for requests that impersonate
+// nobody: refused credentials, missing claims and plain forwarding.
+func TestHandlersAuthentication(t *testing.T) {
+	runHandlersCases(t, map[string]handlersCase{
+		"an empty request should 401": {
+			expEvent:      "AuFail",
+			expReason:     metrics.ReasonUnauthorized,
+			expAuthMethod: metrics.AuthMethodNone,
+			req:           new(http.Request),
+			expCode:       http.StatusUnauthorized,
+			expBody:       "Unauthorized",
+		},
+		"a request with a badly formed token should 401": {
+			expEvent:      "AuFail",
+			expReason:     metrics.ReasonUnauthorized,
+			expAuthMethod: metrics.AuthMethodNone,
+			req: &http.Request{
+				Header: http.Header{
+					"Authorization": []string{"foo"},
+				},
+			},
+			expCode: http.StatusUnauthorized,
+			expBody: "Unauthorized",
+		},
+		"a request with a unauthed token should 401": {
+			expEvent:      "AuFail",
+			expReason:     metrics.ReasonUnauthorized,
+			expAuthMethod: metrics.AuthMethodNone,
+			req: &http.Request{
+				Header: http.Header{
+					"Authorization": []string{"bearer fake-token"},
+				},
+			},
+			expAuthToken: "fake-token",
+			authResponse: &authResponse{
+				resp: nil,
+				pass: false,
+				err:  nil,
+			},
+			expCode: http.StatusUnauthorized,
+			expBody: "Unauthorized",
+		},
+		"a request with an error during token auth should 401": {
+			expEvent:      "AuFail",
+			expReason:     metrics.ReasonUnauthorized,
+			expAuthMethod: metrics.AuthMethodNone,
+			req: &http.Request{
+				Header: http.Header{
+					"Authorization": []string{"bearer fake-token"},
+				},
+			},
+			expAuthToken: "fake-token",
+			authResponse: &authResponse{
+				resp: nil,
+				pass: false,
+				err:  errors.New("some error"),
+			},
+			expCode: http.StatusUnauthorized,
+			expBody: "Unauthorized",
+		},
+		"a request with an error but passes during token auth should still 401": {
+			expEvent:      "AuFail",
+			expReason:     metrics.ReasonUnauthorized,
+			expAuthMethod: metrics.AuthMethodNone,
+			req: &http.Request{
+				Header: http.Header{
+					"Authorization": []string{"bearer fake-token"},
+				},
+			},
+			expAuthToken: "fake-token",
+			authResponse: &authResponse{
+				resp: nil,
+				pass: true,
+				err:  errors.New("some error"),
+			},
+			expCode: http.StatusUnauthorized,
+			expBody: "Unauthorized",
+		},
+		"an authed request with no username is token should 403": {
+			expEvent:      "AuFail",
+			expReason:     metrics.ReasonNoUsernameClaim,
+			expAuthMethod: metrics.AuthMethodOIDC,
+			req: &http.Request{
+				Header: http.Header{
+					"Authorization": []string{"bearer fake-token"},
+				},
+			},
+			expAuthToken: "fake-token",
+			authResponse: &authResponse{
+				resp: &authenticator.Response{
+					User: &user.DefaultInfo{Name: ""},
+				},
+				pass: true,
+				err:  nil,
+			},
+			expCode: http.StatusForbidden,
+			expBody: "Username claim not available in OIDC Issuer response",
+		},
+		"an authed request with user should 200": {
+			expEvent:      "AuSuccess",
+			expAuthMethod: metrics.AuthMethodOIDC,
+			req: &http.Request{
+				Header: http.Header{
+					"Authorization": []string{"bearer fake-token"},
+				},
+			},
+			expAuthToken: "fake-token",
+			authResponse: &authResponse{
+				resp: &authenticator.Response{
+					User: &user.DefaultInfo{Name: "a-user"},
+				},
+				pass: true,
+				err:  nil,
+			},
+			expCode:  http.StatusOK,
+			expBody:  "",
+			expUser:  "a-user",
+			expGroup: []string{"system:authenticated"},
+		},
+		"an authed request with user, group, extra should 200": {
+			expEvent:      "AuSuccess",
+			expAuthMethod: metrics.AuthMethodOIDC,
+			req: &http.Request{
+				Header: http.Header{
+					"Authorization": []string{"bearer fake-token"},
+				},
+			},
+			expAuthToken: "fake-token",
+			authResponse: &authResponse{
+				resp: &authenticator.Response{
+					User: &user.DefaultInfo{
+						Name:   "a-user",
+						Groups: []string{"my-group"},
+						Extra: map[string][]string{
+							"foo":     {"a", "b"},
+							"bar":     {"c", "d"},
+							"foo-bar": {"e", "f"},
+						},
+					},
+				},
+				pass: true,
+				err:  nil,
+			},
+			expCode:  http.StatusOK,
+			expBody:  "",
+			expUser:  "a-user",
+			expGroup: []string{"my-group", "system:authenticated"},
+			expExtra: map[string][]string{
+				"Impersonate-Extra-Foo":     {"a", "b"},
+				"Impersonate-Extra-Bar":     {"c", "d"},
+				"Impersonate-Extra-Foo-Bar": {"e", "f"},
+			},
+		},
+	})
 }
