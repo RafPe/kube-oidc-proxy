@@ -89,15 +89,15 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 
 		Eventually(func() []map[string]any {
 			recs, _ := records(f)
-			return sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)
+			return sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)
 		}, 20*time.Second, time.Second).Should(HaveLen(1))
 		recs, _ := records(f)
-		dec := sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)[0]
+		dec := sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)[0]
 		Expect(dec).To(HaveKeyWithValue("event", "AuSuccess"))
 		Expect(dec).To(HaveKeyWithValue("auth_method", "oidc"))
 		Expect(dec).To(HaveKeyWithValue("k8s_resource", "pods"))
 		Expect(dec).To(HaveKey("issuer_name"))
-		done := sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.response.completed"), id)
+		done := sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.response.completed"), id)
 		Expect(done).To(HaveLen(1))
 		Expect(done[0]).To(HaveKeyWithValue("http_status", float64(200)))
 		Expect(done[0]).To(HaveKeyWithValue("termination", "normal"))
@@ -107,7 +107,7 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 		resp := doRequest(f, f.SignedTokenFor(defaultUsername, []string{"group-1"}), map[string]string{"Audit-ID": "client-chosen"})
 		Expect(resp.Header.Get("Audit-ID")).NotTo(Equal("client-chosen"))
 		recs, _ := records(f)
-		Expect(sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.access.decided"), "client-chosen")).To(BeEmpty())
+		Expect(sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.access.decided"), "client-chosen")).To(BeEmpty())
 	})
 
 	It("records a rejected token with a reason and never the token itself", func() {
@@ -117,10 +117,10 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 		id := resp.Header.Get("Audit-ID")
 		Eventually(func() []map[string]any {
 			recs, _ := records(f)
-			return sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)
+			return sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)
 		}, 20*time.Second, time.Second).Should(HaveLen(1))
 		recs, raw := records(f)
-		Expect(sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)[0]).To(HaveKeyWithValue("reason", "unauthorized"))
+		Expect(sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)[0]).To(HaveKeyWithValue("reason", "unauthorized"))
 		Expect(raw).NotTo(ContainSubstring(tok))
 		// The stream is checked for an unmasked credential rather than for the
 		// header name: at -v=10 client-go's debug round tripper prints a curl
@@ -142,10 +142,10 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 		id := resp.Header.Get("Audit-ID")
 		Eventually(func() []map[string]any {
 			recs, _ := records(f)
-			return sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)
+			return sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)
 		}, 20*time.Second, time.Second).Should(HaveLen(1))
 		recs, _ := records(f)
-		dec := sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)[0]
+		dec := sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)[0]
 		Expect(dec).To(HaveKeyWithValue("event", "AuFail"))
 		Expect(dec).To(HaveKeyWithValue("reason", "impersonation_denied"))
 		Expect(dec).To(HaveKeyWithValue("target_kind", "group"))
@@ -156,10 +156,10 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 		id := resp.Header.Get("Audit-ID")
 		Eventually(func() []map[string]any {
 			recs, _ := records(f)
-			return sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.headers.dropped"), id)
+			return sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.headers.dropped"), id)
 		}, 20*time.Second, time.Second).Should(HaveLen(1))
 		recs, _ := records(f)
-		Expect(sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)[0]).NotTo(HaveKeyWithValue("src_ip", "9.9.9.9"))
+		Expect(sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)[0]).NotTo(HaveKeyWithValue("src_ip", "9.9.9.9"))
 	})
 
 	It("bridges client-go output as component=k8s without event_type", func() {

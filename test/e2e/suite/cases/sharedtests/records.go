@@ -18,8 +18,8 @@ func ByComponent(recs []map[string]any, component string) []map[string]any {
 	return filter(recs, "component", component)
 }
 
-// WithRequestID returns the records carrying the given request_id.
-func WithRequestID(recs []map[string]any, id string) []map[string]any {
+// ByRequestID returns the records carrying the given request_id.
+func ByRequestID(recs []map[string]any, id string) []map[string]any {
 	return filter(recs, "request_id", id)
 }
 

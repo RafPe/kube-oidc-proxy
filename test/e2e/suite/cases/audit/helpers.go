@@ -340,7 +340,7 @@ func testAuditLogs(f *framework.Framework, podLabelSelector, containerName, logP
 func auditIDsWithoutAccessRecord(recs []map[string]any, events []auditv1.Event) []string {
 	var out []string
 	for _, ev := range events {
-		if len(sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.access.decided"), string(ev.AuditID))) != 1 {
+		if len(sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.access.decided"), string(ev.AuditID))) != 1 {
 			out = append(out, string(ev.AuditID))
 		}
 	}
