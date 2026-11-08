@@ -176,13 +176,13 @@ func (c *cachedTokenReview) AuthenticateToken(ctx context.Context, token string)
 	if v, hit := c.cache.Get(key); hit {
 		record := v.(cachedReview)
 		logging.Emit(ctx, c.reviewer.log(), logging.EventCacheTokenReviewLookup,
-			slog.String("cache_result", "hit"),
+			slog.String("cache_result", string(metrics.CacheHit)),
 			slog.Bool("authenticated", record.ok))
 		c.reviewer.metrics.CacheLookup(metrics.ReviewTokenReview, metrics.CacheHit)
 		return record.resp, record.ok, nil
 	}
 	logging.Emit(ctx, c.reviewer.log(), logging.EventCacheTokenReviewLookup,
-		slog.String("cache_result", "miss"))
+		slog.String("cache_result", string(metrics.CacheMiss)))
 	c.reviewer.metrics.CacheLookup(metrics.ReviewTokenReview, metrics.CacheMiss)
 
 	resp, ok, err := c.reviewer.AuthenticateToken(ctx, token)

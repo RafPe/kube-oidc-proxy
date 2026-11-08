@@ -422,7 +422,7 @@ func (p *Proxy) RoundTrip(req *http.Request) (*http.Response, error) {
 	if context.NoImpersonation(req) {
 		p.recordDecision(req, accesslogging.Decision{
 			Allowed:    true,
-			AuthMethod: authMethodFrom(req),
+			AuthMethod: context.AuthMethod(req),
 			Inbound:    userFromContext(req),
 		})
 		return p.noAuthClientTransport.RoundTrip(req)
@@ -441,7 +441,7 @@ func (p *Proxy) RoundTrip(req *http.Request) (*http.Response, error) {
 	// or exec that runs for hours still produces its access record immediately.
 	p.recordDecision(req, accesslogging.Decision{
 		Allowed:    true,
-		AuthMethod: authMethodFrom(req),
+		AuthMethod: context.AuthMethod(req),
 		Inbound:    impersonationConf.InboundUser,
 		Outbound:   impersonationConf.ImpersonatedUser,
 	})
@@ -456,7 +456,7 @@ func (p *Proxy) reviewToken(rw http.ResponseWriter, req *http.Request) bool {
 	bearer, found := utiltoken.ParseFromRequest(req)
 	if !found {
 		logging.Emit(ctx, logging.OrDiscard(p.tokenReviewLog), logging.EventAuthnTokenMissing)
-		p.metrics.AuthenticationAttempt(authMethodTokenReview, metrics.AuthRejected)
+		p.metrics.AuthenticationAttempt(metrics.AuthMethodTokenReview, metrics.AuthRejected)
 		return false
 	}
 
@@ -465,8 +465,8 @@ func (p *Proxy) reviewToken(rw http.ResponseWriter, req *http.Request) bool {
 		// The reviewer could not answer. That is a dependency failure, not a
 		// verdict on the token: the caller fails closed.
 		logging.Emit(ctx, logging.OrDiscard(p.tokenReviewLog), logging.EventAuthnTokenReviewFailed,
-			slog.String("reason", reasonAuthenticationDependencyError), logging.ErrAttr(err))
-		p.metrics.AuthenticationAttempt(authMethodTokenReview, metrics.AuthError)
+			slog.String("reason", string(metrics.ReasonAuthenticationDependencyError)), logging.ErrAttr(err))
+		p.metrics.AuthenticationAttempt(metrics.AuthMethodTokenReview, metrics.AuthError)
 		return false
 	}
 
@@ -475,9 +475,9 @@ func (p *Proxy) reviewToken(rw http.ResponseWriter, req *http.Request) bool {
 	// hit emits cache.tokenreview.lookup with the cached verdict. A rejection
 	// is such an answer, not a failure, so nothing more is recorded here.
 	if ok {
-		p.metrics.AuthenticationAttempt(authMethodTokenReview, metrics.AuthAccepted)
+		p.metrics.AuthenticationAttempt(metrics.AuthMethodTokenReview, metrics.AuthAccepted)
 	} else {
-		p.metrics.AuthenticationAttempt(authMethodTokenReview, metrics.AuthRejected)
+		p.metrics.AuthenticationAttempt(metrics.AuthMethodTokenReview, metrics.AuthRejected)
 	}
 	return ok
 }

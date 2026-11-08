@@ -410,19 +410,19 @@ func (s *SubjectAccessReview) checkRbacImpersonationAuthorization(ctx context.Co
 
 	key, cacheable := s.cache.key(&spec)
 	if !cacheable {
-		logging.Emit(ctx, s.log(), logging.EventCacheSARLookup, slog.String("cache_result", "bypass"))
+		logging.Emit(ctx, s.log(), logging.EventCacheSARLookup, slog.String("cache_result", string(metrics.CacheBypass)))
 		s.metrics.CacheLookup(metrics.ReviewSAR, metrics.CacheBypass)
 		return s.timedLiveCheck(ctx, kind, false, &spec)
 	}
 
 	if allowed, ok := s.cache.get(key); ok {
 		logging.Emit(ctx, s.log(), logging.EventCacheSARLookup,
-			slog.String("cache_result", "hit"),
-			slog.String("decision", decision(allowed)))
+			slog.String("cache_result", string(metrics.CacheHit)),
+			slog.String("decision", string(metrics.DecisionFor(allowed))))
 		s.metrics.CacheLookup(metrics.ReviewSAR, metrics.CacheHit)
 		return allowed, nil
 	}
-	logging.Emit(ctx, s.log(), logging.EventCacheSARLookup, slog.String("cache_result", "miss"))
+	logging.Emit(ctx, s.log(), logging.EventCacheSARLookup, slog.String("cache_result", string(metrics.CacheMiss)))
 	s.metrics.CacheLookup(metrics.ReviewSAR, metrics.CacheMiss)
 
 	return s.sharedLiveCheck(ctx, kind, key, &spec)
@@ -433,14 +433,6 @@ func (s *SubjectAccessReview) checkRbacImpersonationAuthorization(ctx context.Co
 // discarding logger.
 func (s *SubjectAccessReview) log() *slog.Logger {
 	return logging.OrDiscard(s.logger)
-}
-
-// decision renders an authorization outcome as the schema's decision value.
-func decision(allowed bool) string {
-	if allowed {
-		return "allow"
-	}
-	return "deny"
 }
 
 // timedLiveCheck runs one live check and records its outcome: a completed
@@ -501,7 +493,7 @@ func (s *SubjectAccessReview) observeLiveCheck(ctx context.Context, kind string,
 		return
 	}
 	logging.Emit(ctx, s.log(), logging.EventAuthzSARCompleted,
-		slog.String("decision", decision(allowed)),
+		slog.String("decision", string(metrics.DecisionFor(allowed))),
 		slog.Int64("duration_ms", time.Since(start).Milliseconds()),
 		slog.Bool("request_coalesced", coalesced),
 		slog.String("target_kind", kind))

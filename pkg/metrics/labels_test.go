@@ -148,14 +148,14 @@ func TestReviewOutcomeFor(t *testing.T) {
 func TestProjectionsNeverPassAnUnknownValue(t *testing.T) {
 	hostile := []string{"", "x", "GET", "system:masters", "a\"b", "../../etc", "很长"}
 	for _, v := range hostile {
-		if got := projectTermination(v); got != "other" {
+		if got := projectTermination(Termination(v)); got != "other" {
 			t.Errorf("projectTermination(%q) = %q", v, got)
 		}
-		if got := projectAuthMethod(v); got != "other" {
+		if got := projectAuthMethod(AuthMethod(v)); got != "other" {
 			t.Errorf("projectAuthMethod(%q) = %q", v, got)
 		}
 		if v != "" { // the empty reason is the reason of an allow and passes through
-			if got := projectReason(v); got != "other" {
+			if got := projectReason(Reason(v)); got != "other" {
 				t.Errorf("projectReason(%q) = %q", v, got)
 			}
 		}
@@ -167,14 +167,14 @@ func TestProjectionsNeverPassAnUnknownValue(t *testing.T) {
 		}
 	}
 	// The documented values pass through unchanged.
-	for _, v := range []string{"normal", "hijacked", "client_cancel", "panic", "upstream_timeout", "upstream_reset", "proxy_error"} {
-		if projectTermination(v) != v {
+	for _, v := range []Termination{"normal", "hijacked", "client_cancel", "panic", "upstream_timeout", "upstream_reset", "proxy_error"} {
+		if projectTermination(v) != string(v) {
 			t.Errorf("projectTermination(%q) altered a documented value", v)
 		}
 	}
-	for _, v := range []string{"unauthorized", "reserved_identity", "no_username_claim", "impersonation_denied",
+	for _, v := range []Reason{"unauthorized", "reserved_identity", "no_username_claim", "impersonation_denied",
 		"too_many_impersonation_values", "client_canceled", "internal_error", "upstream_error", "authentication_dependency_error"} {
-		if projectReason(v) != v {
+		if projectReason(v) != string(v) {
 			t.Errorf("projectReason(%q) altered a documented value", v)
 		}
 	}

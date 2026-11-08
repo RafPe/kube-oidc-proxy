@@ -287,19 +287,19 @@ func TestError(t *testing.T) {
 	if exp := []byte("Unauthorized\n"); !bytes.Equal(frw.buffer, exp) {
 		t.Errorf("unexpected response, exp='%s' got='%s'", exp, frw.buffer)
 	}
-	assertDeniedReason(t, records, reasonUnauthorized)
+	assertDeniedReason(t, records, metrics.ReasonUnauthorized)
 
 	frw, records = tryError(t, http.StatusForbidden, errNoName)
 	if exp := []byte("Username claim not available in OIDC Issuer response\n"); !bytes.Equal(frw.buffer, exp) {
 		t.Errorf("unexpected response, exp='%s' got='%s'", exp, frw.buffer)
 	}
-	assertDeniedReason(t, records, reasonNoUsernameClaim)
+	assertDeniedReason(t, records, metrics.ReasonNoUsernameClaim)
 
 	frw, records = tryError(t, http.StatusInternalServerError, errors.New("foo"))
 	if exp := []byte("\n"); !bytes.Equal(frw.buffer, exp) {
 		t.Errorf("unexpected response, exp='%s' got='%s'", exp, frw.buffer)
 	}
-	assertDeniedReason(t, records, reasonInternalError)
+	assertDeniedReason(t, records, metrics.ReasonInternalError)
 }
 
 // TestErrorHandlerInternalFailureEmitsHandlerFailed pins the record the proxy
@@ -348,8 +348,8 @@ func TestErrorHandlerInternalFailureEmitsHandlerFailed(t *testing.T) {
 			if got := rec.String("request_id"); got != "test-request-id" {
 				t.Errorf("request_id = %q, want %q", got, "test-request-id")
 			}
-			if got := rec.String("reason"); got != reasonInternalError {
-				t.Errorf("reason = %q, want %q", got, reasonInternalError)
+			if got := rec.String("reason"); got != string(metrics.ReasonInternalError) {
+				t.Errorf("reason = %q, want %q", got, metrics.ReasonInternalError)
 			}
 			if got := rec.String("error_message"); got != test.wantErrMessage {
 				t.Errorf("error_message = %q, want %q", got, test.wantErrMessage)
@@ -360,7 +360,7 @@ func TestErrorHandlerInternalFailureEmitsHandlerFailed(t *testing.T) {
 
 // assertDeniedReason pins the single AuFail record a refusal writes, and the
 // closed reason it is classified by.
-func assertDeniedReason(t *testing.T, records *logtest.Capture, wantReason string) {
+func assertDeniedReason(t *testing.T, records *logtest.Capture, wantReason metrics.Reason) {
 	t.Helper()
 	rec := records.Only(t, logging.EventRequestAccessDecided)
 	if got := rec.String("event"); got != "AuFail" {
@@ -369,7 +369,7 @@ func assertDeniedReason(t *testing.T, records *logtest.Capture, wantReason strin
 	if got := rec.String("decision"); got != "deny" {
 		t.Errorf("decision = %q, want deny", got)
 	}
-	if got := rec.String("reason"); got != wantReason {
+	if got := rec.String("reason"); got != string(wantReason) {
 		t.Errorf("reason = %q, want %q", got, wantReason)
 	}
 }
@@ -381,26 +381,26 @@ func TestErrorClassifiesEveryReason(t *testing.T) {
 	tests := map[string]struct {
 		err       error
 		expCode   int
-		expReason string
+		expReason metrics.Reason
 	}{
-		"unauthorized": {errUnauthorized, http.StatusUnauthorized, reasonUnauthorized},
+		"unauthorized": {errUnauthorized, http.StatusUnauthorized, metrics.ReasonUnauthorized},
 		"reserved identity": {fmt.Errorf("%w: username %q", errReservedIdentity, "system:masters"),
-			http.StatusForbidden, reasonReservedIdentity},
-		"no username claim": {errNoName, http.StatusForbidden, reasonNoUsernameClaim},
+			http.StatusForbidden, metrics.ReasonReservedIdentity},
+		"no username claim": {errNoName, http.StatusForbidden, metrics.ReasonNoUsernameClaim},
 		"too many impersonation values": {fmt.Errorf("%w: 5 > 2", subjectaccessreview.ErrTooManyImpersonationHeaderValues),
-			http.StatusRequestHeaderFieldsTooLarge, reasonTooManyImpersonationValues},
+			http.StatusRequestHeaderFieldsTooLarge, metrics.ReasonTooManyImpersonationValues},
 		"impersonation denied": {&subjectaccessreview.ImpersonationAuthError{
 			Requester: "mmosley", Kind: subjectaccessreview.TargetGroup, Target: "system:masters"},
-			http.StatusForbidden, reasonImpersonationDenied},
-		"no impersonation config": {errNoImpersonationConfig, http.StatusInternalServerError, reasonInternalError},
+			http.StatusForbidden, metrics.ReasonImpersonationDenied},
+		"no impersonation config": {errNoImpersonationConfig, http.StatusInternalServerError, metrics.ReasonInternalError},
 		// A SubjectAccessReview that could not be submitted wraps a client-go
 		// transport error, so it satisfies net.Error too. It is the proxy's own
 		// dependency failing, not the upstream hop, so it stays a 500.
 		"subjectaccessreview unavailable": {fmt.Errorf("%w: %w", subjectaccessreview.ErrCreateSubjectAccessReview,
 			&net.OpError{Op: "dial", Err: errors.New("connection refused")}),
-			http.StatusInternalServerError, reasonInternalError},
-		"no impersonation user": {subjectaccessreview.ErrNoImpersonationUser, http.StatusInternalServerError, reasonInternalError},
-		"unknown":               {errors.New("boom"), http.StatusInternalServerError, reasonInternalError},
+			http.StatusInternalServerError, metrics.ReasonInternalError},
+		"no impersonation user": {subjectaccessreview.ErrNoImpersonationUser, http.StatusInternalServerError, metrics.ReasonInternalError},
+		"unknown":               {errors.New("boom"), http.StatusInternalServerError, metrics.ReasonInternalError},
 	}
 
 	for name, test := range tests {
@@ -442,7 +442,7 @@ func TestErrorCanceledIsRecordedWithoutAResponse(t *testing.T) {
 	if got := frw.header.Get("StatusCode"); got != "" {
 		t.Errorf("a status code was written for a canceled request: %q", got)
 	}
-	assertDeniedReason(t, records, reasonClientCanceled)
+	assertDeniedReason(t, records, metrics.ReasonClientCanceled)
 }
 
 // TestErrorImpersonationDenialNamesTheTarget pins that the refused target is
@@ -566,21 +566,21 @@ func TestHandlers(t *testing.T) {
 		// expEvent is the access record's event field, expReason its reason
 		// (empty on an allow) and expAuthMethod how the request authenticated.
 		expEvent      string
-		expReason     string
-		expAuthMethod string
+		expReason     metrics.Reason
+		expAuthMethod metrics.AuthMethod
 	}{
 		"an empty request should 401": {
 			expEvent:      "AuFail",
-			expReason:     reasonUnauthorized,
-			expAuthMethod: authMethodNone,
+			expReason:     metrics.ReasonUnauthorized,
+			expAuthMethod: metrics.AuthMethodNone,
 			req:           new(http.Request),
 			expCode:       http.StatusUnauthorized,
 			expBody:       "Unauthorized",
 		},
 		"a request with a badly formed token should 401": {
 			expEvent:      "AuFail",
-			expReason:     reasonUnauthorized,
-			expAuthMethod: authMethodNone,
+			expReason:     metrics.ReasonUnauthorized,
+			expAuthMethod: metrics.AuthMethodNone,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization": []string{"foo"},
@@ -591,8 +591,8 @@ func TestHandlers(t *testing.T) {
 		},
 		"a request with a unauthed token should 401": {
 			expEvent:      "AuFail",
-			expReason:     reasonUnauthorized,
-			expAuthMethod: authMethodNone,
+			expReason:     metrics.ReasonUnauthorized,
+			expAuthMethod: metrics.AuthMethodNone,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization": []string{"bearer fake-token"},
@@ -609,8 +609,8 @@ func TestHandlers(t *testing.T) {
 		},
 		"a request with an error during token auth should 401": {
 			expEvent:      "AuFail",
-			expReason:     reasonUnauthorized,
-			expAuthMethod: authMethodNone,
+			expReason:     metrics.ReasonUnauthorized,
+			expAuthMethod: metrics.AuthMethodNone,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization": []string{"bearer fake-token"},
@@ -627,8 +627,8 @@ func TestHandlers(t *testing.T) {
 		},
 		"a request with an error but passes during token auth should still 401": {
 			expEvent:      "AuFail",
-			expReason:     reasonUnauthorized,
-			expAuthMethod: authMethodNone,
+			expReason:     metrics.ReasonUnauthorized,
+			expAuthMethod: metrics.AuthMethodNone,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization": []string{"bearer fake-token"},
@@ -645,8 +645,8 @@ func TestHandlers(t *testing.T) {
 		},
 		"a request with unauth with impersonation should 401": {
 			expEvent:      "AuFail",
-			expReason:     reasonUnauthorized,
-			expAuthMethod: authMethodNone,
+			expReason:     metrics.ReasonUnauthorized,
+			expAuthMethod: metrics.AuthMethodNone,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":    []string{"bearer fake-token"},
@@ -667,7 +667,7 @@ func TestHandlers(t *testing.T) {
 
 		"an authed request with authorized impersonation user should succeed": {
 			expEvent:      "AuSuccess",
-			expAuthMethod: authMethodOIDC,
+			expAuthMethod: metrics.AuthMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":    []string{"bearer fake-token"},
@@ -696,7 +696,7 @@ func TestHandlers(t *testing.T) {
 		},
 		"an authed request with authorized impersonation group should succeed": {
 			expEvent:      "AuSuccess",
-			expAuthMethod: authMethodOIDC,
+			expAuthMethod: metrics.AuthMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":     []string{"bearer fake-token"},
@@ -726,7 +726,7 @@ func TestHandlers(t *testing.T) {
 		},
 		"an authed request with authorized impersonation extra should succeed": {
 			expEvent:      "AuSuccess",
-			expAuthMethod: authMethodOIDC,
+			expAuthMethod: metrics.AuthMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":                []string{"bearer fake-token"},
@@ -761,7 +761,7 @@ func TestHandlers(t *testing.T) {
 
 		"an authed request with authorized impersonation extra should succeed, with an empty X-Forwarded-For header": {
 			expEvent:      "AuSuccess",
-			expAuthMethod: authMethodOIDC,
+			expAuthMethod: metrics.AuthMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":                []string{"bearer fake-token"},
@@ -797,7 +797,7 @@ func TestHandlers(t *testing.T) {
 
 		"an authed request with authorized impersonation uid should succeed": {
 			expEvent:      "AuSuccess",
-			expAuthMethod: authMethodOIDC,
+			expAuthMethod: metrics.AuthMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":     []string{"bearer fake-token"},
@@ -830,8 +830,8 @@ func TestHandlers(t *testing.T) {
 
 		"an authed request with unauthorized impersonation user should error unauthorized": {
 			expEvent:      "AuFail",
-			expReason:     reasonImpersonationDenied,
-			expAuthMethod: authMethodOIDC,
+			expReason:     metrics.ReasonImpersonationDenied,
+			expAuthMethod: metrics.AuthMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":    []string{"bearer fake-token"},
@@ -854,8 +854,8 @@ func TestHandlers(t *testing.T) {
 		},
 		"an authed request with unauthorized impersonation group should error unauthorized": {
 			expEvent:      "AuFail",
-			expReason:     reasonImpersonationDenied,
-			expAuthMethod: authMethodOIDC,
+			expReason:     metrics.ReasonImpersonationDenied,
+			expAuthMethod: metrics.AuthMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":     []string{"bearer fake-token"},
@@ -879,8 +879,8 @@ func TestHandlers(t *testing.T) {
 		},
 		"an authed request with unauthorized impersonation extra should error unauthorized": {
 			expEvent:      "AuFail",
-			expReason:     reasonImpersonationDenied,
-			expAuthMethod: authMethodOIDC,
+			expReason:     metrics.ReasonImpersonationDenied,
+			expAuthMethod: metrics.AuthMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":         []string{"bearer fake-token"},
@@ -904,8 +904,8 @@ func TestHandlers(t *testing.T) {
 		},
 		"an authed request with unauthorized impersonation uid should error unauthorized": {
 			expEvent:      "AuFail",
-			expReason:     reasonImpersonationDenied,
-			expAuthMethod: authMethodOIDC,
+			expReason:     metrics.ReasonImpersonationDenied,
+			expAuthMethod: metrics.AuthMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":    []string{"bearer fake-token"},
@@ -930,8 +930,8 @@ func TestHandlers(t *testing.T) {
 
 		"an authed request with impersonation groups missing user should fail": {
 			expEvent:      "AuFail",
-			expReason:     reasonInternalError,
-			expAuthMethod: authMethodOIDC,
+			expReason:     metrics.ReasonInternalError,
+			expAuthMethod: metrics.AuthMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":      []string{"bearer fake-token"},
@@ -955,8 +955,8 @@ func TestHandlers(t *testing.T) {
 
 		"an authed request with impersonation extra missing user should fail": {
 			expEvent:      "AuFail",
-			expReason:     reasonInternalError,
-			expAuthMethod: authMethodOIDC,
+			expReason:     metrics.ReasonInternalError,
+			expAuthMethod: metrics.AuthMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":         []string{"bearer fake-token"},
@@ -980,8 +980,8 @@ func TestHandlers(t *testing.T) {
 
 		"an authed request with impersonation uid missing user should fail": {
 			expEvent:      "AuFail",
-			expReason:     reasonInternalError,
-			expAuthMethod: authMethodOIDC,
+			expReason:     metrics.ReasonInternalError,
+			expAuthMethod: metrics.AuthMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":   []string{"bearer fake-token"},
@@ -1005,8 +1005,8 @@ func TestHandlers(t *testing.T) {
 
 		"an authed request with an invalid impersonation header should fail": {
 			expEvent:      "AuFail",
-			expReason:     reasonInternalError,
-			expAuthMethod: authMethodOIDC,
+			expReason:     metrics.ReasonInternalError,
+			expAuthMethod: metrics.AuthMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization":        []string{"bearer fake-token"},
@@ -1033,8 +1033,8 @@ func TestHandlers(t *testing.T) {
 
 		"an authed request with no username is token should 403": {
 			expEvent:      "AuFail",
-			expReason:     reasonNoUsernameClaim,
-			expAuthMethod: authMethodOIDC,
+			expReason:     metrics.ReasonNoUsernameClaim,
+			expAuthMethod: metrics.AuthMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization": []string{"bearer fake-token"},
@@ -1053,7 +1053,7 @@ func TestHandlers(t *testing.T) {
 		},
 		"an authed request with user should 200": {
 			expEvent:      "AuSuccess",
-			expAuthMethod: authMethodOIDC,
+			expAuthMethod: metrics.AuthMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization": []string{"bearer fake-token"},
@@ -1074,7 +1074,7 @@ func TestHandlers(t *testing.T) {
 		},
 		"an authed request with user, group, extra should 200": {
 			expEvent:      "AuSuccess",
-			expAuthMethod: authMethodOIDC,
+			expAuthMethod: metrics.AuthMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization": []string{"bearer fake-token"},
@@ -1108,7 +1108,7 @@ func TestHandlers(t *testing.T) {
 		},
 		"an authed request with user, group, extra but disabled impersonation should return no impersonation and should 200": {
 			expEvent:      "AuSuccess",
-			expAuthMethod: authMethodOIDC,
+			expAuthMethod: metrics.AuthMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
 					"Authorization": []string{"bearer fake-token"},
@@ -1211,10 +1211,10 @@ func TestHandlers(t *testing.T) {
 			if got := rec.String("event"); got != test.expEvent {
 				t.Errorf("event = %q, want %q", got, test.expEvent)
 			}
-			if got := rec.String("reason"); got != test.expReason {
+			if got := rec.String("reason"); got != string(test.expReason) {
 				t.Errorf("reason = %q, want %q", got, test.expReason)
 			}
-			if got := rec.String("auth_method"); got != test.expAuthMethod {
+			if got := rec.String("auth_method"); got != string(test.expAuthMethod) {
 				t.Errorf("auth_method = %q, want %q", got, test.expAuthMethod)
 			}
 			// The id is the one the filter minted, not one the test stamped:
@@ -1252,8 +1252,8 @@ func TestRoundTripLogsTokenReviewPassthrough(t *testing.T) {
 	if got := rec.String("event"); got != "AuSuccess" {
 		t.Errorf("event = %q, want AuSuccess", got)
 	}
-	if got := rec.String("auth_method"); got != authMethodTokenReview {
-		t.Errorf("auth_method = %q, want %q", got, authMethodTokenReview)
+	if got := rec.String("auth_method"); got != string(metrics.AuthMethodTokenReview) {
+		t.Errorf("auth_method = %q, want %q", got, metrics.AuthMethodTokenReview)
 	}
 
 	p.ctrl.Finish()

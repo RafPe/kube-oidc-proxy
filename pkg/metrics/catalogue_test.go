@@ -153,10 +153,10 @@ func TestAllowedValuesMatchTheProjections(t *testing.T) {
 	}{
 		{nameRequestsTotal, "k8s_verb", func(v string) string { return projectVerb(Verb(v)) }, other},
 		{nameRequestsTotal, "scope", func(v string) string { return projectScope(Scope(v)) }, string(ScopeNone)},
-		{nameRequestsTotal, "termination", projectTermination, other},
-		{nameAuthnAttempts, "auth_method", projectAuthMethod, other},
+		{nameRequestsTotal, "termination", func(v string) string { return projectTermination(Termination(v)) }, other},
+		{nameAuthnAttempts, "auth_method", func(v string) string { return projectAuthMethod(AuthMethod(v)) }, other},
 		{nameAuthnAttempts, "outcome", func(v string) string { return projectAuthOutcome(AuthOutcome(v)) }, other},
-		{nameAccessDecisions, "reason", projectReason, other},
+		{nameAccessDecisions, "reason", func(v string) string { return projectReason(Reason(v)) }, other},
 		{nameReviewRequests, "review", func(v string) string { return projectReview(Review(v)) }, other},
 		{nameReviewRequests, "outcome", func(v string) string { return projectReviewOutcome(ReviewOutcome(v)) }, other},
 		{nameCacheLookups, "cache", func(v string) string { return projectReview(Review(v)) }, other},

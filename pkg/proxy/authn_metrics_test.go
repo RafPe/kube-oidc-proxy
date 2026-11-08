@@ -10,6 +10,7 @@ import (
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/user"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics/metricstest"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
 	accesslogging "github.com/rafpe/kube-oidc-proxy/pkg/proxy/logging"
@@ -83,12 +84,12 @@ func TestTokenReviewDependencyFailureIsAnErrorAttempt(t *testing.T) {
 func TestRecordDecisionCountsAnAllowOnce(t *testing.T) {
 	p := newTestProxy(t)
 	req := context.WithDecisionHolder(newFakeR())
-	p.recordDecision(req, accesslogging.Decision{Allowed: true, AuthMethod: authMethodOIDC})
+	p.recordDecision(req, accesslogging.Decision{Allowed: true, AuthMethod: metrics.AuthMethodOIDC})
 	if v, _ := metricstest.Value(t, p.metrics.Gatherer(), metricAccessDecisions, map[string]string{"auth_method": "oidc", "decision": "allow", "reason": ""}); v != 1 {
 		t.Fatalf("decisions{oidc,allow} = %v, want 1", v)
 	}
 	// A second denial on the same request is not a second decision.
-	p.logDenied(req, reasonUpstreamError, errors.New("late"))
+	p.logDenied(req, metrics.ReasonUpstreamError, errors.New("late"))
 	if v, _ := metricstest.Value(t, p.metrics.Gatherer(), metricAccessDecisions, map[string]string{"decision": "deny"}); v != 0 {
 		t.Fatalf("a second decision was counted: %v", v)
 	}

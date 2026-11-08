@@ -30,6 +30,7 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
+	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	proxycontext "github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 	fakesubjectaccessreview "github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview/fake"
@@ -204,8 +205,8 @@ func TestTokenReviewDependencyFailureIsError(t *testing.T) {
 	if got := rec.String("level"); got != "ERROR" {
 		t.Errorf("level = %q, want ERROR", got)
 	}
-	if got := rec.String("reason"); got != reasonAuthenticationDependencyError {
-		t.Errorf("reason = %q, want %q", got, reasonAuthenticationDependencyError)
+	if got := rec.String("reason"); got != string(metrics.ReasonAuthenticationDependencyError) {
+		t.Errorf("reason = %q, want %q", got, metrics.ReasonAuthenticationDependencyError)
 	}
 	if got := rec.String("error_message"); got != "apiserver unreachable" {
 		t.Errorf("error_message = %q, want %q", got, "apiserver unreachable")
@@ -232,10 +233,10 @@ func TestClientCancellationEmitsUpstreamRequestCanceled(t *testing.T) {
 	if got := rec.String("level"); got != "DEBUG" {
 		t.Errorf("level = %q, want DEBUG", got)
 	}
-	if got := rec.String("reason"); got != reasonClientCanceled {
-		t.Errorf("reason = %q, want %q", got, reasonClientCanceled)
+	if got := rec.String("reason"); got != string(metrics.ReasonClientCanceled) {
+		t.Errorf("reason = %q, want %q", got, metrics.ReasonClientCanceled)
 	}
-	assertDeniedReason(t, p.logs, reasonClientCanceled)
+	assertDeniedReason(t, p.logs, metrics.ReasonClientCanceled)
 }
 
 // TestOIDCFailureEmitsAuthnOIDCFailed asserts that a token that was present
@@ -720,7 +721,7 @@ func TestAnomalyIsRateLimitedButAccessRecordIsNot(t *testing.T) {
 func TestFlushWarnLimiterSummarisesOnShutdown(t *testing.T) {
 	p := newTestProxy(t)
 	for i := 0; i < 10; i++ {
-		p.warnLimiter.Allow(reasonReservedIdentity)
+		p.warnLimiter.Allow(string(metrics.ReasonReservedIdentity))
 	}
 
 	stopCh := make(chan struct{})
@@ -736,7 +737,7 @@ func TestFlushWarnLimiterSummarisesOnShutdown(t *testing.T) {
 	if n, _ := rec.Int("suppressed_count"); n != 7 {
 		t.Fatalf("suppressed_count = %d, want 7 (10 offered, burst of 3 allowed)", n)
 	}
-	if rec.String("warning_reason") != reasonReservedIdentity {
+	if rec.String("warning_reason") != string(metrics.ReasonReservedIdentity) {
 		t.Fatalf("%v", rec)
 	}
 }
@@ -748,7 +749,7 @@ func TestFlushWarnLimiterSummarisesOnShutdown(t *testing.T) {
 func TestErrorHandlerClassifiesUpstreamTransportErrors(t *testing.T) {
 	cases := map[string]struct {
 		err  error
-		term string
+		term metrics.Termination
 	}{
 		"timeout": {err: &net.OpError{Op: "dial", Err: &timeoutErr{}}, term: "upstream_timeout"},
 		"reset":   {err: &net.OpError{Op: "read", Err: syscall.ECONNRESET}, term: "upstream_reset"},
@@ -769,7 +770,7 @@ func TestErrorHandlerClassifiesUpstreamTransportErrors(t *testing.T) {
 				t.Fatalf("status = %d, want 502", rw.Code)
 			}
 			up := p.logs.Only(t, logging.EventUpstreamRequestFailed)
-			if up.String("termination") != c.term || up.String("reason") != reasonUpstreamError {
+			if up.String("termination") != string(c.term) || up.String("reason") != string(metrics.ReasonUpstreamError) {
 				t.Fatalf("%v", up)
 			}
 			if got := p.logs.ByEvent(logging.EventRequestAccessDecided); len(got) != 0 {
@@ -837,7 +838,7 @@ func TestClientCancelAfterAdmissionRecordsOneAccessDecision(t *testing.T) {
 	if n := len(p.logs.ByEvent(logging.EventUpstreamRequestCanceled)); n != 1 {
 		t.Errorf("upstream.request.canceled records = %d, want 1: %s", n, p.logs.Raw())
 	}
-	if got := p.logs.Only(t, logging.EventRequestResponseCompleted).String("termination"); got != terminationClientCancel {
-		t.Errorf("termination = %q, want %q", got, terminationClientCancel)
+	if got := p.logs.Only(t, logging.EventRequestResponseCompleted).String("termination"); got != string(metrics.TerminationClientCancel) {
+		t.Errorf("termination = %q, want %q", got, metrics.TerminationClientCancel)
 	}
 }

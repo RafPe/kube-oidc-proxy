@@ -146,20 +146,13 @@ func allowedValuesFor(family, label string) []string {
 	case "code":
 		return allowedCodes()
 	case "termination":
-		return []string{
-			"normal", "hijacked", "client_cancel", "panic",
-			"upstream_timeout", "upstream_reset", "proxy_error", other,
-		}
+		return append(strs(terminations), other)
 	case "auth_method":
-		return []string{"oidc", "tokenreview", "none", other}
+		return append(strs(authMethods), other)
 	case "decision":
-		return []string{"allow", "deny"}
+		return strs([]Decision{DecisionAllow, DecisionDeny})
 	case "reason":
-		return []string{
-			"", "unauthorized", "reserved_identity", "no_username_claim",
-			"impersonation_denied", "too_many_impersonation_values", "client_canceled",
-			"internal_error", "upstream_error", "authentication_dependency_error", other,
-		}
+		return append(strs(reasons), other)
 	case "review", "cache":
 		return []string{string(ReviewTokenReview), string(ReviewSAR), other}
 	case "result":
@@ -176,6 +169,15 @@ func allowedValuesFor(family, label string) []string {
 		}
 	}
 	return nil
+}
+
+// strs renders a typed vocabulary as the plain strings the catalogue lists.
+func strs[T ~string](values []T) []string {
+	out := make([]string, 0, len(values)+1)
+	for _, v := range values {
+		out = append(out, string(v))
+	}
+	return out
 }
 
 // allowedCodes is every value CodeFor can render: the statuses Go's registry

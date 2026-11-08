@@ -21,6 +21,7 @@ import (
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	proxycontext "github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
 )
 
@@ -91,10 +92,10 @@ type Decision struct {
 	Allowed bool
 
 	// Reason is one of the closed reason values, on a denial only.
-	Reason string
+	Reason metrics.Reason
 
-	// AuthMethod is oidc, tokenreview or none.
-	AuthMethod string
+	// AuthMethod is how the request authenticated.
+	AuthMethod metrics.AuthMethod
 
 	// Inbound is the authenticated identity that made the request; Outbound is
 	// the identity forwarded upstream when impersonation resolved a different
@@ -112,9 +113,9 @@ type Decision struct {
 // is called as soon as authentication, authorization and proxy admission are
 // decided, so a watch or exec that runs for hours is recorded immediately.
 func (a *AccessLogger) LogDecision(req *http.Request, d Decision) {
-	event, decision := "AuFail", "deny"
+	event := "AuFail"
 	if d.Allowed {
-		event, decision = "AuSuccess", "allow"
+		event = "AuSuccess"
 	}
 
 	attrs := []slog.Attr{
@@ -135,18 +136,18 @@ func (a *AccessLogger) LogDecision(req *http.Request, d Decision) {
 
 	attrs = append(attrs,
 		slog.String("http_method", req.Method),
-		slog.String("auth_method", d.AuthMethod),
+		slog.String("auth_method", string(d.AuthMethod)),
 	)
 	if name := proxycontext.IssuerName(req); name != "" {
 		attrs = append(attrs, slog.String("issuer_name", logging.Bound(name, logging.MaxIdentity)))
 	}
 
 	attrs = append(attrs, kubernetesAttrs(req)...)
-	attrs = append(attrs, slog.String("decision", decision))
+	attrs = append(attrs, slog.String("decision", string(metrics.DecisionFor(d.Allowed))))
 
 	if !d.Allowed {
 		if d.Reason != "" {
-			attrs = append(attrs, slog.String("reason", d.Reason))
+			attrs = append(attrs, slog.String("reason", string(d.Reason)))
 		}
 		if d.TargetKind != "" {
 			attrs = append(attrs, slog.String("target_kind", d.TargetKind))

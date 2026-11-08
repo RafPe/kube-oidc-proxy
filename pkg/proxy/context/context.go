@@ -35,6 +35,7 @@ import (
 	"k8s.io/client-go/transport"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 )
 
 type key int
@@ -69,6 +70,9 @@ const (
 	// filter installs so a handler further down the chain can classify how the
 	// request ended.
 	terminationKey
+
+	// authMethodKey is the context key for how the request authenticated.
+	authMethodKey
 )
 
 // The inbound forwarding headers the trusted-proxy contract owns.
@@ -231,10 +235,10 @@ func DecisionRecorded(req *http.Request) bool {
 
 // Termination is how a request ended, as classified by a handler deeper in the
 // chain than the lifecycle filter that reports it. Reason is the closed
-// access-record reason that goes with it, or "" when there is none.
+// access-record reason that goes with it, or metrics.ReasonNone.
 type Termination struct {
-	Termination string
-	Reason      string
+	Termination metrics.Termination
+	Reason      metrics.Reason
 }
 
 // WithTerminationHolder returns a copy of the request carrying an empty
@@ -253,7 +257,7 @@ func WithTerminationHolder(req *http.Request) *http.Request {
 // than deriving a request, and it is a no-op when the request carries no
 // holder, so a handler called outside that filter -- a test, or an error on a
 // request that never reached it -- needs no special case.
-func RecordTermination(req *http.Request, termination, reason string) {
+func RecordTermination(req *http.Request, termination metrics.Termination, reason metrics.Reason) {
 	if h, ok := req.Context().Value(terminationKey).(*Termination); ok {
 		h.Termination = termination
 		h.Reason = reason
@@ -269,6 +273,22 @@ func TerminationFrom(req *http.Request) Termination {
 	}
 
 	return *h
+}
+
+// WithAuthMethod returns a copy of the request recording how it authenticated.
+// It is set by the handler that accepted the credential and read by the access
+// record, which runs after the decision on both the success and failure paths.
+func WithAuthMethod(req *http.Request, method metrics.AuthMethod) *http.Request {
+	return req.WithContext(request.WithValue(req.Context(), authMethodKey, method))
+}
+
+// AuthMethod returns how the request authenticated. A request refused before
+// any authenticator accepted its credential reports metrics.AuthMethodNone.
+func AuthMethod(req *http.Request) metrics.AuthMethod {
+	if method, ok := req.Context().Value(authMethodKey).(metrics.AuthMethod); ok && method != "" {
+		return method
+	}
+	return metrics.AuthMethodNone
 }
 
 // WithImpersonationConfig returns a copy of the request carrying the resolved

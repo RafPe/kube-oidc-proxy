@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -135,37 +136,112 @@ func CodeFor(status int) string {
 	return strconv.Itoa(status)
 }
 
-// projectTermination projects onto the termination vocabulary of
-// pkg/proxy/lifecycle.go, repeated here rather than imported so this package
-// has no dependency on the proxy.
-func projectTermination(v string) string {
-	switch v {
-	case "normal", "hijacked", "client_cancel", "panic",
-		"upstream_timeout", "upstream_reset", "proxy_error":
-		return v
+// Termination is how a request ended, as the terminal record's termination
+// and the requests counter's label report it. The lifecycle filter decides the
+// first four; the error handler classifies the upstream three.
+type Termination string
+
+const (
+	TerminationNormal       Termination = "normal"
+	TerminationHijacked     Termination = "hijacked"
+	TerminationClientCancel Termination = "client_cancel"
+	TerminationPanic        Termination = "panic"
+
+	TerminationUpstreamTimeout Termination = "upstream_timeout"
+	TerminationUpstreamReset   Termination = "upstream_reset"
+	TerminationProxyError      Termination = "proxy_error"
+)
+
+// terminations is the documented set, in catalogue order.
+var terminations = []Termination{
+	TerminationNormal, TerminationHijacked, TerminationClientCancel, TerminationPanic,
+	TerminationUpstreamTimeout, TerminationUpstreamReset, TerminationProxyError,
+}
+
+func projectTermination(t Termination) string {
+	if slices.Contains(terminations, t) {
+		return string(t)
 	}
 	return other
 }
 
-// projectAuthMethod projects onto the auth_method vocabulary of
-// pkg/proxy/handlers.go.
-func projectAuthMethod(v string) string {
-	switch v {
-	case "oidc", "tokenreview", "none":
-		return v
+// AuthMethod is how a request authenticated, as the access record's
+// auth_method and the authentication and decision counters report it.
+type AuthMethod string
+
+const (
+	AuthMethodOIDC        AuthMethod = "oidc"
+	AuthMethodTokenReview AuthMethod = "tokenreview"
+
+	// AuthMethodNone is a request refused before any authenticator accepted
+	// its credential.
+	AuthMethodNone AuthMethod = "none"
+)
+
+// authMethods is the documented set, in catalogue order.
+var authMethods = []AuthMethod{AuthMethodOIDC, AuthMethodTokenReview, AuthMethodNone}
+
+func projectAuthMethod(m AuthMethod) string {
+	if slices.Contains(authMethods, m) {
+		return string(m)
 	}
 	return other
 }
 
-// projectReason projects onto the access-record reason vocabulary of
-// pkg/proxy/handlers.go. The empty reason is the reason of an allow and
-// passes through.
-func projectReason(v string) string {
-	switch v {
-	case "", "unauthorized", "reserved_identity", "no_username_claim",
-		"impersonation_denied", "too_many_impersonation_values", "client_canceled",
-		"internal_error", "upstream_error", "authentication_dependency_error":
-		return v
+// Decision is the outcome of a request's single access decision.
+type Decision string
+
+const (
+	DecisionAllow Decision = "allow"
+	DecisionDeny  Decision = "deny"
+)
+
+// DecisionFor renders an allowed/denied outcome as the decision value every
+// record and label uses.
+func DecisionFor(allowed bool) Decision {
+	if allowed {
+		return DecisionAllow
+	}
+	return DecisionDeny
+}
+
+// Reason is why a request was refused, as the access record's reason and the
+// decision counter's label report it. An allow has no reason: ReasonNone.
+type Reason string
+
+const (
+	ReasonNone                       Reason = ""
+	ReasonUnauthorized               Reason = "unauthorized"
+	ReasonReservedIdentity           Reason = "reserved_identity"
+	ReasonNoUsernameClaim            Reason = "no_username_claim"
+	ReasonImpersonationDenied        Reason = "impersonation_denied"
+	ReasonTooManyImpersonationValues Reason = "too_many_impersonation_values"
+	ReasonClientCanceled             Reason = "client_canceled"
+	ReasonInternalError              Reason = "internal_error"
+
+	// ReasonUpstreamError classifies a failure of the hop to the API server
+	// itself, as opposed to anything the proxy decided about the request. It
+	// is carried by the upstream record and by the terminal record, never by
+	// an access decision: the request was already admitted.
+	ReasonUpstreamError Reason = "upstream_error"
+
+	// ReasonAuthenticationDependencyError classifies a TokenReview that could
+	// not be answered at all: the API server was unreachable or returned a
+	// status error. It is not a verdict on the credential.
+	ReasonAuthenticationDependencyError Reason = "authentication_dependency_error"
+)
+
+// reasons is the documented set, in catalogue order. ReasonNone is the
+// reason of an allow and passes through.
+var reasons = []Reason{
+	ReasonNone, ReasonUnauthorized, ReasonReservedIdentity, ReasonNoUsernameClaim,
+	ReasonImpersonationDenied, ReasonTooManyImpersonationValues, ReasonClientCanceled,
+	ReasonInternalError, ReasonUpstreamError, ReasonAuthenticationDependencyError,
+}
+
+func projectReason(r Reason) string {
+	if slices.Contains(reasons, r) {
+		return string(r)
 	}
 	return other
 }

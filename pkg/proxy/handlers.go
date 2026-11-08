@@ -40,62 +40,12 @@ const (
 // of the closed reason value set.
 const warnReasonHeadersDropped = "headers_dropped"
 
-// How a request authenticated, as reported by the access record's auth_method.
-const (
-	authMethodOIDC        = "oidc"
-	authMethodTokenReview = "tokenreview"
-	authMethodNone        = "none"
-)
-
-// The closed set of access-record reasons this package classifies. A denial
-// carries exactly one of them, so a query never has to match on message text.
-const (
-	reasonUnauthorized               = "unauthorized"
-	reasonReservedIdentity           = "reserved_identity"
-	reasonNoUsernameClaim            = "no_username_claim"
-	reasonImpersonationDenied        = "impersonation_denied"
-	reasonTooManyImpersonationValues = "too_many_impersonation_values"
-	reasonClientCanceled             = "client_canceled"
-	reasonInternalError              = "internal_error"
-
-	// reasonUpstreamError classifies a failure of the hop to the API server
-	// itself, as opposed to anything the proxy decided about the request. It
-	// is carried by the upstream record and by the terminal record, never by
-	// an access decision: the request was already admitted.
-	reasonUpstreamError = "upstream_error"
-
-	// reasonAuthenticationDependencyError classifies a TokenReview that could
-	// not be answered at all: the API server was unreachable or returned a
-	// status error. It is not a verdict on the credential.
-	reasonAuthenticationDependencyError = "authentication_dependency_error"
-)
-
 // Why impersonation was not applied to a request, as reported by
 // request.impersonation.skipped.
 const (
 	skipReasonDisabled    = "disabled"
 	skipReasonPassthrough = "passthrough"
 )
-
-// authMethodKey is the context key carrying how the request authenticated. It
-// is set by the handler that accepted the credential and read by the access
-// record, which runs after the decision on both the success and failure paths.
-type authMethodKey struct{}
-
-// withAuthMethod records how the request authenticated.
-func withAuthMethod(req *http.Request, method string) *http.Request {
-	return req.WithContext(stdcontext.WithValue(req.Context(), authMethodKey{}, method))
-}
-
-// authMethodFrom returns how the request authenticated. A request refused
-// before any authenticator accepted it has none.
-func authMethodFrom(req *http.Request) string {
-	method, _ := req.Context().Value(authMethodKey{}).(string)
-	if method == "" {
-		return authMethodNone
-	}
-	return method
-}
 
 // userFromContext returns the identity the request presented, or nil when it
 // was refused before one was established.
@@ -211,9 +161,9 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 			// error. The error text itself stays out of the record: the denial
 			// is reported by reason, and a validation message is attacker
 			// influenced.
-			p.metrics.AuthenticationAttempt(authMethodOIDC, metrics.AuthRejected)
+			p.metrics.AuthenticationAttempt(metrics.AuthMethodOIDC, metrics.AuthRejected)
 			logging.Emit(req.Context(), logging.OrDiscard(p.oidcLog), logging.EventAuthnOIDCFailed,
-				slog.String("src_ip", context.ClientIP(req)), slog.String("reason", reasonUnauthorized))
+				slog.String("src_ip", context.ClientIP(req)), slog.String("reason", string(metrics.ReasonUnauthorized)))
 
 			// Since we have failed OIDC auth, we will try a token review, if enabled.
 			// Routing is deliberately unchanged: falling through to token
@@ -224,12 +174,12 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 
 		// Failed authorization
 		if !ok {
-			p.metrics.AuthenticationAttempt(authMethodNone, metrics.AuthRejected)
+			p.metrics.AuthenticationAttempt(metrics.AuthMethodNone, metrics.AuthRejected)
 			p.handleError(rw, req, errUnauthorized)
 			return
 		}
 
-		p.metrics.AuthenticationAttempt(authMethodOIDC, metrics.AuthAccepted)
+		p.metrics.AuthenticationAttempt(metrics.AuthMethodOIDC, metrics.AuthAccepted)
 
 		// Attribute the request to the issuer that accepted its token, for this
 		// record and for every access record the request goes on to produce.
@@ -240,7 +190,7 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 
 		// The token was accepted, so every record from here on -- including a
 		// rejection by the reserved-identity guard -- reports the OIDC path.
-		req = withAuthMethod(req, authMethodOIDC)
+		req = context.WithAuthMethod(req, metrics.AuthMethodOIDC)
 
 		// Add the user info to the request context. Done before the
 		// reserved-identity check so a rejection is audited against the identity
@@ -315,7 +265,7 @@ func (p *Proxy) withTokenReview(handler http.Handler) http.Handler {
 		}
 
 		// Set no impersonation headers and re-add removed headers.
-		req = withAuthMethod(req, authMethodTokenReview)
+		req = context.WithAuthMethod(req, metrics.AuthMethodTokenReview)
 		req = context.WithNoImpersonation(req)
 
 		handler.ServeHTTP(rw, req)
@@ -490,7 +440,7 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			// Nothing was decided about a request, so nothing is recorded about
 			// one; the proxy bug is still reported.
 			logging.EmitLevel(r.Context(), logging.OrDiscard(p.logger), logging.EventRequestHandlerFailed, slog.LevelError,
-				slog.String("reason", reasonInternalError),
+				slog.String("reason", string(metrics.ReasonInternalError)),
 				slog.String("error_message", "error handler called with nil error"))
 			http.Error(rw, "", http.StatusInternalServerError)
 			return
@@ -503,7 +453,7 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 		// Failed auth
 		case errors.Is(err, errUnauthorized):
 			// If Unauthorized then error and report to audit
-			p.logDenied(r, reasonUnauthorized, err)
+			p.logDenied(r, metrics.ReasonUnauthorized, err)
 			unauthedHandler.ServeHTTP(rw, r)
 			return
 
@@ -511,27 +461,27 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 		case errors.Is(err, errReservedIdentity):
 			// A token minting a system: identity is an exploit attempt or a
 			// badly broken claim mapping, not an ordinary denial.
-			p.logAnomaly(r, reasonReservedIdentity)
-			p.logDenied(r, reasonReservedIdentity, err)
+			p.logAnomaly(r, metrics.ReasonReservedIdentity)
+			p.logDenied(r, metrics.ReasonReservedIdentity, err)
 			forbiddenHandler.ServeHTTP(rw, r)
 			return
 
 			// No name given or available in oidc request
 		case errors.Is(err, errNoName):
-			p.logDenied(r, reasonNoUsernameClaim, err)
+			p.logDenied(r, metrics.ReasonNoUsernameClaim, err)
 			http.Error(rw, "Username claim not available in OIDC Issuer response", http.StatusForbidden)
 			return
 
 			// No impersonation configuration found in context
 		case errors.Is(err, errNoImpersonationConfig):
 			p.logHandlerFailed(r, err)
-			p.logDenied(r, reasonInternalError, err)
+			p.logDenied(r, metrics.ReasonInternalError, err)
 			http.Error(rw, "", http.StatusInternalServerError)
 			return
 
 			// No impersonation user found
 		case errors.Is(err, subjectaccessreview.ErrNoImpersonationUser):
-			p.logDenied(r, reasonInternalError, err)
+			p.logDenied(r, metrics.ReasonInternalError, err)
 			http.Error(rw, subjectaccessreview.ErrNoImpersonationUser.Error(), http.StatusInternalServerError)
 			return
 
@@ -541,15 +491,15 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 		case errors.Is(err, subjectaccessreview.ErrTooManyImpersonationHeaderValues):
 			// Far more impersonation values than any client legitimately sends:
 			// a resource-exhaustion attempt against the SubjectAccessReview path.
-			p.logAnomaly(r, reasonTooManyImpersonationValues)
-			p.logDenied(r, reasonTooManyImpersonationValues, err)
+			p.logAnomaly(r, metrics.ReasonTooManyImpersonationValues)
+			p.logDenied(r, metrics.ReasonTooManyImpersonationValues, err)
 			http.Error(rw, err.Error(), http.StatusRequestHeaderFieldsTooLarge)
 			return
 
 			// Requester is not authorized to impersonate the requested identity.
 			// Classified by typed error (errors.Is), not by message text.
 		case errors.Is(err, subjectaccessreview.ErrImpersonationNotAllowed):
-			p.logDenied(r, reasonImpersonationDenied, err)
+			p.logDenied(r, metrics.ReasonImpersonationDenied, err)
 			http.Error(rw, err.Error(), http.StatusForbidden)
 			return
 
@@ -557,8 +507,8 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			// write back; the connection is already going away.
 		case errors.Is(err, stdcontext.Canceled):
 			logging.Emit(r.Context(), logging.OrDiscard(p.upstreamLog), logging.EventUpstreamRequestCanceled,
-				slog.String("reason", reasonClientCanceled))
-			p.logDenied(r, reasonClientCanceled, err)
+				slog.String("reason", string(metrics.ReasonClientCanceled)))
+			p.logDenied(r, metrics.ReasonClientCanceled, err)
 			return
 
 			// A SubjectAccessReview the proxy could not submit. It wraps a
@@ -569,7 +519,7 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			// than proxied.
 		case errors.Is(err, subjectaccessreview.ErrCreateSubjectAccessReview):
 			p.logHandlerFailed(r, err)
-			p.logDenied(r, reasonInternalError, err)
+			p.logDenied(r, metrics.ReasonInternalError, err)
 			http.Error(rw, "", http.StatusInternalServerError)
 			return
 
@@ -581,9 +531,9 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			// to the lifecycle filter for the terminal record.
 		case isUpstreamTransportError(err):
 			term := upstreamTermination(err)
-			context.RecordTermination(r, term, reasonUpstreamError)
+			context.RecordTermination(r, term, metrics.ReasonUpstreamError)
 			logging.Emit(r.Context(), logging.OrDiscard(p.upstreamLog), logging.EventUpstreamRequestFailed,
-				slog.String("reason", reasonUpstreamError), slog.String("termination", term),
+				slog.String("reason", string(metrics.ReasonUpstreamError)), slog.String("termination", string(term)),
 				logging.ErrAttr(err))
 			http.Error(rw, "", http.StatusBadGateway)
 			return
@@ -592,7 +542,7 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			// receives an empty 500 body.
 		default:
 			p.logHandlerFailed(r, err)
-			p.logDenied(r, reasonInternalError, err)
+			p.logDenied(r, metrics.ReasonInternalError, err)
 			http.Error(rw, "", http.StatusInternalServerError)
 		}
 	}
@@ -621,18 +571,18 @@ func isUpstreamTransportError(err error) bool {
 // termination set the terminal record reports, so an operator can tell an API
 // server that is slow from one that is dropping connections without reading
 // error text.
-func upstreamTermination(err error) string {
+func upstreamTermination(err error) metrics.Termination {
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
-		return terminationUpstreamTimeout
+		return metrics.TerminationUpstreamTimeout
 	}
 
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
 		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
-		return terminationUpstreamReset
+		return metrics.TerminationUpstreamReset
 	}
 
-	return terminationProxyError
+	return metrics.TerminationProxyError
 }
 
 // logHandlerFailed reports a failure the proxy itself is responsible for. The
@@ -640,26 +590,26 @@ func upstreamTermination(err error) string {
 // bounded and sanitized; the access record carries reason=internal_error.
 func (p *Proxy) logHandlerFailed(r *http.Request, err error) {
 	logging.EmitLevel(r.Context(), logging.OrDiscard(p.logger), logging.EventRequestHandlerFailed, slog.LevelError,
-		slog.String("reason", reasonInternalError), logging.ErrAttr(err))
+		slog.String("reason", string(metrics.ReasonInternalError)), logging.ErrAttr(err))
 }
 
 // logAnomaly reports a rejection that indicates an exploit attempt or gross
 // misconfiguration rather than an ordinary denial. It is token-bucketed per
 // reason, because a client can produce these without bound; the access record,
 // which is never sampled, still carries the outcome.
-func (p *Proxy) logAnomaly(r *http.Request, reason string) {
-	if !p.warnLimiter.Allow(reason) {
+func (p *Proxy) logAnomaly(r *http.Request, reason metrics.Reason) {
+	if !p.warnLimiter.Allow(string(reason)) {
 		return
 	}
 
 	logging.Emit(r.Context(), logging.OrDiscard(p.logger), logging.EventRequestAnomalyDetected,
-		slog.String("src_ip", context.ClientIP(r)), slog.String("reason", reason))
+		slog.String("src_ip", context.ClientIP(r)), slog.String("reason", string(reason)))
 }
 
 // logDenied writes the access record for a refused request. The impersonation
 // target, when the error names one, is taken from the typed error rather than
 // parsed back out of the client-facing message.
-func (p *Proxy) logDenied(r *http.Request, reason string, err error) {
+func (p *Proxy) logDenied(r *http.Request, reason metrics.Reason, err error) {
 	// RoundTrip writes the access record for an admitted request before the
 	// upstream call, so a failure arriving after that -- a client that
 	// cancelled, an upstream that broke -- has no decision left to make. Every
@@ -672,7 +622,7 @@ func (p *Proxy) logDenied(r *http.Request, reason string, err error) {
 	d := accesslogging.Decision{
 		Allowed:    false,
 		Reason:     reason,
-		AuthMethod: authMethodFrom(r),
+		AuthMethod: context.AuthMethod(r),
 		Inbound:    userFromContext(r),
 	}
 
