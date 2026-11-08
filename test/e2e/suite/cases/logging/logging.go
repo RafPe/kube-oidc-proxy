@@ -19,7 +19,6 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/suite/cases/sharedtests"
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
-	"github.com/rafpe/kube-oidc-proxy/test/util"
 )
 
 const (
@@ -83,7 +82,7 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 	It("correlates a successful request across the access record, the terminal record and the response header", func() {
 		grantPodList(f, defaultUsername)
 
-		resp := doRequest(f, validToken(f), nil)
+		resp := doRequest(f, f.SignedTokenFor(defaultUsername, []string{"group-1"}), nil)
 		Expect(resp.StatusCode).To(Equal(http.StatusOK))
 		id := resp.Header.Get("Audit-ID")
 		Expect(id).To(MatchRegexp(`^[0-9a-f-]{36}$`))
@@ -105,7 +104,7 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 	})
 
 	It("does not adopt a client-supplied Audit-ID", func() {
-		resp := doRequest(f, validToken(f), map[string]string{"Audit-ID": "client-chosen"})
+		resp := doRequest(f, f.SignedTokenFor(defaultUsername, []string{"group-1"}), map[string]string{"Audit-ID": "client-chosen"})
 		Expect(resp.Header.Get("Audit-ID")).NotTo(Equal("client-chosen"))
 		recs, _ := records(f)
 		Expect(sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.access.decided"), "client-chosen")).To(BeEmpty())
@@ -135,7 +134,7 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 		// with a group it does not: a group header on its own never reaches a
 		// SubjectAccessReview, so the denial being asserted here would not
 		// happen. The SAR clears the user and refuses the group.
-		resp := doRequest(f, validToken(f), map[string]string{
+		resp := doRequest(f, f.SignedTokenFor(defaultUsername, []string{"group-1"}), map[string]string{
 			"Impersonate-User":  "ok-to-impersonate@nodomain.dev",
 			"Impersonate-Group": "system:masters",
 		})
@@ -153,7 +152,7 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 	})
 
 	It("drops forwarded headers from an untrusted client and says so at WARN", func() {
-		resp := doRequest(f, validToken(f), map[string]string{"X-Forwarded-For": "9.9.9.9"})
+		resp := doRequest(f, f.SignedTokenFor(defaultUsername, []string{"group-1"}), map[string]string{"X-Forwarded-For": "9.9.9.9"})
 		id := resp.Header.Get("Audit-ID")
 		Eventually(func() []map[string]any {
 			recs, _ := records(f)
@@ -176,7 +175,7 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 		extraOIDCVolumes, fakeAPIServerURL, err := f.Helper().DeployFakeAPIServer(f.Namespace.Name)
 		Expect(err).NotTo(HaveOccurred())
 		f.DeployProxyWith(extraOIDCVolumes, fmt.Sprintf("--server=%s", fakeAPIServerURL), "--certificate-authority=/fake-apiserver/ca.pem")
-		resp := doRequest(f, validToken(f), nil)
+		resp := doRequest(f, f.SignedTokenFor(defaultUsername, []string{"group-1"}), nil)
 		id := resp.Header.Get("Audit-ID")
 
 		// The fake API server logs header names without their values, so the
@@ -226,18 +225,6 @@ func nonEmptyLines(raw string) []string {
 	}
 
 	return out
-}
-
-// validToken mints a token the proxy's OIDC authenticator accepts.
-func validToken(f *framework.Framework) string {
-	payload, err := util.NewTokenPayloadForIdentity(f.IssuerURL(), f.ClientID(),
-		defaultUsername, []string{"group-1"}, time.Now().Add(time.Minute*10))
-	Expect(err).NotTo(HaveOccurred())
-
-	signedToken, err := util.SignToken(f.IssuerKeyBundle(), payload)
-	Expect(err).NotTo(HaveOccurred())
-
-	return signedToken
 }
 
 // doRequest lists pods through the proxy with the given bearer token and extra

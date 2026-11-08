@@ -209,6 +209,19 @@ func (f *Framework) ClientID() string {
 	return clientID
 }
 
+// SignedTokenFor mints a token for the given identity, signed by the suite's
+// mock issuer and valid for ten minutes, so the proxy's OIDC authenticator
+// accepts it.
+func (f *Framework) SignedTokenFor(username string, groups []string) string {
+	payload, err := util.NewTokenPayloadForIdentity(f.issuerURL, clientID,
+		username, groups, time.Now().Add(10*time.Minute))
+	Expect(err).NotTo(HaveOccurred())
+
+	signed, err := util.SignToken(f.issuerKeyBundle, payload)
+	Expect(err).NotTo(HaveOccurred())
+	return signed
+}
+
 func (f *Framework) NewProxyRestConfig() *rest.Config {
 	config, err := f.Helper().NewValidRestConfig(f.issuerKeyBundle, f.proxyKeyBundle,
 		f.issuerURL, f.proxyURL, clientID)

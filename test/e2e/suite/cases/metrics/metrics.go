@@ -111,10 +111,10 @@ var _ = framework.CasesDescribe("Metrics", Label("shard-a"), func() {
 
 	It("counts an allowed list and a rejected token with closed-set labels", func() {
 		grantPods(f, defaultUsername, "get", "list", "watch")
-		// Built before the poll: validToken and NewProxyRestConfig both assert,
+		// Built before the poll: SignedTokenFor and NewProxyRestConfig both assert,
 		// and an assertion inside the callback would fail the spec on the first
 		// attempt instead of being retried.
-		token, config := validToken(f), f.NewProxyRestConfig()
+		token, config := f.SignedTokenFor(defaultUsername, []string{"group-1"}), f.NewProxyRestConfig()
 		// RBAC propagation is asynchronous: the RoleBinding is not visible to
 		// the API server's authorizer the instant Create returns, so the first
 		// list can still be a 403. Poll until the grant lands.
@@ -141,7 +141,7 @@ var _ = framework.CasesDescribe("Metrics", Label("shard-a"), func() {
 
 	It("gauges an open watch and releases it, without timing it", func() {
 		grantPods(f, defaultUsername, "get", "list", "watch")
-		token, config := validToken(f), f.NewProxyRestConfig()
+		token, config := f.SignedTokenFor(defaultUsername, []string{"group-1"}), f.NewProxyRestConfig()
 		// RBAC propagation is not synchronous either: open the watch only
 		// once a list with the same grant succeeds.
 		Eventually(func() (int, error) {
@@ -304,15 +304,6 @@ func sampleValue(f *framework.Framework, s helper.ChartMetricsSurface, name stri
 	}
 	v, _ := util.SampleValue(ss, name, labels)
 	return v, nil
-}
-
-func validToken(f *framework.Framework) string {
-	payload, err := util.NewTokenPayloadForIdentity(f.IssuerURL(), f.ClientID(),
-		defaultUsername, []string{"group-1"}, time.Now().Add(10*time.Minute))
-	Expect(err).NotTo(HaveOccurred())
-	signed, err := util.SignToken(f.IssuerKeyBundle(), payload)
-	Expect(err).NotTo(HaveOccurred())
-	return signed
 }
 
 // listPods lists the namespace's pods through the proxy and returns the status
