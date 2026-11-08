@@ -4,6 +4,8 @@ package subjectaccessreview
 import (
 	"net/http"
 	"strings"
+
+	"k8s.io/client-go/transport"
 )
 
 // IsImpersonationHeader reports whether key names an impersonation header.
@@ -12,6 +14,16 @@ import (
 // an impersonation attempt and must be authorized or refused, never forwarded.
 func IsImpersonationHeader(key string) bool {
 	return hasPrefixFold(key, "Impersonate-")
+}
+
+// isKnownImpersonationHeader reports whether key is one of the impersonation
+// header kinds CheckAuthorizedForImpersonation authorizes: user, uid, group or
+// an extra.
+func isKnownImpersonationHeader(key string) bool {
+	return strings.EqualFold(key, transport.ImpersonateUserHeader) ||
+		strings.EqualFold(key, transport.ImpersonateUIDHeader) ||
+		strings.EqualFold(key, transport.ImpersonateGroupHeader) ||
+		hasPrefixFold(key, transport.ImpersonateUserExtraHeaderPrefix)
 }
 
 // HasImpersonationHeaders reports whether the headers carry any impersonation

@@ -4,7 +4,6 @@ package proxy
 import (
 	"net"
 	"net/http"
-	"strings"
 	"unicode"
 
 	"k8s.io/apimachinery/pkg/util/uuid"
@@ -47,7 +46,7 @@ func (p *Proxy) withRequestID(next http.Handler) http.Handler {
 		r.Header.Del(headerRequestID)
 		w.Header().Set(headerAuditID, id)
 
-		r = r.WithContext(logging.NewContext(r.Context(), p.logger))
+		r = r.WithContext(logging.NewContext(r.Context(), p.requestLogger))
 
 		next.ServeHTTP(w, reqctx.WithRequestID(r, id))
 	})
@@ -64,7 +63,7 @@ func validRequestID(v string) string {
 			return ""
 		}
 	}
-	return strings.TrimSpace(v)
+	return v
 }
 
 // peerIsTrusted reports whether the immediate peer is inside one of the

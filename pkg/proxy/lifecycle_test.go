@@ -204,7 +204,7 @@ func TestUpstreamFailureReachesTheTerminalRecord(t *testing.T) {
 	p := newTestProxy(t)
 	serveWith(t, p, func(w http.ResponseWriter, r *http.Request) {
 		// Derived exactly as the filters below the lifecycle one derive it.
-		p.handleError(w, r.WithContext(logging.NewContext(r.Context(), p.logger)),
+		p.handleError(w, r.WithContext(logging.NewContext(r.Context(), p.requestLogger)),
 			&net.OpError{Op: "dial", Err: &timeoutErr{}})
 	}, httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil))
 

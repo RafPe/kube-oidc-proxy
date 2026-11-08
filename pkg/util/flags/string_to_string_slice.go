@@ -29,43 +29,38 @@ func NewStringToStringSliceValue(p *map[string][]string) pflag.Value {
 	}
 }
 
-// This format is expecting a list of key value pairs, seperated by commas. A
-// single index may have multiple entries.
-// e.g.: a=-7,b=2,a=3
+// Set parses a comma-separated list of key=value pairs, e.g. a=-7,b=2,a=3.
+// A key may repeat; its values accumulate in order, across repeated flags
+// too. A malformed value is rejected without changing what earlier flags set.
 func (s *stringToStringSliceValue) Set(val string) error {
+	// A value built without the constructor still ends up with a map to read.
 	if s.values == nil {
-		m := make(map[string][]string)
-		s.values = &m
+		s.values = new(map[string][]string)
 	}
-
 	if *s.values == nil {
 		*s.values = make(map[string][]string)
 	}
-
-	if len(val) == 0 {
+	if val == "" {
 		return nil
 	}
 
-	var ss []string
-
-	r := csv.NewReader(strings.NewReader(val))
-	var err error
-	ss, err = r.Read()
+	pairs, err := csv.NewReader(strings.NewReader(val)).Read()
 	if err != nil {
-		*s.values = make(map[string][]string)
 		return err
 	}
 
-	for _, pair := range ss {
-		kv := strings.Split(pair, "=")
-		if len(kv) != 2 {
-			*s.values = make(map[string][]string)
+	parsed := make([][2]string, 0, len(pairs))
+	for _, pair := range pairs {
+		k, v, ok := strings.Cut(pair, "=")
+		if !ok || strings.Contains(v, "=") {
 			return fmt.Errorf("%s must be formatted as key=value", pair)
 		}
-
-		(*s.values)[kv[0]] = append((*s.values)[kv[0]], kv[1])
+		parsed = append(parsed, [2]string{k, v})
 	}
 
+	for _, kv := range parsed {
+		(*s.values)[kv[0]] = append((*s.values)[kv[0]], kv[1])
+	}
 	return nil
 }
 

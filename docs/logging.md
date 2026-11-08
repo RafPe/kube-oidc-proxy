@@ -261,9 +261,10 @@ logged. The cache identity is in the event type, not in a field.
 `authn.*`, `authz.*`, `upstream.*` and `request.handler.failed` records:
 
 `unauthorized`, `reserved_identity`, `impersonation_denied`,
-`too_many_impersonation_values`, `no_username_claim`,
-`authentication_dependency_error`, `authorization_dependency_error`,
-`upstream_error`, `internal_error`, `client_canceled`.
+`too_many_impersonation_values`, `malformed_impersonation`,
+`no_username_claim`, `authentication_dependency_error`,
+`authorization_dependency_error`, `upstream_error`, `internal_error`,
+`client_canceled`.
 
 **Startup configuration failures** — on `proxy.config.invalid` only, a
 startup-scoped vocabulary that is deliberately disjoint from the request set so

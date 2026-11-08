@@ -73,10 +73,11 @@ type EventSpec struct {
 	Summary       string   // one line for docs
 }
 
-// Registry holds one entry per EventType constant. Required lists the mandatory
+// registry holds one entry per EventType constant. It is unexported so the
+// event contract can only be read through AllEventTypes and EventType.Spec. Required lists the mandatory
 // attributes beyond time, level, msg, schema_version, component and event_type;
 // conditional attributes are documented in the summary, not required here.
-var Registry = map[EventType]EventSpec{
+var registry = map[EventType]EventSpec{
 	EventRequestAccessDecided: {
 		Components: []Component{ComponentRequest},
 		Level:      slog.LevelInfo,
@@ -383,8 +384,8 @@ var Registry = map[EventType]EventSpec{
 
 // AllEventTypes returns every registered event type, sorted by string value.
 func AllEventTypes() []EventType {
-	out := make([]EventType, 0, len(Registry))
-	for e := range Registry {
+	out := make([]EventType, 0, len(registry))
+	for e := range registry {
 		out = append(out, e)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
@@ -396,6 +397,16 @@ func (e EventType) Attr() slog.Attr { return slog.String("event_type", string(e)
 
 // Spec returns the registry entry for e.
 func (e EventType) Spec() (EventSpec, bool) {
-	s, ok := Registry[e]
+	s, ok := registry[e]
 	return s, ok
+}
+
+// mustSpec returns e's registry entry and panics when there is none: passing
+// an unregistered event is a programming error, and the event set is closed.
+func (e EventType) mustSpec() EventSpec {
+	spec, ok := e.Spec()
+	if !ok {
+		panic("logging: unregistered event " + string(e))
+	}
+	return spec
 }

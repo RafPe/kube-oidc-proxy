@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	v1 "k8s.io/api/authorization/v1"
@@ -26,7 +25,7 @@ import (
 // never cached: a transient API-server failure fails only the requests that
 // observed it.
 func (s *SubjectAccessReview) checkRbacImpersonationAuthorization(ctx context.Context, target impersonationTarget, requester user.Info) (bool, error) {
-	spec := impersonationReviewSpec(target.resource, target.name, requester)
+	spec := impersonationReviewSpec(target, requester)
 	kind := target.kind
 
 	key, cacheable := s.cache.key(&spec)
@@ -53,7 +52,7 @@ func (s *SubjectAccessReview) checkRbacImpersonationAuthorization(ctx context.Co
 // review carrying how long the caller waited and whether it shared another
 // request's call, or a failure carrying the dependency error. Exactly one
 // terminal record is emitted per authorization question a caller asks.
-func (s *SubjectAccessReview) timedLiveCheck(ctx context.Context, kind string, coalesced bool, spec *v1.SubjectAccessReviewSpec) (bool, error) {
+func (s *SubjectAccessReview) timedLiveCheck(ctx context.Context, kind TargetKind, coalesced bool, spec *v1.SubjectAccessReviewSpec) (bool, error) {
 	start := time.Now()
 	allowed, err := s.liveCheck(ctx, spec)
 	s.observeLiveCheck(ctx, kind, start, coalesced, allowed, err)
@@ -91,18 +90,18 @@ func requesterDone(ctx context.Context) bool {
 // simply by hanging up mid-request. When the requester is still waiting, the
 // deadline that expired is the proxy's budget, which means the API server did
 // not answer in time: that is a dependency failure and stays an ERROR.
-func (s *SubjectAccessReview) observeLiveCheck(ctx context.Context, kind string, start time.Time, coalesced, allowed bool, err error) {
+func (s *SubjectAccessReview) observeLiveCheck(ctx context.Context, kind TargetKind, start time.Time, coalesced, allowed bool, err error) {
 	if err != nil {
-		reason, level, logged := "authorization_dependency_error", slog.LevelError, err
+		reason, level, logged := metrics.ReasonAuthorizationDependencyError, slog.LevelError, err
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			if requesterDone(ctx) {
-				reason, level = "client_canceled", slog.LevelDebug
+				reason, level = metrics.ReasonClientCanceled, slog.LevelDebug
 			} else {
 				logged = fmt.Errorf("subject access review timed out after %s: %w", s.sarTimeout, err)
 			}
 		}
 		logging.EmitLevel(ctx, s.log(), logging.EventAuthzSARFailed, level,
-			slog.String("reason", reason),
+			slog.String("reason", string(reason)),
 			logging.ErrAttr(logged))
 		return
 	}
@@ -110,7 +109,7 @@ func (s *SubjectAccessReview) observeLiveCheck(ctx context.Context, kind string,
 		slog.String("decision", string(metrics.DecisionFor(allowed))),
 		slog.Int64("duration_ms", time.Since(start).Milliseconds()),
 		slog.Bool("request_coalesced", coalesced),
-		slog.String("target_kind", kind))
+		slog.String("target_kind", string(kind)))
 }
 
 // sharedLiveCheck performs a live check deduplicated across concurrent callers
@@ -118,7 +117,7 @@ func (s *SubjectAccessReview) observeLiveCheck(ctx context.Context, kind string,
 // The winning caller's context governs the shared call, so a waiter whose
 // flight fails with a context error not its own retries with a direct check
 // rather than inheriting another request's cancellation.
-func (s *SubjectAccessReview) sharedLiveCheck(ctx context.Context, kind, key string, spec *v1.SubjectAccessReviewSpec) (bool, error) {
+func (s *SubjectAccessReview) sharedLiveCheck(ctx context.Context, kind TargetKind, key string, spec *v1.SubjectAccessReviewSpec) (bool, error) {
 	start := time.Now()
 
 	if s.beforeFlight != nil {
@@ -178,29 +177,10 @@ func (s *SubjectAccessReview) liveCheck(ctx context.Context, spec *v1.SubjectAcc
 // submitted to the API server and serialized as the cache key, so every field
 // that can influence the decision — including the requester's UID and Extra
 // fields — is part of the key by construction.
-func impersonationReviewSpec(resource string, name string, requester user.Info) v1.SubjectAccessReviewSpec {
-	extras := map[string]v1.ExtraValue{}
-	var group string
-	var subresource string
-
+func impersonationReviewSpec(target impersonationTarget, requester user.Info) v1.SubjectAccessReviewSpec {
+	extras := make(map[string]v1.ExtraValue, len(requester.GetExtra()))
 	for key, value := range requester.GetExtra() {
 		extras[key] = value
-	}
-
-	slashIndex := strings.Index(resource, "/")
-
-	if slashIndex > 0 {
-		newResources := strings.Split(resource, "/")
-		resource = newResources[0]
-		subresource = newResources[1]
-		group = "authentication.k8s.io"
-	}
-
-	// UID impersonation lives in authentication.k8s.io, unlike
-	// users/groups/serviceaccounts which are core. Without the group the
-	// review checks a core-group "uids" resource no RBAC rule grants.
-	if resource == "uids" {
-		group = "authentication.k8s.io"
 	}
 
 	return v1.SubjectAccessReviewSpec{
@@ -210,11 +190,11 @@ func impersonationReviewSpec(resource string, name string, requester user.Info) 
 		Extra:  extras,
 
 		ResourceAttributes: &v1.ResourceAttributes{
-			Verb:        "impersonate",
-			Group:       group,
-			Resource:    resource,
-			Subresource: subresource,
-			Name:        name,
+			Verb:        impersonateVerb,
+			Group:       target.group,
+			Resource:    target.resource,
+			Subresource: target.subresource,
+			Name:        target.name,
 		},
 	}
 }

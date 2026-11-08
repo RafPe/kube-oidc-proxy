@@ -63,7 +63,7 @@ func TestListenerFailureIsReported(t *testing.T) {
 	if waitErr == nil {
 		t.Fatal("Wait returned nil after the listener was closed under Serve")
 	}
-	if !errors.Is(reported, waitErr) && reported == nil {
+	if !errors.Is(reported, waitErr) {
 		t.Fatalf("onFailed was not told about %v", waitErr)
 	}
 }

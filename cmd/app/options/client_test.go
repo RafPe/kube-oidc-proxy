@@ -45,7 +45,7 @@ func TestClientFlagsChanged(t *testing.T) {
 	o := New()
 	cmd := &cobra.Command{Use: "test"}
 	o.AddFlags(cmd)
-	for _, flag := range []string{"as", "as-uid", "as-group"} {
+	for _, flag := range []string{"as", "as-uid", "as-group", "as-user-extra", "username", "password"} {
 		if cmd.Flags().Lookup(flag) != nil {
 			t.Errorf("--%s is offered; the proxy must not impersonate on its own calls", flag)
 		}

@@ -71,14 +71,14 @@ func TestReviewToken(t *testing.T) {
 				test.reviewerResult(reviewer)
 			}
 
-			p := &Proxy{tokenReviewer: reviewer}
+			p := withDiscardLoggers(&Proxy{tokenReviewer: reviewer})
 
 			req := withTestRequestID(httptest.NewRequest("GET", "https://target.example.com/foo", nil))
 			if test.authHeader != "" {
 				req.Header.Set("Authorization", test.authHeader)
 			}
 
-			if got := p.reviewToken(httptest.NewRecorder(), req); got != test.expPassthrough {
+			if got := p.reviewToken(req); got != test.expPassthrough {
 				t.Errorf("unexpected passthrough decision, exp=%t got=%t", test.expPassthrough, got)
 			}
 		})
@@ -155,11 +155,11 @@ func TestWithTokenReviewStatusCodes(t *testing.T) {
 			}
 
 			access, _ := newAccessLogger(t)
-			p := &Proxy{
+			p := withDiscardLoggers(&Proxy{
 				tokenReviewer: reviewer,
 				config:        &Config{TokenReview: test.tokenReviewEnabled},
 				access:        access,
-			}
+			})
 			p.handleError = p.newErrorHandler()
 
 			nextCalled := false

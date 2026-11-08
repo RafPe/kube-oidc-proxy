@@ -20,7 +20,7 @@ func TestUntrustedForwardedHeadersDroppedIsWarn(t *testing.T) {
 	req.Header.Set("X-Forwarded-For", "1.2.3.4")
 	req.Header.Set("X-Real-Ip", "1.2.3.4")
 	req = withTestRequestID(req)
-	req = req.WithContext(logging.NewContext(req.Context(), p.logger))
+	req = req.WithContext(logging.NewContext(req.Context(), p.requestLogger))
 	h.ServeHTTP(httptest.NewRecorder(), req)
 	rec := p.logs.Only(t, logging.EventRequestHeadersDropped)
 	if rec.String("level") != "WARN" || !strings.Contains(fmt.Sprint(rec["dropped_headers"]), "x-forwarded-for") {
@@ -38,7 +38,7 @@ func TestRealIPOnlyDroppedCarriesNoForwardedChain(t *testing.T) {
 	req.RemoteAddr = "203.0.113.9:1"
 	req.Header.Set("X-Real-Ip", "1.2.3.4")
 	req = withTestRequestID(req)
-	req = req.WithContext(logging.NewContext(req.Context(), p.logger))
+	req = req.WithContext(logging.NewContext(req.Context(), p.requestLogger))
 	h.ServeHTTP(httptest.NewRecorder(), req)
 	rec := p.logs.Only(t, logging.EventRequestHeadersDropped)
 	if got := fmt.Sprint(rec["dropped_headers"]); got != "[x-real-ip]" {
@@ -57,7 +57,7 @@ func TestTrustedForwardedHeadersRewritten(t *testing.T) {
 	req.RemoteAddr = "10.0.0.7:1"
 	req.Header.Set("X-Forwarded-For", "1.2.3.4, 10.0.0.9")
 	req = withTestRequestID(req)
-	req = req.WithContext(logging.NewContext(req.Context(), p.logger))
+	req = req.WithContext(logging.NewContext(req.Context(), p.requestLogger))
 	h.ServeHTTP(httptest.NewRecorder(), req)
 	rec := p.logs.Only(t, logging.EventRequestHeadersRewritten)
 	if rec.String("src_ip") != "1.2.3.4" {

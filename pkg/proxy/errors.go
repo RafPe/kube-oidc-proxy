@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
 	"syscall"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
@@ -57,7 +56,7 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 		if err == nil {
 			// Nothing was decided about a request, so nothing is recorded about
 			// one; the proxy bug is still reported.
-			logging.EmitLevel(r.Context(), logging.OrDiscard(p.logger), logging.EventRequestHandlerFailed, slog.LevelError,
+			logging.EmitLevel(r.Context(), p.requestLogger, logging.EventRequestHandlerFailed, slog.LevelError,
 				slog.String("reason", string(metrics.ReasonInternalError)),
 				slog.String("error_message", "error handler called with nil error"))
 			http.Error(rw, "", http.StatusInternalServerError)
@@ -92,10 +91,20 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			deny(rw, r, http.StatusForbidden, "Username claim not available in OIDC Issuer response")
 			return
 
-			// No impersonation user found
+			// Groups, uid or extras with no user to refine. A malformed request,
+			// not a proxy fault; it keeps the 500 and message clients have
+			// always seen for it.
 		case errors.Is(err, subjectaccessreview.ErrNoImpersonationUser):
-			p.logDenied(r, metrics.ReasonInternalError, err)
+			p.logDenied(r, metrics.ReasonMalformedImpersonation, err)
 			deny(rw, r, http.StatusInternalServerError, subjectaccessreview.ErrNoImpersonationUser.Error())
+			return
+
+			// An Impersonate- header of a kind the proxy does not know. Refused
+			// before any SubjectAccessReview, and not logged as a failure of the
+			// proxy's own: a client can send it on every request.
+		case errors.Is(err, subjectaccessreview.ErrUnknownImpersonationHeader):
+			p.logDenied(r, metrics.ReasonMalformedImpersonation, err)
+			deny(rw, r, http.StatusBadRequest, err.Error())
 			return
 
 			// Request carries more impersonation header values than the
@@ -119,7 +128,7 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			// Client canceled the request (SAR or reverse-proxy). Nothing to
 			// write back; the connection is already going away.
 		case errors.Is(err, context.Canceled):
-			logging.Emit(r.Context(), logging.OrDiscard(p.upstreamLog), logging.EventUpstreamRequestCanceled,
+			logging.Emit(r.Context(), p.upstreamLogger, logging.EventUpstreamRequestCanceled,
 				slog.String("reason", string(metrics.ReasonClientCanceled)))
 			p.logDenied(r, metrics.ReasonClientCanceled, err)
 			return
@@ -133,7 +142,7 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 		case isUpstreamTransportError(err):
 			term := upstreamTermination(err)
 			reqctx.RecordTermination(r, term, metrics.ReasonUpstreamError)
-			logging.Emit(r.Context(), logging.OrDiscard(p.upstreamLog), logging.EventUpstreamRequestFailed,
+			logging.Emit(r.Context(), p.upstreamLogger, logging.EventUpstreamRequestFailed,
 				slog.String("reason", string(metrics.ReasonUpstreamError)), slog.String("termination", string(term)),
 				logging.ErrAttr(err))
 			http.Error(rw, "", http.StatusBadGateway)
@@ -155,7 +164,7 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 // carrying the request to the API server rather than from a decision the proxy
 // made about it. The error handler is dual-use -- the authentication and
 // impersonation filters call it directly, not only the reverse proxy -- so the
-// test is by error type, never a catch-all: an unrecognised error stays a 500.
+// test is by error type: an error of an unrecognised type stays a 500.
 func isUpstreamTransportError(err error) bool {
 	// A SubjectAccessReview the proxy could not submit wraps a client-go
 	// transport error that satisfies net.Error, but the call that failed is
@@ -165,17 +174,14 @@ func isUpstreamTransportError(err error) bool {
 		return false
 	}
 
+	// Any net.Error counts -- *net.OpError, *url.Error and syscall.Errno all
+	// are one -- plus the stream ends and certificate failures that are not.
 	var (
 		netErr  net.Error
-		opErr   *net.OpError
-		urlErr  *url.Error
 		certErr *tls.CertificateVerificationError
-		errno   syscall.Errno
 	)
-
-	return errors.As(err, &netErr) || errors.As(err, &opErr) || errors.As(err, &urlErr) ||
-		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
-		errors.As(err, &errno) || errors.As(err, &certErr)
+	return errors.As(err, &netErr) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.As(err, &certErr)
 }
 
 // upstreamTermination classifies an upstream transport failure into the closed
@@ -200,7 +206,7 @@ func upstreamTermination(err error) metrics.Termination {
 // error text is kept out of the client-facing body and recorded here instead,
 // bounded and sanitized; the access record carries reason=internal_error.
 func (p *Proxy) logHandlerFailed(r *http.Request, err error) {
-	logging.EmitLevel(r.Context(), logging.OrDiscard(p.logger), logging.EventRequestHandlerFailed, slog.LevelError,
+	logging.EmitLevel(r.Context(), p.requestLogger, logging.EventRequestHandlerFailed, slog.LevelError,
 		slog.String("reason", string(metrics.ReasonInternalError)), logging.ErrAttr(err))
 }
 
@@ -213,7 +219,7 @@ func (p *Proxy) logAnomaly(r *http.Request, reason metrics.Reason) {
 		return
 	}
 
-	logging.Emit(r.Context(), logging.OrDiscard(p.logger), logging.EventRequestAnomalyDetected,
+	logging.Emit(r.Context(), p.requestLogger, logging.EventRequestAnomalyDetected,
 		slog.String("src_ip", reqctx.ClientIP(r)), slog.String("reason", string(reason)))
 }
 
@@ -239,7 +245,7 @@ func (p *Proxy) logDenied(r *http.Request, reason metrics.Reason, err error) {
 
 	var authErr *subjectaccessreview.ImpersonationAuthError
 	if errors.As(err, &authErr) {
-		d.TargetKind = authErr.Kind
+		d.TargetKind = string(authErr.Kind)
 		d.TargetName = authErr.TargetName()
 	}
 

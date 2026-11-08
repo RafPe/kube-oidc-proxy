@@ -298,7 +298,7 @@ func TestHandlersImpersonation(t *testing.T) {
 		},
 		"an authed request with impersonation groups missing user should fail": {
 			expEvent:      "AuFail",
-			expReason:     metrics.ReasonInternalError,
+			expReason:     metrics.ReasonMalformedImpersonation,
 			expAuthMethod: metrics.AuthMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
@@ -322,7 +322,7 @@ func TestHandlersImpersonation(t *testing.T) {
 		},
 		"an authed request with impersonation extra missing user should fail": {
 			expEvent:      "AuFail",
-			expReason:     metrics.ReasonInternalError,
+			expReason:     metrics.ReasonMalformedImpersonation,
 			expAuthMethod: metrics.AuthMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
@@ -346,7 +346,7 @@ func TestHandlersImpersonation(t *testing.T) {
 		},
 		"an authed request with impersonation uid missing user should fail": {
 			expEvent:      "AuFail",
-			expReason:     metrics.ReasonInternalError,
+			expReason:     metrics.ReasonMalformedImpersonation,
 			expAuthMethod: metrics.AuthMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
@@ -370,7 +370,7 @@ func TestHandlersImpersonation(t *testing.T) {
 		},
 		"an authed request with an invalid impersonation header should fail": {
 			expEvent:      "AuFail",
-			expReason:     metrics.ReasonInternalError,
+			expReason:     metrics.ReasonMalformedImpersonation,
 			expAuthMethod: metrics.AuthMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
@@ -390,8 +390,8 @@ func TestHandlersImpersonation(t *testing.T) {
 				pass: true,
 				err:  nil,
 			},
-			expCode: http.StatusInternalServerError,
-			expBody: "",
+			expCode: http.StatusBadRequest,
+			expBody: `unknown impersonation header: "Impersonate-Not-Real"`,
 		},
 
 		// END IMPERSONATION TESTS

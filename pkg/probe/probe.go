@@ -45,7 +45,6 @@ const (
 const (
 	pendingNotInitialized = "not_initialized"
 	pendingTransient      = "transient"
-	pendingError          = "error"
 )
 
 // pendingIssuer is one issuer that failed its probe, with the classification
@@ -246,6 +245,9 @@ func (s *Server) Shutdown() error {
 // budget, or nil after a clean stop. http.ErrServerClosed is normalized to
 // nil. It may be called by multiple goroutines.
 func (s *Server) Wait() error {
+	if s.serving == nil {
+		return nil
+	}
 	return s.serving.Wait()
 }
 
@@ -281,14 +283,15 @@ func isTransient(err error) bool {
 // verification, which means the JWKS did load, so the issuer counts as
 // initialized and never reaches a pending record. It is kept as the explicit
 // default rather than an implicit one so the classification has no silent case.
-func (h *HealthCheck) pendingReason(err error) string {
+func (h *HealthCheck) pendingReason(err error) (reason string, pending bool) {
 	switch {
 	case isNotInitialized(err):
-		return pendingNotInitialized
+		return pendingNotInitialized, true
 	case isTransient(err):
-		return pendingTransient
+		return pendingTransient, true
 	default:
-		return pendingError
+		// Raised at verification of the fake token: the JWKS did load.
+		return "", false
 	}
 }
 
@@ -332,7 +335,7 @@ func (h *HealthCheck) Check() error {
 		// or a transient network/timeout error both leave it pending; anything
 		// else was raised at verification, so the JWKS did load.
 		if err != nil {
-			if reason := h.pendingReason(err); reason != pendingError {
+			if reason, isPending := h.pendingReason(err); isPending {
 				pending = append(pending, pendingIssuer{issuerURL: issuer.IssuerURL, reason: reason})
 				continue
 			}

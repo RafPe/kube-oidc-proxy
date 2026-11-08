@@ -14,14 +14,14 @@ import (
 
 // LoggingOptions configures the process-wide root logger. Verbosity is
 // deliberately NOT a flag of its own: -v is the single knob, registered by
-// globalflag in the Misc set, and is read back from there so the two can never
+// globalflag in the Global flag set (GlobalFlagSet), and is read back from there so the two can never
 // disagree.
 type LoggingOptions struct {
 	// Format is the encoding of the log stream, one of json or text.
-	Format string
+	Format logging.Format
 
 	// nfs is the flag-set registry the command was built from, kept so
-	// Verbosity can read -v from the Misc set at call time rather than
+	// Verbosity can read -v from the Global flag set at call time rather than
 	// snapshotting it before the command line is parsed.
 	nfs *cliflag.NamedFlagSets
 }
@@ -32,14 +32,14 @@ func NewLoggingOptions(nfs *cliflag.NamedFlagSets) *LoggingOptions {
 }
 
 func (o *LoggingOptions) AddFlags(fs *pflag.FlagSet) *LoggingOptions {
-	fs.StringVar(&o.Format, "logging-format", "json", "Log output format, one of json or text.")
+	fs.StringVar((*string)(&o.Format), "logging-format", string(logging.FormatJSON), "Log output format, one of json or text.")
 	return o
 }
 
 // Validate rejects a format the root logger cannot build. An empty value is
 // refused too: the flag defaults to json, so an empty one was set explicitly.
 func (o *LoggingOptions) Validate() error {
-	switch logging.Format(o.Format) {
+	switch o.Format {
 	case logging.FormatJSON, logging.FormatText:
 		return nil
 	default:
@@ -70,7 +70,7 @@ func (o *LoggingOptions) Verbosity() int {
 // ToLoggerOptions renders the flags as the root logger's options, writing to w.
 func (o *LoggingOptions) ToLoggerOptions(w io.Writer) logging.Options {
 	return logging.Options{
-		Format:    logging.Format(o.Format),
+		Format:    o.Format,
 		Verbosity: o.Verbosity(),
 		Output:    w,
 	}

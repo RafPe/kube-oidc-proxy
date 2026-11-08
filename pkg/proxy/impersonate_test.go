@@ -43,12 +43,12 @@ func TestWithImpersonateRequestDoesNotMutateAuthenticatorUser(t *testing.T) {
 	wantGroupsBacking := append([]string(nil), groups[:cap(groups)]...) // ["group1" "" "" ""]
 	wantExtra := map[string][]string{"foo": {"x"}}
 
-	p := &Proxy{
+	p := withDiscardLoggers(&Proxy{
 		config: &Config{
 			ExtraUserHeadersClientIPEnabled: true,
 			ExtraUserHeaders:                map[string][]string{"foo": {"bar"}},
 		},
-	}
+	})
 
 	handler := p.withImpersonateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
@@ -79,7 +79,7 @@ func TestImpersonationSkippedWhenDisabled(t *testing.T) {
 
 	handler := p.withImpersonateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req = req.WithContext(logging.NewContext(logging.WithRequestID(req.Context(), "rid-disabled"), p.logger))
+	req = req.WithContext(logging.NewContext(logging.WithRequestID(req.Context(), "rid-disabled"), p.requestLogger))
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
 	rec := p.logs.Only(t, logging.EventRequestImpersonationSkipped)
@@ -103,7 +103,7 @@ func TestImpersonationSkippedOnTokenReviewPassthrough(t *testing.T) {
 
 	handler := p.withImpersonateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req = req.WithContext(logging.NewContext(logging.WithRequestID(req.Context(), "rid-passthrough"), p.logger))
+	req = req.WithContext(logging.NewContext(logging.WithRequestID(req.Context(), "rid-passthrough"), p.requestLogger))
 	req = reqctx.WithNoImpersonation(req)
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
@@ -125,7 +125,7 @@ func TestImpersonationAppliedLogsHeaderNamesOnly(t *testing.T) {
 	p.config.ExtraUserHeaders = map[string][]string{"tenant": {"acme-secret"}}
 	handler := p.withImpersonateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	ctx := logging.NewContext(logging.WithRequestID(req.Context(), "rid-3"), p.logger)
+	ctx := logging.NewContext(logging.WithRequestID(req.Context(), "rid-3"), p.requestLogger)
 	req = req.WithContext(genericapirequest.WithUser(ctx, &authuser.DefaultInfo{Name: "alice"}))
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 	rec := p.logs.Only(t, logging.EventRequestImpersonationApplied)

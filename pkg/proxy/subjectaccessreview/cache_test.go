@@ -280,7 +280,7 @@ func TestDecisionCacheBound(t *testing.T) {
 	names := []string{"user-0", "user-1", "user-2"}
 	keys := make([]string, 0, len(names))
 	for _, n := range names {
-		spec := impersonationReviewSpec("users", n, cacheTestRequester())
+		spec := impersonationReviewSpec(userImpersonation(n), cacheTestRequester())
 		key, ok := cache.key(&spec)
 		if !ok {
 			t.Fatalf("key(%s) not cacheable", n)
@@ -310,7 +310,7 @@ func TestOversizedSpecNotCached(t *testing.T) {
 
 	huge := strings.Repeat("a", maxCacheKeySize)
 
-	spec := impersonationReviewSpec("users", huge, cacheTestRequester())
+	spec := impersonationReviewSpec(userImpersonation(huge), cacheTestRequester())
 	if _, ok := sar.cache.key(&spec); ok {
 		t.Fatal("oversized spec reported cacheable, want not cacheable")
 	}

@@ -90,7 +90,11 @@ func (s *Server) Start(ctx context.Context) error {
 
 // Wait blocks until serving and shutdown have both finished and returns the
 // terminal error: a listener failure, a shutdown that overran its budget, or
-// nil after a clean stop.
+// nil after a clean stop. Before a successful Start there is nothing to wait
+// for, and it returns nil.
 func (s *Server) Wait() error {
+	if s.serving == nil {
+		return nil
+	}
 	return s.serving.Wait()
 }

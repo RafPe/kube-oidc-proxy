@@ -217,3 +217,30 @@ func TestStripImpersonationHeaders(t *testing.T) {
 		t.Error("stripped headers share value slices with the caller")
 	}
 }
+
+// TestUnknownImpersonationHeaderIsRefusedBeforeAnyReview pins that an unknown
+// Impersonate- kind is refused with its sentinel before a single
+// SubjectAccessReview is sent, whatever else the request asks for and whatever
+// order the header map iterates in.
+func TestUnknownImpersonationHeaderIsRefusedBeforeAnyReview(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		reviewer := &countingFakeReviewer{FakeReviewer: fake.New(nil)}
+		sar, err := New(reviewer, Config{Timeout: DefaultTimeout, MaxHeaderValues: DefaultMaxHeaderValues}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := (&http.Request{Header: http.Header{
+			"Impersonate-User":  {"bob"},
+			"Impersonate-Group": {"a", "b"},
+			"Impersonate-Foo":   {"x"},
+		}}).WithContext(testRequestContext())
+
+		_, err = sar.CheckAuthorizedForImpersonation(req, &user.DefaultInfo{Name: "alice"})
+		if !errors.Is(err, ErrUnknownImpersonationHeader) {
+			t.Fatalf("error = %v, want ErrUnknownImpersonationHeader", err)
+		}
+		if got := reviewer.calls.Load(); got != 0 {
+			t.Fatalf("%d SubjectAccessReviews sent for a request refused on its shape", got)
+		}
+	}
+}

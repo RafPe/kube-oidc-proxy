@@ -246,7 +246,7 @@ func TestSubjectAccessReview(t *testing.T) {
 
 			expImpersonationHeaders:  true,
 			expAz:                    false,
-			expErr:                   errors.New("unknown impersonation header 'Impersonate-doesnotexist'"),
+			expErr:                   fmt.Errorf("%w: %q", ErrUnknownImpersonationHeader, "Impersonate-doesnotexist"),
 			expErrorRbac:             nil,
 			extraImpersonationHeader: true,
 		},

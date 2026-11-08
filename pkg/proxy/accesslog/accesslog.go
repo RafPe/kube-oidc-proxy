@@ -1,10 +1,10 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
 
-// Package logging emits the proxy's access record: one
+// Package accesslog emits the proxy's access record: one
 // request.access.decided per request, carrying the authentication,
 // authorization and admission outcome.
 //
-// The record's src_ip is the client IP the proxy/context package resolved
+// The record's src_ip is the client IP the reqctx package resolved
 // under the trusted-proxy contract (see that package's documentation); this
 // package does not resolve addresses itself, so the access record, the audit
 // log and the Remote-Client-IP impersonation extra can never disagree. The raw
@@ -180,7 +180,7 @@ func (a *AccessLogger) LogDecision(req *http.Request, d Decision) {
 func untrustedForwardedFor(req *http.Request) string {
 	raw := reqctx.OriginalForwardedFor(req)
 	if raw == "" {
-		raw = req.Header.Get("X-Forwarded-For")
+		raw = req.Header.Get(reqctx.HeaderForwardedFor)
 	}
 	return logging.Sanitize(raw)
 }

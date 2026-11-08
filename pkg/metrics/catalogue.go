@@ -129,14 +129,9 @@ func allowedValuesFor(family, label string) []string {
 
 	switch label {
 	case "k8s_verb":
-		return []string{
-			string(VerbGet), string(VerbList), string(VerbWatch), string(VerbCreate),
-			string(VerbUpdate), string(VerbPatch), string(VerbDelete),
-			string(VerbDeleteCollection), string(VerbProxy), string(VerbConnect),
-			string(VerbOther),
-		}
+		return strs(verbs)
 	case "scope":
-		return []string{string(ScopeCluster), string(ScopeNamespace), string(ScopeResource), string(ScopeNone)}
+		return strs(scopes)
 	case "code":
 		return allowedCodes()
 	case "termination":
@@ -148,19 +143,16 @@ func allowedValuesFor(family, label string) []string {
 	case "reason":
 		return append(strs(reasons), other)
 	case "review", "cache":
-		return []string{string(ReviewTokenReview), string(ReviewSAR), other}
+		return append(strs(reviews), other)
 	case "result":
-		return []string{string(CacheHit), string(CacheMiss), string(CacheBypass), other}
+		return append(strs(cacheResults), other)
 	case "operation":
-		return []string{string(AuditRun), string(AuditShutdown), other}
+		return append(strs(auditOperations), other)
 	case "outcome":
 		if family == nameAuthnAttempts {
-			return []string{string(AuthAccepted), string(AuthRejected), string(AuthError), other}
+			return append(strs(authOutcomes), other)
 		}
-		return []string{
-			string(ReviewAllow), string(ReviewDeny), string(ReviewTimeout),
-			string(ReviewCanceled), string(ReviewError), other,
-		}
+		return append(strs(reviewOutcomes), other)
 	}
 	return nil
 }

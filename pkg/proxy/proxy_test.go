@@ -4,6 +4,7 @@ package proxy
 import (
 	stdcontext "context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -186,10 +187,10 @@ func newTestProxy(t *testing.T) *fakeProxy {
 		logs:         logs,
 		Proxy: &Proxy{
 			metrics:                  recorder,
-			logger:                   requestLogger,
-			oidcLog:                  logging.ForComponent(root, logging.ComponentOIDC),
-			tokenReviewLog:           logging.ForComponent(root, logging.ComponentTokenReview),
-			upstreamLog:              logging.ForComponent(root, logging.ComponentUpstream),
+			requestLogger:            requestLogger,
+			oidcLogger:               logging.ForComponent(root, logging.ComponentOIDC),
+			tokenReviewLogger:        logging.ForComponent(root, logging.ComponentTokenReview),
+			upstreamLogger:           logging.ForComponent(root, logging.ComponentUpstream),
 			access:                   accesslog.NewAccessLogger(requestLogger),
 			oidcRequestAuthenticator: bearertoken.New(fakeToken),
 			tokenReviewer:            fakeReviewer,
@@ -246,4 +247,16 @@ func TestRoundTripLogsTokenReviewPassthrough(t *testing.T) {
 	}
 
 	p.ctrl.Finish()
+}
+
+// withDiscardLoggers gives a Proxy a test built by hand the loggers New would
+// have derived, discarding every record, so the never-nil contract on those
+// fields holds in tests too. Loggers the test already set are kept.
+func withDiscardLoggers(p *Proxy) *Proxy {
+	for _, l := range []**slog.Logger{&p.requestLogger, &p.oidcLogger, &p.tokenReviewLogger, &p.upstreamLogger} {
+		if *l == nil {
+			*l = slog.New(slog.DiscardHandler)
+		}
+	}
+	return p
 }

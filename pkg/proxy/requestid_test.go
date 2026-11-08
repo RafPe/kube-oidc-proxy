@@ -34,7 +34,7 @@ func mustCIDRs(t *testing.T, cidrs ...string) []*net.IPNet {
 }
 
 func TestWithRequestIDMintsAndSetsAuditIDHeader(t *testing.T) {
-	p := &Proxy{trustedProxies: nil}
+	p := withDiscardLoggers(&Proxy{trustedProxies: nil})
 	var seenHeader, seenCtx string
 	h := p.withRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seenHeader = r.Header.Get("Audit-ID")
@@ -55,7 +55,7 @@ func TestWithRequestIDMintsAndSetsAuditIDHeader(t *testing.T) {
 }
 
 func TestWithRequestIDDoesNotTrustClientHeaderFromUntrustedPeer(t *testing.T) {
-	p := &Proxy{trustedProxies: mustCIDRs(t, "10.0.0.0/8")}
+	p := withDiscardLoggers(&Proxy{trustedProxies: mustCIDRs(t, "10.0.0.0/8")})
 	var id, clientID string
 	h := p.withRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id = reqctx.RequestID(r)
@@ -75,7 +75,7 @@ func TestWithRequestIDDoesNotTrustClientHeaderFromUntrustedPeer(t *testing.T) {
 }
 
 func TestWithRequestIDAdoptsHeaderFromTrustedProxy(t *testing.T) {
-	p := &Proxy{trustedProxies: mustCIDRs(t, "10.0.0.0/8")}
+	p := withDiscardLoggers(&Proxy{trustedProxies: mustCIDRs(t, "10.0.0.0/8")})
 	var id string
 	h := p.withRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { id = reqctx.RequestID(r) }))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -88,7 +88,7 @@ func TestWithRequestIDAdoptsHeaderFromTrustedProxy(t *testing.T) {
 }
 
 func TestWithRequestIDBoundsAndSanitisesInbound(t *testing.T) {
-	p := &Proxy{trustedProxies: mustCIDRs(t, "10.0.0.0/8")}
+	p := withDiscardLoggers(&Proxy{trustedProxies: mustCIDRs(t, "10.0.0.0/8")})
 	var id string
 	h := p.withRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { id = reqctx.RequestID(r) }))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -104,7 +104,7 @@ func TestWithRequestIDBoundsAndSanitisesInbound(t *testing.T) {
 }
 
 func TestBothAuditChainsAdoptTheSameID(t *testing.T) {
-	p := &Proxy{}
+	p := withDiscardLoggers(&Proxy{})
 	var fromAudit string
 	inner := genericapifilters.WithAuditInit(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if id, ok := audit.AuditIDFrom(r.Context()); ok {
@@ -130,7 +130,7 @@ func TestBothAuditChainsAdoptTheSameID(t *testing.T) {
 // to the events whose registry entry requires it.
 func TestWithRequestIDInstallsTheRequestScopedLogger(t *testing.T) {
 	root, records := logtest.New(t, 2)
-	p := &Proxy{logger: logging.ForComponent(root, logging.ComponentRequest)}
+	p := withDiscardLoggers(&Proxy{requestLogger: logging.ForComponent(root, logging.ComponentRequest)})
 
 	var minted string
 	h := p.withRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -134,18 +134,16 @@ func OrDiscard(l *slog.Logger) *slog.Logger {
 // registry entry declares. Passing an unregistered event is a programming
 // error and panics: the event set is closed and checked at build time.
 func Emit(ctx context.Context, l *slog.Logger, e EventType, attrs ...slog.Attr) {
-	spec, ok := e.Spec()
-	if !ok {
-		panic("logging: unregistered event " + string(e))
-	}
-	EmitLevel(ctx, l, e, spec.Level, attrs...)
+	EmitLevel(ctx, l, e, e.mustSpec().Level, attrs...)
 }
 
 // EmitLevel is Emit with an explicit level, for the few events whose severity
 // depends on the outcome (authz.sar.failed drops to DEBUG when the requester
 // itself went away).
+//
+// Like Emit it panics on an unregistered event.
 func EmitLevel(ctx context.Context, l *slog.Logger, e EventType, level slog.Level, attrs ...slog.Attr) {
-	spec, _ := e.Spec()
+	spec := e.mustSpec()
 	attrs = withContextRequestID(ctx, spec, attrs)
 	checkRequired(e, spec, attrs) // no-op unless built with -tags logcheck
 	if !l.Enabled(ctx, level) {

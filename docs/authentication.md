@@ -104,7 +104,10 @@ request is authorized twice, and both checks deny by default.
    value fails the whole request with `403` and
    `reason=impersonation_denied`; nothing is forwarded. These are the
    decisions the [SubjectAccessReview cache](./caching.md#subjectaccessreview-decision-cache)
-   remembers.
+   remembers. A request whose headers are malformed is refused before any
+   review is sent, with `reason=malformed_impersonation`: an `Impersonate-`
+   header of a kind the proxy does not know gets `400`, and groups, a uid or
+   extras without an `Impersonate-User` get `500`.
 2. **The API server authorizes the target.** The request is forwarded
    impersonating the target identity, so RBAC applies to the target, not to
    the caller. A target with no bindings can do nothing.

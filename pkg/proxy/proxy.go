@@ -74,20 +74,22 @@ type Proxy struct {
 
 	config *Config
 
-	// logger is the request-component logger every request-path record is
-	// emitted through, and the logger the request filter puts on the request
-	// context. Never nil: New requires a root logger.
-	logger *slog.Logger
-
-	// oidcLog, tokenReviewLog and upstreamLog are the component loggers for the
-	// records registered to those components. The request-scoped logger on the
-	// context carries component=request, so it must not be used for them: a
-	// record's component is part of its contract, not of where it happens to be
-	// emitted from. New derives all three from the root logger; read them
-	// through componentLogger, which tolerates a partially wired Proxy.
-	oidcLog        *slog.Logger
-	tokenReviewLog *slog.Logger
-	upstreamLog    *slog.Logger
+	// requestLogger is the request-component logger every request-path record
+	// is emitted through, and the logger the request filter puts on the
+	// request context.
+	//
+	// oidcLogger, tokenReviewLogger and upstreamLogger are the component
+	// loggers for the records registered to those components. The
+	// request-scoped logger on the context carries component=request, so it
+	// must not be used for them: a record's component is part of its contract,
+	// not of where it happens to be emitted from.
+	//
+	// None of the four is ever nil: New derives all of them from the required
+	// root logger, and the tests that build a Proxy by hand set them too.
+	requestLogger     *slog.Logger
+	oidcLogger        *slog.Logger
+	tokenReviewLogger *slog.Logger
+	upstreamLogger    *slog.Logger
 
 	// trustedProxies is the parsed form of config.TrustedProxies, resolved once
 	// at construction. The request-id and forward-header filters are the only
@@ -184,7 +186,7 @@ func New(deps Dependencies) (*Proxy, error) {
 	// mutating the caller's Config (or the map it shares) after New cannot alter
 	// proxy behavior.
 	cfg := *deps.Config
-	cfg.ExtraUserHeaders = cloneHeaderMap(deps.Config.ExtraUserHeaders)
+	cfg.ExtraUserHeaders = cloneExtra(deps.Config.ExtraUserHeaders)
 	cfg.TrustedProxies = append([]string(nil), deps.Config.TrustedProxies...)
 	cfg.AllowedReservedGroups = append([]string(nil), deps.Config.AllowedReservedGroups...)
 
@@ -217,10 +219,10 @@ func New(deps Dependencies) (*Proxy, error) {
 	return &Proxy{
 		metrics:                  deps.Metrics,
 		restConfig:               deps.RestConfig,
-		logger:                   requestLogger,
-		oidcLog:                  logging.ForComponent(deps.Logger, logging.ComponentOIDC),
-		tokenReviewLog:           logging.ForComponent(deps.Logger, logging.ComponentTokenReview),
-		upstreamLog:              logging.ForComponent(deps.Logger, logging.ComponentUpstream),
+		requestLogger:            requestLogger,
+		oidcLogger:               logging.ForComponent(deps.Logger, logging.ComponentOIDC),
+		tokenReviewLogger:        logging.ForComponent(deps.Logger, logging.ComponentTokenReview),
+		upstreamLogger:           logging.ForComponent(deps.Logger, logging.ComponentUpstream),
 		hooks:                    hooks.New(logging.ForComponent(deps.Logger, logging.ComponentShutdown)),
 		tokenReviewer:            deps.TokenReviewer,
 		subjectAccessReviewer:    deps.SubjectAccessReviewer,
@@ -240,14 +242,14 @@ func New(deps Dependencies) (*Proxy, error) {
 // cancelled. It returns a channel that is closed once serving has fully stopped
 // and a second channel that is closed once the listener has stopped accepting.
 func (p *Proxy) Run(ctx context.Context) (<-chan struct{}, <-chan struct{}, error) {
-	// standard round tripper for proxy to API Server
 	clientRT, err := p.roundTripperForRestConfig(p.restConfig)
 	if err != nil {
 		return nil, nil, err
 	}
 	p.clientTransport = clientRT
 
-	// No auth round tripper for no impersonation
+	// A request forwarded without impersonation carries no credentials of the
+	// proxy's own: it goes out on a transport built without them.
 	if p.config.DisableImpersonation || p.config.TokenReview {
 		noAuthClientRT, err := p.roundTripperForRestConfig(&rest.Config{
 			APIPath: p.restConfig.APIPath,
@@ -265,7 +267,6 @@ func (p *Proxy) Run(ctx context.Context) (<-chan struct{}, <-chan struct{}, erro
 		p.noAuthClientTransport = noAuthClientRT
 	}
 
-	// get API server url
 	url, err := url.Parse(p.restConfig.Host)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to parse url: %w", err)
@@ -273,7 +274,6 @@ func (p *Proxy) Run(ctx context.Context) (<-chan struct{}, <-chan struct{}, erro
 
 	p.handleError = p.newErrorHandler()
 
-	// Set up proxy handler using proxy
 	proxyHandler := httputil.NewSingleHostReverseProxy(url)
 	proxyHandler.Transport = p
 	proxyHandler.ErrorHandler = p.handleError
@@ -281,7 +281,7 @@ func (p *Proxy) Run(ctx context.Context) (<-chan struct{}, <-chan struct{}, erro
 
 	go p.flushWarnLimiter(ctx) //nolint:gosec // G118: the final flush runs after ctx is cancelled and must not be scoped to it.
 
-	waitCh, listenerStoppedCh, err := p.serve(proxyHandler, ctx)
+	waitCh, listenerStoppedCh, err := p.serve(ctx, proxyHandler)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -299,15 +299,15 @@ func (p *Proxy) flushWarnLimiter(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			p.warnLimiter.Flush(context.Background(), logging.OrDiscard(p.logger))
+			p.warnLimiter.Flush(context.Background(), p.requestLogger)
 		case <-ctx.Done():
-			p.warnLimiter.Flush(context.Background(), logging.OrDiscard(p.logger))
+			p.warnLimiter.Flush(context.Background(), p.requestLogger)
 			return
 		}
 	}
 }
 
-func (p *Proxy) serve(handler http.Handler, ctx context.Context) (<-chan struct{}, <-chan struct{}, error) {
+func (p *Proxy) serve(ctx context.Context, handler http.Handler) (<-chan struct{}, <-chan struct{}, error) {
 	handler = p.withHandlers(handler)
 
 	if err := p.auditor.Run(ctx); err != nil {
@@ -344,7 +344,6 @@ func (p *Proxy) RoundTrip(req *http.Request) (*http.Response, error) {
 		return p.noAuthClientTransport.RoundTrip(req)
 	}
 
-	// Get the impersonation headers from the context.
 	impersonationConf := reqctx.ImpersonationConfig(req)
 	if impersonationConf == nil {
 		return nil, errNoImpersonationConfig
@@ -361,16 +360,15 @@ func (p *Proxy) RoundTrip(req *http.Request) (*http.Response, error) {
 		Outbound:   impersonationConf.ImpersonatedUser,
 	})
 
-	// Push request through round trippers to the API server.
 	return rt.RoundTrip(req)
 }
 
-func (p *Proxy) reviewToken(rw http.ResponseWriter, req *http.Request) bool {
+func (p *Proxy) reviewToken(req *http.Request) bool {
 	ctx := req.Context()
 
 	bearer, found := utiltoken.ParseFromRequest(req)
 	if !found {
-		logging.Emit(ctx, logging.OrDiscard(p.tokenReviewLog), logging.EventAuthnTokenMissing)
+		logging.Emit(ctx, p.tokenReviewLogger, logging.EventAuthnTokenMissing)
 		p.metrics.AuthenticationAttempt(metrics.AuthMethodTokenReview, metrics.AuthRejected)
 		return false
 	}
@@ -379,7 +377,7 @@ func (p *Proxy) reviewToken(rw http.ResponseWriter, req *http.Request) bool {
 	if err != nil {
 		// The reviewer could not answer. That is a dependency failure, not a
 		// verdict on the token: the caller fails closed.
-		logging.Emit(ctx, logging.OrDiscard(p.tokenReviewLog), logging.EventAuthnTokenReviewFailed,
+		logging.Emit(ctx, p.tokenReviewLogger, logging.EventAuthnTokenReviewFailed,
 			slog.String("reason", string(metrics.ReasonAuthenticationDependencyError)), logging.ErrAttr(err))
 		p.metrics.AuthenticationAttempt(metrics.AuthMethodTokenReview, metrics.AuthError)
 		return false

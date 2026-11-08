@@ -63,7 +63,7 @@ func TestOIDCSuccessEmitsAuthnOIDCSucceeded(t *testing.T) {
 	}))
 
 	req := reservedIdentityRequest(t, nil)
-	req = req.WithContext(logging.NewContext(req.Context(), p.logger))
+	req = req.WithContext(logging.NewContext(req.Context(), p.requestLogger))
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
 	if !served {
@@ -92,9 +92,9 @@ func TestTokenReviewDependencyFailureIsError(t *testing.T) {
 		nil, false, errors.New("apiserver unreachable"))
 
 	req := reservedIdentityRequest(t, nil)
-	req = req.WithContext(logging.NewContext(req.Context(), p.logger))
+	req = req.WithContext(logging.NewContext(req.Context(), p.requestLogger))
 
-	if ok := p.reviewToken(httptest.NewRecorder(), req); ok {
+	if ok := p.reviewToken(req); ok {
 		t.Fatal("a reviewer error passed the request through; the path must fail closed")
 	}
 
@@ -149,7 +149,7 @@ func TestOIDCFailureEmitsAuthnOIDCFailed(t *testing.T) {
 	req := reservedIdentityRequest(t, nil)
 	req.RemoteAddr = "8.8.8.8:1234"
 	req = reqctx.WithRequestID(req, "rid-1")
-	req = req.WithContext(logging.NewContext(logging.WithRequestID(req.Context(), "rid-1"), p.logger))
+	req = req.WithContext(logging.NewContext(logging.WithRequestID(req.Context(), "rid-1"), p.requestLogger))
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
 	rec := p.logs.Only(t, logging.EventAuthnOIDCFailed)
@@ -170,8 +170,8 @@ func TestOIDCFailureEmitsAuthnOIDCFailed(t *testing.T) {
 func TestMissingBearerOnTokenReviewIsDebug(t *testing.T) {
 	p := newTestProxy(t)
 	req := httptest.NewRequest(http.MethodGet, "/", nil) // no Authorization
-	req = req.WithContext(logging.NewContext(logging.WithRequestID(req.Context(), "rid-2"), p.logger))
-	p.reviewToken(httptest.NewRecorder(), req)
+	req = req.WithContext(logging.NewContext(logging.WithRequestID(req.Context(), "rid-2"), p.requestLogger))
+	p.reviewToken(req)
 	rec := p.logs.Only(t, logging.EventAuthnTokenMissing)
 	if rec.String("level") != "DEBUG" {
 		t.Fatalf("level = %s", rec.String("level"))
@@ -190,8 +190,8 @@ func TestRejectedTokenReviewIsNotAFailure(t *testing.T) {
 	p := newTestProxy(t)
 	p.fakeReviewer.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(nil, false, nil)
 	req := reservedIdentityRequest(t, nil)
-	req = req.WithContext(logging.NewContext(req.Context(), p.logger))
-	if p.reviewToken(httptest.NewRecorder(), req) {
+	req = req.WithContext(logging.NewContext(req.Context(), p.requestLogger))
+	if p.reviewToken(req) {
 		t.Fatal("a rejected token passed review")
 	}
 	if got := p.logs.ByEvent(logging.EventAuthnTokenReviewFailed); len(got) != 0 {
@@ -237,7 +237,7 @@ func TestErrorHandlerClassifiesUpstreamTransportErrors(t *testing.T) {
 			rw := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			req = withTestRequestID(req)
-			req = req.WithContext(logging.NewContext(req.Context(), p.logger))
+			req = req.WithContext(logging.NewContext(req.Context(), p.requestLogger))
 			p.handleError(rw, req, c.err)
 			if rw.Code != http.StatusBadGateway {
 				t.Fatalf("status = %d, want 502", rw.Code)

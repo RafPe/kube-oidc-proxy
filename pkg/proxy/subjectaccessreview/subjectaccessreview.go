@@ -32,6 +32,13 @@ var (
 	// impersonate. The message is client-facing and stable.
 	ErrNoImpersonationUser = errors.New("no Impersonation-User header found for request")
 
+	// ErrUnknownImpersonationHeader is the sentinel for a request carrying an
+	// Impersonate- prefixed header of a kind this proxy does not know. It is
+	// refused rather than forwarded or ignored: an impersonation attempt the
+	// proxy cannot authorize must not travel on. The header name is wrapped
+	// alongside it for the client-facing message.
+	ErrUnknownImpersonationHeader = errors.New("unknown impersonation header")
+
 	// ErrCreateSubjectAccessReview is the sentinel wrapping a failure to submit a
 	// SubjectAccessReview to the API server. Callers can match it with errors.Is;
 	// the underlying error (including context.Canceled/DeadlineExceeded) is wrapped
@@ -55,14 +62,17 @@ var (
 	ErrTooManyImpersonationHeaderValues = errors.New("too many impersonation header values")
 )
 
-// The closed set of impersonation target kinds, as the access record's
-// target_kind reports them. They are also the vocabulary ImpersonationAuthError
-// speaks, so the proxy never has to recover a kind from message text.
+// TargetKind is one of the closed set of impersonation target kinds, as the
+// access record's target_kind reports them. It is also the vocabulary
+// ImpersonationAuthError speaks, so the proxy never has to recover a kind from
+// message text.
+type TargetKind string
+
 const (
-	TargetUser  = "user"
-	TargetGroup = "group"
-	TargetUID   = "uid"
-	TargetExtra = "extra"
+	TargetUser  TargetKind = "user"
+	TargetGroup TargetKind = "group"
+	TargetUID   TargetKind = "uid"
+	TargetExtra TargetKind = "extra"
 )
 
 // ImpersonationAuthError reports that a requester is not authorized to
@@ -75,7 +85,7 @@ type ImpersonationAuthError struct {
 	Requester string
 
 	// Kind is one of TargetUser, TargetGroup, TargetUID or TargetExtra.
-	Kind string
+	Kind TargetKind
 
 	// Target is the refused name: the user, group or uid, or for TargetExtra
 	// the refused value of the extra.
@@ -195,24 +205,22 @@ type Config struct {
 // header values. MaxHeaderValues must be greater than zero: every SAR costs a
 // round trip, so an unbounded value count must not be constructible.
 //
-// allowCacheTTL and denyCacheTTL bound how long a definitive allowed or denied
-// decision is served from an in-memory cache before being re-checked against
-// the API server; errors are never cached. Caching trades revocation lag for
-// load: an RBAC revoke can take up to allowCacheTTL to be enforced for a
-// cached allow, and a newly granted permission up to denyCacheTTL to be
+// cfg.AllowCacheTTL and cfg.DenyCacheTTL bound how long a definitive allowed
+// or denied decision is served from an in-memory cache before being re-checked
+// against the API server; errors are never cached. Caching trades revocation
+// lag for load: an RBAC revoke can take up to AllowCacheTTL to be enforced for
+// a cached allow, and a newly granted permission up to DenyCacheTTL to be
 // honoured. Set both to 0 to disable the cache and re-check on every request.
 func New(reviewer clientazv1.SubjectAccessReviewInterface, cfg Config, logger *slog.Logger) (*SubjectAccessReview, error) {
-	sarTimeout, allowCacheTTL, denyCacheTTL, maxHeaderValues := cfg.Timeout, cfg.AllowCacheTTL, cfg.DenyCacheTTL, cfg.MaxHeaderValues
-	if maxHeaderValues <= 0 {
-		return nil, fmt.Errorf("maxHeaderValues must be greater than 0, got %d", maxHeaderValues)
+	if cfg.MaxHeaderValues <= 0 {
+		return nil, fmt.Errorf("maxHeaderValues must be greater than 0, got %d", cfg.MaxHeaderValues)
 	}
-	logger = logging.OrDiscard(logger)
 	return &SubjectAccessReview{
-		logger:          logger,
+		logger:          logging.OrDiscard(logger),
 		reviewer:        reviewer,
-		sarTimeout:      sarTimeout,
-		maxHeaderValues: maxHeaderValues,
-		cache:           newDecisionCache(allowCacheTTL, denyCacheTTL, decisionCacheSize, realClock{}),
+		sarTimeout:      cfg.Timeout,
+		maxHeaderValues: cfg.MaxHeaderValues,
+		cache:           newDecisionCache(cfg.AllowCacheTTL, cfg.DenyCacheTTL, decisionCacheSize, realClock{}),
 	}, nil
 }
 
@@ -231,16 +239,47 @@ func (realClock) Now() time.Time { return time.Now() }
 
 var _ utilcache.Clock = realClock{}
 
+// The resource attributes a SubjectAccessReview asks about for impersonation.
+// Users and groups are core-group resources; uids and user extras live in
+// authentication.k8s.io, so a review without that group checks a resource no
+// RBAC rule grants.
+const (
+	impersonateVerb   = "impersonate"
+	authenticationAPI = "authentication.k8s.io"
+)
+
 // impersonationTarget is one identity attribute a request asks to impersonate:
-// the SubjectAccessReview resource that authorizes it, the kind the record
-// reports it under, and the name being asked for.
+// the resource attributes of the SubjectAccessReview that authorizes it, the
+// kind the record reports it under, and the name being asked for.
 type impersonationTarget struct {
-	kind     string
-	resource string
-	name     string
+	kind        TargetKind
+	group       string
+	resource    string
+	subresource string
+	name        string
 
 	// extraKey is the extra's key when kind is TargetExtra.
 	extraKey string
+}
+
+func userImpersonation(name string) impersonationTarget {
+	return impersonationTarget{kind: TargetUser, resource: "users", name: name}
+}
+
+func groupImpersonation(name string) impersonationTarget {
+	return impersonationTarget{kind: TargetGroup, resource: "groups", name: name}
+}
+
+func uidImpersonation(uid string) impersonationTarget {
+	return impersonationTarget{kind: TargetUID, group: authenticationAPI, resource: "uids", name: uid}
+}
+
+// extraImpersonation asks about one value of a user extra. Extra keys are
+// lower-case by definition (user.Info documents it), so the review uses that
+// form.
+func extraImpersonation(key, value string) impersonationTarget {
+	return impersonationTarget{kind: TargetExtra, group: authenticationAPI, resource: "userextras",
+		subresource: key, name: value, extraKey: key}
 }
 
 // denial is the typed error a refused target is reported through.
@@ -280,10 +319,17 @@ func (s *SubjectAccessReview) CheckAuthorizedForImpersonation(req *http.Request,
 	if !HasImpersonationHeaders(req.Header) {
 		return nil, nil
 	}
-	// Groups, uids and extras refine a user; without one there is nothing to
-	// impersonate.
+	// The request's shape is settled before any review is sent, so a malformed
+	// request costs nothing and is refused the same way whatever order the
+	// header map iterates in. Groups, uids and extras refine a user; without
+	// one there is nothing to impersonate.
 	if req.Header.Get(transport.ImpersonateUserHeader) == "" {
 		return nil, ErrNoImpersonationUser
+	}
+	for key := range req.Header {
+		if IsImpersonationHeader(key) && !isKnownImpersonationHeader(key) {
+			return nil, fmt.Errorf("%w: %q", ErrUnknownImpersonationHeader, key)
+		}
 	}
 
 	// Derive one shared budget for the whole SAR sequence from the inbound
@@ -305,14 +351,14 @@ func (s *SubjectAccessReview) CheckAuthorizedForImpersonation(req *http.Request,
 
 		switch {
 		case strings.EqualFold(key, transport.ImpersonateUserHeader):
-			target := impersonationTarget{kind: TargetUser, resource: "users", name: values[0]}
+			target := userImpersonation(values[0])
 			if err := s.authorize(ctx, target, requester); err != nil {
 				return nil, err
 			}
 			targetUser.Name = target.name
 
 		case strings.EqualFold(key, transport.ImpersonateUIDHeader):
-			target := impersonationTarget{kind: TargetUID, resource: "uids", name: values[0]}
+			target := uidImpersonation(values[0])
 			if err := s.authorize(ctx, target, requester); err != nil {
 				return nil, err
 			}
@@ -320,32 +366,31 @@ func (s *SubjectAccessReview) CheckAuthorizedForImpersonation(req *http.Request,
 
 		case strings.EqualFold(key, transport.ImpersonateGroupHeader):
 			for _, group := range values {
-				target := impersonationTarget{kind: TargetGroup, resource: "groups", name: group}
+				target := groupImpersonation(group)
 				if err := s.authorize(ctx, target, requester); err != nil {
 					return nil, err
 				}
 				targetUser.Groups = append(targetUser.Groups, group)
 			}
 
-		case hasPrefixFold(key, transport.ImpersonateUserExtraHeaderPrefix):
-			// Extra keys are lower-case by definition (user.Info documents it),
-			// so the RBAC check and the forwarded identity both use that form.
+		default:
+			// An Impersonate-Extra- header: the shape check above has refused
+			// every other kind. Extra keys are lower-case by definition
+			// (user.Info documents it), so the RBAC check and the forwarded
+			// identity both use that form.
 			extraKey := strings.ToLower(key[len(transport.ImpersonateUserExtraHeaderPrefix):])
 			for _, value := range values {
-				target := impersonationTarget{kind: TargetExtra, resource: "userextras/" + extraKey, name: value, extraKey: extraKey}
+				target := extraImpersonation(extraKey, value)
 				if err := s.authorize(ctx, target, requester); err != nil {
 					return nil, err
 				}
 				targetUser.Extra[extraKey] = append(targetUser.Extra[extraKey], value)
 			}
-
-		default:
-			return nil, fmt.Errorf("unknown impersonation header '%s'", key)
 		}
 	}
 
 	logging.Emit(ctx, s.log(), logging.EventAuthzImpersonationResolved,
-		slog.String("target_kind", TargetUser),
+		slog.String("target_kind", string(TargetUser)),
 		slog.String("target_name", logging.Bound(targetUser.Name, logging.MaxIdentity)))
 
 	return targetUser, nil

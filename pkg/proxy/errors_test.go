@@ -35,7 +35,7 @@ func newFakeRW() *fakeRW {
 }
 
 func tryError(t *testing.T, expCode int, err error) (*fakeRW, *logtest.Capture) {
-	p := new(Proxy)
+	p := withDiscardLoggers(new(Proxy))
 	access, records := newAccessLogger(t)
 	p.access = access
 	p.handleError = p.newErrorHandler()
@@ -118,10 +118,10 @@ func TestErrorHandlerInternalFailureEmitsHandlerFailed(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			root, records := logtest.New(t, 0)
 			requestLogger := logging.ForComponent(root, logging.ComponentRequest)
-			p := &Proxy{
-				logger: requestLogger,
-				access: accesslog.NewAccessLogger(requestLogger),
-			}
+			p := withDiscardLoggers(&Proxy{
+				requestLogger: requestLogger,
+				access:        accesslog.NewAccessLogger(requestLogger),
+			})
 			p.handleError = p.newErrorHandler()
 
 			p.handleError(newFakeRW(), newFakeR(), test.err)
@@ -187,8 +187,10 @@ func TestErrorClassifiesEveryReason(t *testing.T) {
 		"subjectaccessreview unavailable": {fmt.Errorf("%w: %w", subjectaccessreview.ErrCreateSubjectAccessReview,
 			&net.OpError{Op: "dial", Err: errors.New("connection refused")}),
 			http.StatusInternalServerError, metrics.ReasonInternalError},
-		"no impersonation user": {subjectaccessreview.ErrNoImpersonationUser, http.StatusInternalServerError, metrics.ReasonInternalError},
-		"unknown":               {errors.New("boom"), http.StatusInternalServerError, metrics.ReasonInternalError},
+		"no impersonation user": {subjectaccessreview.ErrNoImpersonationUser, http.StatusInternalServerError, metrics.ReasonMalformedImpersonation},
+		"unknown impersonation header": {fmt.Errorf("%w: %q", subjectaccessreview.ErrUnknownImpersonationHeader, "Impersonate-Foo"),
+			http.StatusBadRequest, metrics.ReasonMalformedImpersonation},
+		"unknown": {errors.New("boom"), http.StatusInternalServerError, metrics.ReasonInternalError},
 	}
 
 	for name, test := range tests {
@@ -219,7 +221,7 @@ func TestErrorUpstreamTransportFailureIsNotAnAccessDecision(t *testing.T) {
 // no response: the connection is already going away, but the request still
 // produced a decision that has to be recorded.
 func TestErrorCanceledIsRecordedWithoutAResponse(t *testing.T) {
-	p := new(Proxy)
+	p := withDiscardLoggers(new(Proxy))
 	access, records := newAccessLogger(t)
 	p.access = access
 	p.handleError = p.newErrorHandler()

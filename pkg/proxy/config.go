@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/util/sets"
+	authuser "k8s.io/apiserver/pkg/authentication/user"
 )
 
 type Config struct {
@@ -51,6 +52,8 @@ func parseAllowedReservedGroups(groups []string) (sets.Set[string], error) {
 		case !strings.HasPrefix(group, ReservedIdentityPrefix):
 			return nil, fmt.Errorf("allowed reserved group %q does not carry the reserved %q prefix, so listing it has no effect",
 				group, ReservedIdentityPrefix)
+		case group == authuser.AllAuthenticated:
+			return nil, fmt.Errorf("allowed reserved group %q is always permitted, so listing it has no effect", group)
 		}
 		allowed.Insert(group)
 	}
@@ -79,17 +82,4 @@ func parseTrustedProxies(cidrs []string) ([]*net.IPNet, error) {
 		nets = append(nets, network)
 	}
 	return nets, nil
-}
-
-// cloneHeaderMap returns a deep copy of a header map so the Proxy never shares
-// mutable state with its caller. A nil input yields nil.
-func cloneHeaderMap(in map[string][]string) map[string][]string {
-	if in == nil {
-		return nil
-	}
-	out := make(map[string][]string, len(in))
-	for k, vs := range in {
-		out[k] = append([]string(nil), vs...)
-	}
-	return out
 }

@@ -1,6 +1,6 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
 
-// Package context stores request-scoped values on the http.Request context and
+// Package reqctx stores request-scoped values on the http.Request context and
 // owns the proxy's client-IP resolution.
 //
 // # Client-IP and trusted-proxy semantics (see issue #56)
@@ -75,10 +75,11 @@ const (
 	authMethodKey
 )
 
-// The inbound forwarding headers the trusted-proxy contract owns.
+// The inbound forwarding headers the trusted-proxy contract owns. They are
+// exported so every reader of the headers spells them the same way.
 const (
-	headerForwardedFor = "X-Forwarded-For"
-	headerRealIP       = "X-Real-Ip"
+	HeaderForwardedFor = "X-Forwarded-For"
+	HeaderRealIP       = "X-Real-Ip"
 )
 
 // WithResolvedClient returns a copy of the request that carries the client IP
@@ -97,7 +98,7 @@ const (
 // The returned request owns a copy of the header map, so the caller's request
 // is left exactly as it arrived.
 func WithResolvedClient(req *http.Request, trusted []*net.IPNet) *http.Request {
-	xff := req.Header.Get(headerForwardedFor)
+	xff := req.Header.Get(HeaderForwardedFor)
 	clientIP := ResolveClientIP(req.RemoteAddr, xff, trusted)
 
 	ctx := request.WithValue(req.Context(), clientIPKey, clientIP)
@@ -107,16 +108,16 @@ func WithResolvedClient(req *http.Request, trusted []*net.IPNet) *http.Request {
 
 	out := req.WithContext(ctx)
 	out.Header = req.Header.Clone()
-	out.Header.Del(headerRealIP)
+	out.Header.Del(HeaderRealIP)
 
 	switch {
 	case xff == "":
 	case clientIP == PeerHost(req.RemoteAddr):
 		// The resolver fell back to the direct peer: nothing in the
 		// forwarded chain is trustworthy.
-		out.Header.Del(headerForwardedFor)
+		out.Header.Del(HeaderForwardedFor)
 	default:
-		out.Header.Set(headerForwardedFor, clientIP)
+		out.Header.Set(HeaderForwardedFor, clientIP)
 	}
 
 	return out

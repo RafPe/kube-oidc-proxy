@@ -35,12 +35,15 @@ func (c *ClientOptions) AddFlags(fs *pflag.FlagSet) *ClientOptions {
 		"Path to the kubeconfig file to use for requests to the API server.")
 
 	// Impersonation is the proxy's own job: an --as flag here would make the
-	// proxy impersonate that identity on every call of its own, so the three
-	// impersonation overrides are not offered.
+	// proxy impersonate that identity on every call of its own, so the
+	// impersonation overrides are not offered. Basic auth was never offered
+	// and is not added here either.
 	names := clientcmd.RecommendedConfigOverrideFlags("")
 	names.AuthOverrideFlags.Impersonate.LongName = ""
 	names.AuthOverrideFlags.ImpersonateUID.LongName = ""
 	names.AuthOverrideFlags.ImpersonateGroups.LongName = ""
+	names.AuthOverrideFlags.Username.LongName = ""
+	names.AuthOverrideFlags.Password.LongName = ""
 	clientcmd.BindOverrideFlags(&c.overrides, fs, names)
 
 	fs.Float32Var(&c.KubeClientQPS, "kube-client-qps", c.KubeClientQPS, "Sets the QPS on the app "+

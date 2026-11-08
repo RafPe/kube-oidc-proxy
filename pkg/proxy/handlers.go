@@ -18,12 +18,6 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 )
 
-// The inbound forwarding headers the trusted-proxy contract owns.
-const (
-	headerForwardedFor = "X-Forwarded-For"
-	headerRealIP       = "X-Real-Ip"
-)
-
 // warnReasonHeadersDropped is the limiter bucket the dropped-header warning
 // draws from. It is a bucket key rather than a record field, so it is not part
 // of the closed reason value set.
@@ -71,13 +65,13 @@ func (p *Proxy) withHandlers(handler http.Handler) http.Handler {
 // sees sanitized headers.
 func (p *Proxy) withSanitizedForwardHeaders(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-		inboundXFF := req.Header.Get(headerForwardedFor)
-		inboundRealIP := req.Header.Get(headerRealIP)
+		inboundXFF := req.Header.Get(reqctx.HeaderForwardedFor)
+		inboundRealIP := req.Header.Get(reqctx.HeaderRealIP)
 
 		req = reqctx.WithResolvedClient(req, p.trustedProxies)
 
 		if inboundXFF != "" || inboundRealIP != "" {
-			req = p.logForwardHeaders(req, inboundXFF, inboundRealIP)
+			p.logForwardHeaders(req, inboundXFF, inboundRealIP)
 		}
 
 		handler.ServeHTTP(rw, req)
@@ -93,11 +87,11 @@ func (p *Proxy) withSanitizedForwardHeaders(handler http.Handler) http.Handler {
 // request that also had its X-Forwarded-For collapsed produces both records.
 // Only the drop is token-bucketed; it is the one an untrusted client can
 // produce on every request.
-func (p *Proxy) logForwardHeaders(req *http.Request, inboundXFF, inboundRealIP string) *http.Request {
+func (p *Proxy) logForwardHeaders(req *http.Request, inboundXFF, inboundRealIP string) {
 	srcIP := reqctx.ClientIP(req)
 	forwardedFor := slog.String("forwarded_for_untrusted", logging.Sanitize(inboundXFF))
 
-	if outboundXFF := req.Header.Get(headerForwardedFor); outboundXFF != "" && outboundXFF != inboundXFF {
+	if outboundXFF := req.Header.Get(reqctx.HeaderForwardedFor); outboundXFF != "" && outboundXFF != inboundXFF {
 		logging.Emit(req.Context(), logging.FromContext(req.Context()), logging.EventRequestHeadersRewritten,
 			slog.String("src_ip", srcIP), forwardedFor)
 	}
@@ -105,14 +99,14 @@ func (p *Proxy) logForwardHeaders(req *http.Request, inboundXFF, inboundRealIP s
 	// Sorted, and lower-cased as the wire format writes them, so the field is
 	// queryable by exact match rather than by however the client spelled it.
 	var dropped []string
-	if inboundXFF != "" && req.Header.Get(headerForwardedFor) == "" {
-		dropped = append(dropped, strings.ToLower(headerForwardedFor))
+	if inboundXFF != "" && req.Header.Get(reqctx.HeaderForwardedFor) == "" {
+		dropped = append(dropped, strings.ToLower(reqctx.HeaderForwardedFor))
 	}
 	if inboundRealIP != "" {
-		dropped = append(dropped, strings.ToLower(headerRealIP))
+		dropped = append(dropped, strings.ToLower(reqctx.HeaderRealIP))
 	}
 	if len(dropped) == 0 || !p.warnLimiter.Allow(warnReasonHeadersDropped) {
-		return req
+		return
 	}
 	slices.Sort(dropped)
 
@@ -123,8 +117,6 @@ func (p *Proxy) logForwardHeaders(req *http.Request, inboundXFF, inboundRealIP s
 		attrs = append(attrs, forwardedFor)
 	}
 	logging.Emit(req.Context(), logging.FromContext(req.Context()), logging.EventRequestHeadersDropped, attrs...)
-
-	return req
 }
 
 // withAuthenticateRequest adds the proxy authentication handler to a chain.
@@ -140,7 +132,6 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 		ctx, issuer := authn.WithIssuerHolder(req.Context())
 		req = req.WithContext(ctx)
 
-		// Auth request and handle unauthed
 		info, ok, err := p.oidcRequestAuthenticator.AuthenticateRequest(req)
 		if err != nil {
 			// An error here means a token was present and failed validation;
@@ -149,7 +140,7 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 			// is reported by reason, and a validation message is attacker
 			// influenced.
 			p.metrics.AuthenticationAttempt(metrics.AuthMethodOIDC, metrics.AuthRejected)
-			logging.Emit(req.Context(), logging.OrDiscard(p.oidcLog), logging.EventAuthnOIDCFailed,
+			logging.Emit(req.Context(), p.oidcLogger, logging.EventAuthnOIDCFailed,
 				slog.String("src_ip", reqctx.ClientIP(req)), slog.String("reason", string(metrics.ReasonUnauthorized)))
 
 			// Since we have failed OIDC auth, we will try a token review, if enabled.
@@ -159,7 +150,6 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 			return
 		}
 
-		// Failed authorization
 		if !ok {
 			p.metrics.AuthenticationAttempt(metrics.AuthMethodNone, metrics.AuthRejected)
 			p.handleError(rw, req, errUnauthorized)
@@ -172,7 +162,7 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 		// record and for every access record the request goes on to produce.
 		req = reqctx.WithIssuerName(req, issuer.Name())
 
-		logging.Emit(req.Context(), logging.OrDiscard(p.oidcLog), logging.EventAuthnOIDCSucceeded,
+		logging.Emit(req.Context(), p.oidcLogger, logging.EventAuthnOIDCSucceeded,
 			slog.String("issuer_name", logging.Bound(issuer.Name(), logging.MaxIdentity)))
 
 		// The token was accepted, so every record from here on -- including a
@@ -238,20 +228,19 @@ func checkReservedIdentity(info authuser.Info, allowedGroups sets.Set[string]) e
 // enabled.
 func (p *Proxy) withTokenReview(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-		// If token review is not enabled then error.
 		if !p.config.TokenReview {
 			p.handleError(rw, req, errUnauthorized)
 			return
 		}
 
-		// Attempt to passthrough request if valid token
-		if !p.reviewToken(rw, req) {
-			// Token review failed so error
+		if !p.reviewToken(req) {
 			p.handleError(rw, req, errUnauthorized)
 			return
 		}
 
-		// Set no impersonation headers and re-add removed headers.
+		// OIDC did not accept the token, so the bearer authenticator left the
+		// Authorization header in place; the request is forwarded with the
+		// client's own token and RoundTrip skips impersonation for it.
 		req = reqctx.WithAuthMethod(req, metrics.AuthMethodTokenReview)
 		req = reqctx.WithNoImpersonation(req)
 
