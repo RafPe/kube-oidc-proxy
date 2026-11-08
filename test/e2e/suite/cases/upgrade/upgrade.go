@@ -16,6 +16,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
@@ -28,6 +29,7 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/util/port"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
+	"github.com/rafpe/kube-oidc-proxy/test/kind"
 )
 
 // Both specs stream through the same default proxy deployment to the same echo
@@ -51,8 +53,21 @@ var _ = framework.CasesDescribe("Upgrade", Ordered, ContinueOnFailure, Label("sh
 				Containers: []corev1.Container{
 					{
 						Name:            "echoserver",
-						Image:           "gcr.io/google_containers/echoserver:1.10",
-						ImagePullPolicy: corev1.PullIfNotPresent,
+						Image:           kind.EchoServerImageName,
+						ImagePullPolicy: corev1.PullNever,
+						// Without a readiness probe the pod is Ready the moment
+						// the process starts, and the exec case raced it to the
+						// listening socket (curl exit 7 in runs 33990317402 and
+						// 35720045694). Ready now means listening.
+						ReadinessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{
+								HTTPGet: &corev1.HTTPGetAction{
+									Path: "/ready",
+									Port: intstr.FromInt32(8080),
+								},
+							},
+							PeriodSeconds: 1,
+						},
 					},
 				},
 			},

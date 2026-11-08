@@ -20,6 +20,7 @@ const (
 	IssuerImageName        = "oidc-issuer-e2e"
 	FakeAPIServerImageName = "fake-apiserver-e2e"
 	AuditWebhookImageName  = "audit-webhook-e2e"
+	EchoServerImageName    = "echoserver-e2e"
 )
 
 func (k *Kind) LoadAllImages() error {
@@ -36,6 +37,10 @@ func (k *Kind) LoadAllImages() error {
 	}
 
 	if err := k.LoadAuditWebhook(); err != nil {
+		return err
+	}
+
+	if err := k.LoadEchoServer(); err != nil {
 		return err
 	}
 
@@ -76,6 +81,14 @@ func (k *Kind) LoadAuditWebhook() error {
 	mainPath := filepath.Join(dockerfilePath, "cmd")
 
 	return k.loadImage(binPath, mainPath, AuditWebhookImageName, dockerfilePath)
+}
+
+func (k *Kind) LoadEchoServer() error {
+	binPath := filepath.Join(k.rootPath, "./test/tools/echoserver/bin/echoserver")
+	dockerfilePath := filepath.Join(k.rootPath, "./test/tools/echoserver")
+	mainPath := filepath.Join(dockerfilePath, "cmd")
+
+	return k.loadImage(binPath, mainPath, EchoServerImageName, dockerfilePath)
 }
 
 func (k *Kind) loadImage(binPath, mainPath, image, dockerfilePath string, extraBuildArgs ...string) error {
