@@ -37,15 +37,38 @@ func (h *Helper) WaitForDeploymentReady(namespace, name string, timeout time.Dur
 	})
 
 	if err != nil {
-		kErr := h.Kubectl(namespace).DescribeResource("deployment", name)
-		if kErr != nil {
-			err = fmt.Errorf("%s\n%s", err, kErr)
-		}
-
-		return err
+		return h.describeDeploymentFailure(namespace, name, err)
 	}
 
 	return nil
+}
+
+// describeDeploymentFailure wraps a deployment wait error with the state of
+// the Deployment, its Pods and the namespace events, written to the test
+// output. The Deployment alone rarely explains a timeout: a pod stuck in
+// ContainerCreating only shows up in the pod description and the events.
+func (h *Helper) describeDeploymentFailure(namespace, name string, err error) error {
+	kubectl := h.Kubectl(namespace)
+
+	if kErr := kubectl.DescribeResource("deployment", name); kErr != nil {
+		err = fmt.Errorf("%s\n%s", err, kErr)
+	}
+
+	selector := "app=" + name
+	if deploy, gErr := h.KubeClient.AppsV1().Deployments(namespace).Get(context.Background(), name, metav1.GetOptions{}); gErr == nil && deploy.Spec.Selector != nil {
+		if sel, sErr := metav1.LabelSelectorAsSelector(deploy.Spec.Selector); sErr == nil && !sel.Empty() {
+			selector = sel.String()
+		}
+	}
+	if kErr := kubectl.Run("describe", "pods", "-l", selector); kErr != nil {
+		err = fmt.Errorf("%s\n%s", err, kErr)
+	}
+
+	if kErr := kubectl.Run("get", "events", "--sort-by=.lastTimestamp"); kErr != nil {
+		err = fmt.Errorf("%s\n%s", err, kErr)
+	}
+
+	return err
 }
 
 func (h *Helper) WaitForPodReady(namespace, name string, timeout time.Duration) error {
