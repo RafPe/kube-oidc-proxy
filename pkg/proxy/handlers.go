@@ -57,8 +57,9 @@ func userFromContext(req *http.Request) authuser.Info {
 	return info
 }
 
+// withHandlers composes the request filter chain around the reverse proxy,
+// outermost last.
 func (p *Proxy) withHandlers(handler http.Handler) http.Handler {
-	// Set up proxy handlers
 	handler = p.auditor.WithRequest(handler)
 	handler = p.withImpersonateRequest(handler)
 	handler = p.withAuthenticateRequest(handler)
@@ -68,9 +69,6 @@ func (p *Proxy) withHandlers(handler http.Handler) http.Handler {
 	// run outside the audit chain and need the request's verb and resource.
 	handler = p.auditor.WithRequestInfo(handler)
 	handler = p.withRequestID(handler)
-
-	// Add the auditor backend as a shutdown hook
-	p.hooks.AddPreShutdownHook("AuditBackend", p.auditor.Shutdown)
 
 	return handler
 }
@@ -154,7 +152,7 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 		req = req.WithContext(ctx)
 
 		// Auth request and handle unauthed
-		info, ok, err := p.oidcRequestAuther.AuthenticateRequest(req)
+		info, ok, err := p.oidcRequestAuthenticator.AuthenticateRequest(req)
 		if err != nil {
 			// An error here means a token was present and failed validation;
 			// an absent or unparseable token yields ok == false with a nil
@@ -472,13 +470,6 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			http.Error(rw, "Username claim not available in OIDC Issuer response", http.StatusForbidden)
 			return
 
-			// No impersonation configuration found in context
-		case errors.Is(err, errNoImpersonationConfig):
-			p.logHandlerFailed(r, err)
-			p.logDenied(r, metrics.ReasonInternalError, err)
-			http.Error(rw, "", http.StatusInternalServerError)
-			return
-
 			// No impersonation user found
 		case errors.Is(err, subjectaccessreview.ErrNoImpersonationUser):
 			p.logDenied(r, metrics.ReasonInternalError, err)
@@ -511,18 +502,6 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			p.logDenied(r, metrics.ReasonClientCanceled, err)
 			return
 
-			// A SubjectAccessReview the proxy could not submit. It wraps a
-			// client-go transport error that satisfies net.Error, so it has to
-			// be matched ahead of the upstream case below: the call that failed
-			// is the proxy's own authorization dependency, not the reverse
-			// proxy's hop to the API server, and the request is refused rather
-			// than proxied.
-		case errors.Is(err, subjectaccessreview.ErrCreateSubjectAccessReview):
-			p.logHandlerFailed(r, err)
-			p.logDenied(r, metrics.ReasonInternalError, err)
-			http.Error(rw, "", http.StatusInternalServerError)
-			return
-
 			// The reverse proxy could not reach or complete the call to the API
 			// server. The request was already admitted, and its access decision
 			// was written by RoundTrip: an upstream failure is not a second
@@ -538,8 +517,10 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			http.Error(rw, "", http.StatusBadGateway)
 			return
 
-			// Server or unknown error. Details stay server-side; the client
-			// receives an empty 500 body.
+			// Server or unknown error, including a missing impersonation
+			// configuration and a SubjectAccessReview the proxy could not
+			// submit. Details stay server-side; the client receives an empty
+			// 500 body.
 		default:
 			p.logHandlerFailed(r, err)
 			p.logDenied(r, metrics.ReasonInternalError, err)
@@ -554,6 +535,14 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 // impersonation filters call it directly, not only the reverse proxy -- so the
 // test is by error type, never a catch-all: an unrecognised error stays a 500.
 func isUpstreamTransportError(err error) bool {
+	// A SubjectAccessReview the proxy could not submit wraps a client-go
+	// transport error that satisfies net.Error, but the call that failed is
+	// the proxy's own authorization dependency, not the hop to the API server:
+	// the request is refused, not proxied, so it is a 500 and never a 502.
+	if errors.Is(err, subjectaccessreview.ErrCreateSubjectAccessReview) {
+		return false
+	}
+
 	var (
 		netErr  net.Error
 		opErr   *net.OpError

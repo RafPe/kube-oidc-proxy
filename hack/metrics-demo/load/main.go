@@ -225,7 +225,7 @@ func loadState(dir string) (*state, error) {
 	}
 	issuerURL, err := url.Parse(strings.TrimSpace(string(rawURL)))
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse issuer-url: %s", err)
+		return nil, fmt.Errorf("failed to parse issuer-url: %w", err)
 	}
 
 	certBytes, err := read("issuer-ca.pem")
@@ -242,7 +242,7 @@ func loadState(dir string) (*state, error) {
 	}
 	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse the issuer key: %s", err)
+		return nil, fmt.Errorf("failed to parse the issuer key: %w", err)
 	}
 
 	proxyCA, err := read("proxy-ca.pem")
@@ -456,7 +456,7 @@ func startPortForward(ctx context.Context, kubeconfig, namespace, target string,
 	cmd.Stderr = stderr
 
 	if err := cmd.Start(); err != nil {
-		return 0, nil, fmt.Errorf("failed to start kubectl port-forward: %s", err)
+		return 0, nil, fmt.Errorf("failed to start kubectl port-forward: %w", err)
 	}
 
 	// The announcement is read on its own goroutine so the wait for it can be
@@ -531,7 +531,7 @@ func readForwardedPort(stdout io.Reader) (int, error) {
 		return strconv.Atoi(m[1])
 	}
 	if err := scanner.Err(); err != nil {
-		return 0, fmt.Errorf("failed to read kubectl port-forward output: %s", err)
+		return 0, fmt.Errorf("failed to read kubectl port-forward output: %w", err)
 	}
 
 	return 0, errors.New("kubectl port-forward exited before it announced a local port")
@@ -672,7 +672,7 @@ func newGenerator(logger *slog.Logger, st *state, namespace string, tun *tunnel)
 	}
 	cluster, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build a kubernetes client: %s", err)
+		return nil, fmt.Errorf("failed to build a kubernetes client: %w", err)
 	}
 
 	return &generator{
@@ -716,7 +716,7 @@ func (g *generator) tokenWithoutUsername(exp time.Time) (string, error) {
 		"exp":    exp.Unix(),
 	})
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal the token payload: %s", err)
+		return "", fmt.Errorf("failed to marshal the token payload: %w", err)
 	}
 
 	return util.SignToken(g.st.issuerBundle, payload)
@@ -1215,7 +1215,7 @@ func (g *generator) watch(ctx context.Context) (int, error) {
 
 	w, err := client.CoreV1().Pods(g.namespace).Watch(watchCtx, metav1.ListOptions{})
 	if err != nil {
-		return 0, fmt.Errorf("failed to open a watch: %s", err)
+		return 0, fmt.Errorf("failed to open a watch: %w", err)
 	}
 	defer w.Stop()
 
@@ -1259,7 +1259,7 @@ func (g *generator) exec(ctx context.Context) (int, error) {
 
 	executor, err := remotecommand.NewSPDYExecutor(cfg, http.MethodPost, req.URL())
 	if err != nil {
-		return 0, fmt.Errorf("failed to build an exec executor: %s", err)
+		return 0, fmt.Errorf("failed to build an exec executor: %w", err)
 	}
 
 	execCtx, cancel := context.WithTimeout(ctx, callTimeout)

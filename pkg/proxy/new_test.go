@@ -24,8 +24,7 @@ func validDeps(t *testing.T) Dependencies {
 	ctrl := gomock.NewController(t)
 	root, _ := logtest.New(t, 0)
 
-	sar, err := subjectaccessreview.New(fakesubjectaccessreview.New(nil), subjectaccessreview.DefaultTimeout, 0, 0,
-		subjectaccessreview.DefaultMaxHeaderValues, logging.ForComponent(root, logging.ComponentSAR))
+	sar, err := subjectaccessreview.New(fakesubjectaccessreview.New(nil), subjectaccessreview.Config{Timeout: subjectaccessreview.DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, logging.ForComponent(root, logging.ComponentSAR))
 	if err != nil {
 		t.Fatalf("building SubjectAccessReview: %v", err)
 	}

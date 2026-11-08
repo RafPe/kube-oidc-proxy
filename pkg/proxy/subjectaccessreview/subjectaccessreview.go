@@ -168,11 +168,28 @@ type SubjectAccessReview struct {
 	flight singleflight.Group
 }
 
+// Config is the operator-facing configuration of a SubjectAccessReview.
+type Config struct {
+	// Timeout is the single shared budget for the whole sequence of checks
+	// one request needs. See DefaultTimeout.
+	Timeout time.Duration
+
+	// AllowCacheTTL and DenyCacheTTL bound how long a definitive allowed or
+	// denied decision is served from memory; zero disables that class of
+	// caching. See New for the trade-off.
+	AllowCacheTTL time.Duration
+	DenyCacheTTL  time.Duration
+
+	// MaxHeaderValues caps the impersonation header values one request may
+	// carry. See DefaultMaxHeaderValues.
+	MaxHeaderValues int
+}
+
 // New returns a SubjectAccessReview that authorizes impersonation via reviewer,
-// bounding the whole sequence of checks for a single request by sarTimeout and
-// refusing requests that carry more than maxHeaderValues impersonation header
-// values. maxHeaderValues must be greater than zero: every SAR costs a round
-// trip, so an unbounded value count must not be constructible.
+// bounding the whole sequence of checks for a single request by cfg.Timeout and
+// refusing requests that carry more than cfg.MaxHeaderValues impersonation
+// header values. MaxHeaderValues must be greater than zero: every SAR costs a
+// round trip, so an unbounded value count must not be constructible.
 //
 // allowCacheTTL and denyCacheTTL bound how long a definitive allowed or denied
 // decision is served from an in-memory cache before being re-checked against
@@ -180,7 +197,8 @@ type SubjectAccessReview struct {
 // load: an RBAC revoke can take up to allowCacheTTL to be enforced for a
 // cached allow, and a newly granted permission up to denyCacheTTL to be
 // honoured. Set both to 0 to disable the cache and re-check on every request.
-func New(reviewer clientazv1.SubjectAccessReviewInterface, sarTimeout, allowCacheTTL, denyCacheTTL time.Duration, maxHeaderValues int, logger *slog.Logger) (*SubjectAccessReview, error) {
+func New(reviewer clientazv1.SubjectAccessReviewInterface, cfg Config, logger *slog.Logger) (*SubjectAccessReview, error) {
+	sarTimeout, allowCacheTTL, denyCacheTTL, maxHeaderValues := cfg.Timeout, cfg.AllowCacheTTL, cfg.DenyCacheTTL, cfg.MaxHeaderValues
 	if maxHeaderValues <= 0 {
 		return nil, fmt.Errorf("maxHeaderValues must be greater than 0, got %d", maxHeaderValues)
 	}

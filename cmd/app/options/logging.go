@@ -49,14 +49,14 @@ func (o *LoggingOptions) Validate() error {
 }
 
 // Verbosity returns the -v value the command line carries, or 0 when the flag
-// is absent. -v is owned by globalflag in the Misc flag set; it is read here
+// is absent. -v is owned by globalflag in the Global flag set; it is read here
 // rather than bound to a field of its own so that klog and the root logger are
 // driven by exactly one value.
 func (o *LoggingOptions) Verbosity() int {
 	if o.nfs == nil {
 		return 0
 	}
-	f := o.nfs.FlagSet("Misc").Lookup("v")
+	f := o.nfs.FlagSet(GlobalFlagSet).Lookup("v")
 	if f == nil {
 		return 0
 	}

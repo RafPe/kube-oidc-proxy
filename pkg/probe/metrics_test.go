@@ -28,7 +28,7 @@ func TestProbePublishesIssuerAndReadyGauges(t *testing.T) {
 	issuerB := IssuerReadiness{IssuerURL: "https://b.example.com", FakeJWT: "jwt-b"}
 	rec := newMetricsRecorder(t)
 
-	s := NewServer("0", []IssuerReadiness{issuerA, issuerB}, false, &fakeAuther{notInit: map[string]bool{"jwt-b": true}}, slog.New(slog.DiscardHandler)).WithMetrics(rec)
+	s := NewServer(0, []IssuerReadiness{issuerA, issuerB}, false, &fakeAuthenticator{notInit: map[string]bool{"jwt-b": true}}, slog.New(slog.DiscardHandler)).WithMetrics(rec)
 	g := rec.Gatherer()
 
 	// Every configured issuer has a series from construction, at 0.

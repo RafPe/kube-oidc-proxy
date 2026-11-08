@@ -6,12 +6,11 @@ package hooks
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 	"time"
-
-	k8sErrors "k8s.io/apimachinery/pkg/util/errors"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 )
@@ -115,5 +114,5 @@ func (h *Hooks) RunPreShutdownHooks() error {
 			slog.Int64("duration_ms", elapsed.Milliseconds()))
 	}
 
-	return k8sErrors.NewAggregate(errs)
+	return errors.Join(errs...)
 }

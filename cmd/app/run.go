@@ -208,13 +208,8 @@ var ErrReported = errors.New("error already reported on the log stream")
 // through is derived from the root logger, which cannot exist until the
 // command line has been parsed.
 func NewRunCommand() *cobra.Command {
-	// Build options
 	opts := options.New()
-
-	// Build command
 	cmd := buildRunCommand(opts, os.Stdout)
-
-	// Add option flags to command
 	opts.AddFlags(cmd)
 
 	return cmd
@@ -232,6 +227,9 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if opts.Version.Requested(cmd) {
+				opts.Version.PrintVersionAndExit()
+			}
 			if err := opts.Validate(cmd); err != nil {
 				return err
 			}
@@ -293,8 +291,8 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 			var metricsServer *metrics.Server
 			if opts.Metrics.Enabled() {
 				recorder, err = metrics.New(metrics.BuildInfo{
-					Version:   opts.Misc.Version(),
-					Revision:  opts.Misc.Commit(),
+					Version:   opts.Version.Version(),
+					Revision:  opts.Version.Commit(),
 					GoVersion: runtime.Version(),
 				})
 				if err != nil {
@@ -362,7 +360,6 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 					opts.App.TokenPassthrough.CacheFailureTTL)
 			}
 
-			// Initialise Secure Serving Config
 			secureServingInfo := new(server.SecureServingInfo)
 			if err := opts.SecureServing.ApplyTo(&secureServingInfo); err != nil {
 				return fail(err)
@@ -383,7 +380,6 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 				AllowedReservedGroups: opts.App.AllowedReservedGroups,
 			}
 
-			// Setup Subject Access Review
 			kubeclient, err := kubernetes.NewForConfig(restConfig)
 			if err != nil {
 				return fail(err)
@@ -391,10 +387,12 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 
 			subjectAccessReviewer, err := subjectaccessreview.New(
 				kubeclient.AuthorizationV1().SubjectAccessReviews(),
-				opts.App.SubjectAccessReviewTimeout,
-				opts.App.SubjectAccessReviewAllowCacheTTL,
-				opts.App.SubjectAccessReviewDenyCacheTTL,
-				opts.App.MaxImpersonationHeaderValues,
+				subjectaccessreview.Config{
+					Timeout:         opts.App.SubjectAccessReviewTimeout,
+					AllowCacheTTL:   opts.App.SubjectAccessReviewAllowCacheTTL,
+					DenyCacheTTL:    opts.App.SubjectAccessReviewDenyCacheTTL,
+					MaxHeaderValues: opts.App.MaxImpersonationHeaderValues,
+				},
 				logging.ForComponent(root, logging.ComponentSAR),
 			)
 			if err != nil {
@@ -404,16 +402,15 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 
 			oidcLogger := logging.ForComponent(root, logging.ComponentOIDC)
 
-			tokenAuther, issuerURLs, err := buildTokenAuther(opts, oidcLogger, startupLogger)
+			tokenAuthenticator, issuerURLs, err := buildTokenAuthenticator(opts, oidcLogger, startupLogger)
 			if err != nil {
 				return fail(err)
 			}
 
-			// Initialise proxy with token authenticator
 			p, err := proxy.New(proxy.Dependencies{
 				Logger:                root,
 				RestConfig:            restConfig,
-				TokenAuthenticator:    tokenAuther,
+				TokenAuthenticator:    tokenAuthenticator,
 				AuditOptions:          opts.Audit.AuditOptions,
 				TokenReviewer:         tokenReviewer,
 				SubjectAccessReviewer: subjectAccessReviewer,
@@ -426,7 +423,7 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 			}
 
 			logConfigLoaded(startupLogger, configSummary{
-				version:       opts.Misc.Version(),
+				version:       opts.Version.Version(),
 				configHash:    configHash(cmd.Flags()),
 				issuerCount:   len(issuerURLs),
 				readinessMode: probe.ReadinessMode(opts.App.ReadinessRequireAllIssuers),
@@ -447,7 +444,7 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 
 			// Start readiness probe with an explicit lifecycle. Start binds
 			// synchronously so a port-in-use failure surfaces here at startup.
-			probeServer := probe.NewServer(strconv.Itoa(opts.App.ReadinessProbePort),
+			probeServer := probe.NewServer(opts.App.ReadinessProbePort,
 				issuerProbes, opts.App.ReadinessRequireAllIssuers,
 				p.OIDCTokenAuthenticator(),
 				root)
@@ -456,7 +453,6 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 				return fail(err)
 			}
 
-			// Run proxy
 			waitCh, listenerStoppedCh, err := p.Run(ctx)
 			if err != nil {
 				return fail(err)
@@ -540,14 +536,14 @@ func caContentProvider(path string, logger *slog.Logger) oidc.CAContentProvider 
 	return caFromFile{path: path, logger: logger}
 }
 
-// buildTokenAuther builds the token authenticator and returns the issuer URLs
+// buildTokenAuthenticator builds the token authenticator and returns the issuer URLs
 // backing it. oidcLogger carries the per-issuer configuration records and
 // startupLogger the configuration failures a CA file can raise later.
-func buildTokenAuther(opts *options.Options, oidcLogger, startupLogger *slog.Logger) (authenticator.Token, []string, error) {
+func buildTokenAuthenticator(opts *options.Options, oidcLogger, startupLogger *slog.Logger) (authenticator.Token, []string, error) {
 	if opts.AuthenticationConfig.ConfigFile != "" {
-		return buildUnionAuther(opts, oidcLogger)
+		return buildUnionAuthenticator(opts, oidcLogger)
 	}
-	return buildSingleAuther(opts.OIDCAuthentication, oidcLogger, startupLogger)
+	return buildSingleAuthenticator(opts.OIDCAuthentication, oidcLogger, startupLogger)
 }
 
 // jwtAuthenticatorFromOIDCOptions builds the internal JWTAuthenticator config
@@ -587,7 +583,7 @@ func jwtAuthenticatorFromOIDCOptions(o *options.OIDCAuthenticationOptions) apise
 	}
 }
 
-func buildSingleAuther(o *options.OIDCAuthenticationOptions, oidcLogger, startupLogger *slog.Logger) (authenticator.Token, []string, error) {
+func buildSingleAuthenticator(o *options.OIDCAuthenticationOptions, oidcLogger, startupLogger *slog.Logger) (authenticator.Token, []string, error) {
 	jwtConfig := jwtAuthenticatorFromOIDCOptions(o)
 	client, err := oidcHTTPClient(o.CAFile, nil, o.TLSClientCertFile, o.TLSClientKeyFile)
 	if err != nil {
@@ -601,7 +597,7 @@ func buildSingleAuther(o *options.OIDCAuthenticationOptions, oidcLogger, startup
 	if client == nil {
 		provider = caContentProvider(o.CAFile, startupLogger)
 	}
-	auther, err := oidc.New(context.Background(), oidc.Options{
+	authn, err := oidc.New(context.Background(), oidc.Options{
 		CAContentProvider:    provider,
 		Client:               client,
 		SupportedSigningAlgs: o.SigningAlgs,
@@ -612,10 +608,10 @@ func buildSingleAuther(o *options.OIDCAuthenticationOptions, oidcLogger, startup
 	}
 	logIssuersConfigured(oidcLogger, issuerNames([]string{o.IssuerURL}))
 
-	return proxy.AttributeToIssuer(probe.IssuerName(o.IssuerURL), auther), []string{o.IssuerURL}, nil
+	return proxy.AttributeToIssuer(probe.IssuerName(o.IssuerURL), authn), []string{o.IssuerURL}, nil
 }
 
-func buildUnionAuther(opts *options.Options, oidcLogger *slog.Logger) (authenticator.Token, []string, error) {
+func buildUnionAuthenticator(opts *options.Options, oidcLogger *slog.Logger) (authenticator.Token, []string, error) {
 	// One CEL compiler shared by document validation and every authenticator:
 	// CEL environments are expensive to construct.
 	compiler := authenticationcel.NewDefaultCompiler()
@@ -637,21 +633,21 @@ func buildUnionAuther(opts *options.Options, oidcLogger *slog.Logger) (authentic
 		return nil, nil, fmt.Errorf("two configured issuers share the name %q (%q and %q); issuers must differ by host", name, first, other)
 	}
 
-	authers := make([]authenticator.Token, 0, len(authCfg.JWT))
+	authenticators := make([]authenticator.Token, 0, len(authCfg.JWT))
 	for _, jwtEntry := range authCfg.JWT {
-		auther, err := oidcAutherFromJWT(jwtEntry, compiler, oidc.AllValidSigningAlgorithms(), opts.OIDCAuthentication)
+		authn, err := oidcAuthenticatorFromJWT(jwtEntry, compiler, oidc.AllValidSigningAlgorithms(), opts.OIDCAuthentication)
 		if err != nil {
 			return nil, nil, fmt.Errorf("building authenticator for issuer %q: %w", jwtEntry.Issuer.URL, err)
 		}
-		authers = append(authers, proxy.AttributeToIssuer(probe.IssuerName(jwtEntry.Issuer.URL), auther))
+		authenticators = append(authenticators, proxy.AttributeToIssuer(probe.IssuerName(jwtEntry.Issuer.URL), authn))
 	}
 
 	logIssuersConfigured(oidcLogger, issuerNames(issuerURLs))
 
-	return tokenunion.NewFailOnError(authers...), issuerURLs, nil
+	return tokenunion.NewFailOnError(authenticators...), issuerURLs, nil
 }
 
-func oidcAutherFromJWT(
+func oidcAuthenticatorFromJWT(
 	jwtConfig apiserverapi.JWTAuthenticator,
 	compiler authenticationcel.Compiler,
 	signingAlgs []string,
@@ -667,7 +663,7 @@ func oidcAutherFromJWT(
 		return nil, fmt.Errorf("creating OIDC HTTP client for issuer %q: %w", jwtConfig.Issuer.URL, err)
 	}
 
-	// As in buildSingleAuther: a dedicated client already carries the CA, so
+	// As in buildSingleAuthenticator: a dedicated client already carries the CA, so
 	// the authenticator takes it directly only when there is no client.
 	var provider oidc.CAContentProvider
 	if client == nil && jwtConfig.Issuer.CertificateAuthority != "" {

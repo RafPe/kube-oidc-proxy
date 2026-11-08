@@ -81,7 +81,10 @@ func TestOIDCAuthenticationOptions_Validate(t *testing.T) {
 				ClientID:  tc.clientID,
 				CAFile:    tc.caFile,
 			}
-			err := o.Validate(tc.authConfigSet)
+			err := o.Validate()
+			if err == nil && !tc.authConfigSet {
+				err = o.ValidateIssuerFlags()
+			}
 			if (err != nil) != tc.wantErr {
 				t.Errorf("Validate() error = %v, wantErr %v", err, tc.wantErr)
 			}
@@ -117,9 +120,9 @@ func TestOIDCAuthenticationOptionsValidateTLSClientCredentials(t *testing.T) {
 				TLSClientCertFile: tc.certFile,
 				TLSClientKeyFile:  tc.keyFile,
 			}
-			err := o.Validate(true)
+			err := o.Validate()
 			if gotErr := err != nil; gotErr != tc.wantErr {
-				t.Errorf("Validate(true) error = %v, want error presence = %t", err, tc.wantErr)
+				t.Errorf("Validate() error = %v, want error presence = %t", err, tc.wantErr)
 			}
 		})
 	}

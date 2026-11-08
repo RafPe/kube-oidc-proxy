@@ -492,8 +492,7 @@ func newTestProxy(t *testing.T) *fakeProxy {
 	requestLogger := logging.ForComponent(root, logging.ComponentRequest)
 
 	fakeSubjectAccessReviewer := fakesubjectaccessreview.New(nil)
-	subjectAccessReview, _ := subjectaccessreview.New(fakeSubjectAccessReviewer, subjectaccessreview.DefaultTimeout, 0, 0,
-		subjectaccessreview.DefaultMaxHeaderValues, logging.ForComponent(root, logging.ComponentSAR))
+	subjectAccessReview, _ := subjectaccessreview.New(fakeSubjectAccessReviewer, subjectaccessreview.Config{Timeout: subjectaccessreview.DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, logging.ForComponent(root, logging.ComponentSAR))
 
 	// A real recorder, not a fake: the tests assert on the exposition the
 	// binary would serve, including help strings and label names.
@@ -509,19 +508,19 @@ func newTestProxy(t *testing.T) *fakeProxy {
 		fakeRT:       fakeRT,
 		logs:         logs,
 		Proxy: &Proxy{
-			metrics:               recorder,
-			logger:                requestLogger,
-			oidcLog:               logging.ForComponent(root, logging.ComponentOIDC),
-			tokenReviewLog:        logging.ForComponent(root, logging.ComponentTokenReview),
-			upstreamLog:           logging.ForComponent(root, logging.ComponentUpstream),
-			access:                accesslog.NewAccessLogger(requestLogger),
-			oidcRequestAuther:     bearertoken.New(fakeToken),
-			tokenReviewer:         fakeReviewer,
-			subjectAccessReviewer: subjectAccessReview,
-			clientTransport:       fakeRT,
-			noAuthClientTransport: fakeRT,
-			config:                new(Config),
-			hooks:                 hooks.New(logging.ForComponent(root, logging.ComponentShutdown)),
+			metrics:                  recorder,
+			logger:                   requestLogger,
+			oidcLog:                  logging.ForComponent(root, logging.ComponentOIDC),
+			tokenReviewLog:           logging.ForComponent(root, logging.ComponentTokenReview),
+			upstreamLog:              logging.ForComponent(root, logging.ComponentUpstream),
+			access:                   accesslog.NewAccessLogger(requestLogger),
+			oidcRequestAuthenticator: bearertoken.New(fakeToken),
+			tokenReviewer:            fakeReviewer,
+			subjectAccessReviewer:    subjectAccessReview,
+			clientTransport:          fakeRT,
+			noAuthClientTransport:    fakeRT,
+			config:                   new(Config),
+			hooks:                    hooks.New(logging.ForComponent(root, logging.ComponentShutdown)),
 			// A frozen clock and a small burst make the warning limiter
 			// deterministic: a test asserts on exactly how many warnings
 			// survive sampling, without sleeping for a refill.

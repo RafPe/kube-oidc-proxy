@@ -85,12 +85,12 @@ type Config struct {
 type errorHandlerFn func(http.ResponseWriter, *http.Request, error)
 
 type Proxy struct {
-	oidcRequestAuther     *bearertoken.Authenticator
-	tokenAuthenticator    authenticator.Token
-	tokenReviewer         authenticator.Token
-	subjectAccessReviewer *subjectaccessreview.SubjectAccessReview
-	secureServingInfo     *server.SecureServingInfo
-	auditor               *audit.Audit
+	oidcRequestAuthenticator *bearertoken.Authenticator
+	tokenAuthenticator       authenticator.Token
+	tokenReviewer            authenticator.Token
+	subjectAccessReviewer    *subjectaccessreview.SubjectAccessReview
+	secureServingInfo        *server.SecureServingInfo
+	auditor                  *audit.Audit
 
 	restConfig            *rest.Config
 	clientTransport       http.RoundTripper
@@ -239,24 +239,24 @@ func New(deps Dependencies) (*Proxy, error) {
 	requestLogger := logging.ForComponent(deps.Logger, logging.ComponentRequest)
 
 	return &Proxy{
-		metrics:               deps.Metrics,
-		restConfig:            deps.RestConfig,
-		logger:                requestLogger,
-		oidcLog:               logging.ForComponent(deps.Logger, logging.ComponentOIDC),
-		tokenReviewLog:        logging.ForComponent(deps.Logger, logging.ComponentTokenReview),
-		upstreamLog:           logging.ForComponent(deps.Logger, logging.ComponentUpstream),
-		hooks:                 hooks.New(logging.ForComponent(deps.Logger, logging.ComponentShutdown)),
-		tokenReviewer:         deps.TokenReviewer,
-		subjectAccessReviewer: deps.SubjectAccessReviewer,
-		secureServingInfo:     deps.SecureServingInfo,
-		config:                &cfg,
-		trustedProxies:        trustedProxies,
-		allowedReservedGroups: allowedReservedGroups,
-		oidcRequestAuther:     bearertoken.New(deps.TokenAuthenticator),
-		tokenAuthenticator:    deps.TokenAuthenticator,
-		auditor:               auditor,
-		access:                accesslog.NewAccessLogger(requestLogger),
-		warnLimiter:           logging.NewLimiter(warnLimiterRate, warnLimiterBurst, warnLimiterInterval, nil),
+		metrics:                  deps.Metrics,
+		restConfig:               deps.RestConfig,
+		logger:                   requestLogger,
+		oidcLog:                  logging.ForComponent(deps.Logger, logging.ComponentOIDC),
+		tokenReviewLog:           logging.ForComponent(deps.Logger, logging.ComponentTokenReview),
+		upstreamLog:              logging.ForComponent(deps.Logger, logging.ComponentUpstream),
+		hooks:                    hooks.New(logging.ForComponent(deps.Logger, logging.ComponentShutdown)),
+		tokenReviewer:            deps.TokenReviewer,
+		subjectAccessReviewer:    deps.SubjectAccessReviewer,
+		secureServingInfo:        deps.SecureServingInfo,
+		config:                   &cfg,
+		trustedProxies:           trustedProxies,
+		allowedReservedGroups:    allowedReservedGroups,
+		oidcRequestAuthenticator: bearertoken.New(deps.TokenAuthenticator),
+		tokenAuthenticator:       deps.TokenAuthenticator,
+		auditor:                  auditor,
+		access:                   accesslog.NewAccessLogger(requestLogger),
+		warnLimiter:              logging.NewLimiter(warnLimiterRate, warnLimiterBurst, warnLimiterInterval, nil),
 	}, nil
 }
 
@@ -393,13 +393,13 @@ func (p *Proxy) flushWarnLimiter(ctx context.Context) {
 }
 
 func (p *Proxy) serve(handler http.Handler, ctx context.Context) (<-chan struct{}, <-chan struct{}, error) {
-	// Setup proxy handlers
 	handler = p.withHandlers(handler)
 
-	// Run auditor
 	if err := p.auditor.Run(ctx); err != nil {
 		return nil, nil, err
 	}
+	// The backend flushes on shutdown, after the listener has stopped.
+	p.hooks.AddPreShutdownHook("AuditBackend", p.auditor.Shutdown)
 
 	// securely serve using serving config. The apiserver's Serve stops on a
 	// closed channel, which is what the context's Done channel is.
@@ -435,7 +435,6 @@ func (p *Proxy) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, errNoImpersonationConfig
 	}
 
-	// Set up impersonation request.
 	rt := transport.NewImpersonatingRoundTripper(*impersonationConf.ImpersonationConfig, p.clientTransport)
 
 	// Record the admitted request. Written before the upstream call so a watch

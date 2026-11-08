@@ -52,7 +52,7 @@ func (c *capturingRT) RoundTrip(req *http.Request) (*http.Response, error) {
 // Response.User.Extra would fail both halves.
 func TestIssuerNameNeverReachesImpersonationHeaders(t *testing.T) {
 	p := newTestProxy(t)
-	p.oidcRequestAuther = bearertoken.New(AttributeToIssuer(leakProbeIssuerName, p.fakeToken))
+	p.oidcRequestAuthenticator = bearertoken.New(AttributeToIssuer(leakProbeIssuerName, p.fakeToken))
 
 	// An identity extra and the client-IP extra guarantee the round tripper
 	// really builds Impersonate-Extra- headers, so the scan below has

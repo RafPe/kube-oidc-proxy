@@ -11,9 +11,9 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"golang.org/x/term"
-	k8sErrors "k8s.io/apimachinery/pkg/util/errors"
 
 	cliflag "k8s.io/component-base/cli/flag"
+	"k8s.io/component-base/cli/globalflag"
 )
 
 const (
@@ -29,15 +29,19 @@ type Options struct {
 	Client               *ClientOptions
 	Logging              *LoggingOptions
 	Metrics              *MetricsOptions
-	Misc                 *MiscOptions
+	Version              *VersionOptions
 
 	nfs *cliflag.NamedFlagSets
 }
 
+// GlobalFlagSet names the flag set carrying the component-base global flags
+// (-v, --vmodule and friends), which LoggingOptions reads the verbosity from.
+const GlobalFlagSet = "Global"
+
 func New() *Options {
 	nfs := new(cliflag.NamedFlagSets)
+	globalflag.AddGlobalFlags(nfs.FlagSet(GlobalFlagSet), AppName)
 
-	// Add flags to command sets
 	return &Options{
 		App:                  NewKubeOIDCProxyOptions(nfs),
 		OIDCAuthentication:   NewOIDCAuthenticationOptions(nfs),
@@ -47,7 +51,7 @@ func New() *Options {
 		Client:               NewClientOptions(nfs),
 		Logging:              NewLoggingOptions(nfs),
 		Metrics:              NewMetricsOptions(nfs),
-		Misc:                 NewMiscOptions(nfs),
+		Version:              NewVersionOptions(nfs),
 
 		nfs: nfs,
 	}
@@ -74,11 +78,8 @@ func (o *Options) AddFlags(cmd *cobra.Command) {
 	}
 }
 
+// Validate checks the parsed options and returns every problem found, joined.
 func (o *Options) Validate(cmd *cobra.Command) error {
-	if cmd.Flag("version").Value.String() == "true" {
-		o.Misc.PrintVersionAndExit()
-	}
-
 	var errs []error
 
 	if err := o.AuthenticationConfig.Validate(); err != nil {
@@ -91,8 +92,13 @@ func (o *Options) Validate(cmd *cobra.Command) error {
 		errs = append(errs, fmt.Errorf("authentication-config and issuer-specific --oidc-* flags are mutually exclusive"))
 	}
 
-	if err := o.OIDCAuthentication.Validate(authConfigSet); err != nil {
+	if err := o.OIDCAuthentication.Validate(); err != nil {
 		errs = append(errs, err)
+	}
+	if !authConfigSet {
+		if err := o.OIDCAuthentication.ValidateIssuerFlags(); err != nil {
+			errs = append(errs, err)
+		}
 	}
 
 	if err := o.SecureServing.Validate(); len(err) > 0 {
@@ -160,11 +166,7 @@ func (o *Options) Validate(cmd *cobra.Command) error {
 		errs = append(errs, fmt.Errorf("--max-impersonation-header-values must be greater than 0, got %d", o.App.MaxImpersonationHeaderValues))
 	}
 
-	if len(errs) > 0 {
-		return k8sErrors.NewAggregate(errs)
-	}
-
-	return nil
+	return errors.Join(errs...)
 }
 
 // oidcFlagsChanged reports whether any --oidc-* flag was set on cmd. The flag

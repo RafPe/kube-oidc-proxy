@@ -297,7 +297,7 @@ func runTest(t *testing.T, name string, test testT) {
 		extras[key] = value
 	}
 
-	testReviewer, _ := New(fake.New(test.expErrorRbac), DefaultTimeout, 0, 0, DefaultMaxHeaderValues, slog.New(slog.DiscardHandler))
+	testReviewer, _ := New(fake.New(test.expErrorRbac), Config{Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 
 	headers := map[string][]string{}
 
@@ -510,7 +510,7 @@ func TestCheckAuthorizedForImpersonationHeaderValueCap(t *testing.T) {
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			reviewer := &countingFakeReviewer{FakeReviewer: fake.New(nil)}
-			sar, err := New(reviewer, DefaultTimeout, 0, 0, tc.max, slog.New(slog.DiscardHandler))
+			sar, err := New(reviewer, Config{Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: tc.max}, slog.New(slog.DiscardHandler))
 			if err != nil {
 				t.Fatalf("New() error = %v", err)
 			}
@@ -555,7 +555,7 @@ func TestCheckAuthorizedForImpersonationHeaderValueCap(t *testing.T) {
 // reviewer must not be constructible.
 func TestNewRejectsNonPositiveMaxHeaderValues(t *testing.T) {
 	for _, max := range []int{0, -1} {
-		if _, err := New(fake.New(nil), DefaultTimeout, 0, 0, max, slog.New(slog.DiscardHandler)); err == nil {
+		if _, err := New(fake.New(nil), Config{Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: max}, slog.New(slog.DiscardHandler)); err == nil {
 			t.Errorf("New(maxHeaderValues=%d) error = nil, want error", max)
 		}
 	}
@@ -609,7 +609,7 @@ type sarResult struct {
 // sequence with context.Canceled and does not run further checks.
 func TestCheckAuthorizedForImpersonationCanceled(t *testing.T) {
 	reviewer := &blockingReviewer{entered: make(chan struct{}, 1)}
-	sar, err := New(reviewer, DefaultTimeout, 0, 0, DefaultMaxHeaderValues, slog.New(slog.DiscardHandler))
+	sar, err := New(reviewer, Config{Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -657,7 +657,7 @@ func TestCheckAuthorizedForImpersonationCanceled(t *testing.T) {
 // context.DeadlineExceeded and runs at most the first check.
 func TestCheckAuthorizedForImpersonationDeadlineExceeded(t *testing.T) {
 	reviewer := &blockingReviewer{entered: make(chan struct{}, 1)}
-	sar, err := New(reviewer, DefaultTimeout, 0, 0, DefaultMaxHeaderValues, slog.New(slog.DiscardHandler))
+	sar, err := New(reviewer, Config{Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -698,7 +698,7 @@ func TestCheckAuthorizedForImpersonationDeadlineExceeded(t *testing.T) {
 // budget distinguishable from a longer one that would only expire much later.
 func TestCheckAuthorizedForImpersonationConfiguredTimeout(t *testing.T) {
 	reviewer := &blockingReviewer{entered: make(chan struct{}, 1)}
-	sar, err := New(reviewer, 50*time.Millisecond, 0, 0, DefaultMaxHeaderValues, slog.New(slog.DiscardHandler))
+	sar, err := New(reviewer, Config{Timeout: 50 * time.Millisecond, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -739,8 +739,7 @@ func TestCheckAuthorizedForImpersonationConfiguredTimeout(t *testing.T) {
 func newLoggingSAR(t *testing.T, root *slog.Logger, r clientazv1.SubjectAccessReviewInterface, sarTimeout, allowTTL, denyTTL time.Duration) *SubjectAccessReview {
 	t.Helper()
 
-	s, err := New(r, sarTimeout, allowTTL, denyTTL, DefaultMaxHeaderValues,
-		logging.ForComponent(root, logging.ComponentSAR))
+	s, err := New(r, Config{Timeout: sarTimeout, AllowCacheTTL: allowTTL, DenyCacheTTL: denyTTL, MaxHeaderValues: DefaultMaxHeaderValues}, logging.ForComponent(root, logging.ComponentSAR))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

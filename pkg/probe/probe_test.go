@@ -4,14 +4,17 @@ package probe
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -21,19 +24,19 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 )
 
-// fakeAuther simulates the union authenticator: tokens listed in notInit
+// fakeAuthenticator simulates the union authenticator: tokens listed in notInit
 // hit an issuer whose JWKS is not yet fetched; every other token reaches
 // an initialized issuer and fails ordinary verification. A per-token error
 // may be supplied via override to model alternate phrasings and transient
 // failures.
-type fakeAuther struct {
+type fakeAuthenticator struct {
 	mu       sync.Mutex
 	notInit  map[string]bool
 	override map[string]error
 	calls    map[string]int
 }
 
-func (f *fakeAuther) AuthenticateToken(_ context.Context, token string) (*authenticator.Response, bool, error) {
+func (f *fakeAuthenticator) AuthenticateToken(_ context.Context, token string) (*authenticator.Response, bool, error) {
 	f.mu.Lock()
 	if f.calls == nil {
 		f.calls = make(map[string]int)
@@ -50,33 +53,33 @@ func (f *fakeAuther) AuthenticateToken(_ context.Context, token string) (*authen
 	return nil, false, errors.New("oidc: verify token: signature invalid")
 }
 
-func (f *fakeAuther) callCount(token string) int {
+func (f *fakeAuthenticator) callCount(token string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls[token]
 }
 
-func newTestHealthCheckWithAuther(requireAll bool, auther authenticator.Token, issuers ...IssuerReadiness) *HealthCheck {
+func newTestHealthCheckWithAuthenticator(requireAll bool, authn authenticator.Token, issuers ...IssuerReadiness) *HealthCheck {
 	// Discarding loggers by default: NewServer never leaves either nil, and a
 	// test that asserts on records replaces them via newTestHealthCheckWithLogger.
 	return &HealthCheck{
-		readinessLogger: slog.New(slog.DiscardHandler),
-		oidcLogger:      slog.New(slog.DiscardHandler),
-		oidcAuther:      auther,
-		issuers:         issuers,
-		requireAll:      requireAll,
-		initialized:     make(map[string]bool),
+		readinessLogger:   slog.New(slog.DiscardHandler),
+		oidcLogger:        slog.New(slog.DiscardHandler),
+		oidcAuthenticator: authn,
+		issuers:           issuers,
+		requireAll:        requireAll,
+		initialized:       make(map[string]bool),
 	}
 }
 
 func newTestHealthCheck(requireAll bool, notInit map[string]bool, issuers ...IssuerReadiness) *HealthCheck {
-	return newTestHealthCheckWithAuther(requireAll, &fakeAuther{notInit: notInit}, issuers...)
+	return newTestHealthCheckWithAuthenticator(requireAll, &fakeAuthenticator{notInit: notInit}, issuers...)
 }
 
 // newTestHealthCheckWithLogger builds a HealthCheck reporting through root.
 // notInit is keyed by issuer URL rather than by fake JWT, which is what a test
 // asserting on records cares about; the translation to the token keying
-// fakeAuther uses happens here.
+// fakeAuthenticator uses happens here.
 func newTestHealthCheckWithLogger(t testing.TB, root *slog.Logger, requireAll bool, notInit map[string]bool, issuers ...IssuerReadiness) *HealthCheck {
 	t.Helper()
 
@@ -87,7 +90,7 @@ func newTestHealthCheckWithLogger(t testing.TB, root *slog.Logger, requireAll bo
 		}
 	}
 
-	h := newTestHealthCheckWithAuther(requireAll, &fakeAuther{notInit: notInitByToken}, issuers...)
+	h := newTestHealthCheckWithAuthenticator(requireAll, &fakeAuthenticator{notInit: notInitByToken}, issuers...)
 	h.readinessLogger = logging.ForComponent(root, logging.ComponentReadiness)
 	h.oidcLogger = logging.ForComponent(root, logging.ComponentOIDC)
 	return h
@@ -246,7 +249,7 @@ func TestCheckContinuesProbingPendingAfterLatch(t *testing.T) {
 	notInit := map[string]bool{"jwt-b": true}
 	h := newTestHealthCheck(false, notInit, issuerA, issuerB)
 	h.SetServing()
-	fake := h.oidcAuther.(*fakeAuther)
+	fake := h.oidcAuthenticator.(*fakeAuthenticator)
 
 	if err := h.Check(); err != nil {
 		t.Fatalf("expected ready (issuer A initialized), got: %v", err)
@@ -298,12 +301,12 @@ func TestCheckContinuesProbingPendingAfterLatch(t *testing.T) {
 func TestCheckAlternatePhrasingKeepsPending(t *testing.T) {
 	issuerA := IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"}
 
-	auther := &fakeAuther{
+	authn := &fakeAuthenticator{
 		override: map[string]error{
 			"jwt-a": errors.New("oidc: authenticator for issuer is not initialized"),
 		},
 	}
-	h := newTestHealthCheckWithAuther(true, auther, issuerA)
+	h := newTestHealthCheckWithAuthenticator(true, authn, issuerA)
 	h.SetServing()
 
 	if err := h.Check(); err == nil {
@@ -324,15 +327,18 @@ func TestCheckTransientErrorDoesNotLatch(t *testing.T) {
 	issuerA := IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"}
 
 	tests := map[string]error{
-		"context deadline":    context.DeadlineExceeded,
-		"connection refused":  errors.New(`Get "https://a.example.com/.well-known/openid-configuration": dial tcp 10.0.0.1:443: connect: connection refused`),
+		"context deadline": context.DeadlineExceeded,
+		"connection refused": fmt.Errorf(`Get "https://a.example.com/.well-known/openid-configuration": %w`,
+			&net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED}}),
+		"no such host": fmt.Errorf(`Get "https://a.example.com/.well-known/openid-configuration": %w`,
+			&net.DNSError{Err: "no such host", Name: "a.example.com", IsNotFound: true}),
 		"net timeout wrapped": &net.OpError{Op: "dial", Err: timeoutError{}},
 	}
 
 	for name, retErr := range tests {
 		t.Run(name, func(t *testing.T) {
-			auther := &fakeAuther{override: map[string]error{"jwt-a": retErr}}
-			h := newTestHealthCheckWithAuther(true, auther, issuerA)
+			authn := &fakeAuthenticator{override: map[string]error{"jwt-a": retErr}}
+			h := newTestHealthCheckWithAuthenticator(true, authn, issuerA)
 			h.SetServing()
 
 			if err := h.Check(); err == nil {
@@ -384,20 +390,16 @@ func (timeoutError) Temporary() bool { return true }
 
 // freePort reserves and immediately releases a wildcard port, returning its
 // number for a subsequent bind. Server.Start binds 0.0.0.0, so reserve 0.0.0.0.
-func freePort(t *testing.T) string {
+func freePort(t *testing.T) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
 		t.Fatalf("reserving port: %v", err)
 	}
-	_, port, err := net.SplitHostPort(ln.Addr().String())
-	if err != nil {
-		t.Fatalf("splitting host/port: %v", err)
-	}
 	if err := ln.Close(); err != nil {
 		t.Fatalf("releasing reserved port: %v", err)
 	}
-	return port
+	return ln.Addr().(*net.TCPAddr).Port
 }
 
 // TestServerStartReturnsBindError verifies Start surfaces a bind failure to the
@@ -409,12 +411,9 @@ func TestServerStartReturnsBindError(t *testing.T) {
 	}
 	defer func() { _ = occupied.Close() }()
 
-	_, port, err := net.SplitHostPort(occupied.Addr().String())
-	if err != nil {
-		t.Fatalf("splitting host/port: %v", err)
-	}
+	port := occupied.Addr().(*net.TCPAddr).Port
 
-	s := NewServer(port, nil, false, &fakeAuther{}, slog.New(slog.DiscardHandler))
+	s := NewServer(port, nil, false, &fakeAuthenticator{}, slog.New(slog.DiscardHandler))
 	if err := s.Start(context.Background()); err == nil {
 		t.Fatal("expected Start to return an error binding an occupied port, got nil")
 	}
@@ -429,13 +428,13 @@ func TestServerStartServesAndShutsDown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	s := NewServer(port, nil, false, &fakeAuther{}, slog.New(slog.DiscardHandler))
+	s := NewServer(port, nil, false, &fakeAuthenticator{}, slog.New(slog.DiscardHandler))
 	if err := s.Start(ctx); err != nil {
 		t.Fatalf("Start returned unexpected error: %v", err)
 	}
 
 	// The liveness endpoint has no checks, so it returns 200 once serving.
-	url := "http://127.0.0.1:" + port + "/live"
+	url := fmt.Sprintf("http://127.0.0.1:%d/live", port)
 	resp, err := http.Get(url)
 	if err != nil {
 		t.Fatalf("readiness server not serving after Start: %v", err)
@@ -453,7 +452,7 @@ func TestServerStartServesAndShutsDown(t *testing.T) {
 	}
 
 	// The listener must be released: rebinding the same port must now succeed.
-	ln, err := net.Listen("tcp", net.JoinHostPort("0.0.0.0", port))
+	ln, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", port))
 	if err != nil {
 		t.Fatalf("listener not released after shutdown, rebind failed: %v", err)
 	}
@@ -469,7 +468,7 @@ func TestServerNoGoroutineLeak(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		port := freePort(t)
 		ctx, cancel := context.WithCancel(context.Background())
-		s := NewServer(port, nil, false, &fakeAuther{}, slog.New(slog.DiscardHandler))
+		s := NewServer(port, nil, false, &fakeAuthenticator{}, slog.New(slog.DiscardHandler))
 		if err := s.Start(ctx); err != nil {
 			cancel()
 			t.Fatalf("Start returned unexpected error: %v", err)
@@ -501,10 +500,10 @@ func stableGoroutines(t *testing.T) int {
 	return prev
 }
 
-// concurrentAuther records the maximum number of AuthenticateToken calls in
+// concurrentAuthenticator records the maximum number of AuthenticateToken calls in
 // flight simultaneously. It is used to prove the health-check lock is not held
 // across the authenticator call (#53).
-type concurrentAuther struct {
+type concurrentAuthenticator struct {
 	mu      sync.Mutex
 	current int
 	max     int
@@ -513,7 +512,7 @@ type concurrentAuther struct {
 	release chan struct{}
 }
 
-func (c *concurrentAuther) AuthenticateToken(_ context.Context, _ string) (*authenticator.Response, bool, error) {
+func (c *concurrentAuthenticator) AuthenticateToken(_ context.Context, _ string) (*authenticator.Response, bool, error) {
 	c.mu.Lock()
 	c.current++
 	if c.current > c.max {
@@ -532,7 +531,7 @@ func (c *concurrentAuther) AuthenticateToken(_ context.Context, _ string) (*auth
 	return nil, false, errors.New("oidc: authenticator not initialized")
 }
 
-func (c *concurrentAuther) maxConcurrent() int {
+func (c *concurrentAuthenticator) maxConcurrent() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.max
@@ -545,11 +544,11 @@ func (c *concurrentAuther) maxConcurrent() int {
 // causing the barrier read below to time out.
 func TestCheckDoesNotHoldLockDuringAuth(t *testing.T) {
 	issuerA := IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"}
-	auther := &concurrentAuther{
+	authn := &concurrentAuthenticator{
 		entered: make(chan struct{}, 2),
 		release: make(chan struct{}),
 	}
-	h := newTestHealthCheckWithAuther(true, auther, issuerA)
+	h := newTestHealthCheckWithAuthenticator(true, authn, issuerA)
 	// Check returns before reaching the authenticator unless it is serving.
 	h.SetServing()
 
@@ -565,17 +564,17 @@ func TestCheckDoesNotHoldLockDuringAuth(t *testing.T) {
 	// Both Check calls must reach the authenticator concurrently.
 	for i := 0; i < 2; i++ {
 		select {
-		case <-auther.entered:
+		case <-authn.entered:
 		case <-time.After(2 * time.Second):
-			close(auther.release)
+			close(authn.release)
 			t.Fatal("only one Check reached the authenticator: lock held across auth call")
 		}
 	}
 
-	close(auther.release)
+	close(authn.release)
 	wg.Wait()
 
-	if got := auther.maxConcurrent(); got < 2 {
+	if got := authn.maxConcurrent(); got < 2 {
 		t.Fatalf("expected >=2 concurrent authenticator calls, got %d", got)
 	}
 }
@@ -661,7 +660,7 @@ func TestReadinessServerFailedOnShutdownError(t *testing.T) {
 	defer logtest.AssertRegistered(t, cap)
 
 	port := freePort(t)
-	s := NewServer(port, nil, false, &fakeAuther{}, root)
+	s := NewServer(port, nil, false, &fakeAuthenticator{}, root)
 
 	// A handler that holds the connection open for longer than the shutdown
 	// budget, so Shutdown returns its context's deadline error.
@@ -682,7 +681,7 @@ func TestReadinessServerFailedOnShutdownError(t *testing.T) {
 
 	go func() {
 		//nolint:errcheck // the response never arrives; the request is only here to hold the connection.
-		http.Get("http://127.0.0.1:" + port + "/live")
+		http.Get(fmt.Sprintf("http://127.0.0.1:%d/live", port))
 	}()
 	<-inFlight
 
@@ -744,7 +743,7 @@ func TestReadinessServerWaitReturnsTheShutdownError(t *testing.T) {
 	defer logtest.AssertRegistered(t, cap)
 
 	port := freePort(t)
-	s := NewServer(port, nil, false, &fakeAuther{}, root)
+	s := NewServer(port, nil, false, &fakeAuthenticator{}, root)
 
 	// A handler that outlives the shutdown budget, so Shutdown returns its
 	// context's deadline error.
@@ -765,7 +764,7 @@ func TestReadinessServerWaitReturnsTheShutdownError(t *testing.T) {
 
 	go func() {
 		//nolint:errcheck // the response never arrives; the request is only here to hold the connection.
-		http.Get("http://127.0.0.1:" + port + "/live")
+		http.Get(fmt.Sprintf("http://127.0.0.1:%d/live", port))
 	}()
 	<-inFlight
 
@@ -790,7 +789,7 @@ func TestReadinessServerWaitBlocksUntilShutdownCompletes(t *testing.T) {
 	defer logtest.AssertRegistered(t, cap)
 
 	port := freePort(t)
-	s := NewServer(port, nil, false, &fakeAuther{}, root)
+	s := NewServer(port, nil, false, &fakeAuthenticator{}, root)
 
 	// The handler stays in flight well past the cancellation and only then
 	// lets the connection go idle, which is what Shutdown waits for. The
@@ -811,7 +810,7 @@ func TestReadinessServerWaitBlocksUntilShutdownCompletes(t *testing.T) {
 	}
 
 	go func() {
-		resp, err := http.Get("http://127.0.0.1:" + port + "/live")
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/live", port))
 		if err == nil {
 			resp.Body.Close()
 		}

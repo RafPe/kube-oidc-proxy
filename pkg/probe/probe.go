@@ -14,9 +14,11 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"k8s.io/apiserver/pkg/authentication/authenticator"
@@ -37,19 +39,6 @@ const (
 	// stuck connection cannot block process teardown indefinitely.
 	shutdownTimeout = time.Second * 5
 )
-
-// transientMarkers are substrings that unambiguously identify a transient
-// network/timeout failure while probing an issuer. The set is deliberately
-// conservative: a false "pending" is worse than a false "ready" here, because
-// in require-all mode a healthy issuer wrongly classified as pending would keep
-// the pod from ever becoming ready. Only phrases that cannot appear in an
-// ordinary JWT verification error belong here.
-var transientMarkers = []string{
-	"context deadline exceeded",
-	"connection refused",
-	"no such host",
-	"i/o timeout",
-}
 
 // Pending reasons classify why an issuer is not yet initialized. They are the
 // closed pending_reason value set carried by the oidc.issuer.pending record.
@@ -115,9 +104,9 @@ type HealthCheck struct {
 	// metrics receives the per-issuer and readiness gauges; nil records nothing.
 	metrics *metrics.Recorder
 
-	oidcAuther authenticator.Token
-	issuers    []IssuerReadiness
-	requireAll bool
+	oidcAuthenticator authenticator.Token
+	issuers           []IssuerReadiness
+	requireAll        bool
 
 	serving atomic.Bool
 
@@ -156,30 +145,31 @@ type Server struct {
 }
 
 // NewServer builds a readiness Server that probes the given issuers via
-// oidcAuther and serves the readiness endpoint on the given port. It does not
+// oidcAuthenticator and serves the readiness endpoint on port. It does not
 // bind or serve until Start is called.
 //
-// logger is the root logger: the probe reports under two components (readiness
-// for the latch, oidc for the per-issuer records) and derives both from it. A
-// nil logger yields one that discards every record, so a partially wired caller
+// root must be the process root logger, not a component-bound one: unlike its
+// sibling constructors, the probe reports under two components (readiness for
+// the latch, oidc for the per-issuer records) and derives both itself. A nil
+// root yields loggers that discard every record, so a partially wired caller
 // cannot panic on a probe.
-func NewServer(port string, issuers []IssuerReadiness, requireAll bool, oidcAuther authenticator.Token, logger *slog.Logger) *Server {
-	logger = logging.OrDiscard(logger)
+func NewServer(port int, issuers []IssuerReadiness, requireAll bool, oidcAuthenticator authenticator.Token, root *slog.Logger) *Server {
+	root = logging.OrDiscard(root)
 
 	h := &HealthCheck{
-		readinessLogger: logging.ForComponent(logger, logging.ComponentReadiness),
-		oidcLogger:      logging.ForComponent(logger, logging.ComponentOIDC),
-		oidcAuther:      oidcAuther,
-		issuers:         issuers,
-		requireAll:      requireAll,
-		initialized:     make(map[string]bool),
+		readinessLogger:   logging.ForComponent(root, logging.ComponentReadiness),
+		oidcLogger:        logging.ForComponent(root, logging.ComponentOIDC),
+		oidcAuthenticator: oidcAuthenticator,
+		issuers:           issuers,
+		requireAll:        requireAll,
+		initialized:       make(map[string]bool),
 	}
 
 	return &Server{
 		hc:              h,
 		shutdownTimeout: shutdownTimeout,
 		srv: &http.Server{
-			Addr:    net.JoinHostPort("0.0.0.0", port),
+			Addr:    net.JoinHostPort("0.0.0.0", strconv.Itoa(port)),
 			Handler: h.handler(),
 
 			// Bound how long a client may take to send its headers. The
@@ -300,13 +290,10 @@ func isTransient(err error) bool {
 	if errors.As(err, &netErr) && netErr.Timeout() {
 		return true
 	}
-	msg := err.Error()
-	for _, marker := range transientMarkers {
-		if strings.Contains(msg, marker) {
-			return true
-		}
-	}
-	return false
+	// The issuer is not listening yet, or its name does not resolve yet: both
+	// are what a cold cluster looks like while the issuer is still coming up.
+	var dnsErr *net.DNSError
+	return errors.Is(err, syscall.ECONNREFUSED) || errors.As(err, &dnsErr)
 }
 
 // pendingReason classifies the error from an issuer probe into the closed
@@ -361,7 +348,7 @@ func (h *HealthCheck) Check() error {
 	var newlyInitialized []string
 	var pending []pendingIssuer
 	for _, issuer := range toProbe {
-		_, _, err := h.oidcAuther.AuthenticateToken(ctx, issuer.FakeJWT)
+		_, _, err := h.oidcAuthenticator.AuthenticateToken(ctx, issuer.FakeJWT)
 		// The issuer counts as initialized only once its authenticator reaches
 		// token verification. A "not initialized" signal (JWKS not fetched yet)
 		// or a transient network/timeout error both leave it pending; anything

@@ -514,7 +514,7 @@ func TestOverCapImpersonationRejectedBeforeSubjectAccessReview(t *testing.T) {
 	p := newTestProxy(t)
 
 	reviewer := &countingReviewer{FakeReviewer: fakesubjectaccessreview.New(nil)}
-	sar, err := subjectaccessreview.New(reviewer, subjectaccessreview.DefaultTimeout, 0, 0, 2, slog.New(slog.DiscardHandler))
+	sar, err := subjectaccessreview.New(reviewer, subjectaccessreview.Config{Timeout: subjectaccessreview.DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: 2}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("creating subject access reviewer: %s", err)
 	}
@@ -565,7 +565,7 @@ func TestReservedIdentityRejectedBeforeSubjectAccessReview(t *testing.T) {
 	p := newTestProxy(t)
 
 	reviewer := &countingReviewer{FakeReviewer: fakesubjectaccessreview.New(nil)}
-	sar, err := subjectaccessreview.New(reviewer, subjectaccessreview.DefaultTimeout, 0, 0, subjectaccessreview.DefaultMaxHeaderValues, slog.New(slog.DiscardHandler))
+	sar, err := subjectaccessreview.New(reviewer, subjectaccessreview.Config{Timeout: subjectaccessreview.DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("creating subject access reviewer: %s", err)
 	}

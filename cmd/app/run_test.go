@@ -45,7 +45,7 @@ func writeTempFile(t *testing.T, content string) string {
 	return f.Name()
 }
 
-func TestOIDCAutherFromJWT_Construction(t *testing.T) {
+func TestOIDCAuthenticatorFromJWT_Construction(t *testing.T) {
 	emptyPrefix := ""
 	entry := apiserverapi.JWTAuthenticator{
 		Issuer: apiserverapi.Issuer{
@@ -67,17 +67,17 @@ func TestOIDCAutherFromJWT_Construction(t *testing.T) {
 		},
 	}
 
-	auther, err := oidcAutherFromJWT(
+	authn, err := oidcAuthenticatorFromJWT(
 		entry,
 		authenticationcel.NewDefaultCompiler(),
 		[]string{"RS256"},
 		&options.OIDCAuthenticationOptions{},
 	)
 	if err != nil {
-		t.Fatalf("oidcAutherFromJWT() unexpected error: %v", err)
+		t.Fatalf("oidcAuthenticatorFromJWT() unexpected error: %v", err)
 	}
-	if auther == nil {
-		t.Error("oidcAutherFromJWT() returned nil authenticator")
+	if authn == nil {
+		t.Error("oidcAuthenticatorFromJWT() returned nil authenticator")
 	}
 }
 
@@ -174,7 +174,7 @@ func TestJWTAuthenticatorFromOIDCOptions_RequiredClaims(t *testing.T) {
 	})
 }
 
-func TestBuildTokenAuther_SingleIssuer(t *testing.T) {
+func TestBuildTokenAuthenticator_SingleIssuer(t *testing.T) {
 	opts := &options.Options{
 		OIDCAuthentication: &options.OIDCAuthenticationOptions{
 			IssuerURL:     "https://vault.example.com/v1/identity/oidc",
@@ -186,19 +186,19 @@ func TestBuildTokenAuther_SingleIssuer(t *testing.T) {
 		AuthenticationConfig: &options.AuthenticationConfigOptions{},
 	}
 
-	auther, issuerURLs, err := buildTokenAuther(opts, discardLogger(), discardLogger())
+	authn, issuerURLs, err := buildTokenAuthenticator(opts, discardLogger(), discardLogger())
 	if err != nil {
-		t.Fatalf("buildTokenAuther() unexpected error: %v", err)
+		t.Fatalf("buildTokenAuthenticator() unexpected error: %v", err)
 	}
-	if auther == nil {
-		t.Error("buildTokenAuther() returned nil authenticator")
+	if authn == nil {
+		t.Error("buildTokenAuthenticator() returned nil authenticator")
 	}
 	if want := []string{opts.OIDCAuthentication.IssuerURL}; len(issuerURLs) != len(want) || issuerURLs[0] != want[0] {
-		t.Errorf("buildTokenAuther() issuerURLs = %v, want %v", issuerURLs, want)
+		t.Errorf("buildTokenAuthenticator() issuerURLs = %v, want %v", issuerURLs, want)
 	}
 }
 
-func TestBuildTokenAuther_AuthConfig(t *testing.T) {
+func TestBuildTokenAuthenticator_AuthConfig(t *testing.T) {
 	configContent := `
 apiVersion: apiserver.config.k8s.io/v1beta1
 kind: AuthenticationConfiguration
@@ -237,28 +237,28 @@ jwt:
 		},
 	}
 
-	auther, issuerURLs, err := buildTokenAuther(opts, discardLogger(), discardLogger())
+	authn, issuerURLs, err := buildTokenAuthenticator(opts, discardLogger(), discardLogger())
 	if err != nil {
-		t.Fatalf("buildTokenAuther() unexpected error: %v", err)
+		t.Fatalf("buildTokenAuthenticator() unexpected error: %v", err)
 	}
-	if auther == nil {
-		t.Error("buildTokenAuther() returned nil authenticator")
+	if authn == nil {
+		t.Error("buildTokenAuthenticator() returned nil authenticator")
 	}
 	want := []string{
 		"https://vault.example.com/v1/identity/oidc",
 		"https://issuer2.example.com/v1/identity/oidc",
 	}
 	if len(issuerURLs) != len(want) {
-		t.Fatalf("buildTokenAuther() issuerURLs = %v, want %v", issuerURLs, want)
+		t.Fatalf("buildTokenAuthenticator() issuerURLs = %v, want %v", issuerURLs, want)
 	}
 	for i := range want {
 		if issuerURLs[i] != want[i] {
-			t.Errorf("buildTokenAuther() issuerURLs[%d] = %q, want %q", i, issuerURLs[i], want[i])
+			t.Errorf("buildTokenAuthenticator() issuerURLs[%d] = %q, want %q", i, issuerURLs[i], want[i])
 		}
 	}
 }
 
-func TestBuildUnionAutherFromV1ConfigWithCEL(t *testing.T) {
+func TestBuildUnionAuthenticatorFromV1ConfigWithCEL(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "auth.yaml")
 	cfg := `apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
@@ -287,11 +287,11 @@ jwt:
 	opts := options.New()
 	opts.AuthenticationConfig.ConfigFile = path
 
-	auther, issuerURLs, err := buildTokenAuther(opts, discardLogger(), discardLogger())
+	authn, issuerURLs, err := buildTokenAuthenticator(opts, discardLogger(), discardLogger())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if auther == nil {
+	if authn == nil {
 		t.Fatal("expected a token authenticator, got nil")
 	}
 	want := []string{"https://issuer1.example.com", "https://issuer2.example.com"}
@@ -300,15 +300,15 @@ jwt:
 	}
 }
 
-func TestBuildTokenAuther_AuthConfig_InvalidFile(t *testing.T) {
+func TestBuildTokenAuthenticator_AuthConfig_InvalidFile(t *testing.T) {
 	opts := &options.Options{
 		OIDCAuthentication:   &options.OIDCAuthenticationOptions{SigningAlgs: []string{"RS256"}},
 		AuthenticationConfig: &options.AuthenticationConfigOptions{ConfigFile: "/does/not/exist.yaml"},
 	}
 
-	_, _, err := buildTokenAuther(opts, discardLogger(), discardLogger())
+	_, _, err := buildTokenAuthenticator(opts, discardLogger(), discardLogger())
 	if err == nil {
-		t.Error("buildTokenAuther() expected error for missing config file, got nil")
+		t.Error("buildTokenAuthenticator() expected error for missing config file, got nil")
 	}
 }
 
@@ -363,7 +363,7 @@ func TestCheckReservedIdentityPrefixes(t *testing.T) {
 	}
 }
 
-// discardLogger is the logger the buildTokenAuther cases pass: these tests
+// discardLogger is the logger the buildTokenAuthenticator cases pass: these tests
 // exercise authenticator construction, not the records it emits.
 func discardLogger() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
@@ -555,10 +555,10 @@ func TestMetricsBindFailureIsReportedAtStartup(t *testing.T) {
 	}
 }
 
-// TestBuildTokenAutherRefusesIssuersSharingAHost pins the placement: the
-// configuration is refused by buildTokenAuther itself, before it constructs
+// TestBuildTokenAuthenticatorRefusesIssuersSharingAHost pins the placement: the
+// configuration is refused by buildTokenAuthenticator itself, before it constructs
 // any authenticator.
-func TestBuildTokenAutherRefusesIssuersSharingAHost(t *testing.T) {
+func TestBuildTokenAuthenticatorRefusesIssuersSharingAHost(t *testing.T) {
 	config := filepath.Join(t.TempDir(), "auth.yaml")
 	content := `apiVersion: apiserver.config.k8s.io/v1beta1
 kind: AuthenticationConfiguration
@@ -585,15 +585,15 @@ jwt:
 	}
 	opts := options.New()
 	opts.AuthenticationConfig.ConfigFile = config
-	_, _, err := buildTokenAuther(opts, slog.New(slog.DiscardHandler), slog.New(slog.DiscardHandler))
+	_, _, err := buildTokenAuthenticator(opts, slog.New(slog.DiscardHandler), slog.New(slog.DiscardHandler))
 	if err == nil || !strings.Contains(err.Error(), "share the name \"idp.example.com\"") {
-		t.Fatalf("buildTokenAuther = %v, want the shared-host refusal", err)
+		t.Fatalf("buildTokenAuthenticator = %v, want the shared-host refusal", err)
 	}
 	// The name alone does not say which two entries have to be changed, so
 	// both colliding URLs belong in the refusal.
 	for _, want := range []string{"https://idp.example.com/realms/a", "https://idp.example.com/realms/b"} {
 		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("buildTokenAuther = %v, want it to name %q", err, want)
+			t.Fatalf("buildTokenAuthenticator = %v, want it to name %q", err, want)
 		}
 	}
 }
