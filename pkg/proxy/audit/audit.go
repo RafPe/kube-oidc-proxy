@@ -64,21 +64,34 @@ type Audit struct {
 	serverConfig *server.CompletedConfig
 }
 
-// New creates a new Audit struct to handle auditing for proxy requests. This
-// is mostly a wrapper for the apiserver auditing handlers to combine them with
-// the proxy.
+// Config is what the auditor needs from the command: the apiserver audit
+// options bound to the flags, the address and serving info the audit events
+// describe, and the recorder backend failures are counted on.
+type Config struct {
+	// Options is the apiserver's own audit configuration. Nil configures no
+	// backend, so a request chain built for a test still has every filter in
+	// place.
+	Options *apiserveroptions.AuditOptions
+
+	ExternalAddress string
+	SecureServing   *server.SecureServingInfo
+
+	// Metrics receives start and shutdown failures. Optional: nil records
+	// nothing.
+	Metrics *metrics.Recorder
+}
+
+// New creates the auditor for proxied requests: mostly a wrapper that combines
+// the apiserver's audit handlers with the proxy.
 //
-// opts is the apiserver's own audit configuration, as bound to the command's
-// flags; nil configures no backend, so a request chain built for a test still
-// has every filter in place. logger is the audit-component logger; a nil
-// logger yields one that discards every record, so a partially wired caller
-// cannot panic on the request path.
-func New(opts *apiserveroptions.AuditOptions, externalAddress string, secureServingInfo *server.SecureServingInfo, logger *slog.Logger) (*Audit, error) {
+// logger is the audit-component logger; a nil logger yields one that discards
+// every record, so a partially wired caller cannot panic on the request path.
+func New(cfg Config, logger *slog.Logger) (*Audit, error) {
 	logger = logging.OrDiscard(logger)
 
 	serverConfig := &server.Config{
-		ExternalAddress: externalAddress,
-		SecureServing:   secureServingInfo,
+		ExternalAddress: cfg.ExternalAddress,
+		SecureServing:   cfg.SecureServing,
 
 		LongRunningFunc: longRunningRequests,
 
@@ -97,7 +110,7 @@ func New(opts *apiserveroptions.AuditOptions, externalAddress string, secureServ
 	}
 
 	// We do not support dynamic auditing, so leave nil
-	if err := opts.ApplyTo(serverConfig); err != nil {
+	if err := cfg.Options.ApplyTo(serverConfig); err != nil {
 		return nil, err
 	}
 
@@ -107,15 +120,9 @@ func New(opts *apiserveroptions.AuditOptions, externalAddress string, secureServ
 
 	return &Audit{
 		logger:       logger,
+		metrics:      cfg.Metrics,
 		serverConfig: &completed,
 	}, nil
-}
-
-// WithMetrics sets the recorder start and shutdown failures are counted on.
-// A nil recorder records nothing.
-func (a *Audit) WithMetrics(r *metrics.Recorder) *Audit {
-	a.metrics = r
-	return a
 }
 
 // errorReporter is implemented by an audit backend that can say whether its
@@ -128,10 +135,10 @@ type errorReporter interface {
 	ShutdownErr() error
 }
 
-// Run starts the audit backend, if one is configured, and stops it when ctx is
-// cancelled. A backend that fails to start is an error the process cannot
+// Start starts the audit backend, if one is configured, and stops it when ctx
+// is cancelled. It returns once the backend is running. A backend that fails to start is an error the process cannot
 // serve correctly through: without it, proxied requests leave no audit trail.
-func (a *Audit) Run(ctx context.Context) error {
+func (a *Audit) Start(ctx context.Context) error {
 	if a.serverConfig.AuditBackend == nil {
 		return nil
 	}

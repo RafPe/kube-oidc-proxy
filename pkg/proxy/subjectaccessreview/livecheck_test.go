@@ -54,9 +54,9 @@ func TestCacheHitAndLiveCheckEvents(t *testing.T) {
 	defer logtest.AssertRegistered(t, cap)
 	s := newSARWithFakeReviewer(t, root, allowAll)
 	requester := &user.DefaultInfo{Name: "mmosley", Groups: []string{"group1"}}
-	ctx := logging.WithRequestID(logging.NewContext(context.Background(), root), "r1")
+	ctx := logging.WithRequestID(logging.WithLogger(context.Background(), root), "r1")
 
-	if _, err := s.checkRbacImpersonationAuthorization(ctx, userImpersonation("bob"), requester); err != nil {
+	if _, err := s.checkRbacImpersonationAuthorization(directCall(ctx, requester), userImpersonation("bob")); err != nil {
 		t.Fatal(err)
 	}
 	miss := cap.ByEvent(logging.EventCacheSARLookup)
@@ -71,7 +71,7 @@ func TestCacheHitAndLiveCheckEvents(t *testing.T) {
 		t.Fatal("duration_ms missing")
 	}
 
-	if _, err := s.checkRbacImpersonationAuthorization(ctx, userImpersonation("bob"), requester); err != nil {
+	if _, err := s.checkRbacImpersonationAuthorization(directCall(ctx, requester), userImpersonation("bob")); err != nil {
 		t.Fatal(err)
 	}
 	hits := cap.ByEvent(logging.EventCacheSARLookup)
@@ -111,7 +111,7 @@ func TestCacheBypassEvents(t *testing.T) {
 			ctx := logging.WithRequestID(context.Background(), "r1")
 
 			for i := range 2 {
-				if _, err := s.checkRbacImpersonationAuthorization(ctx, userImpersonation(tc.name), loggingTestRequester()); err != nil {
+				if _, err := s.checkRbacImpersonationAuthorization(directCall(ctx, loggingTestRequester()), userImpersonation(tc.name)); err != nil {
 					t.Fatalf("check %d: %v", i, err)
 				}
 			}
@@ -149,7 +149,7 @@ func TestCachedDenyDecisionEvents(t *testing.T) {
 	ctx := logging.WithRequestID(context.Background(), "r1")
 
 	for i := range 2 {
-		allowed, err := s.checkRbacImpersonationAuthorization(ctx, groupImpersonation("group3"), loggingTestRequester())
+		allowed, err := s.checkRbacImpersonationAuthorization(directCall(ctx, loggingTestRequester()), groupImpersonation("group3"))
 		if err != nil {
 			t.Fatalf("check %d: %v", i, err)
 		}
@@ -186,7 +186,7 @@ func TestLiveCheckFailureEvents(t *testing.T) {
 		s := newLoggingSAR(t, root, &fnReviewer{fn: failWith(errReview)}, DefaultTimeout, DefaultAllowCacheTTL, DefaultDenyCacheTTL)
 		ctx := logging.WithRequestID(context.Background(), "r1")
 
-		if _, err := s.checkRbacImpersonationAuthorization(ctx, userImpersonation("bob"), loggingTestRequester()); !errors.Is(err, ErrCreateSubjectAccessReview) {
+		if _, err := s.checkRbacImpersonationAuthorization(directCall(ctx, loggingTestRequester()), userImpersonation("bob")); !errors.Is(err, ErrCreateSubjectAccessReview) {
 			t.Fatalf("error = %v, want errors.Is(ErrCreateSubjectAccessReview)", err)
 		}
 
@@ -220,7 +220,7 @@ func TestLiveCheckFailureEvents(t *testing.T) {
 
 		done := make(chan error, 1)
 		go func() {
-			_, err := s.checkRbacImpersonationAuthorization(ctx, userImpersonation("bob"), loggingTestRequester())
+			_, err := s.checkRbacImpersonationAuthorization(directCall(ctx, loggingTestRequester()), userImpersonation("bob"))
 			done <- err
 		}()
 
@@ -367,7 +367,7 @@ func TestCoalescedLiveCheckEvent(t *testing.T) {
 
 	check := func(wg *sync.WaitGroup, err *error) {
 		defer wg.Done()
-		_, e := s.checkRbacImpersonationAuthorization(ctx, userImpersonation("bob"), loggingTestRequester())
+		_, e := s.checkRbacImpersonationAuthorization(directCall(ctx, loggingTestRequester()), userImpersonation("bob"))
 		*err = e
 	}
 
@@ -453,4 +453,11 @@ func TestImpersonationResolvedEvent(t *testing.T) {
 	if live.String("target_kind") != "user" {
 		t.Errorf("completed target_kind = %q, want user", live.String("target_kind"))
 	}
+}
+
+// directCall is the reviewCall for a check driven directly by a test: the
+// review runs on the request's own context, so the requester's deadline and
+// the review's are the same one.
+func directCall(ctx context.Context, requester user.Info) reviewCall {
+	return reviewCall{ctx: ctx, request: ctx, requester: requester}
 }

@@ -4,6 +4,7 @@ package helper
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"strings"
@@ -13,11 +14,10 @@ import (
 	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/klog/v2"
 )
 
 func (h *Helper) WaitForDeploymentReady(namespace, name string, timeout time.Duration) error {
-	klog.Infof("Waiting for Deployment to become ready %s/%s", namespace, name)
+	slog.Info("helper: waiting for deployment to become ready", slog.String("namespace", namespace), slog.String("name", name))
 
 	err := wait.PollUntilContextTimeout(context.Background(), time.Second*2, timeout, true, func(ctx context.Context) (bool, error) {
 		deploy, err := h.KubeClient.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
@@ -72,7 +72,7 @@ func (h *Helper) describeDeploymentFailure(namespace, name string, err error) er
 }
 
 func (h *Helper) WaitForPodReady(namespace, name string, timeout time.Duration) error {
-	klog.Infof("Waiting for Pod to become ready %s/%s", namespace, name)
+	slog.Info("helper: waiting for pod to become ready", slog.String("namespace", namespace), slog.String("name", name))
 
 	err := wait.PollUntilContextTimeout(context.Background(), time.Second*2, timeout, true, func(ctx context.Context) (bool, error) {
 		pod, err := h.KubeClient.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
@@ -94,8 +94,8 @@ func (h *Helper) WaitForPodReady(namespace, name string, timeout time.Duration) 
 		}
 
 		if !ready {
-			klog.Infof("helper: pod not ready %s/%s: %v",
-				pod.Namespace, pod.Name, pod.Status.Conditions)
+			slog.Info("helper: pod not ready",
+				slog.String("namespace", pod.Namespace), slog.String("name", pod.Name), slog.Any("conditions", pod.Status.Conditions))
 			return false, nil
 		}
 
@@ -114,12 +114,12 @@ func (h *Helper) WaitForPodReady(namespace, name string, timeout time.Duration) 
 }
 
 func (h *Helper) WaitForDeploymentToDelete(namespace, name string, timeout time.Duration) error {
-	klog.Infof("Waiting for Deployment to be deleted: %s/%s", namespace, name)
+	slog.Info("helper: waiting for deployment to be deleted", slog.String("namespace", namespace), slog.String("name", name))
 
 	err := wait.PollUntilContextTimeout(context.Background(), time.Second*2, timeout, true, func(ctx context.Context) (bool, error) {
 		_, err := h.KubeClient.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 		if k8sErrors.IsNotFound(err) {
-			klog.Infof("Deployment %s/%s deleted, waiting for pods", namespace, name)
+			slog.Info("helper: deployment deleted, waiting for pods", slog.String("namespace", namespace), slog.String("name", name))
 			pods, err := h.KubeClient.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
 
 			if err != nil {
@@ -128,12 +128,12 @@ func (h *Helper) WaitForDeploymentToDelete(namespace, name string, timeout time.
 
 			for _, pod := range pods.Items {
 				if strings.HasPrefix(pod.Name, name+"-") {
-					klog.Infof("Pod %s/%s still not terminated", namespace, pod.Name)
+					slog.Info("helper: pod still not terminated", slog.String("namespace", namespace), slog.String("name", pod.Name))
 					return false, nil
 				}
 			}
 
-			klog.Infof("All pods for %s/%s terminated", namespace, name)
+			slog.Info("helper: all pods terminated", slog.String("namespace", namespace), slog.String("name", name))
 			return true, nil
 		}
 
@@ -157,7 +157,7 @@ func (h *Helper) WaitForDeploymentToDelete(namespace, name string, timeout time.
 }
 
 func (h *Helper) WaitForURLToBeReady(url *url.URL, timeout time.Duration) error {
-	klog.Infof("Waiting for URL %s to be ready", url)
+	slog.Info("helper: waiting for URL to be ready", slog.String("url", url.String()))
 
 	return wait.PollUntilContextTimeout(context.Background(), time.Second*2, timeout, true, func(ctx context.Context) (bool, error) {
 		host := url.Host

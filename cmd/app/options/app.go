@@ -2,6 +2,8 @@
 package options
 
 import (
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/spf13/pflag"
@@ -11,6 +13,9 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/util/flags"
 )
 
+// KubeOIDCProxyOptions are the proxy's own flags: impersonation, readiness,
+// SubjectAccessReview and token passthrough behaviour, trusted proxies and the
+// extra headers sent upstream.
 type KubeOIDCProxyOptions struct {
 	DisableImpersonation bool
 	ReadinessProbePort   int
@@ -33,6 +38,8 @@ type KubeOIDCProxyOptions struct {
 	AllowedReservedGroups []string
 }
 
+// TokenPassthroughOptions configure passing a non-OIDC bearer token through to
+// the API server after a TokenReview accepts it.
 type TokenPassthroughOptions struct {
 	Audiences      []string
 	RequestTimeout time.Duration
@@ -45,16 +52,21 @@ type TokenPassthroughOptions struct {
 	CacheFailureTTL time.Duration
 }
 
+// ExtraHeaderOptions configure the extra user headers the proxy adds to every
+// impersonated request.
 type ExtraHeaderOptions struct {
 	EnableClientIPExtraUserHeader bool
 
 	ExtraUserHeaders map[string][]string
 }
 
+// NewKubeOIDCProxyOptions registers the Kube-OIDC-Proxy flag set on nfs and
+// returns the options it binds.
 func NewKubeOIDCProxyOptions(nfs *cliflag.NamedFlagSets) *KubeOIDCProxyOptions {
 	return new(KubeOIDCProxyOptions).AddFlags(nfs.FlagSet("Kube-OIDC-Proxy"))
 }
 
+// AddFlags binds the proxy flags to fs and returns k for chaining.
 func (k *KubeOIDCProxyOptions) AddFlags(fs *pflag.FlagSet) *KubeOIDCProxyOptions {
 	fs.BoolVar(&k.DisableImpersonation, "disable-impersonation", k.DisableImpersonation,
 		"(Alpha) Disable the impersonation of authenticated requests. All "+
@@ -141,7 +153,8 @@ func (k *KubeOIDCProxyOptions) AddFlags(fs *pflag.FlagSet) *KubeOIDCProxyOptions
 	return k
 }
 
-func (t *TokenPassthroughOptions) AddFlags(fs *pflag.FlagSet) {
+// AddFlags binds the token passthrough flags to fs and returns t for chaining.
+func (t *TokenPassthroughOptions) AddFlags(fs *pflag.FlagSet) *TokenPassthroughOptions {
 	fs.StringSliceVar(&t.Audiences, "token-passthrough-audiences", t.Audiences, ""+
 		"(Alpha) List of the identifiers that the resource server presented with the token "+
 		"identifies as. The resource server will verify that non OIDC tokens are intended "+
@@ -174,9 +187,12 @@ func (t *TokenPassthroughOptions) AddFlags(fs *pflag.FlagSet) {
 		"(Alpha) Requests with Bearer tokens that fail OIDC validation are tried against "+
 		"the API server using the Token Review endpoint. If successful, the request "+
 		"is sent on as is, with no impersonation.")
+
+	return t
 }
 
-func (e *ExtraHeaderOptions) AddFlags(fs *pflag.FlagSet) {
+// AddFlags binds the extra header flags to fs and returns e for chaining.
+func (e *ExtraHeaderOptions) AddFlags(fs *pflag.FlagSet) *ExtraHeaderOptions {
 	fs.BoolVar(&e.EnableClientIPExtraUserHeader, "extra-user-header-client-ip",
 		e.EnableClientIPExtraUserHeader, "(Alpha) If enabled, proxied requests will "+
 			"include the extra user header 'Impersonate-Extra-Remote-Client-IP: "+
@@ -188,4 +204,49 @@ func (e *ExtraHeaderOptions) AddFlags(fs *pflag.FlagSet) {
 		"(Alpha) A list of key value pairs of extra user headers to pass with "+
 			"proxied requests as part of the impersonated request. A single key can "+
 			"hold multiple values.")
+
+	return e
+}
+
+// Validate checks the proxy flags and returns every problem found, joined.
+func (k *KubeOIDCProxyOptions) Validate() error {
+	var errs []error
+
+	if k.DisableImpersonation &&
+		(k.ExtraHeaderOptions.EnableClientIPExtraUserHeader || len(k.ExtraHeaderOptions.ExtraUserHeaders) > 0) {
+		errs = append(errs, errors.New("cannot add extra user headers when impersonation disabled"))
+	}
+
+	if k.TokenPassthrough.Enabled && k.TokenPassthrough.RequestTimeout <= 0 {
+		errs = append(errs, errors.New("--token-passthrough-request-timeout must be greater than zero"))
+	}
+
+	// Zero is meaningful for the cache TTLs (it disables that class of
+	// caching); only negatives are configuration mistakes. Checked regardless
+	// of --token-passthrough — like --subject-access-review-timeout — so a
+	// broken value never lies dormant until the feature is switched on.
+	if k.TokenPassthrough.CacheSuccessTTL < 0 {
+		errs = append(errs, errors.New("--token-passthrough-cache-success-ttl must not be negative"))
+	}
+	if k.TokenPassthrough.CacheFailureTTL < 0 {
+		errs = append(errs, errors.New("--token-passthrough-cache-failure-ttl must not be negative"))
+	}
+
+	if k.SubjectAccessReviewTimeout <= 0 {
+		errs = append(errs, fmt.Errorf("--subject-access-review-timeout must be greater than 0, got %s", k.SubjectAccessReviewTimeout))
+	}
+
+	if k.SubjectAccessReviewAllowCacheTTL < 0 {
+		errs = append(errs, fmt.Errorf("--subject-access-review-cache-allow-ttl must not be negative (0 disables caching of allowed decisions), got %s", k.SubjectAccessReviewAllowCacheTTL))
+	}
+
+	if k.SubjectAccessReviewDenyCacheTTL < 0 {
+		errs = append(errs, fmt.Errorf("--subject-access-review-cache-deny-ttl must not be negative (0 disables caching of denied decisions), got %s", k.SubjectAccessReviewDenyCacheTTL))
+	}
+
+	if k.MaxImpersonationHeaderValues <= 0 {
+		errs = append(errs, fmt.Errorf("--max-impersonation-header-values must be greater than 0, got %d", k.MaxImpersonationHeaderValues))
+	}
+
+	return errors.Join(errs...)
 }

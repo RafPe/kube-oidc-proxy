@@ -50,7 +50,7 @@ func TestDebugHiddenAtVerbosityZero(t *testing.T) {
 }
 
 func TestFromContextReturnsDiscardWhenAbsent(t *testing.T) {
-	l := logging.FromContext(context.Background())
+	l := logging.LoggerFrom(context.Background())
 	if l == nil {
 		t.Fatal("nil logger")
 	}

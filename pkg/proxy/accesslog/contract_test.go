@@ -107,8 +107,8 @@ func emitFixture(t *testing.T, name string) map[string]any {
 			UID:    "alice-uid",
 			Groups: []string{"dev"},
 			Extra: map[string][]string{
-				UserHeaderClientIPKey: {"1.2.3.4"},
-				"email":               {"alice@example.com"},
+				reqctx.UserHeaderClientIPKey: {"1.2.3.4"},
+				"email":                      {"alice@example.com"},
 			},
 		},
 	}

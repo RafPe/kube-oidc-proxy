@@ -5,19 +5,19 @@ import (
 	"errors"
 
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
-
-	"github.com/rafpe/kube-oidc-proxy/test/environment"
 )
 
+// Config locates the cluster and the checkout the e2e suite runs against. It
+// holds only plain paths, so the process that provisions the environment can
+// hand it to every other Ginkgo process.
 type Config struct {
 	KubeConfigPath string
 	Kubectl        string
 
 	RepoRoot string
-
-	Environment *environment.Environment
 }
 
+// Validate reports every required path that is missing.
 func (c *Config) Validate() error {
 	var errs []error
 

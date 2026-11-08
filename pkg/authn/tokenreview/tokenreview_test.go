@@ -11,8 +11,8 @@ import (
 	authv1 "k8s.io/api/authentication/v1"
 	"k8s.io/apiserver/pkg/authentication/user"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/authn/tokenreview/fake"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/tokenreview/fake"
 )
 
 // testRequestContext returns a context carrying a request id, exactly as the
@@ -81,9 +81,7 @@ func TestAuthenticateToken(t *testing.T) {
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			tReviewer := &TokenReview{
-				reviewRequester: fake.New().WithCreate(test.reviewResp, test.errResp),
-			}
+			tReviewer := newReviewer(fake.New().WithCreate(test.reviewResp, test.errResp), Config{}, nil)
 
 			resp, ok, err := tReviewer.AuthenticateToken(testRequestContext(), "test-token")
 
@@ -113,10 +111,10 @@ func TestAuthenticateToken(t *testing.T) {
 	}
 }
 
-// TestReviewTimeout pins the timeout plumbing: New stores what it is given,
-// and the zero value falls back to the default so struct-literal construction
-// (as the tests above do) keeps the old behaviour.
-func TestReviewTimeout(t *testing.T) {
+// TestNewReviewerSettlesTheTimeout pins the timeout plumbing: the configured
+// value is used, and zero or negative falls back to the default at
+// construction, so the reviewer needs no zero-value accommodation.
+func TestNewReviewerSettlesTheTimeout(t *testing.T) {
 	tests := map[string]struct {
 		timeout time.Duration
 		exp     time.Duration
@@ -128,8 +126,7 @@ func TestReviewTimeout(t *testing.T) {
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			tr := &TokenReview{timeout: test.timeout}
-			if got := tr.reviewTimeout(); got != test.exp {
+			if got := newReviewer(fake.New(), Config{Timeout: test.timeout}, nil).timeout; got != test.exp {
 				t.Errorf("unexpected review timeout, exp=%s got=%s", test.exp, got)
 			}
 		})

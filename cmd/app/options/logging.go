@@ -26,11 +26,14 @@ type LoggingOptions struct {
 	nfs *cliflag.NamedFlagSets
 }
 
+// NewLoggingOptions registers the Logging flag set on nfs and returns the
+// options it binds.
 func NewLoggingOptions(nfs *cliflag.NamedFlagSets) *LoggingOptions {
 	l := &LoggingOptions{nfs: nfs}
 	return l.AddFlags(nfs.FlagSet("Logging"))
 }
 
+// AddFlags binds --logging-format to fs and returns o for chaining.
 func (o *LoggingOptions) AddFlags(fs *pflag.FlagSet) *LoggingOptions {
 	fs.StringVar((*string)(&o.Format), "logging-format", string(logging.FormatJSON), "Log output format, one of json or text.")
 	return o

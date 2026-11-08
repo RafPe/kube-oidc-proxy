@@ -245,7 +245,7 @@ func TestReservedIdentityEmitsAnomalyAndDeniedAccess(t *testing.T) {
 	reservedIdentityUser(p, []string{"system:masters"}, 1)
 	rw := httptest.NewRecorder()
 	req := reservedIdentityRequest(t, nil)
-	req = req.WithContext(logging.NewContext(req.Context(), p.requestLogger))
+	req = req.WithContext(logging.WithLogger(req.Context(), p.requestLogger))
 	p.withAuthenticateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(rw, req)
 	if p.logs.Only(t, logging.EventRequestAnomalyDetected).String("reason") != "reserved_identity" {
 		t.Fatal("anomaly not recorded")
@@ -260,7 +260,7 @@ func TestAnomalyIsRateLimitedButAccessRecordIsNot(t *testing.T) {
 	reservedIdentityUser(p, []string{"system:masters"}, 10)
 	for i := 0; i < 10; i++ {
 		req := reservedIdentityRequest(t, nil)
-		req = req.WithContext(logging.NewContext(req.Context(), p.requestLogger))
+		req = req.WithContext(logging.WithLogger(req.Context(), p.requestLogger))
 		p.withAuthenticateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(httptest.NewRecorder(), req)
 	}
 	if n := len(p.logs.ByEvent(logging.EventRequestAccessDecided)); n != 10 {

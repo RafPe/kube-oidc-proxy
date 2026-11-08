@@ -147,8 +147,7 @@ type SubjectAccessReview struct {
 	// logger is the sar-component logger every record this reviewer emits goes
 	// through, so each carries component=sar. The per-request correlation id
 	// travels on the call's context instead, never bound onto a logger, and
-	// Emit reads it from there. Never nil: New substitutes a discarding logger
-	// and log() covers a reviewer built without one.
+	// Emit reads it from there. Never nil: New substitutes a discarding logger.
 	logger *slog.Logger
 
 	// metrics receives the API-call and cache observations; nil records nothing.
@@ -197,6 +196,10 @@ type Config struct {
 	// MaxHeaderValues caps the impersonation header values one request may
 	// carry. See DefaultMaxHeaderValues.
 	MaxHeaderValues int
+
+	// Metrics receives the API-call and cache observations. Optional: nil
+	// records nothing.
+	Metrics *metrics.Recorder
 }
 
 // New returns a SubjectAccessReview that authorizes impersonation via reviewer,
@@ -217,18 +220,12 @@ func New(reviewer clientazv1.SubjectAccessReviewInterface, cfg Config, logger *s
 	}
 	return &SubjectAccessReview{
 		logger:          logging.OrDiscard(logger),
+		metrics:         cfg.Metrics,
 		reviewer:        reviewer,
 		sarTimeout:      cfg.Timeout,
 		maxHeaderValues: cfg.MaxHeaderValues,
 		cache:           newDecisionCache(cfg.AllowCacheTTL, cfg.DenyCacheTTL, decisionCacheSize, realClock{}),
 	}, nil
-}
-
-// WithMetrics sets the recorder the reviewer reports API calls and cache
-// lookups to. A nil recorder records nothing.
-func (s *SubjectAccessReview) WithMetrics(r *metrics.Recorder) *SubjectAccessReview {
-	s.metrics = r
-	return s
 }
 
 // realClock supplies wall-clock time to the decision cache; tests substitute a
@@ -335,9 +332,9 @@ func (s *SubjectAccessReview) CheckAuthorizedForImpersonation(req *http.Request,
 	// Derive one shared budget for the whole SAR sequence from the inbound
 	// request context, so client cancellation propagates and a stalled API
 	// server cannot stall the request indefinitely.
-	ctx, cancel := context.WithTimeout(req.Context(), s.sarTimeout)
+	budget, cancel := context.WithTimeout(req.Context(), s.sarTimeout)
 	defer cancel()
-	ctx = withRequesterErr(ctx, req.Context().Err)
+	call := reviewCall{ctx: budget, request: req.Context(), requester: requester}
 
 	targetUser := &user.DefaultInfo{
 		Groups: make([]string, 0),
@@ -352,14 +349,14 @@ func (s *SubjectAccessReview) CheckAuthorizedForImpersonation(req *http.Request,
 		switch {
 		case strings.EqualFold(key, transport.ImpersonateUserHeader):
 			target := userImpersonation(values[0])
-			if err := s.authorize(ctx, target, requester); err != nil {
+			if err := s.authorize(call, target); err != nil {
 				return nil, err
 			}
 			targetUser.Name = target.name
 
 		case strings.EqualFold(key, transport.ImpersonateUIDHeader):
 			target := uidImpersonation(values[0])
-			if err := s.authorize(ctx, target, requester); err != nil {
+			if err := s.authorize(call, target); err != nil {
 				return nil, err
 			}
 			targetUser.UID = target.name
@@ -367,7 +364,7 @@ func (s *SubjectAccessReview) CheckAuthorizedForImpersonation(req *http.Request,
 		case strings.EqualFold(key, transport.ImpersonateGroupHeader):
 			for _, group := range values {
 				target := groupImpersonation(group)
-				if err := s.authorize(ctx, target, requester); err != nil {
+				if err := s.authorize(call, target); err != nil {
 					return nil, err
 				}
 				targetUser.Groups = append(targetUser.Groups, group)
@@ -381,7 +378,7 @@ func (s *SubjectAccessReview) CheckAuthorizedForImpersonation(req *http.Request,
 			extraKey := strings.ToLower(key[len(transport.ImpersonateUserExtraHeaderPrefix):])
 			for _, value := range values {
 				target := extraImpersonation(extraKey, value)
-				if err := s.authorize(ctx, target, requester); err != nil {
+				if err := s.authorize(call, target); err != nil {
 					return nil, err
 				}
 				targetUser.Extra[extraKey] = append(targetUser.Extra[extraKey], value)
@@ -389,7 +386,7 @@ func (s *SubjectAccessReview) CheckAuthorizedForImpersonation(req *http.Request,
 		}
 	}
 
-	logging.Emit(ctx, s.log(), logging.EventAuthzImpersonationResolved,
+	logging.Emit(budget, s.logger, logging.EventAuthzImpersonationResolved,
 		slog.String("target_kind", string(TargetUser)),
 		slog.String("target_name", logging.Bound(targetUser.Name, logging.MaxIdentity)))
 
@@ -399,20 +396,13 @@ func (s *SubjectAccessReview) CheckAuthorizedForImpersonation(req *http.Request,
 // authorize asks the API server whether requester may impersonate target and
 // returns the typed denial when it may not. A dependency failure is returned
 // as is: it is not a verdict on the request.
-func (s *SubjectAccessReview) authorize(ctx context.Context, target impersonationTarget, requester user.Info) error {
-	allowed, err := s.checkRbacImpersonationAuthorization(ctx, target, requester)
+func (s *SubjectAccessReview) authorize(call reviewCall, target impersonationTarget) error {
+	allowed, err := s.checkRbacImpersonationAuthorization(call, target)
 	if err != nil {
 		return err
 	}
 	if !allowed {
-		return target.denial(requester)
+		return target.denial(call.requester)
 	}
 	return nil
-}
-
-// log returns the logger this reviewer emits through. It tolerates the
-// zero-valued reviewer tests build directly, which New would have given a
-// discarding logger.
-func (s *SubjectAccessReview) log() *slog.Logger {
-	return logging.OrDiscard(s.logger)
 }

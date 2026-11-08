@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -26,6 +27,8 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
+	"github.com/rafpe/kube-oidc-proxy/pkg/metrics/metricstest"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/accesslog"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 	fakesubjectaccessreview "github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview/fake"
 )
@@ -63,7 +66,7 @@ func TestOIDCSuccessEmitsAuthnOIDCSucceeded(t *testing.T) {
 	}))
 
 	req := reservedIdentityRequest(t, nil)
-	req = req.WithContext(logging.NewContext(req.Context(), p.requestLogger))
+	req = req.WithContext(logging.WithLogger(req.Context(), p.requestLogger))
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
 	if !served {
@@ -92,7 +95,7 @@ func TestTokenReviewDependencyFailureIsError(t *testing.T) {
 		nil, false, errors.New("apiserver unreachable"))
 
 	req := reservedIdentityRequest(t, nil)
-	req = req.WithContext(logging.NewContext(req.Context(), p.requestLogger))
+	req = req.WithContext(logging.WithLogger(req.Context(), p.requestLogger))
 
 	if ok := p.reviewToken(req); ok {
 		t.Fatal("a reviewer error passed the request through; the path must fail closed")
@@ -149,7 +152,7 @@ func TestOIDCFailureEmitsAuthnOIDCFailed(t *testing.T) {
 	req := reservedIdentityRequest(t, nil)
 	req.RemoteAddr = "8.8.8.8:1234"
 	req = reqctx.WithRequestID(req, "rid-1")
-	req = req.WithContext(logging.NewContext(logging.WithRequestID(req.Context(), "rid-1"), p.requestLogger))
+	req = req.WithContext(logging.WithLogger(logging.WithRequestID(req.Context(), "rid-1"), p.requestLogger))
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
 	rec := p.logs.Only(t, logging.EventAuthnOIDCFailed)
@@ -170,7 +173,7 @@ func TestOIDCFailureEmitsAuthnOIDCFailed(t *testing.T) {
 func TestMissingBearerOnTokenReviewIsDebug(t *testing.T) {
 	p := newTestProxy(t)
 	req := httptest.NewRequest(http.MethodGet, "/", nil) // no Authorization
-	req = req.WithContext(logging.NewContext(logging.WithRequestID(req.Context(), "rid-2"), p.requestLogger))
+	req = req.WithContext(logging.WithLogger(logging.WithRequestID(req.Context(), "rid-2"), p.requestLogger))
 	p.reviewToken(req)
 	rec := p.logs.Only(t, logging.EventAuthnTokenMissing)
 	if rec.String("level") != "DEBUG" {
@@ -190,7 +193,7 @@ func TestRejectedTokenReviewIsNotAFailure(t *testing.T) {
 	p := newTestProxy(t)
 	p.fakeReviewer.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(nil, false, nil)
 	req := reservedIdentityRequest(t, nil)
-	req = req.WithContext(logging.NewContext(req.Context(), p.requestLogger))
+	req = req.WithContext(logging.WithLogger(req.Context(), p.requestLogger))
 	if p.reviewToken(req) {
 		t.Fatal("a rejected token passed review")
 	}
@@ -237,7 +240,7 @@ func TestErrorHandlerClassifiesUpstreamTransportErrors(t *testing.T) {
 			rw := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			req = withTestRequestID(req)
-			req = req.WithContext(logging.NewContext(req.Context(), p.requestLogger))
+			req = req.WithContext(logging.WithLogger(req.Context(), p.requestLogger))
 			p.handleError(rw, req, c.err)
 			if rw.Code != http.StatusBadGateway {
 				t.Fatalf("status = %d, want 502", rw.Code)
@@ -313,5 +316,156 @@ func TestClientCancelAfterAdmissionRecordsOneAccessDecision(t *testing.T) {
 	}
 	if got := p.logs.Only(t, logging.EventRequestResponseCompleted).String("termination"); got != string(metrics.TerminationClientCancel) {
 		t.Errorf("termination = %q, want %q", got, metrics.TerminationClientCancel)
+	}
+}
+
+func TestUntrustedForwardedHeadersDroppedIsWarn(t *testing.T) {
+	p := newTestProxy(t)
+	h := p.withSanitizedForwardHeaders(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "203.0.113.9:1"
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+	req.Header.Set("X-Real-Ip", "1.2.3.4")
+	req = withTestRequestID(req)
+	req = req.WithContext(logging.WithLogger(req.Context(), p.requestLogger))
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	rec := p.logs.Only(t, logging.EventRequestHeadersDropped)
+	if rec.String("level") != "WARN" || !strings.Contains(fmt.Sprint(rec["dropped_headers"]), "x-forwarded-for") {
+		t.Fatalf("%v", rec)
+	}
+}
+
+// TestRealIPOnlyDroppedCarriesNoForwardedChain covers the one case in which
+// the dropped record has no forwarded chain to report: X-Real-Ip is always
+// removed, and the client sent no X-Forwarded-For at all.
+func TestRealIPOnlyDroppedCarriesNoForwardedChain(t *testing.T) {
+	p := newTestProxy(t)
+	h := p.withSanitizedForwardHeaders(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "203.0.113.9:1"
+	req.Header.Set("X-Real-Ip", "1.2.3.4")
+	req = withTestRequestID(req)
+	req = req.WithContext(logging.WithLogger(req.Context(), p.requestLogger))
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	rec := p.logs.Only(t, logging.EventRequestHeadersDropped)
+	if got := fmt.Sprint(rec["dropped_headers"]); got != "[x-real-ip]" {
+		t.Fatalf("dropped_headers = %s, want [x-real-ip]", got)
+	}
+	if _, ok := rec["forwarded_for_untrusted"]; ok {
+		t.Fatalf("record reports a forwarded chain the client never sent: %v", rec)
+	}
+}
+
+func TestTrustedForwardedHeadersRewritten(t *testing.T) {
+	p := newTestProxy(t)
+	p.trustedProxies = mustCIDRs(t, "10.0.0.0/8")
+	h := p.withSanitizedForwardHeaders(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.0.7:1"
+	req.Header.Set("X-Forwarded-For", "1.2.3.4, 10.0.0.9")
+	req = withTestRequestID(req)
+	req = req.WithContext(logging.WithLogger(req.Context(), p.requestLogger))
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	rec := p.logs.Only(t, logging.EventRequestHeadersRewritten)
+	if rec.String("src_ip") != "1.2.3.4" {
+		t.Fatal("rewritten record missing resolved src_ip")
+	}
+	// A rewrite is the trusted-proxy path working as designed, and it fires on
+	// every request behind a trusted ingress, so it is diagnostic rather than a
+	// warning.
+	if rec.String("level") != "DEBUG" {
+		t.Fatalf("rewritten record is %s, want DEBUG: %v", rec.String("level"), rec)
+	}
+
+	// The same request against a -v=0 logger produces nothing: at the default
+	// verbosity an operator sees only the records that need acting on.
+	quiet, quietLogs := logtest.New(t, 0)
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.0.7:1"
+	req.Header.Set("X-Forwarded-For", "1.2.3.4, 10.0.0.9")
+	req = withTestRequestID(req)
+	req = req.WithContext(logging.WithLogger(req.Context(), logging.ForComponent(quiet, logging.ComponentRequest)))
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	if n := len(quietLogs.ByEvent(logging.EventRequestHeadersRewritten)); n != 0 {
+		t.Fatalf("rewritten records at -v=0 = %d, want 0: %s", n, quietLogs.Raw())
+	}
+}
+
+const (
+	metricAuthnAttempts   = "kube_oidc_proxy_authentication_attempts_total"
+	metricAccessDecisions = "kube_oidc_proxy_access_decisions_total"
+)
+
+func TestRejectedTokenCountsAnOIDCAttemptAndADenial(t *testing.T) {
+	p := newTestProxy(t)
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "bad").Return(nil, false, errors.New("verify: signature invalid"))
+	req := watchRequest()
+	req.Header.Set("Authorization", "bearer bad")
+	rw := serveChain(t, p, req, noopHandler)
+	if rw.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rw.Code)
+	}
+	g := p.metrics.Gatherer()
+	if v, _ := metricstest.Value(t, g, metricAuthnAttempts, map[string]string{"auth_method": "oidc", "outcome": "rejected"}); v != 1 {
+		t.Fatalf("attempts{oidc,rejected} = %v, want 1", v)
+	}
+	if v, _ := metricstest.Value(t, g, metricAccessDecisions, map[string]string{"auth_method": "none", "decision": "deny", "reason": "unauthorized"}); v != 1 {
+		t.Fatalf("decisions{none,deny,unauthorized} = %v, want 1", v)
+	}
+}
+
+func TestMissingTokenCountsANoneAttempt(t *testing.T) {
+	p := newTestProxy(t)
+	rw := serveChain(t, p, watchRequest(), noopHandler)
+	if rw.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rw.Code)
+	}
+	if v, _ := metricstest.Value(t, p.metrics.Gatherer(), metricAuthnAttempts, map[string]string{"auth_method": "none", "outcome": "rejected"}); v != 1 {
+		t.Fatalf("attempts{none,rejected} = %v, want 1", v)
+	}
+}
+
+func TestOIDCFailureThenTokenReviewSuccessIsTwoAttempts(t *testing.T) {
+	p := newTestProxy(t)
+	p.config.TokenReview = true
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "svc").Return(nil, false, errors.New("not an oidc token"))
+	p.fakeReviewer.EXPECT().AuthenticateToken(gomock.Any(), "svc").
+		Return(&authenticator.Response{User: &authuser.DefaultInfo{Name: "system:serviceaccount:a:b"}}, true, nil)
+	req := watchRequest()
+	req.Header.Set("Authorization", "bearer svc")
+	serveChain(t, p, req, noopHandler)
+	g := p.metrics.Gatherer()
+	if v, _ := metricstest.Value(t, g, metricAuthnAttempts, map[string]string{"auth_method": "oidc", "outcome": "rejected"}); v != 1 {
+		t.Fatalf("attempts{oidc,rejected} = %v, want 1", v)
+	}
+	if v, _ := metricstest.Value(t, g, metricAuthnAttempts, map[string]string{"auth_method": "tokenreview", "outcome": "accepted"}); v != 1 {
+		t.Fatalf("attempts{tokenreview,accepted} = %v, want 1", v)
+	}
+}
+
+func TestTokenReviewDependencyFailureIsAnErrorAttempt(t *testing.T) {
+	p := newTestProxy(t)
+	p.config.TokenReview = true
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "svc").Return(nil, false, errors.New("not an oidc token"))
+	p.fakeReviewer.EXPECT().AuthenticateToken(gomock.Any(), "svc").Return(nil, false, errors.New("apiserver unreachable"))
+	req := watchRequest()
+	req.Header.Set("Authorization", "bearer svc")
+	serveChain(t, p, req, noopHandler)
+	if v, _ := metricstest.Value(t, p.metrics.Gatherer(), metricAuthnAttempts, map[string]string{"auth_method": "tokenreview", "outcome": "error"}); v != 1 {
+		t.Fatalf("attempts{tokenreview,error} = %v, want 1", v)
+	}
+}
+
+func TestRecordDecisionCountsAnAllowOnce(t *testing.T) {
+	p := newTestProxy(t)
+	req := reqctx.WithDecisionHolder(newFakeR())
+	p.recordDecision(req, accesslog.Decision{Allowed: true, AuthMethod: metrics.AuthMethodOIDC})
+	if v, _ := metricstest.Value(t, p.metrics.Gatherer(), metricAccessDecisions, map[string]string{"auth_method": "oidc", "decision": "allow", "reason": ""}); v != 1 {
+		t.Fatalf("decisions{oidc,allow} = %v, want 1", v)
+	}
+	// A second denial on the same request is not a second decision.
+	p.logDenied(req, metrics.ReasonUpstreamError, errors.New("late"))
+	if v, _ := metricstest.Value(t, p.metrics.Gatherer(), metricAccessDecisions, map[string]string{"decision": "deny"}); v != 0 {
+		t.Fatalf("a second decision was counted: %v", v)
 	}
 }

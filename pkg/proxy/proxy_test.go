@@ -4,13 +4,16 @@ package proxy
 import (
 	stdcontext "context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,15 +22,15 @@ import (
 	"k8s.io/apiserver/pkg/authentication/request/bearertoken"
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/server"
+	"k8s.io/client-go/rest"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/authn"
+	"github.com/rafpe/kube-oidc-proxy/pkg/authn/authntest"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/accesslog"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/audit"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/hooks"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/mocks"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 	fakesubjectaccessreview "github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview/fake"
@@ -36,8 +39,8 @@ import (
 type fakeProxy struct {
 	ctrl *gomock.Controller
 
-	fakeToken    *mocks.MockToken
-	fakeReviewer *mocks.MockToken
+	fakeToken    *authntest.MockToken
+	fakeReviewer *authntest.MockToken
 	fakeRT       *fakeRT
 
 	// logs is the capture every component of this proxy writes into.
@@ -158,8 +161,8 @@ var frozenClock = time.Unix(0, 0)
 
 func newTestProxy(t *testing.T) *fakeProxy {
 	ctrl := gomock.NewController(t)
-	fakeToken := mocks.NewMockToken(ctrl)
-	fakeReviewer := mocks.NewMockToken(ctrl)
+	fakeToken := authntest.NewMockToken(ctrl)
+	fakeReviewer := authntest.NewMockToken(ctrl)
 	fakeRT := &fakeRT{t: t}
 
 	// One root, one capture: every component the fake proxy owns writes into
@@ -198,7 +201,7 @@ func newTestProxy(t *testing.T) *fakeProxy {
 			clientTransport:          fakeRT,
 			noAuthClientTransport:    fakeRT,
 			config:                   new(Config),
-			hooks:                    hooks.New(logging.ForComponent(root, logging.ComponentShutdown)),
+			shutdownLogger:           logging.ForComponent(root, logging.ComponentShutdown),
 			// A frozen clock and a small burst make the warning limiter
 			// deterministic: a test asserts on exactly how many warnings
 			// survive sampling, without sleeping for a refill.
@@ -206,14 +209,11 @@ func newTestProxy(t *testing.T) *fakeProxy {
 		},
 	}
 
-	auditor, err := audit.New(nil, "0.0.0.0:1234", new(server.SecureServingInfo),
-		logging.ForComponent(root, logging.ComponentAudit))
+	auditor, err := audit.New(audit.Config{ExternalAddress: "0.0.0.0:1234", SecureServing: new(server.SecureServingInfo)}, logging.ForComponent(root, logging.ComponentAudit))
 	if err != nil {
 		t.Fatalf("failed to create auditor: %s", err)
 	}
 	p.auditor = auditor
-
-	p.handleError = p.newErrorHandler()
 
 	return p
 }
@@ -259,4 +259,214 @@ func withDiscardLoggers(p *Proxy) *Proxy {
 		}
 	}
 	return p
+}
+
+// TestShutdownReportsTheAuditFlushAsAHook pins the pre-shutdown record: one
+// proxy.hook.completed naming the audit backend step, with its duration.
+func TestShutdownReportsTheAuditFlushAsAHook(t *testing.T) {
+	p := newTestProxy(t)
+
+	if err := p.Shutdown(); err != nil {
+		t.Fatalf("Shutdown() = %v", err)
+	}
+
+	rec := p.logs.Only(t, logging.EventProxyHookCompleted)
+	if got := rec.String("hook"); got != "AuditBackend" {
+		t.Errorf("hook = %q, want AuditBackend", got)
+	}
+	if got := rec.String("component"); got != string(logging.ComponentShutdown) {
+		t.Errorf("component = %q, want shutdown", got)
+	}
+}
+
+// TestWaitBeforeStartReturns pins that a Proxy that never served has nothing to
+// wait for.
+func TestWaitBeforeStartReturns(t *testing.T) {
+	newTestProxy(t).Wait()
+}
+
+// sweep collects every capture a test in this package built through
+// newTestProxy. Holding them all at the end catches an unregistered event, a
+// wrong component or level and a missing required attribute in whatever record
+// any test happened to produce, without every test having to assert it.
+var sweep struct {
+	mu       sync.Mutex
+	captures []*logtest.Capture
+}
+
+// trackCapture adds a capture to the package sweep. It is called from
+// newTestProxy, so tests running in parallel append concurrently.
+func trackCapture(c *logtest.Capture) {
+	sweep.mu.Lock()
+	defer sweep.mu.Unlock()
+	sweep.captures = append(sweep.captures, c)
+}
+
+// TestMain runs the package's tests and then holds every record they emitted
+// against the event registry. It runs after m.Run so the captures are complete.
+func TestMain(m *testing.M) {
+	code := m.Run()
+
+	tb := new(sweepTB)
+	sweep.mu.Lock()
+	for _, c := range sweep.captures {
+		logtest.AssertRegistered(tb, c)
+	}
+	sweep.mu.Unlock()
+
+	if tb.failed && code == 0 {
+		code = 1
+	}
+	os.Exit(code)
+}
+
+// sweepTB is the testing.TB AssertRegistered reports through when there is no
+// *testing.T to report through, which is the case inside TestMain. The
+// embedded interface stays nil: every method the assertion uses is overridden
+// below, and a call to any other one is a programming error worth the panic.
+type sweepTB struct {
+	testing.TB
+	failed bool
+}
+
+func (s *sweepTB) Helper() {}
+
+func (s *sweepTB) Errorf(format string, args ...any) {
+	s.failed = true
+	fmt.Fprintf(os.Stderr, "events sweep: "+format+"\n", args...)
+}
+
+func (s *sweepTB) Error(args ...any) {
+	s.Errorf("%s", fmt.Sprint(args...))
+}
+
+func (s *sweepTB) Fatalf(format string, args ...any) {
+	s.Errorf(format, args...)
+}
+
+func (s *sweepTB) Fatal(args ...any) {
+	s.Error(args...)
+}
+
+// validDeps returns a Dependencies value with every required field populated,
+// so individual tests can null out one field to exercise validation.
+func validDeps(t *testing.T) Dependencies {
+	t.Helper()
+
+	ctrl := gomock.NewController(t)
+	root, _ := logtest.New(t, 0)
+
+	sar, err := subjectaccessreview.New(fakesubjectaccessreview.New(nil), subjectaccessreview.Config{Timeout: subjectaccessreview.DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, logging.ForComponent(root, logging.ComponentSAR))
+	if err != nil {
+		t.Fatalf("building SubjectAccessReview: %v", err)
+	}
+
+	return Dependencies{
+		Logger:                 root,
+		RestConfig:             &rest.Config{Host: "https://kube.example.com"},
+		OIDCTokenAuthenticator: authntest.NewMockToken(ctrl),
+		AuditOptions:           nil,
+		SubjectAccessReviewer:  sar,
+		SecureServingInfo:      new(server.SecureServingInfo),
+		// ExternalAddress must be set: audit.New derives the audit server's
+		// external address from it and fatals when it is empty with no listener.
+		Config: &Config{ExternalAddress: "0.0.0.0:1234"},
+	}
+}
+
+// TestNewRequiresLogger pins that the root logger is a required dependency:
+// there is no package-level logger to fall back on, so a caller that forgets to
+// inject one must fail at construction rather than emit nothing at runtime.
+func TestNewRequiresLogger(t *testing.T) {
+	deps := validDeps(t)
+	deps.Logger = nil
+	if _, err := New(deps); err == nil || !strings.Contains(err.Error(), "Logger is required") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestNewValidatesDependencies(t *testing.T) {
+	tests := map[string]struct {
+		mutate  func(d *Dependencies)
+		wantErr bool
+	}{
+		"valid dependencies succeed": {
+			mutate:  func(d *Dependencies) {},
+			wantErr: false,
+		},
+		"nil RestConfig fails": {
+			mutate:  func(d *Dependencies) { d.RestConfig = nil },
+			wantErr: true,
+		},
+		"nil OIDCTokenAuthenticator fails": {
+			mutate:  func(d *Dependencies) { d.OIDCTokenAuthenticator = nil },
+			wantErr: true,
+		},
+		"nil SubjectAccessReviewer fails": {
+			mutate:  func(d *Dependencies) { d.SubjectAccessReviewer = nil },
+			wantErr: true,
+		},
+		"nil SecureServingInfo fails": {
+			mutate:  func(d *Dependencies) { d.SecureServingInfo = nil },
+			wantErr: true,
+		},
+		"nil Config fails": {
+			mutate:  func(d *Dependencies) { d.Config = nil },
+			wantErr: true,
+		},
+		"TokenReview enabled without reviewer fails": {
+			mutate: func(d *Dependencies) {
+				d.Config = &Config{TokenReview: true, ExternalAddress: "0.0.0.0:1234"}
+				d.TokenReviewer = nil
+			},
+			wantErr: true,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			deps := validDeps(t)
+			tc.mutate(&deps)
+
+			p, err := New(deps)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("New(%s): expected an error, got nil", name)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("New(%s): unexpected error: %v", name, err)
+			}
+			if p == nil {
+				t.Fatalf("New(%s): expected a Proxy, got nil", name)
+			}
+		})
+	}
+}
+
+// TestNewCopiesExtraUserHeaders verifies New copies the caller's Config and its
+// ExtraUserHeaders map at the construction boundary, so mutating the caller's
+// map afterward cannot change proxy behavior.
+func TestNewCopiesExtraUserHeaders(t *testing.T) {
+	deps := validDeps(t)
+	src := map[string][]string{"team": {"platform"}}
+	deps.Config = &Config{ExtraUserHeaders: src, ExternalAddress: "0.0.0.0:1234"}
+
+	p, err := New(deps)
+	if err != nil {
+		t.Fatalf("New returned unexpected error: %v", err)
+	}
+
+	// Mutate the caller-owned map and slice after construction.
+	src["team"][0] = "mutated"
+	src["injected"] = []string{"value"}
+
+	got := p.config.ExtraUserHeaders
+	if v := got["team"][0]; v != "platform" {
+		t.Fatalf("proxy shares slice storage with caller: got %q want %q", v, "platform")
+	}
+	if _, ok := got["injected"]; ok {
+		t.Fatal("proxy shares map storage with caller: injected key leaked into proxy config")
+	}
 }

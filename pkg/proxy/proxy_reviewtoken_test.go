@@ -11,7 +11,7 @@ import (
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/user"
 
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/mocks"
+	"github.com/rafpe/kube-oidc-proxy/pkg/authn/authntest"
 )
 
 // TestReviewToken pins the fail-closed contract of the token-review fallback:
@@ -26,7 +26,7 @@ func TestReviewToken(t *testing.T) {
 
 		// reviewerResult configures the mocked authenticator.Token. When nil,
 		// the reviewer must not be called at all.
-		reviewerResult func(m *mocks.MockToken)
+		reviewerResult func(m *authntest.MockToken)
 
 		expPassthrough bool
 	}{
@@ -37,7 +37,7 @@ func TestReviewToken(t *testing.T) {
 
 		"a reviewer error denies (fail closed)": {
 			authHeader: "bearer " + bearer,
-			reviewerResult: func(m *mocks.MockToken) {
+			reviewerResult: func(m *authntest.MockToken) {
 				m.EXPECT().AuthenticateToken(gomock.Any(), bearer).
 					Return(nil, false, errors.New("apiserver unreachable"))
 			},
@@ -46,7 +46,7 @@ func TestReviewToken(t *testing.T) {
 
 		"an unauthenticated result denies": {
 			authHeader: "bearer " + bearer,
-			reviewerResult: func(m *mocks.MockToken) {
+			reviewerResult: func(m *authntest.MockToken) {
 				m.EXPECT().AuthenticateToken(gomock.Any(), bearer).
 					Return(nil, false, nil)
 			},
@@ -55,7 +55,7 @@ func TestReviewToken(t *testing.T) {
 
 		"an authenticated result passes through": {
 			authHeader: "bearer " + bearer,
-			reviewerResult: func(m *mocks.MockToken) {
+			reviewerResult: func(m *authntest.MockToken) {
 				m.EXPECT().AuthenticateToken(gomock.Any(), bearer).
 					Return(&authenticator.Response{User: &user.DefaultInfo{Name: "user-a"}}, true, nil)
 			},
@@ -66,7 +66,7 @@ func TestReviewToken(t *testing.T) {
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
-			reviewer := mocks.NewMockToken(ctrl)
+			reviewer := authntest.NewMockToken(ctrl)
 			if test.reviewerResult != nil {
 				test.reviewerResult(reviewer)
 			}
@@ -97,7 +97,7 @@ func TestWithTokenReviewStatusCodes(t *testing.T) {
 
 		// reviewerResult configures the mocked authenticator.Token. When nil,
 		// the reviewer must not be called at all.
-		reviewerResult func(m *mocks.MockToken)
+		reviewerResult func(m *authntest.MockToken)
 
 		expCode       int
 		expNextCalled bool
@@ -117,7 +117,7 @@ func TestWithTokenReviewStatusCodes(t *testing.T) {
 		"a reviewer error answers 401 (fail closed)": {
 			tokenReviewEnabled: true,
 			authHeader:         "bearer " + bearer,
-			reviewerResult: func(m *mocks.MockToken) {
+			reviewerResult: func(m *authntest.MockToken) {
 				m.EXPECT().AuthenticateToken(gomock.Any(), bearer).
 					Return(nil, false, errors.New("apiserver unreachable"))
 			},
@@ -127,7 +127,7 @@ func TestWithTokenReviewStatusCodes(t *testing.T) {
 		"an unauthenticated result answers 401": {
 			tokenReviewEnabled: true,
 			authHeader:         "bearer " + bearer,
-			reviewerResult: func(m *mocks.MockToken) {
+			reviewerResult: func(m *authntest.MockToken) {
 				m.EXPECT().AuthenticateToken(gomock.Any(), bearer).
 					Return(nil, false, nil)
 			},
@@ -137,7 +137,7 @@ func TestWithTokenReviewStatusCodes(t *testing.T) {
 		"an authenticated result reaches the next handler": {
 			tokenReviewEnabled: true,
 			authHeader:         "bearer " + bearer,
-			reviewerResult: func(m *mocks.MockToken) {
+			reviewerResult: func(m *authntest.MockToken) {
 				m.EXPECT().AuthenticateToken(gomock.Any(), bearer).
 					Return(&authenticator.Response{User: &user.DefaultInfo{Name: "user-a"}}, true, nil)
 			},
@@ -149,7 +149,7 @@ func TestWithTokenReviewStatusCodes(t *testing.T) {
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
-			reviewer := mocks.NewMockToken(ctrl)
+			reviewer := authntest.NewMockToken(ctrl)
 			if test.reviewerResult != nil {
 				test.reviewerResult(reviewer)
 			}
@@ -160,7 +160,6 @@ func TestWithTokenReviewStatusCodes(t *testing.T) {
 				config:        &Config{TokenReview: test.tokenReviewEnabled},
 				access:        access,
 			})
-			p.handleError = p.newErrorHandler()
 
 			nextCalled := false
 			next := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {

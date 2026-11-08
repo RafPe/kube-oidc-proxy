@@ -11,9 +11,9 @@ import (
 
 	authv1 "k8s.io/api/authentication/v1"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/authn/tokenreview/fake"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/tokenreview/fake"
 )
 
 // authenticatedResponse is the API-server reply newCachedWithFake serves:
@@ -25,10 +25,7 @@ func authenticatedResponse(*authv1.TokenReview) (*authv1.TokenReview, error) {
 // newLoggingTokenReview builds a live reviewer that logs through root as the
 // tokenreview component, so the records a review emits are observable.
 func newLoggingTokenReview(root *slog.Logger, create func(*authv1.TokenReview) (*authv1.TokenReview, error)) *TokenReview {
-	return &TokenReview{
-		logger:          logging.ForComponent(root, logging.ComponentTokenReview),
-		reviewRequester: &fake.FakeReviewer{CreateFn: create},
-	}
+	return newReviewer(&fake.FakeReviewer{CreateFn: create}, Config{}, logging.ForComponent(root, logging.ComponentTokenReview))
 }
 
 // newCachedWithFake builds a cached reviewer that logs through root as the
@@ -37,7 +34,7 @@ func newLoggingTokenReview(root *slog.Logger, create func(*authv1.TokenReview) (
 func newCachedWithFake(t *testing.T, root *slog.Logger, create func(*authv1.TokenReview) (*authv1.TokenReview, error)) *cachedTokenReview {
 	t.Helper()
 
-	return newCachedTokenReview(newLoggingTokenReview(root, create), 10*time.Second, 10*time.Second, tokenCacheSize)
+	return newCachedTokenReview(newLoggingTokenReview(root, create), 10*time.Second, 10*time.Second, tokenCacheSize, realClock{})
 }
 
 // TestCachedTokenReviewEvents pins the records the cache layer emits: one
@@ -47,7 +44,7 @@ func TestCachedTokenReviewEvents(t *testing.T) {
 	root, cap := logtest.New(t, 2)
 	defer logtest.AssertRegistered(t, cap)
 	tr := newCachedWithFake(t, root, authenticatedResponse)
-	ctx := logging.WithRequestID(logging.NewContext(context.Background(), root), "r1")
+	ctx := logging.WithRequestID(logging.WithLogger(context.Background(), root), "r1")
 	_, _, _ = tr.AuthenticateToken(ctx, "s3cr3t-tok-value")
 	_, _, _ = tr.AuthenticateToken(ctx, "s3cr3t-tok-value")
 	l := cap.ByEvent(logging.EventCacheTokenReviewLookup)

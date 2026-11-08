@@ -74,11 +74,11 @@ func TestIssuerNameNeverReachesImpersonationHeaders(t *testing.T) {
 	chain := p.withAuthenticateRequest(p.withImpersonateRequest(http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
 		served = true
 
-		conf := reqctx.ImpersonationConfig(req)
+		conf := reqctx.ImpersonationOf(req)
 		if conf == nil {
 			t.Fatal("no impersonation config on an authenticated request")
 		}
-		for k, vs := range conf.ImpersonationConfig.Extra {
+		for k, vs := range conf.Outbound.Extra {
 			if mentionsIssuer(k) {
 				t.Errorf("issuer leaked into impersonation extra key %q", k)
 			}

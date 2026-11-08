@@ -30,14 +30,13 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
 	"github.com/rafpe/kube-oidc-proxy/pkg/authn"
+	"github.com/rafpe/kube-oidc-proxy/pkg/authn/tokenreview"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/probe"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/tokenreview"
 	"github.com/rafpe/kube-oidc-proxy/pkg/util/signals"
-	"github.com/rafpe/kube-oidc-proxy/pkg/util/token"
 )
 
 // checkReservedIdentityPrefixes refuses to start when the operator's own
@@ -132,7 +131,7 @@ func startMetrics(ctx context.Context, opts *options.Options, root *slog.Logger)
 		GoVersion: runtime.Version(),
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("building the metrics recorder: %w", err)
 	}
 	server := metrics.NewServer(opts.Metrics.BindAddress, recorder,
 		logging.ForComponent(root, logging.ComponentMetrics))
@@ -154,7 +153,7 @@ func buildRESTConfig(opts *options.Options, cmd *cobra.Command) (*rest.Config, e
 		restConfig, err = rest.InClusterConfig()
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("building the API server client configuration: %w", err)
 	}
 
 	if opts.Client.KubeClientBurst > 0 {
@@ -167,24 +166,52 @@ func buildRESTConfig(opts *options.Options, cmd *cobra.Command) (*rest.Config, e
 }
 
 // buildTokenReviewer builds the token passthrough reviewer, or returns nil
-// when passthrough is disabled. The reviewer is wrapped in a token result
+// when passthrough is disabled. The reviewer is fronted by a token result
 // cache so repeated reviews of the same token (e.g. request storms during an
-// OIDC issuer outage) do not each cost an API server round trip; NewCached
-// returns the bare reviewer when both TTLs are zero.
-func buildTokenReviewer(opts *options.Options, restConfig *rest.Config, recorder *metrics.Recorder, root *slog.Logger) (authenticator.Token, error) {
+// OIDC issuer outage) do not each cost an API server round trip.
+func buildTokenReviewer(opts *options.Options, kubeclient kubernetes.Interface, recorder *metrics.Recorder, root *slog.Logger) authenticator.Token {
 	if !opts.App.TokenPassthrough.Enabled {
-		return nil, nil
+		return nil
 	}
-	reviewer, err := tokenreview.New(restConfig, opts.App.TokenPassthrough.Audiences,
-		opts.App.TokenPassthrough.RequestTimeout,
-		logging.ForComponent(root, logging.ComponentTokenReview))
-	if err != nil {
-		return nil, err
+	return tokenreview.New(kubeclient.AuthenticationV1().TokenReviews(), tokenreview.Config{
+		Audiences:       opts.App.TokenPassthrough.Audiences,
+		Timeout:         opts.App.TokenPassthrough.RequestTimeout,
+		CacheSuccessTTL: opts.App.TokenPassthrough.CacheSuccessTTL,
+		CacheFailureTTL: opts.App.TokenPassthrough.CacheFailureTTL,
+		Metrics:         recorder,
+	}, logging.ForComponent(root, logging.ComponentTokenReview))
+}
+
+// proxyConfig maps the parsed flags onto the proxy's configuration.
+func proxyConfig(opts *options.Options) *proxy.Config {
+	return &proxy.Config{
+		TokenReview:          opts.App.TokenPassthrough.Enabled,
+		DisableImpersonation: opts.App.DisableImpersonation,
+
+		FlushInterval:   opts.App.FlushInterval,
+		ExternalAddress: opts.SecureServing.BindAddress.String(),
+
+		ExtraUserHeaders:                opts.App.ExtraHeaderOptions.ExtraUserHeaders,
+		ExtraUserHeadersClientIPEnabled: opts.App.ExtraHeaderOptions.EnableClientIPExtraUserHeader,
+
+		TrustedProxies: opts.App.TrustedProxies,
+
+		AllowedReservedGroups: opts.App.AllowedReservedGroups,
 	}
-	reviewer.WithMetrics(recorder)
-	return tokenreview.NewCached(reviewer,
-		opts.App.TokenPassthrough.CacheSuccessTTL,
-		opts.App.TokenPassthrough.CacheFailureTTL), nil
+}
+
+// issuerProbes pairs every configured issuer with the fake JWT the readiness
+// probe sends it.
+func issuerProbes(issuerURLs []string) ([]probe.IssuerReadiness, error) {
+	probes := make([]probe.IssuerReadiness, 0, len(issuerURLs))
+	for _, issuerURL := range issuerURLs {
+		readiness, err := probe.NewIssuerReadiness(issuerURL)
+		if err != nil {
+			return nil, fmt.Errorf("building the readiness probe for %q: %w", issuerURL, err)
+		}
+		probes = append(probes, readiness)
+	}
+	return probes, nil
 }
 
 // authenticatorConfig maps the parsed flags onto the authenticator package's
@@ -209,33 +236,30 @@ func authenticatorConfig(opts *options.Options) authn.Config {
 	}
 }
 
-// drain runs the shutdown sequence and joins every failure it collects, so a
-// listener that never released its port and a hook that could not flush both
-// reach the exit status. No step is skipped because an earlier one failed.
+// drain runs the shutdown sequence once the proxy has stopped serving, and
+// joins every failure it collects, so a listener that never released its port
+// and a hook that could not flush both reach the exit status. No step is
+// skipped because an earlier one failed.
 //
-// The order matters. The readiness listener stops first, so nothing new is
-// admitted. The pre-shutdown hooks run next; they report through the recorder
-// -- the audit backend increments the operation="shutdown" counter from inside
-// one -- so the metrics listener stops last, and a scrape landing in the drain
-// window can still read what they recorded.
+// The order matters. The readiness listener began stopping when the stop
+// signal cancelled its context, so nothing new is admitted; drain waits for it
+// first. The proxy's pre-shutdown step runs next; it reports through the
+// recorder -- the audit backend increments the operation="shutdown" counter --
+// so the metrics listener stops last, and a scrape landing in the drain window
+// can still read what it recorded.
 //
-// stopMetrics and waitMetrics are nil when the metrics listener is disabled.
-func drain(stopProbe func(), waitProbe func() error, runHooks func() error, stopMetrics, waitMetrics func() error) error {
-	stopProbe()
+// stopMetrics stops the metrics listener and waits for it; with the listener
+// disabled it is noStep, so every step is always called.
+func drain(waitProbe, shutdownProxy, stopMetrics func() error) error {
 	probeErr := waitProbe()
+	shutdownErr := shutdownProxy()
+	metricsErr := stopMetrics()
 
-	hooksErr := runHooks()
-
-	var metricsErr error
-	if stopMetrics != nil {
-		metricsErr = stopMetrics()
-	}
-	if waitMetrics != nil {
-		metricsErr = errors.Join(metricsErr, waitMetrics())
-	}
-
-	return errors.Join(probeErr, metricsErr, hooksErr)
+	return errors.Join(probeErr, shutdownErr, metricsErr)
 }
+
+// noStep is the drain step for a listener that was never started.
+func noStep() error { return nil }
 
 // ErrReported marks an error that was already emitted on the log stream. main
 // exits non-zero on it without printing it again, so a failure after the
@@ -298,7 +322,7 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 			// reports through the configured stream. Nothing is serving before
 			// this point, so a signal that arrives earlier ends the process
 			// with Go's default behaviour.
-			stopCh := signals.Handler(logging.ForComponent(root, logging.ComponentShutdown))
+			stopCh := signals.NotifyStop(logging.ForComponent(root, logging.ComponentShutdown))
 
 			// Derive a context cancelled when the app stop signal fires, giving the
 			// metrics and readiness servers an explicit shutdown path.
@@ -348,33 +372,14 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 				return fail(err)
 			}
 
-			tokenReviewer, err := buildTokenReviewer(opts, restConfig, recorder, root)
+			// One client serves both reviewers' API calls.
+			kubeclient, err := kubernetes.NewForConfig(restConfig)
 			if err != nil {
-				return fail(err)
+				return fail(fmt.Errorf("building the API server client: %w", err))
 			}
 
 			secureServingInfo := new(server.SecureServingInfo)
 			if err := opts.SecureServing.ApplyTo(&secureServingInfo); err != nil {
-				return fail(err)
-			}
-
-			proxyConfig := &proxy.Config{
-				TokenReview:          opts.App.TokenPassthrough.Enabled,
-				DisableImpersonation: opts.App.DisableImpersonation,
-
-				FlushInterval:   opts.App.FlushInterval,
-				ExternalAddress: opts.SecureServing.BindAddress.String(),
-
-				ExtraUserHeaders:                opts.App.ExtraHeaderOptions.ExtraUserHeaders,
-				ExtraUserHeadersClientIPEnabled: opts.App.ExtraHeaderOptions.EnableClientIPExtraUserHeader,
-
-				TrustedProxies: opts.App.TrustedProxies,
-
-				AllowedReservedGroups: opts.App.AllowedReservedGroups,
-			}
-
-			kubeclient, err := kubernetes.NewForConfig(restConfig)
-			if err != nil {
 				return fail(err)
 			}
 
@@ -385,13 +390,13 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 					AllowCacheTTL:   opts.App.SubjectAccessReviewAllowCacheTTL,
 					DenyCacheTTL:    opts.App.SubjectAccessReviewDenyCacheTTL,
 					MaxHeaderValues: opts.App.MaxImpersonationHeaderValues,
+					Metrics:         recorder,
 				},
 				logging.ForComponent(root, logging.ComponentSAR),
 			)
 			if err != nil {
 				return fail(err)
 			}
-			subjectAccessReviewer.WithMetrics(recorder)
 
 			tokenAuthenticator, issuerURLs, err := authn.Build(authenticatorConfig(opts),
 				logging.ForComponent(root, logging.ComponentOIDC), startupLogger)
@@ -400,15 +405,15 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 			}
 
 			p, err := proxy.New(proxy.Dependencies{
-				Logger:                root,
-				RestConfig:            restConfig,
-				TokenAuthenticator:    tokenAuthenticator,
-				AuditOptions:          opts.Audit.AuditOptions,
-				TokenReviewer:         tokenReviewer,
-				SubjectAccessReviewer: subjectAccessReviewer,
-				SecureServingInfo:     secureServingInfo,
-				Config:                proxyConfig,
-				Metrics:               recorder,
+				Logger:                 root,
+				RestConfig:             restConfig,
+				OIDCTokenAuthenticator: tokenAuthenticator,
+				AuditOptions:           opts.Audit,
+				TokenReviewer:          buildTokenReviewer(opts, kubeclient, recorder, root),
+				SubjectAccessReviewer:  subjectAccessReviewer,
+				SecureServingInfo:      secureServingInfo,
+				Config:                 proxyConfig(opts),
+				Metrics:                recorder,
 			})
 			if err != nil {
 				return fail(err)
@@ -421,32 +426,27 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 				readinessMode: probe.ReadinessMode(opts.App.ReadinessRequireAllIssuers),
 			})
 
-			// Build a per-issuer readiness probe entry.
-			issuerProbes := make([]probe.IssuerReadiness, 0, len(issuerURLs))
-			for _, issuerURL := range issuerURLs {
-				fakeJWT, err := token.FakeJWT(issuerURL)
-				if err != nil {
-					return fail(err)
-				}
-				issuerProbes = append(issuerProbes, probe.IssuerReadiness{
-					IssuerURL: issuerURL,
-					FakeJWT:   fakeJWT,
-				})
+			probes, err := issuerProbes(issuerURLs)
+			if err != nil {
+				return fail(err)
 			}
 
-			// Start readiness probe with an explicit lifecycle. Start binds
-			// synchronously so a port-in-use failure surfaces here at startup.
-			probeServer := probe.NewServer(opts.App.ReadinessProbePort,
-				issuerProbes, opts.App.ReadinessRequireAllIssuers,
-				p.OIDCTokenAuthenticator(),
-				root)
-			probeServer.WithMetrics(recorder)
+			// Start binds synchronously so a port-in-use failure surfaces here
+			// at startup.
+			probeServer := probe.NewServer(probe.Config{
+				// The kubelet probes the pod IP, so the listener binds every
+				// interface.
+				Addr:              net.JoinHostPort("0.0.0.0", strconv.Itoa(opts.App.ReadinessProbePort)),
+				Issuers:           probes,
+				RequireAllIssuers: opts.App.ReadinessRequireAllIssuers,
+				Authenticator:     tokenAuthenticator,
+				Metrics:           recorder,
+			}, root)
 			if err := probeServer.Start(ctx); err != nil {
 				return fail(err)
 			}
 
-			waitCh, listenerStoppedCh, err := p.Run(ctx)
-			if err != nil {
+			if err := p.Start(ctx); err != nil {
 				return fail(err)
 			}
 			servingSince := time.Now()
@@ -460,26 +460,24 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 			// listener. Only now may the pod be advertised as ready: the port
 			// has been bound since SecureServing.ApplyTo above, so before this
 			// point a client connect succeeds and then sits in the backlog
-			// unanswered, and a failure in Run would leave it that way.
+			// unanswered, and a failure in Start would leave it that way.
 			probeServer.SetServing()
 
-			<-waitCh
-			<-listenerStoppedCh
+			p.Wait()
 
 			logging.Emit(context.Background(), serverLogger, logging.EventProxyServerStopped,
 				slog.Int64("duration_ms", time.Since(servingSince).Milliseconds()))
 
-			// Stop the listeners, wait for their ports to be released and run
-			// the pre-shutdown hooks. Errors are collected, not returned: every
-			// step runs whatever the previous one reported. Each failure was
-			// already named on the log stream by its owner.
+			// Wait for the listeners to release their ports and run the
+			// pre-shutdown step. Errors are collected, not returned: every step
+			// runs whatever the previous one reported. Each failure was already
+			// named on the log stream by its owner.
 			shutdownSince := time.Now()
-			var stopMetrics, waitMetrics func() error
+			stopMetrics := noStep
 			if metricsServer != nil {
-				stopMetrics = func() error { cancelMetrics(); return nil }
-				waitMetrics = metricsServer.Wait
+				stopMetrics = func() error { cancelMetrics(); return metricsServer.Wait() }
 			}
-			drainErr := drain(cancel, probeServer.Wait, p.RunPreShutdownHooks, stopMetrics, waitMetrics)
+			drainErr := drain(probeServer.Wait, p.Shutdown, stopMetrics)
 
 			// Reported whether or not a hook failed: the milestone is that the
 			// teardown finished, and the failing hook has already named itself.

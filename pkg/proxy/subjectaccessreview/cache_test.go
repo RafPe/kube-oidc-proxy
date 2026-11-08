@@ -82,6 +82,7 @@ func failWith(err error) func(*azv1.SubjectAccessReview) (*azv1.SubjectAccessRev
 // supplied clock, bypassing New only to inject deterministic time.
 func newCachedSAR(r clientazv1.SubjectAccessReviewInterface, allowTTL, denyTTL time.Duration, clk utilcache.Clock) *SubjectAccessReview {
 	return &SubjectAccessReview{
+		logger:          slog.New(slog.DiscardHandler),
 		reviewer:        r,
 		sarTimeout:      DefaultTimeout,
 		maxHeaderValues: DefaultMaxHeaderValues,

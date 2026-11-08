@@ -106,15 +106,15 @@ func RequestIDFrom(ctx context.Context) string {
 	return id
 }
 
-// NewContext returns a context carrying the request-scoped logger.
-func NewContext(ctx context.Context, l *slog.Logger) context.Context {
+// WithLogger returns a context carrying the request-scoped logger.
+func WithLogger(ctx context.Context, l *slog.Logger) context.Context {
 	return context.WithValue(ctx, ctxKey{}, l)
 }
 
-// FromContext returns the logger carried by the context, or a logger that
+// LoggerFrom returns the logger carried by the context, or a logger that
 // discards every record when there is none. It never returns nil, so call
 // sites need no guard.
-func FromContext(ctx context.Context) *slog.Logger {
+func LoggerFrom(ctx context.Context) *slog.Logger {
 	l, _ := ctx.Value(ctxKey{}).(*slog.Logger)
 	return OrDiscard(l)
 }

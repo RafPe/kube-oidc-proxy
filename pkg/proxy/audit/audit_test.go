@@ -140,7 +140,7 @@ func TestLongRunningRequests(t *testing.T) {
 func TestRequestInfoLongRunning(t *testing.T) {
 	// An external address with a port, since without one Complete() insists on
 	// deriving the port from a secure serving info this test has no use for.
-	auditor, err := New(apiserveroptions.NewAuditOptions(), "127.0.0.1:6443", nil, slog.New(slog.DiscardHandler))
+	auditor, err := New(Config{Options: apiserveroptions.NewAuditOptions(), ExternalAddress: "127.0.0.1:6443", SecureServing: nil}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("failed to create auditor: %s", err)
 	}
@@ -328,7 +328,7 @@ func (f *fakeBackend) ShutdownErr() error                           { return f.s
 func newTestAuditWithBackend(t testing.TB, root *slog.Logger, backend audit.Backend) *Audit {
 	t.Helper()
 
-	a, err := New(apiserveroptions.NewAuditOptions(), "127.0.0.1:6443", nil,
+	a, err := New(Config{Options: apiserveroptions.NewAuditOptions(), ExternalAddress: "127.0.0.1:6443", SecureServing: nil},
 		logging.ForComponent(root, logging.ComponentAudit))
 	if err != nil {
 		t.Fatalf("failed to create auditor: %s", err)
@@ -377,7 +377,7 @@ func TestRunReportsBackendStarted(t *testing.T) {
 	defer logtest.AssertRegistered(t, cap)
 	a := newTestAuditWithBackend(t, root, &fakeBackend{})
 
-	if err := a.Run(context.Background()); err != nil {
+	if err := a.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -398,7 +398,7 @@ func TestRunReportsBackendFailed(t *testing.T) {
 	defer logtest.AssertRegistered(t, cap)
 	a := newTestAuditWithBackend(t, root, &fakeBackend{runErr: errors.New("webhook unreachable")})
 
-	err := a.Run(context.Background())
+	err := a.Start(context.Background())
 	if err == nil {
 		t.Fatal("Run reported success for a backend that failed to start")
 	}
@@ -423,7 +423,7 @@ func TestRunWithoutBackendIsSilent(t *testing.T) {
 	defer logtest.AssertRegistered(t, cap)
 	a := newTestAuditWithBackend(t, root, nil)
 
-	if err := a.Run(context.Background()); err != nil {
+	if err := a.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.Shutdown(); err != nil {
@@ -440,7 +440,7 @@ func TestRunWithoutBackendIsSilent(t *testing.T) {
 // silently collapse the k8s_verb metric label to "other" and the scope label
 // to "none" for the whole core group.
 func TestWithRequestInfoResolvesCoreGroupAsResourceRequest(t *testing.T) {
-	a, err := New(nil, "0.0.0.0:1234", new(server.SecureServingInfo), slog.New(slog.DiscardHandler))
+	a, err := New(Config{ExternalAddress: "0.0.0.0:1234", SecureServing: new(server.SecureServingInfo)}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}

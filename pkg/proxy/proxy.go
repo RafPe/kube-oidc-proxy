@@ -27,7 +27,6 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/accesslog"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/audit"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/hooks"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 	utiltoken "github.com/rafpe/kube-oidc-proxy/pkg/util/token"
@@ -58,11 +57,8 @@ var (
 	errReservedIdentity = errors.New("reserved identity in authentication token")
 )
 
-type errorHandlerFn func(http.ResponseWriter, *http.Request, error)
-
 type Proxy struct {
 	oidcRequestAuthenticator *bearertoken.Authenticator
-	tokenAuthenticator       authenticator.Token
 	tokenReviewer            authenticator.Token
 	subjectAccessReviewer    *subjectaccessreview.SubjectAccessReview
 	secureServingInfo        *server.SecureServingInfo
@@ -118,8 +114,13 @@ type Proxy struct {
 	// --metrics-bind-address) records nothing and never nil-checks.
 	metrics *metrics.Recorder
 
-	hooks       *hooks.Hooks
-	handleError errorHandlerFn
+	// shutdownLogger reports the pre-shutdown steps Shutdown runs.
+	shutdownLogger *slog.Logger
+
+	// stopped and listenerStopped are closed once serving has fully stopped
+	// and once the listener has stopped accepting; Start sets them and Wait
+	// blocks on them.
+	stopped, listenerStopped <-chan struct{}
 }
 
 // Dependencies bundles the collaborators a Proxy needs. Using a named struct
@@ -137,8 +138,11 @@ type Dependencies struct {
 	// required.
 	Logger *slog.Logger
 
-	RestConfig         *rest.Config
-	TokenAuthenticator authenticator.Token
+	RestConfig *rest.Config
+
+	// OIDCTokenAuthenticator verifies the bearer tokens issued by the
+	// configured OIDC issuers.
+	OIDCTokenAuthenticator authenticator.Token
 
 	// AuditOptions is the apiserver audit configuration the auditor applies.
 	// Optional: nil configures no audit backend.
@@ -164,8 +168,8 @@ func New(deps Dependencies) (*Proxy, error) {
 	if deps.RestConfig == nil {
 		return nil, errors.New("proxy: RestConfig is required")
 	}
-	if deps.TokenAuthenticator == nil {
-		return nil, errors.New("proxy: TokenAuthenticator is required")
+	if deps.OIDCTokenAuthenticator == nil {
+		return nil, errors.New("proxy: OIDCTokenAuthenticator is required")
 	}
 	if deps.SubjectAccessReviewer == nil {
 		return nil, errors.New("proxy: SubjectAccessReviewer is required")
@@ -204,12 +208,37 @@ func New(deps Dependencies) (*Proxy, error) {
 		return nil, err
 	}
 
-	auditor, err := audit.New(deps.AuditOptions, cfg.ExternalAddress, deps.SecureServingInfo,
-		logging.ForComponent(deps.Logger, logging.ComponentAudit))
+	auditor, err := audit.New(audit.Config{
+		Options:         deps.AuditOptions,
+		ExternalAddress: cfg.ExternalAddress,
+		SecureServing:   deps.SecureServingInfo,
+		Metrics:         deps.Metrics,
+	}, logging.ForComponent(deps.Logger, logging.ComponentAudit))
 	if err != nil {
 		return nil, err
 	}
-	auditor.WithMetrics(deps.Metrics)
+
+	clientTransport, err := roundTripperForRestConfig(deps.RestConfig)
+	if err != nil {
+		return nil, err
+	}
+	// A request forwarded without impersonation carries no credentials of the
+	// proxy's own: it goes out on a transport built without them.
+	var noAuthClientTransport http.RoundTripper
+	if cfg.DisableImpersonation || cfg.TokenReview {
+		noAuthClientTransport, err = roundTripperForRestConfig(&rest.Config{
+			APIPath: deps.RestConfig.APIPath,
+			Host:    deps.RestConfig.Host,
+			Timeout: deps.RestConfig.Timeout,
+			TLSClientConfig: rest.TLSClientConfig{
+				CAFile: deps.RestConfig.CAFile,
+				CAData: deps.RestConfig.CAData,
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	// One request-component logger serves both the access record and every
 	// other record the request path emits, so they share a destination and a
@@ -223,70 +252,60 @@ func New(deps Dependencies) (*Proxy, error) {
 		oidcLogger:               logging.ForComponent(deps.Logger, logging.ComponentOIDC),
 		tokenReviewLogger:        logging.ForComponent(deps.Logger, logging.ComponentTokenReview),
 		upstreamLogger:           logging.ForComponent(deps.Logger, logging.ComponentUpstream),
-		hooks:                    hooks.New(logging.ForComponent(deps.Logger, logging.ComponentShutdown)),
+		shutdownLogger:           logging.ForComponent(deps.Logger, logging.ComponentShutdown),
+		clientTransport:          clientTransport,
+		noAuthClientTransport:    noAuthClientTransport,
 		tokenReviewer:            deps.TokenReviewer,
 		subjectAccessReviewer:    deps.SubjectAccessReviewer,
 		secureServingInfo:        deps.SecureServingInfo,
 		config:                   &cfg,
 		trustedProxies:           trustedProxies,
 		allowedReservedGroups:    allowedReservedGroups,
-		oidcRequestAuthenticator: bearertoken.New(deps.TokenAuthenticator),
-		tokenAuthenticator:       deps.TokenAuthenticator,
+		oidcRequestAuthenticator: bearertoken.New(deps.OIDCTokenAuthenticator),
 		auditor:                  auditor,
 		access:                   accesslog.NewAccessLogger(requestLogger),
 		warnLimiter:              logging.NewLimiter(warnLimiterRate, warnLimiterBurst, warnLimiterInterval, nil),
 	}, nil
 }
 
-// Run wires up the reverse-proxy handler chain and starts serving until ctx is
-// cancelled. It returns a channel that is closed once serving has fully stopped
-// and a second channel that is closed once the listener has stopped accepting.
-func (p *Proxy) Run(ctx context.Context) (<-chan struct{}, <-chan struct{}, error) {
-	clientRT, err := p.roundTripperForRestConfig(p.restConfig)
+// Start wires up the reverse-proxy handler chain, starts the audit backend and
+// starts serving until ctx is cancelled. It returns once the listener is
+// serving; Wait blocks until it has stopped.
+func (p *Proxy) Start(ctx context.Context) error {
+	upstream, err := url.Parse(p.restConfig.Host)
 	if err != nil {
-		return nil, nil, err
-	}
-	p.clientTransport = clientRT
-
-	// A request forwarded without impersonation carries no credentials of the
-	// proxy's own: it goes out on a transport built without them.
-	if p.config.DisableImpersonation || p.config.TokenReview {
-		noAuthClientRT, err := p.roundTripperForRestConfig(&rest.Config{
-			APIPath: p.restConfig.APIPath,
-			Host:    p.restConfig.Host,
-			Timeout: p.restConfig.Timeout,
-			TLSClientConfig: rest.TLSClientConfig{
-				CAFile: p.restConfig.CAFile,
-				CAData: p.restConfig.CAData,
-			},
-		})
-		if err != nil {
-			return nil, nil, err
-		}
-
-		p.noAuthClientTransport = noAuthClientRT
+		return fmt.Errorf("failed to parse url: %w", err)
 	}
 
-	url, err := url.Parse(p.restConfig.Host)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to parse url: %w", err)
-	}
-
-	p.handleError = p.newErrorHandler()
-
-	proxyHandler := httputil.NewSingleHostReverseProxy(url)
+	proxyHandler := httputil.NewSingleHostReverseProxy(upstream)
 	proxyHandler.Transport = p
 	proxyHandler.ErrorHandler = p.handleError
 	proxyHandler.FlushInterval = p.config.FlushInterval
 
-	go p.flushWarnLimiter(ctx) //nolint:gosec // G118: the final flush runs after ctx is cancelled and must not be scoped to it.
-
-	waitCh, listenerStoppedCh, err := p.serve(ctx, proxyHandler)
-	if err != nil {
-		return nil, nil, err
+	if err := p.auditor.Start(ctx); err != nil {
+		return err
 	}
 
-	return waitCh, listenerStoppedCh, nil
+	go p.flushWarnLimiter(ctx) //nolint:gosec // G118: the final flush runs after ctx is cancelled and must not be scoped to it.
+
+	// The apiserver's Serve stops on a closed channel, which is what the
+	// context's Done channel is.
+	stopped, listenerStopped, err := p.secureServingInfo.Serve(p.withHandlers(proxyHandler), time.Second*60, ctx.Done())
+	if err != nil {
+		return err
+	}
+	p.stopped, p.listenerStopped = stopped, listenerStopped
+	return nil
+}
+
+// Wait blocks until the listener has stopped accepting and serving has fully
+// stopped. Before a successful Start there is nothing to wait for.
+func (p *Proxy) Wait() {
+	if p.stopped == nil {
+		return
+	}
+	<-p.listenerStopped
+	<-p.stopped
 }
 
 // flushWarnLimiter reports what the warning limiter dropped, once per interval
@@ -307,34 +326,16 @@ func (p *Proxy) flushWarnLimiter(ctx context.Context) {
 	}
 }
 
-func (p *Proxy) serve(ctx context.Context, handler http.Handler) (<-chan struct{}, <-chan struct{}, error) {
-	handler = p.withHandlers(handler)
-
-	if err := p.auditor.Run(ctx); err != nil {
-		return nil, nil, err
-	}
-	// The backend flushes on shutdown, after the listener has stopped.
-	p.hooks.AddPreShutdownHook("AuditBackend", p.auditor.Shutdown)
-
-	// securely serve using serving config. The apiserver's Serve stops on a
-	// closed channel, which is what the context's Done channel is.
-	waitCh, listenerStoppedCh, err := p.secureServingInfo.Serve(handler, time.Second*60, ctx.Done())
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return waitCh, listenerStoppedCh, nil
-}
-
 // RoundTrip is called last and is used to manipulate the forwarded request using context.
 func (p *Proxy) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Here we have successfully authenticated so now need to determine whether
 	// we need use impersonation or not.
 
 	// With impersonation disabled or the token passed through, the request is
-	// forwarded as it stands: the passthrough path left the client's bearer
-	// token in place, and the disabled path forwards the authenticated request
-	// without credentials of its own.
+	// forwarded with no credentials of the proxy's own. The passthrough path
+	// left the client's bearer token in place, so the API server
+	// authenticates it; on the disabled path OIDC authentication consumed the
+	// token, so the request arrives anonymous.
 	if reqctx.NoImpersonation(req) {
 		p.recordDecision(req, accesslog.Decision{
 			Allowed:    true,
@@ -344,20 +345,20 @@ func (p *Proxy) RoundTrip(req *http.Request) (*http.Response, error) {
 		return p.noAuthClientTransport.RoundTrip(req)
 	}
 
-	impersonationConf := reqctx.ImpersonationConfig(req)
-	if impersonationConf == nil {
+	impersonation := reqctx.ImpersonationOf(req)
+	if impersonation == nil {
 		return nil, errNoImpersonationConfig
 	}
 
-	rt := transport.NewImpersonatingRoundTripper(*impersonationConf.ImpersonationConfig, p.clientTransport)
+	rt := transport.NewImpersonatingRoundTripper(*impersonation.Outbound, p.clientTransport)
 
 	// Record the admitted request. Written before the upstream call so a watch
 	// or exec that runs for hours still produces its access record immediately.
 	p.recordDecision(req, accesslog.Decision{
 		Allowed:    true,
 		AuthMethod: reqctx.AuthMethod(req),
-		Inbound:    impersonationConf.InboundUser,
-		Outbound:   impersonationConf.ImpersonatedUser,
+		Inbound:    impersonation.InboundUser,
+		Outbound:   impersonation.ImpersonatedUser,
 	})
 
 	return rt.RoundTrip(req)
@@ -403,7 +404,7 @@ func (p *Proxy) recordDecision(req *http.Request, d accesslog.Decision) {
 	p.metrics.AccessDecision(d.AuthMethod, d.Allowed, d.Reason)
 }
 
-func (p *Proxy) roundTripperForRestConfig(config *rest.Config) (http.RoundTripper, error) {
+func roundTripperForRestConfig(config *rest.Config) (http.RoundTripper, error) {
 	// client-go's transport reloads file-backed client certificates and closes
 	// connections that still use the previous certificate. Restrict ALPN to
 	// HTTP/1.1 because Kubernetes streaming requests upgrade to SPDY.
@@ -417,14 +418,27 @@ func (p *Proxy) roundTripperForRestConfig(config *rest.Config) (http.RoundTrippe
 	return clientRT, nil
 }
 
-// OIDCTokenAuthenticator returns the proxy's OIDC token authenticator.
-func (p *Proxy) OIDCTokenAuthenticator() authenticator.Token {
-	return p.tokenAuthenticator
-}
+// Shutdown runs the proxy's pre-shutdown step, flushing the audit backend, and
+// reports it as a hook record so a shutdown that takes too long names the step
+// responsible. It is called once, after the listener has stopped.
+func (p *Proxy) Shutdown() error {
+	const hook = "AuditBackend"
+	ctx := context.Background()
 
-// RunPreShutdownHooks runs the registered pre-shutdown hooks (currently the
-// audit backend flush) and returns an aggregate of any failures. It should be
-// called once during graceful shutdown.
-func (p *Proxy) RunPreShutdownHooks() error {
-	return p.hooks.RunPreShutdownHooks()
+	start := time.Now()
+	err := p.auditor.Shutdown()
+	elapsed := time.Since(start)
+
+	if err != nil {
+		logging.Emit(ctx, p.shutdownLogger, logging.EventProxyHookFailed,
+			slog.String("hook", hook),
+			slog.Int64("duration_ms", elapsed.Milliseconds()),
+			logging.ErrAttr(err))
+		return fmt.Errorf("pre-shutdown hook %q failed: %w", hook, err)
+	}
+
+	logging.Emit(ctx, p.shutdownLogger, logging.EventProxyHookCompleted,
+		slog.String("hook", hook),
+		slog.Int64("duration_ms", elapsed.Milliseconds()))
+	return nil
 }

@@ -17,18 +17,19 @@ const metricAuditFailures = "kube_oidc_proxy_audit_backend_failures_total"
 
 func newAuditWithBackend(t *testing.T, b *fakeBackend, rec *metrics.Recorder) *Audit {
 	t.Helper()
-	a, err := New(nil, "0.0.0.0:1234", new(server.SecureServingInfo), slog.New(slog.DiscardHandler))
+	a, err := New(Config{ExternalAddress: "0.0.0.0:1234", SecureServing: new(server.SecureServingInfo)}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
 	a.serverConfig.AuditBackend = b
-	return a.WithMetrics(rec)
+	a.metrics = rec
+	return a
 }
 
 func TestAuditRunFailureIsCounted(t *testing.T) {
 	rec, _ := metrics.New(metrics.BuildInfo{Version: "test"})
 	a := newAuditWithBackend(t, &fakeBackend{runErr: errors.New("cannot start")}, rec)
-	if err := a.Run(context.Background()); err == nil {
+	if err := a.Start(context.Background()); err == nil {
 		t.Fatal("Run should fail")
 	}
 	if v, _ := metricstest.Value(t, rec.Gatherer(), metricAuditFailures, map[string]string{"operation": "run"}); v != 1 {
@@ -50,7 +51,7 @@ func TestAuditShutdownFailureIsCounted(t *testing.T) {
 func TestAuditCleanShutdownCountsNothing(t *testing.T) {
 	rec, _ := metrics.New(metrics.BuildInfo{Version: "test"})
 	a := newAuditWithBackend(t, &fakeBackend{}, rec)
-	if err := a.Run(context.Background()); err != nil {
+	if err := a.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.Shutdown(); err != nil {

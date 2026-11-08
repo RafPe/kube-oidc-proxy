@@ -82,6 +82,11 @@ func TestSingleflightWinnerCancellationDoesNotPoisonWaiters(t *testing.T) {
 	reviewer := &winnerCancelReviewer{entered: make(chan struct{}, 1)}
 	sar := newCachedSAR(reviewer, 10*time.Second, 30*time.Second, clk)
 
+	// Each caller signals as it is about to join the flight, so the winner is
+	// cancelled only once the waiter is in: no sleep decides the outcome.
+	joined := make(chan struct{}, 2)
+	sar.beforeFlight = func() { joined <- struct{}{} }
+
 	winnerCtx, cancelWinner := context.WithCancel(testRequestContext())
 	defer cancelWinner()
 
@@ -109,8 +114,13 @@ func TestSingleflightWinnerCancellationDoesNotPoisonWaiters(t *testing.T) {
 		waiterDone <- outcome{target, err}
 	}()
 
-	// Give the waiter time to join the in-flight call, then cancel its owner.
-	time.Sleep(300 * time.Millisecond)
+	for i := 0; i < 2; i++ {
+		select {
+		case <-joined:
+		case <-time.After(2 * time.Second):
+			t.Fatal("a caller never reached the singleflight boundary")
+		}
+	}
 	cancelWinner()
 
 	select {

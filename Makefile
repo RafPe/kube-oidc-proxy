@@ -79,11 +79,11 @@ go_lint: $(BINDIR)/golangci-lint ## lint golang code for problems
 clean: ## clean up created files
 	rm -rf \
 		$(BINDIR) \
-		$(CURDIR)/pkg/proxy/mocks/authenticator.go \
+		$(CURDIR)/pkg/authn/authntest/authenticator.go \
 		$(CURDIR)/test/e2e/framework/issuer/bin \
 		$(CURDIR)/test/e2e/framework/fake-apiserver/bin
 
-# generate (not just depend) so pkg/proxy/mocks/authenticator.go exists before
+# generate (not just depend) so pkg/authn/authntest/authenticator.go exists before
 # go_vet ./... and go_lint compile the packages that reference it.
 verify: generate verify_boilerplate verify_eventdoc verify_metricdoc go_fmt go_vet go_lint ## verify code and mod
 

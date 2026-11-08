@@ -7,11 +7,10 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
-
-	"k8s.io/klog/v2"
 )
 
 type Issuer struct {
@@ -70,17 +69,17 @@ func (i *Issuer) Run(bindAddress, listenPort string) (<-chan struct{}, error) {
 
 		err := http.ServeTLS(l, i, i.certFile, i.keyFile)
 		if err != nil {
-			klog.Errorf("stopped serving TLS (%s): %s", serveAddr, err)
+			slog.Error("mock issuer: stopped serving TLS", slog.String("address", serveAddr), slog.Any("error", err))
 		}
 	}()
 
-	klog.Infof("mock issuer listening and serving on %s", serveAddr)
+	slog.Info("mock issuer: listening and serving", slog.String("address", serveAddr))
 
 	return compCh, nil
 }
 
 func (i *Issuer) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
-	klog.Infof("mock issuer received url %s", r.URL)
+	slog.Info("mock issuer: received request", slog.String("url", r.URL.String()))
 
 	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
 
@@ -89,7 +88,7 @@ func (i *Issuer) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		rw.WriteHeader(http.StatusOK)
 
 		if _, err := rw.Write(i.wellKnownResponse()); err != nil {
-			klog.Errorf("failed to write openid-configuration response: %s", err)
+			slog.Error("mock issuer: failed to write openid-configuration response", slog.Any("error", err))
 		}
 
 	case "/certs":
@@ -97,14 +96,14 @@ func (i *Issuer) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 
 		certsDiscovery := i.certsDiscovery()
 		if _, err := rw.Write(certsDiscovery); err != nil {
-			klog.Errorf("failed to write certificate discovery response: %s", err)
+			slog.Error("mock issuer: failed to write certificate discovery response", slog.Any("error", err))
 		}
 
 	default:
-		klog.Errorf("unexpected URL request: %s", r.URL)
+		slog.Error("mock issuer: unexpected URL request", slog.String("url", r.URL.String()))
 		rw.WriteHeader(http.StatusNotFound)
 		if _, err := rw.Write([]byte("{}\n")); err != nil {
-			klog.Errorf("failed to write data to resposne: %s", err)
+			slog.Error("mock issuer: failed to write data to response", slog.Any("error", err))
 		}
 	}
 }

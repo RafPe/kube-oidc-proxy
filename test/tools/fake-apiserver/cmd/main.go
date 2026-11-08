@@ -17,7 +17,7 @@ func main() {
 	opts := new(options.Options)
 	// These test tools have no logging flags of their own; the shutdown
 	// reporting the handler will do goes to the process default logger.
-	stopCh := signals.Handler(slog.Default())
+	stopCh := signals.NotifyStop(slog.Default())
 
 	cmd := &cobra.Command{
 		Use:   "fake-apiserver",

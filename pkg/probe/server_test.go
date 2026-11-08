@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"runtime"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -31,6 +32,11 @@ func freePort(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
+// probeAddr is the listen address for a port reserved by freePort.
+func probeAddr(port int) string {
+	return net.JoinHostPort("0.0.0.0", strconv.Itoa(port))
+}
+
 // TestServerStartReturnsBindError verifies Start surfaces a bind failure to the
 // caller synchronously rather than swallowing it inside a goroutine.
 func TestServerStartReturnsBindError(t *testing.T) {
@@ -42,7 +48,7 @@ func TestServerStartReturnsBindError(t *testing.T) {
 
 	port := occupied.Addr().(*net.TCPAddr).Port
 
-	s := NewServer(port, nil, false, &fakeAuthenticator{}, slog.New(slog.DiscardHandler))
+	s := NewServer(Config{Addr: probeAddr(port), Authenticator: &fakeAuthenticator{}}, slog.New(slog.DiscardHandler))
 	if err := s.Start(context.Background()); err == nil {
 		t.Fatal("expected Start to return an error binding an occupied port, got nil")
 	}
@@ -57,7 +63,7 @@ func TestServerStartServesAndShutsDown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	s := NewServer(port, nil, false, &fakeAuthenticator{}, slog.New(slog.DiscardHandler))
+	s := NewServer(Config{Addr: probeAddr(port), Authenticator: &fakeAuthenticator{}}, slog.New(slog.DiscardHandler))
 	if err := s.Start(ctx); err != nil {
 		t.Fatalf("Start returned unexpected error: %v", err)
 	}
@@ -97,7 +103,7 @@ func TestServerNoGoroutineLeak(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		port := freePort(t)
 		ctx, cancel := context.WithCancel(context.Background())
-		s := NewServer(port, nil, false, &fakeAuthenticator{}, slog.New(slog.DiscardHandler))
+		s := NewServer(Config{Addr: probeAddr(port), Authenticator: &fakeAuthenticator{}}, slog.New(slog.DiscardHandler))
 		if err := s.Start(ctx); err != nil {
 			cancel()
 			t.Fatalf("Start returned unexpected error: %v", err)
@@ -138,7 +144,7 @@ func TestReadinessServerFailedOnShutdownError(t *testing.T) {
 	defer logtest.AssertRegistered(t, cap)
 
 	port := freePort(t)
-	s := NewServer(port, nil, false, &fakeAuthenticator{}, root)
+	s := NewServer(Config{Addr: probeAddr(port), Authenticator: &fakeAuthenticator{}}, root)
 
 	// A handler that holds the connection open for longer than the shutdown
 	// budget, so Shutdown returns its context's deadline error.
@@ -184,7 +190,7 @@ func TestReadinessServerFailedOnShutdownError(t *testing.T) {
 	}
 
 	close(release)
-	_ = s.Shutdown()
+	_ = s.Wait()
 }
 
 // TestReadinessServerWaitReturnsTheShutdownError pins that a drain which
@@ -196,7 +202,7 @@ func TestReadinessServerWaitReturnsTheShutdownError(t *testing.T) {
 	defer logtest.AssertRegistered(t, cap)
 
 	port := freePort(t)
-	s := NewServer(port, nil, false, &fakeAuthenticator{}, root)
+	s := NewServer(Config{Addr: probeAddr(port), Authenticator: &fakeAuthenticator{}}, root)
 
 	// A handler that outlives the shutdown budget, so Shutdown returns its
 	// context's deadline error.
@@ -242,7 +248,7 @@ func TestReadinessServerWaitBlocksUntilShutdownCompletes(t *testing.T) {
 	defer logtest.AssertRegistered(t, cap)
 
 	port := freePort(t)
-	s := NewServer(port, nil, false, &fakeAuthenticator{}, root)
+	s := NewServer(Config{Addr: probeAddr(port), Authenticator: &fakeAuthenticator{}}, root)
 
 	// The handler stays in flight well past the cancellation and only then
 	// lets the connection go idle, which is what Shutdown waits for. The

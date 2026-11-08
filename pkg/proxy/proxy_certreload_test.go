@@ -36,8 +36,7 @@ func TestRoundTripperForRestConfigReloadsClientCertificate(t *testing.T) {
 	}
 	writeProxyClientKeyPair(t, certFile, keyFile, firstCert, firstKey)
 
-	p := &Proxy{}
-	roundTripper, err := p.roundTripperForRestConfig(&rest.Config{
+	roundTripper, err := roundTripperForRestConfig(&rest.Config{
 		TLSClientConfig: rest.TLSClientConfig{
 			CertFile: certFile,
 			KeyFile:  keyFile,
@@ -80,7 +79,7 @@ func TestRoundTripperForRestConfigReloadsClientCertificate(t *testing.T) {
 		t.Error("GetClientCertificate() still returned the original certificate 5s after the files rotated")
 	}
 
-	strippedTransport, err := p.roundTripperForRestConfig(&rest.Config{})
+	strippedTransport, err := roundTripperForRestConfig(&rest.Config{})
 	if err != nil {
 		t.Fatalf("roundTripperForRestConfig(stripped) error = %v", err)
 	}

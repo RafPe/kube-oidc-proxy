@@ -17,6 +17,11 @@ import (
 // the published contract and never changes.
 const Namespace = "kube_oidc_proxy"
 
+// The types below are the proxy's closed outcome vocabulary. This file is
+// their single owner: the access record, the error classifier and the request
+// context use these types directly instead of keeping copies, so a label and
+// a log field naming the same outcome cannot drift apart.
+
 // other is the value every projection collapses an undocumented input onto.
 // A label must never carry a client-controlled string: kube-apiserver can
 // label by resource because its labels come from its route table, but this

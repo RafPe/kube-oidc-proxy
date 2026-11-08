@@ -12,7 +12,6 @@ import (
 	"k8s.io/client-go/transport"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/accesslog"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 )
@@ -22,7 +21,7 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		// If no impersonation has already been set, return early
 		if reqctx.NoImpersonation(req) {
-			logging.Emit(req.Context(), logging.FromContext(req.Context()), logging.EventRequestImpersonationSkipped,
+			logging.Emit(req.Context(), logging.LoggerFrom(req.Context()), logging.EventRequestImpersonationSkipped,
 				slog.String("skip_reason", skipReasonPassthrough))
 			handler.ServeHTTP(rw, req)
 			return
@@ -30,7 +29,7 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 
 		// If we have disabled impersonation we can forward the request right away
 		if p.config.DisableImpersonation {
-			logging.Emit(req.Context(), logging.FromContext(req.Context()), logging.EventRequestImpersonationSkipped,
+			logging.Emit(req.Context(), logging.LoggerFrom(req.Context()), logging.EventRequestImpersonationSkipped,
 				slog.String("skip_reason", skipReasonDisabled))
 			// Indicate we need to not use impersonation.
 			req = reqctx.WithNoImpersonation(req)
@@ -71,17 +70,17 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 			return
 		}
 
-		conf := &reqctx.ImpersonationRequest{
-			ImpersonationConfig: impersonation,
-			InboundUser:         inbound,
-			ImpersonatedUser:    target,
+		conf := &reqctx.Impersonation{
+			Outbound:         impersonation,
+			InboundUser:      inbound,
+			ImpersonatedUser: target,
 		}
 
-		logging.Emit(req.Context(), logging.FromContext(req.Context()), logging.EventRequestImpersonationApplied,
+		logging.Emit(req.Context(), logging.LoggerFrom(req.Context()), logging.EventRequestImpersonationApplied,
 			slog.String("outbound_user", logging.Bound(impersonation.UserName, logging.MaxIdentity)),
 			slog.Any("impersonated_header_names", impersonatedHeaderNames(impersonation)))
 
-		handler.ServeHTTP(rw, reqctx.WithImpersonationConfig(req, conf))
+		handler.ServeHTTP(rw, reqctx.WithImpersonation(req, conf))
 	})
 }
 
@@ -109,7 +108,7 @@ func (p *Proxy) outboundIdentity(req *http.Request, inbound, target authuser.Inf
 	}
 
 	if p.config.ExtraUserHeadersClientIPEnabled {
-		extra[accesslog.UserHeaderClientIPKey] = append(extra[accesslog.UserHeaderClientIPKey], reqctx.ClientIP(req))
+		extra[reqctx.UserHeaderClientIPKey] = append(extra[reqctx.UserHeaderClientIPKey], reqctx.ClientIP(req))
 	}
 
 	// append copies into the freshly cloned value slice, so the configured
@@ -119,14 +118,14 @@ func (p *Proxy) outboundIdentity(req *http.Request, inbound, target authuser.Inf
 	}
 
 	if target != nil {
-		extra[accesslog.ExtraKeyOriginalUser] = []string{inbound.GetName()}
+		extra[reqctx.ExtraKeyOriginalUser] = []string{inbound.GetName()}
 
 		if origGroups := inbound.GetGroups(); len(origGroups) > 0 {
-			extra[accesslog.ExtraKeyOriginalGroups] = slices.Clone(origGroups)
+			extra[reqctx.ExtraKeyOriginalGroups] = slices.Clone(origGroups)
 		}
 
 		if inbound.GetUID() != "" {
-			extra[accesslog.ExtraKeyOriginalUID] = []string{inbound.GetUID()}
+			extra[reqctx.ExtraKeyOriginalUID] = []string{inbound.GetUID()}
 		}
 
 		if len(inbound.GetExtra()) > 0 {
@@ -134,7 +133,7 @@ func (p *Proxy) outboundIdentity(req *http.Request, inbound, target authuser.Inf
 			if err != nil {
 				return nil, err
 			}
-			extra[accesslog.ExtraKeyOriginalExtra] = []string{string(jsonExtras)}
+			extra[reqctx.ExtraKeyOriginalExtra] = []string{string(jsonExtras)}
 		}
 	}
 

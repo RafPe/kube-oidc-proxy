@@ -138,7 +138,7 @@ func TestWithRequestIDInstallsTheRequestScopedLogger(t *testing.T) {
 		if got := logging.RequestIDFrom(r.Context()); got != minted {
 			t.Errorf("logging.RequestIDFrom = %q, want the minted id %q", got, minted)
 		}
-		logging.Emit(r.Context(), logging.FromContext(r.Context()),
+		logging.Emit(r.Context(), logging.LoggerFrom(r.Context()),
 			logging.EventRequestImpersonationSkipped, slog.String("skip_reason", "test"))
 	}))
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil))

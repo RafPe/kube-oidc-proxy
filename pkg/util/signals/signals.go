@@ -34,22 +34,22 @@ func signalName(sig os.Signal) string {
 	}
 }
 
-// Handler installs a SIGINT/SIGTERM handler and returns a stop channel that is
-// closed on the first such signal, requesting a graceful shutdown. The next
+// NotifyStop installs a SIGINT/SIGTERM handler and returns a stop channel that
+// is closed on the first such signal, requesting a graceful shutdown. The next
 // two signals are absorbed while the teardown runs; the third repeat forces an
 // immediate os.Exit(1). Handler is intended to be called once during process
 // startup.
 //
 // logger is the shutdown-component logger the handler reports through.
-func Handler(logger *slog.Logger) chan struct{} {
+func NotifyStop(logger *slog.Logger) <-chan struct{} {
 	ch := make(chan os.Signal, 2)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 
 	return handle(logger, ch, func() { os.Exit(1) })
 }
 
-// handle is Handler's behaviour with the two process-wide dependencies passed
-// in: the signal source and the forced exit. Handler supplies the real ones; a
+// handle is NotifyStop's behaviour with the two process-wide dependencies passed
+// in: the signal source and the forced exit. NotifyStop supplies the real ones; a
 // test supplies a channel it writes to and an exit it can observe, so the whole
 // sequence is exercised without signalling the test process or killing it.
 //

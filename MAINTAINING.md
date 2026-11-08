@@ -110,3 +110,23 @@ Two independent triggers, in the order they usually happen:
      that is the point: compatibility is verified, not assumed, before either
      lands alone.
    - Run the full matrix before merging: `gh workflow run e2e.yaml --ref <branch>`.
+
+## Dependencies worth knowing about
+
+**The apiserver library is the heaviest one, deliberately.** The proxy imports
+`k8s.io/apiserver/pkg/server` and its options for secure serving with dynamic
+certificate reload, the audit backends and policy, and CEL-based
+authentication configuration. Those packages pull etcd, gRPC, OpenTelemetry
+and cel-go into the binary even though no proxy code calls them directly.
+Reimplementing the audit and serving pieces would cost more code than it
+saves, so a Dependabot bump of one of those transitive trees is apiserver's
+baggage, not a sign that the proxy started using it. Revisit only if upstream
+splits audit and serving into a lighter module.
+
+**The e2e harness shares the module.** `sigs.k8s.io/kind`, Ginkgo and Gomega
+are direct requirements because `test/` and `hack/metrics-demo` live in the
+same module; `go list -deps ./cmd` contains none of them, so they never reach
+the binary. A separate test module with a `go.work` would shrink `go.sum` and
+the govulncheck surface, at the cost of a more complicated `go test ./...` and
+Makefile. Split only if that noise becomes a real maintenance cost.
+

@@ -14,19 +14,20 @@ import (
 	"time"
 
 	authv1 "k8s.io/api/authentication/v1"
+	"k8s.io/apiserver/pkg/authentication/authenticator"
 
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/tokenreview/fake"
+	"github.com/rafpe/kube-oidc-proxy/pkg/authn/tokenreview/fake"
 )
 
 // TestNewCached exercises the cached reviewer end to end against a counting
 // fake: which results are served from cache, which always go back to the API
 // server, and how the TTLs bound reuse.
-func TestNewCached(t *testing.T) {
+func TestWithCache(t *testing.T) {
 	type step struct {
-		token       string
-		sleepBefore time.Duration
-		expOK       bool
-		expErr      bool
+		token   string
+		advance time.Duration
+		expOK   bool
+		expErr  bool
 	}
 
 	tests := map[string]struct {
@@ -107,7 +108,7 @@ func TestNewCached(t *testing.T) {
 			},
 			steps: []step{
 				{token: "token-a", expOK: true},
-				{token: "token-a", sleepBefore: 100 * time.Millisecond, expOK: true},
+				{token: "token-a", advance: 100 * time.Millisecond, expOK: true},
 			},
 			expCalls: 2,
 		},
@@ -142,20 +143,20 @@ func TestNewCached(t *testing.T) {
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			var calls atomic.Int64
-			reviewer := &TokenReview{
-				reviewRequester: &fake.FakeReviewer{
-					CreateFn: func(review *authv1.TokenReview) (*authv1.TokenReview, error) {
-						return test.create(calls.Add(1), review)
-					},
+			reviewer := newReviewer(&fake.FakeReviewer{
+				CreateFn: func(review *authv1.TokenReview) (*authv1.TokenReview, error) {
+					return test.create(calls.Add(1), review)
 				},
+			}, Config{}, nil)
+
+			clock := &fakeClock{now: time.Unix(1000, 0)}
+			var cached authenticator.Token = reviewer
+			if test.successTTL > 0 || test.failureTTL > 0 {
+				cached = newCachedTokenReview(reviewer, test.successTTL, test.failureTTL, tokenCacheSize, clock)
 			}
 
-			cached := NewCached(reviewer, test.successTTL, test.failureTTL)
-
 			for i, s := range test.steps {
-				if s.sleepBefore > 0 {
-					time.Sleep(s.sleepBefore)
-				}
+				clock.advance(s.advance)
 
 				_, ok, err := cached.AuthenticateToken(testRequestContext(), s.token)
 				if s.expErr != (err != nil) {
@@ -176,8 +177,8 @@ func TestNewCached(t *testing.T) {
 // TestNewCachedZeroTTLsReturnsBareReviewer pins that disabling both TTLs keeps
 // the exact pre-cache behaviour: no cache layer at all.
 func TestNewCachedZeroTTLsReturnsBareReviewer(t *testing.T) {
-	reviewer := &TokenReview{reviewRequester: fake.New()}
-	if got := NewCached(reviewer, 0, 0); got != reviewer {
+	reviewer := newReviewer(fake.New(), Config{}, nil)
+	if got := withCache(reviewer, 0, 0); got != reviewer {
 		t.Errorf("expected the bare reviewer back for zero TTLs, got %T", got)
 	}
 }
@@ -189,23 +190,21 @@ func TestCachedReviewHonoursCallerCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(testRequestContext())
 	defer cancel()
 
-	reviewer := &TokenReview{
-		reviewRequester: &fake.FakeReviewer{
-			CreateCtxFn: func(reviewCtx context.Context, _ *authv1.TokenReview) (*authv1.TokenReview, error) {
-				// Cancel the inbound request while its review is in flight;
-				// the review's context must observe the cancellation.
-				cancel()
-				select {
-				case <-reviewCtx.Done():
-					return nil, reviewCtx.Err()
-				case <-time.After(5 * time.Second):
-					return authenticatedReview(), nil
-				}
-			},
+	reviewer := newReviewer(&fake.FakeReviewer{
+		CreateCtxFn: func(reviewCtx context.Context, _ *authv1.TokenReview) (*authv1.TokenReview, error) {
+			// Cancel the inbound request while its review is in flight;
+			// the review's context must observe the cancellation.
+			cancel()
+			select {
+			case <-reviewCtx.Done():
+				return nil, reviewCtx.Err()
+			case <-time.After(5 * time.Second):
+				return authenticatedReview(), nil
+			}
 		},
-	}
+	}, Config{}, nil)
 
-	cached := NewCached(reviewer, 10*time.Second, 10*time.Second)
+	cached := withCache(reviewer, 10*time.Second, 10*time.Second)
 
 	start := time.Now()
 	resp, ok, err := cached.AuthenticateToken(ctx, "token-a")
@@ -229,17 +228,14 @@ func TestCachedReviewHonoursTimeoutAboveThirtySeconds(t *testing.T) {
 
 	var gotDeadline time.Time
 	var hadDeadline bool
-	reviewer := &TokenReview{
-		timeout: configured,
-		reviewRequester: &fake.FakeReviewer{
-			CreateCtxFn: func(reviewCtx context.Context, _ *authv1.TokenReview) (*authv1.TokenReview, error) {
-				gotDeadline, hadDeadline = reviewCtx.Deadline()
-				return authenticatedReview(), nil
-			},
+	reviewer := newReviewer(&fake.FakeReviewer{
+		CreateCtxFn: func(reviewCtx context.Context, _ *authv1.TokenReview) (*authv1.TokenReview, error) {
+			gotDeadline, hadDeadline = reviewCtx.Deadline()
+			return authenticatedReview(), nil
 		},
-	}
+	}, Config{Timeout: configured}, nil)
 
-	cached := NewCached(reviewer, 10*time.Second, 10*time.Second)
+	cached := withCache(reviewer, 10*time.Second, 10*time.Second)
 
 	before := time.Now()
 	if _, ok, err := cached.AuthenticateToken(testRequestContext(), "token-a"); err != nil || !ok {
@@ -273,9 +269,9 @@ func TestCachedReviewSeparatesAudienceSets(t *testing.T) {
 		},
 	}
 
-	cachedAud1 := NewCached(&TokenReview{audiences: []string{"aud-1"}, reviewRequester: requester},
+	cachedAud1 := withCache(newReviewer(requester, Config{Audiences: []string{"aud-1"}}, nil),
 		10*time.Second, 10*time.Second)
-	cachedAud2 := NewCached(&TokenReview{audiences: []string{"aud-2"}, reviewRequester: requester},
+	cachedAud2 := withCache(newReviewer(requester, Config{Audiences: []string{"aud-2"}}, nil),
 		10*time.Second, 10*time.Second)
 
 	for i := range 2 {
@@ -331,16 +327,14 @@ func TestCachedReviewBoundsEntryCount(t *testing.T) {
 	const extra = 8
 
 	var calls atomic.Int64
-	reviewer := &TokenReview{
-		reviewRequester: &fake.FakeReviewer{
-			CreateFn: func(*authv1.TokenReview) (*authv1.TokenReview, error) {
-				calls.Add(1)
-				return unauthenticatedReview(), nil
-			},
+	reviewer := newReviewer(&fake.FakeReviewer{
+		CreateFn: func(*authv1.TokenReview) (*authv1.TokenReview, error) {
+			calls.Add(1)
+			return unauthenticatedReview(), nil
 		},
-	}
+	}, Config{}, nil)
 
-	cached := NewCached(reviewer, time.Hour, time.Hour).(*cachedTokenReview)
+	cached := withCache(reviewer, time.Hour, time.Hour).(*cachedTokenReview)
 
 	for i := range tokenCacheSize + extra {
 		token := fmt.Sprintf("unique-token-%d", i)
@@ -385,23 +379,21 @@ func TestCachedReviewConcurrentMissesRunIndependently(t *testing.T) {
 	bothInFlight := make(chan struct{})
 
 	var calls atomic.Int64
-	reviewer := &TokenReview{
-		reviewRequester: &fake.FakeReviewer{
-			CreateCtxFn: func(context.Context, *authv1.TokenReview) (*authv1.TokenReview, error) {
-				if calls.Add(1) == 2 {
-					close(bothInFlight)
-				}
-				select {
-				case <-bothInFlight:
-					return authenticatedReview(), nil
-				case <-time.After(5 * time.Second):
-					return nil, errors.New("second review never started: concurrent misses were collapsed")
-				}
-			},
+	reviewer := newReviewer(&fake.FakeReviewer{
+		CreateCtxFn: func(context.Context, *authv1.TokenReview) (*authv1.TokenReview, error) {
+			if calls.Add(1) == 2 {
+				close(bothInFlight)
+			}
+			select {
+			case <-bothInFlight:
+				return authenticatedReview(), nil
+			case <-time.After(5 * time.Second):
+				return nil, errors.New("second review never started: concurrent misses were collapsed")
+			}
 		},
-	}
+	}, Config{}, nil)
 
-	cached := NewCached(reviewer, 10*time.Second, 10*time.Second)
+	cached := withCache(reviewer, 10*time.Second, 10*time.Second)
 
 	var wg sync.WaitGroup
 	errs := make([]error, 2)
@@ -430,17 +422,14 @@ func TestCachedReviewSendsConfiguredAudiences(t *testing.T) {
 	audiences := []string{"aud-1", "aud-2"}
 
 	var gotAudiences []string
-	reviewer := &TokenReview{
-		audiences: audiences,
-		reviewRequester: &fake.FakeReviewer{
-			CreateFn: func(review *authv1.TokenReview) (*authv1.TokenReview, error) {
-				gotAudiences = review.Spec.Audiences
-				return authenticatedReview(), nil
-			},
+	reviewer := newReviewer(&fake.FakeReviewer{
+		CreateFn: func(review *authv1.TokenReview) (*authv1.TokenReview, error) {
+			gotAudiences = review.Spec.Audiences
+			return authenticatedReview(), nil
 		},
-	}
+	}, Config{Audiences: audiences}, nil)
 
-	cached := NewCached(reviewer, 10*time.Second, 10*time.Second)
+	cached := withCache(reviewer, 10*time.Second, 10*time.Second)
 
 	if _, ok, err := cached.AuthenticateToken(testRequestContext(), "token-a"); err != nil || !ok {
 		t.Fatalf("unexpected review result, ok=%t err=%v", ok, err)
@@ -449,4 +438,23 @@ func TestCachedReviewSendsConfiguredAudiences(t *testing.T) {
 	if !reflect.DeepEqual(audiences, gotAudiences) {
 		t.Errorf("unexpected audiences on the review, exp=%v got=%v", audiences, gotAudiences)
 	}
+}
+
+// fakeClock is a settable clock for the cache's expiry, so a TTL test advances
+// time instead of sleeping on the wall clock.
+type fakeClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
 }

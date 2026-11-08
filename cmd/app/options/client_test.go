@@ -50,9 +50,11 @@ func TestClientFlagsChanged(t *testing.T) {
 			t.Errorf("--%s is offered; the proxy must not impersonate on its own calls", flag)
 		}
 	}
-	for _, flag := range clientOptionFlags() {
+	// The connection flags an operator relies on are all registered.
+	for _, flag := range []string{"certificate-authority", "client-certificate", "client-key", "cluster",
+		"context", "insecure-skip-tls-verify", "kubeconfig", "namespace", "request-timeout", "server", "token", "user"} {
 		if cmd.Flags().Lookup(flag) == nil {
-			t.Errorf("--%s is listed as a client flag but not registered", flag)
+			t.Errorf("--%s is not registered", flag)
 		}
 	}
 }

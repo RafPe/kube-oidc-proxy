@@ -148,9 +148,9 @@ func TestLogDecisionIsSanitizedAndOmitsClaims(t *testing.T) {
 		Name:   "evil\nAuSuccess src:[spoofed",
 		Groups: []string{"dev", "bad\ngroup"},
 		Extra: map[string][]string{
-			UserHeaderClientIPKey:      {"1.2.3.4"},
-			"email":                    {"secret@example.com"},
-			"authorization-bearer-tok": {"do-not-log"},
+			reqctx.UserHeaderClientIPKey: {"1.2.3.4"},
+			"email":                      {"secret@example.com"},
+			"authorization-bearer-tok":   {"do-not-log"},
 		},
 	}
 
@@ -184,8 +184,8 @@ func TestLogDecisionIsSanitizedAndOmitsClaims(t *testing.T) {
 	if !ok {
 		t.Fatalf("inbound_extra missing or wrong type: %v", rec["inbound_extra"])
 	}
-	if _, ok := extra[UserHeaderClientIPKey]; !ok {
-		t.Errorf("allowlisted extra %q not logged: %v", UserHeaderClientIPKey, extra)
+	if _, ok := extra[reqctx.UserHeaderClientIPKey]; !ok {
+		t.Errorf("allowlisted extra %q not logged: %v", reqctx.UserHeaderClientIPKey, extra)
 	}
 }
 

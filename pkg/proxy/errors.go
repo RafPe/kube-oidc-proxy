@@ -19,144 +19,125 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 )
 
-// deniedResponse is the status and body an audited denial writes once the
-// audit filters have recorded the refusal; it travels on the request context
-// under deniedResponseKey because the audited handler is built once and the
-// response differs per error.
-type deniedResponse struct {
-	status int
-	body   string
-}
-
-type deniedResponseKey struct{}
-
-// newErrorHandler returns a handler failed requests.
-func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, err error) {
-
-	unauthedHandler := audit.NewUnauthenticatedHandler(p.auditor, func(rw http.ResponseWriter, r *http.Request) {
-		http.Error(rw, "Unauthorized", http.StatusUnauthorized)
-	})
-
+// handleError writes the response for a request the proxy refused or failed
+// to serve, and records the decision. It is the reverse proxy's ErrorHandler
+// as well as what the filters call directly.
+func (p *Proxy) handleError(rw http.ResponseWriter, r *http.Request, err error) {
 	// Every refusal of a request that did authenticate is audited through the
 	// ordinary request chain rather than the failed-authentication one: the
 	// caller has already put the identity in the request context, so the
-	// event names who was refused. The response is decided per error below
-	// and travels to the audited handler on the request context.
-	auditedDenial := audit.NewForbiddenHandler(p.auditor, func(rw http.ResponseWriter, r *http.Request) {
-		d, _ := r.Context().Value(deniedResponseKey{}).(deniedResponse)
-		http.Error(rw, d.body, d.status)
-	})
-	deny := func(rw http.ResponseWriter, r *http.Request, status int, body string) {
-		r = r.WithContext(context.WithValue(r.Context(), deniedResponseKey{}, deniedResponse{status: status, body: body}))
-		auditedDenial.ServeHTTP(rw, r)
+	// event names who was refused.
+	deny := func(status int, body string) {
+		audit.NewDeniedHandler(p.auditor, func(rw http.ResponseWriter, _ *http.Request) {
+			http.Error(rw, body, status)
+		}).ServeHTTP(rw, r)
 	}
 
-	return func(rw http.ResponseWriter, r *http.Request, err error) {
+	if err == nil {
+		// Nothing was decided about a request, so nothing is recorded about
+		// one; the proxy bug is still reported.
+		logging.EmitLevel(r.Context(), p.requestLogger, logging.EventRequestHandlerFailed, slog.LevelError,
+			slog.String("reason", string(metrics.ReasonInternalError)),
+			slog.String("error_message", "error handler called with nil error"))
+		http.Error(rw, "", http.StatusInternalServerError)
+		return
+	}
 
-		if err == nil {
-			// Nothing was decided about a request, so nothing is recorded about
-			// one; the proxy bug is still reported.
-			logging.EmitLevel(r.Context(), p.requestLogger, logging.EventRequestHandlerFailed, slog.LevelError,
-				slog.String("reason", string(metrics.ReasonInternalError)),
-				slog.String("error_message", "error handler called with nil error"))
-			http.Error(rw, "", http.StatusInternalServerError)
-			return
-		}
+	// The access record carries the classified reason, so every branch below
+	// records why the request was refused before it writes the response.
+	switch {
 
-		// The access record carries the classified reason, so every branch below
-		// records why the request was refused before it writes the response.
-		switch {
+	// Failed authentication: audited against the anonymous user, because no
+	// identity was established.
+	case errors.Is(err, errUnauthorized):
+		p.logDenied(r, metrics.ReasonUnauthorized, err)
+		audit.NewUnauthenticatedHandler(p.auditor, func(rw http.ResponseWriter, _ *http.Request) {
+			http.Error(rw, "Unauthorized", http.StatusUnauthorized)
+		}).ServeHTTP(rw, r)
+		return
 
-		// Failed auth
-		case errors.Is(err, errUnauthorized):
-			// If Unauthorized then error and report to audit
-			p.logDenied(r, metrics.ReasonUnauthorized, err)
-			unauthedHandler.ServeHTTP(rw, r)
-			return
+		// Authenticated, but the identity is one a token must never mint.
+	case errors.Is(err, errReservedIdentity):
+		// A token minting a system: identity is an exploit attempt or a
+		// badly broken claim mapping, not an ordinary denial.
+		p.logAnomaly(r, metrics.ReasonReservedIdentity)
+		p.logDenied(r, metrics.ReasonReservedIdentity, err)
+		// The client body carries no claim values; they are logged and
+		// audited instead.
+		deny(http.StatusForbidden, "identities with the reserved \"system:\" prefix are not accepted from an authentication token")
+		return
 
-			// Authenticated, but the identity is one a token must never mint.
-		case errors.Is(err, errReservedIdentity):
-			// A token minting a system: identity is an exploit attempt or a
-			// badly broken claim mapping, not an ordinary denial.
-			p.logAnomaly(r, metrics.ReasonReservedIdentity)
-			p.logDenied(r, metrics.ReasonReservedIdentity, err)
-			// The client body carries no claim values; they are logged and
-			// audited instead.
-			deny(rw, r, http.StatusForbidden, "identities with the reserved \"system:\" prefix are not accepted from an authentication token")
-			return
+		// No name given or available in oidc request
+	case errors.Is(err, errNoName):
+		p.logDenied(r, metrics.ReasonNoUsernameClaim, err)
+		deny(http.StatusForbidden, "Username claim not available in OIDC Issuer response")
+		return
 
-			// No name given or available in oidc request
-		case errors.Is(err, errNoName):
-			p.logDenied(r, metrics.ReasonNoUsernameClaim, err)
-			deny(rw, r, http.StatusForbidden, "Username claim not available in OIDC Issuer response")
-			return
+		// Groups, uid or extras with no user to refine. A malformed request,
+		// not a proxy fault; it keeps the 500 and message clients have
+		// always seen for it.
+	case errors.Is(err, subjectaccessreview.ErrNoImpersonationUser):
+		p.logDenied(r, metrics.ReasonMalformedImpersonation, err)
+		deny(http.StatusInternalServerError, subjectaccessreview.ErrNoImpersonationUser.Error())
+		return
 
-			// Groups, uid or extras with no user to refine. A malformed request,
-			// not a proxy fault; it keeps the 500 and message clients have
-			// always seen for it.
-		case errors.Is(err, subjectaccessreview.ErrNoImpersonationUser):
-			p.logDenied(r, metrics.ReasonMalformedImpersonation, err)
-			deny(rw, r, http.StatusInternalServerError, subjectaccessreview.ErrNoImpersonationUser.Error())
-			return
+		// An Impersonate- header of a kind the proxy does not know. Refused
+		// before any SubjectAccessReview, and not logged as a failure of the
+		// proxy's own: a client can send it on every request.
+	case errors.Is(err, subjectaccessreview.ErrUnknownImpersonationHeader):
+		p.logDenied(r, metrics.ReasonMalformedImpersonation, err)
+		deny(http.StatusBadRequest, err.Error())
+		return
 
-			// An Impersonate- header of a kind the proxy does not know. Refused
-			// before any SubjectAccessReview, and not logged as a failure of the
-			// proxy's own: a client can send it on every request.
-		case errors.Is(err, subjectaccessreview.ErrUnknownImpersonationHeader):
-			p.logDenied(r, metrics.ReasonMalformedImpersonation, err)
-			deny(rw, r, http.StatusBadRequest, err.Error())
-			return
+		// Request carries more impersonation header values than the
+		// configured cap. Refused before any SubjectAccessReview was sent;
+		// this is a request-shape rejection, not an authorization denial.
+	case errors.Is(err, subjectaccessreview.ErrTooManyImpersonationHeaderValues):
+		// Far more impersonation values than any client legitimately sends:
+		// a resource-exhaustion attempt against the SubjectAccessReview path.
+		p.logAnomaly(r, metrics.ReasonTooManyImpersonationValues)
+		p.logDenied(r, metrics.ReasonTooManyImpersonationValues, err)
+		deny(http.StatusRequestHeaderFieldsTooLarge, err.Error())
+		return
 
-			// Request carries more impersonation header values than the
-			// configured cap. Refused before any SubjectAccessReview was sent;
-			// this is a request-shape rejection, not an authorization denial.
-		case errors.Is(err, subjectaccessreview.ErrTooManyImpersonationHeaderValues):
-			// Far more impersonation values than any client legitimately sends:
-			// a resource-exhaustion attempt against the SubjectAccessReview path.
-			p.logAnomaly(r, metrics.ReasonTooManyImpersonationValues)
-			p.logDenied(r, metrics.ReasonTooManyImpersonationValues, err)
-			deny(rw, r, http.StatusRequestHeaderFieldsTooLarge, err.Error())
-			return
+		// Requester is not authorized to impersonate the requested identity.
+		// Classified by typed error (errors.Is), not by message text.
+	case errors.Is(err, subjectaccessreview.ErrImpersonationNotAllowed):
+		p.logDenied(r, metrics.ReasonImpersonationDenied, err)
+		deny(http.StatusForbidden, err.Error())
+		return
 
-			// Requester is not authorized to impersonate the requested identity.
-			// Classified by typed error (errors.Is), not by message text.
-		case errors.Is(err, subjectaccessreview.ErrImpersonationNotAllowed):
-			p.logDenied(r, metrics.ReasonImpersonationDenied, err)
-			deny(rw, r, http.StatusForbidden, err.Error())
-			return
+		// Client canceled the request (SAR or reverse-proxy). Nothing to
+		// write back; the connection is already going away.
+	case errors.Is(err, context.Canceled):
+		logging.Emit(r.Context(), p.upstreamLogger, logging.EventUpstreamRequestCanceled,
+			slog.String("reason", string(metrics.ReasonClientCanceled)))
+		p.logDenied(r, metrics.ReasonClientCanceled, err)
+		return
 
-			// Client canceled the request (SAR or reverse-proxy). Nothing to
-			// write back; the connection is already going away.
-		case errors.Is(err, context.Canceled):
-			logging.Emit(r.Context(), p.upstreamLogger, logging.EventUpstreamRequestCanceled,
-				slog.String("reason", string(metrics.ReasonClientCanceled)))
-			p.logDenied(r, metrics.ReasonClientCanceled, err)
-			return
+		// The reverse proxy could not reach or complete the call to the API
+		// server. The request was already admitted, and its access decision
+		// was written by RoundTrip: an upstream failure is not a second
+		// decision, so none is recorded here. The failure is reported on its
+		// own upstream record, and the termination it classifies is handed
+		// to the lifecycle filter for the terminal record.
+	case isUpstreamTransportError(err):
+		term := upstreamTermination(err)
+		reqctx.MarkTermination(r, term, metrics.ReasonUpstreamError)
+		logging.Emit(r.Context(), p.upstreamLogger, logging.EventUpstreamRequestFailed,
+			slog.String("reason", string(metrics.ReasonUpstreamError)), slog.String("termination", string(term)),
+			logging.ErrAttr(err))
+		http.Error(rw, "", http.StatusBadGateway)
+		return
 
-			// The reverse proxy could not reach or complete the call to the API
-			// server. The request was already admitted, and its access decision
-			// was written by RoundTrip: an upstream failure is not a second
-			// decision, so none is recorded here. The failure is reported on its
-			// own upstream record, and the termination it classifies is handed
-			// to the lifecycle filter for the terminal record.
-		case isUpstreamTransportError(err):
-			term := upstreamTermination(err)
-			reqctx.RecordTermination(r, term, metrics.ReasonUpstreamError)
-			logging.Emit(r.Context(), p.upstreamLogger, logging.EventUpstreamRequestFailed,
-				slog.String("reason", string(metrics.ReasonUpstreamError)), slog.String("termination", string(term)),
-				logging.ErrAttr(err))
-			http.Error(rw, "", http.StatusBadGateway)
-			return
-
-			// Server or unknown error, including a missing impersonation
-			// configuration and a SubjectAccessReview the proxy could not
-			// submit. Details stay server-side; the client receives an empty
-			// 500 body.
-		default:
-			p.logHandlerFailed(r, err)
-			p.logDenied(r, metrics.ReasonInternalError, err)
-			http.Error(rw, "", http.StatusInternalServerError)
-		}
+		// Server or unknown error, including a missing impersonation
+		// configuration and a SubjectAccessReview the proxy could not
+		// submit. Details stay server-side; the client receives an empty
+		// 500 body.
+	default:
+		p.logHandlerFailed(r, err)
+		p.logDenied(r, metrics.ReasonInternalError, err)
+		http.Error(rw, "", http.StatusInternalServerError)
 	}
 }
 

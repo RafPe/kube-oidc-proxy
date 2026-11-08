@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/pflag"
 	"golang.org/x/term"
 
+	apiserveroptions "k8s.io/apiserver/pkg/server/options"
 	cliflag "k8s.io/component-base/cli/flag"
 	"k8s.io/component-base/cli/globalflag"
 )
@@ -20,12 +21,15 @@ const (
 	AppName = "kube-oidc-proxy"
 )
 
+// Options is every flag the proxy binary accepts, grouped by concern. Each
+// group registers its own flag set and validates its own fields; Validate adds
+// the checks that span groups.
 type Options struct {
 	App                  *KubeOIDCProxyOptions
 	OIDCAuthentication   *OIDCAuthenticationOptions
 	AuthenticationConfig *AuthenticationConfigOptions
 	SecureServing        *SecureServingOptions
-	Audit                *AuditOptions
+	Audit                *apiserveroptions.AuditOptions
 	Client               *ClientOptions
 	Logging              *LoggingOptions
 	Metrics              *MetricsOptions
@@ -38,6 +42,7 @@ type Options struct {
 // (-v, --vmodule and friends), which LoggingOptions reads the verbosity from.
 const GlobalFlagSet = "Global"
 
+// New registers every flag set and returns the options they bind to.
 func New() *Options {
 	nfs := new(cliflag.NamedFlagSets)
 	globalflag.AddGlobalFlags(nfs.FlagSet(GlobalFlagSet), AppName)
@@ -47,7 +52,7 @@ func New() *Options {
 		OIDCAuthentication:   NewOIDCAuthenticationOptions(nfs),
 		AuthenticationConfig: NewAuthenticationConfigOptions(nfs),
 		SecureServing:        NewSecureServingOptions(nfs),
-		Audit:                NewAuditOptions(nfs),
+		Audit:                newAuditOptions(nfs),
 		Client:               NewClientOptions(nfs),
 		Logging:              NewLoggingOptions(nfs),
 		Metrics:              NewMetricsOptions(nfs),
@@ -57,6 +62,8 @@ func New() *Options {
 	}
 }
 
+// AddFlags adds every registered flag set to cmd and installs the sectioned
+// help and usage output.
 func (o *Options) AddFlags(cmd *cobra.Command) {
 	// pretty output from kube-apiserver
 	usageFmt := "Usage:\n  %s\n"
@@ -130,43 +137,20 @@ func (o *Options) Validate(cmd *cobra.Command) error {
 		}
 	}
 
-	if o.App.DisableImpersonation &&
-		(o.App.ExtraHeaderOptions.EnableClientIPExtraUserHeader || len(o.App.ExtraHeaderOptions.ExtraUserHeaders) > 0) {
-		errs = append(errs, errors.New("cannot add extra user headers when impersonation disabled"))
-	}
-
-	if o.App.TokenPassthrough.Enabled && o.App.TokenPassthrough.RequestTimeout <= 0 {
-		errs = append(errs, errors.New("--token-passthrough-request-timeout must be greater than zero"))
-	}
-
-	// Zero is meaningful for the cache TTLs (it disables that class of
-	// caching); only negatives are configuration mistakes. Checked regardless
-	// of --token-passthrough — like --subject-access-review-timeout — so a
-	// broken value never lies dormant until the feature is switched on.
-	if o.App.TokenPassthrough.CacheSuccessTTL < 0 {
-		errs = append(errs, errors.New("--token-passthrough-cache-success-ttl must not be negative"))
-	}
-	if o.App.TokenPassthrough.CacheFailureTTL < 0 {
-		errs = append(errs, errors.New("--token-passthrough-cache-failure-ttl must not be negative"))
-	}
-
-	if o.App.SubjectAccessReviewTimeout <= 0 {
-		errs = append(errs, fmt.Errorf("--subject-access-review-timeout must be greater than 0, got %s", o.App.SubjectAccessReviewTimeout))
-	}
-
-	if o.App.SubjectAccessReviewAllowCacheTTL < 0 {
-		errs = append(errs, fmt.Errorf("--subject-access-review-cache-allow-ttl must not be negative (0 disables caching of allowed decisions), got %s", o.App.SubjectAccessReviewAllowCacheTTL))
-	}
-
-	if o.App.SubjectAccessReviewDenyCacheTTL < 0 {
-		errs = append(errs, fmt.Errorf("--subject-access-review-cache-deny-ttl must not be negative (0 disables caching of denied decisions), got %s", o.App.SubjectAccessReviewDenyCacheTTL))
-	}
-
-	if o.App.MaxImpersonationHeaderValues <= 0 {
-		errs = append(errs, fmt.Errorf("--max-impersonation-header-values must be greater than 0, got %d", o.App.MaxImpersonationHeaderValues))
+	if err := o.App.Validate(); err != nil {
+		errs = append(errs, err)
 	}
 
 	return errors.Join(errs...)
+}
+
+// newAuditOptions binds the apiserver's own audit flags under the Audit flag
+// set. The proxy adds nothing to them, so it holds the apiserver type
+// directly.
+func newAuditOptions(nfs *cliflag.NamedFlagSets) *apiserveroptions.AuditOptions {
+	a := apiserveroptions.NewAuditOptions()
+	a.AddFlags(nfs.FlagSet("Audit"))
+	return a
 }
 
 // oidcFlagsChanged reports whether any --oidc-* flag was set on cmd. The flag

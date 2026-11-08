@@ -92,7 +92,7 @@ func (p *Proxy) logForwardHeaders(req *http.Request, inboundXFF, inboundRealIP s
 	forwardedFor := slog.String("forwarded_for_untrusted", logging.Sanitize(inboundXFF))
 
 	if outboundXFF := req.Header.Get(reqctx.HeaderForwardedFor); outboundXFF != "" && outboundXFF != inboundXFF {
-		logging.Emit(req.Context(), logging.FromContext(req.Context()), logging.EventRequestHeadersRewritten,
+		logging.Emit(req.Context(), logging.LoggerFrom(req.Context()), logging.EventRequestHeadersRewritten,
 			slog.String("src_ip", srcIP), forwardedFor)
 	}
 
@@ -116,7 +116,7 @@ func (p *Proxy) logForwardHeaders(req *http.Request, inboundXFF, inboundRealIP s
 	if inboundXFF != "" {
 		attrs = append(attrs, forwardedFor)
 	}
-	logging.Emit(req.Context(), logging.FromContext(req.Context()), logging.EventRequestHeadersDropped, attrs...)
+	logging.Emit(req.Context(), logging.LoggerFrom(req.Context()), logging.EventRequestHeadersDropped, attrs...)
 }
 
 // withAuthenticateRequest adds the proxy authentication handler to a chain.

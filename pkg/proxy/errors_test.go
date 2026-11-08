@@ -38,7 +38,6 @@ func tryError(t *testing.T, expCode int, err error) (*fakeRW, *logtest.Capture) 
 	p := withDiscardLoggers(new(Proxy))
 	access, records := newAccessLogger(t)
 	p.access = access
-	p.handleError = p.newErrorHandler()
 
 	frw := newFakeRW()
 	fr := newFakeR()
@@ -122,7 +121,6 @@ func TestErrorHandlerInternalFailureEmitsHandlerFailed(t *testing.T) {
 				requestLogger: requestLogger,
 				access:        accesslog.NewAccessLogger(requestLogger),
 			})
-			p.handleError = p.newErrorHandler()
 
 			p.handleError(newFakeRW(), newFakeR(), test.err)
 
@@ -224,7 +222,6 @@ func TestErrorCanceledIsRecordedWithoutAResponse(t *testing.T) {
 	p := withDiscardLoggers(new(Proxy))
 	access, records := newAccessLogger(t)
 	p.access = access
-	p.handleError = p.newErrorHandler()
 
 	frw := newFakeRW()
 	p.handleError(frw, newFakeR(), stdcontext.Canceled)

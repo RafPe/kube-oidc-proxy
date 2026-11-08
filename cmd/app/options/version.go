@@ -34,6 +34,8 @@ var (
 	buildDate = "1970-01-01T00:00:00Z" // build date in ISO8601 format, output of $(date -u +'%Y-%m-%dT%H:%M:%SZ')
 )
 
+// NewVersionOptions registers the Version flag set on nfs and returns the
+// options carrying the build information stamped into the binary.
 func NewVersionOptions(nfs *cliflag.NamedFlagSets) *VersionOptions {
 	m := &VersionOptions{
 		gitMajor:     gitMajor,
@@ -47,6 +49,7 @@ func NewVersionOptions(nfs *cliflag.NamedFlagSets) *VersionOptions {
 	return m.AddFlags(nfs.FlagSet("Version"))
 }
 
+// AddFlags binds --version to fs and returns m for chaining.
 func (m *VersionOptions) AddFlags(fs *pflag.FlagSet) *VersionOptions {
 	fs.Bool("version", false, "Print version information and quit")
 	return m

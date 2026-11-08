@@ -56,7 +56,7 @@ func (p *pinnedPod) Close() {
 func (g *generator) pin(ctx context.Context, logger *slog.Logger) (*pinnedPod, error) {
 	pods, err := g.cluster.CoreV1().Pods(g.namespace).List(ctx, metav1.ListOptions{LabelSelector: proxyPodSelector})
 	if err != nil {
-		return nil, fmt.Errorf("failed to list the proxy pods in %s: %s", g.namespace, err)
+		return nil, fmt.Errorf("failed to list the proxy pods in %s: %w", g.namespace, err)
 	}
 
 	var pod *corev1.Pod
@@ -105,7 +105,7 @@ func (g *generator) scrape(ctx context.Context) ([]util.Sample, error) {
 	}
 	resp, err := g.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to scrape %s: %s", g.pinned.name, err)
+		return nil, fmt.Errorf("failed to scrape %s: %w", g.pinned.name, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
@@ -152,7 +152,7 @@ func seriesSum(samples []util.Sample, name string, labels map[string]string) flo
 func newGenerator(logger *slog.Logger, st *state, namespace string, tun *tunnel) (*generator, error) {
 	restConfig, err := clientcmd.BuildConfigFromFlags("", st.kubeconfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build a rest config from %q: %s", st.kubeconfig, err)
+		return nil, fmt.Errorf("failed to build a rest config from %q: %w", st.kubeconfig, err)
 	}
 	cluster, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
@@ -269,7 +269,7 @@ func (g *generator) serviceAccountToken(ctx context.Context) (string, error) {
 	tr, err := g.cluster.CoreV1().ServiceAccounts(g.namespace).
 		CreateToken(ctx, demoSA, req, metav1.CreateOptions{})
 	if err != nil {
-		return "", fmt.Errorf("failed to mint a token for serviceaccount %s/%s: %s", g.namespace, demoSA, err)
+		return "", fmt.Errorf("failed to mint a token for serviceaccount %s/%s: %w", g.namespace, demoSA, err)
 	}
 
 	return tr.Status.Token, nil

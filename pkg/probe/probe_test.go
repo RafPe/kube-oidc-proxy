@@ -17,6 +17,9 @@ import (
 
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
+
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 )
 
@@ -25,6 +28,13 @@ import (
 // an initialized issuer and fails ordinary verification. A per-token error
 // may be supplied via override to model alternate phrasings and transient
 // failures.
+//
+// It is a stateful fake rather than the generated authntest.MockToken on
+// purpose: tests flip an issuer from pending to initialized between checks and
+// read per-token call counts after concurrent probes, which is the behaviour
+// under test. A gomock expectation list would have to script every call in
+// advance and could not express "however many calls, answer from the current
+// state".
 type fakeAuthenticator struct {
 	mu       sync.Mutex
 	notInit  map[string]bool
@@ -383,3 +393,29 @@ type timeoutError struct{}
 func (timeoutError) Error() string   { return "i/o timeout" }
 func (timeoutError) Timeout() bool   { return true }
 func (timeoutError) Temporary() bool { return true }
+
+// TestNewIssuerReadinessNamesTheIssuer pins what the probe token must carry:
+// the authenticator routes a token to an issuer by its iss claim, so a token
+// naming a different issuer would probe the wrong one.
+func TestNewIssuerReadinessNamesTheIssuer(t *testing.T) {
+	const issuerURL = "https://issuer.example.com/realm"
+	r, err := NewIssuerReadiness(issuerURL)
+	if err != nil {
+		t.Fatalf("NewIssuerReadiness: %v", err)
+	}
+	if r.IssuerURL != issuerURL {
+		t.Fatalf("IssuerURL = %q, want %q", r.IssuerURL, issuerURL)
+	}
+
+	parsed, err := jwt.ParseSigned(r.FakeJWT, []jose.SignatureAlgorithm{jose.HS256})
+	if err != nil {
+		t.Fatalf("probe token is not a signed JWT: %v", err)
+	}
+	var claims jwt.Claims
+	if err := parsed.UnsafeClaimsWithoutVerification(&claims); err != nil {
+		t.Fatalf("reading probe token claims: %v", err)
+	}
+	if claims.Issuer != issuerURL {
+		t.Fatalf("iss = %q, want %q", claims.Issuer, issuerURL)
+	}
+}

@@ -46,7 +46,7 @@ func (p *Proxy) withRequestID(next http.Handler) http.Handler {
 		r.Header.Del(headerRequestID)
 		w.Header().Set(headerAuditID, id)
 
-		r = r.WithContext(logging.NewContext(r.Context(), p.requestLogger))
+		r = r.WithContext(logging.WithLogger(r.Context(), p.requestLogger))
 
 		next.ServeHTTP(w, reqctx.WithRequestID(r, id))
 	})

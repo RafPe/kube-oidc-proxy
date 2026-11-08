@@ -31,7 +31,7 @@ func loadState(dir string) (*state, error) {
 		// files up.sh just wrote.
 		b, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
-			return nil, fmt.Errorf("failed to read %s from %s; run 'make metrics_demo_up' first: %s", name, dir, err)
+			return nil, fmt.Errorf("failed to read %s from %s; run 'make metrics_demo_up' first: %w", name, dir, err)
 		}
 
 		return b, nil

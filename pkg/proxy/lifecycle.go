@@ -149,7 +149,7 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 		req = reqctx.WithTerminationHolder(req)
 		req = reqctx.WithDecisionHolder(req)
 		ctx := req.Context()
-		l := logging.FromContext(ctx)
+		l := logging.LoggerFrom(ctx)
 
 		// The verb and scope labels come from the RequestInfo the audit filter
 		// resolved ahead of this one; both projections collapse anything
@@ -191,7 +191,7 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 
 		defer func() {
 			panicked := recover()
-			classified := reqctx.TerminationFrom(req)
+			classified := reqctx.Termination(req)
 
 			term := metrics.TerminationNormal
 			switch {
@@ -210,9 +210,9 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 				// Aborted with the client still attached: the stream broke on
 				// the upstream side.
 				term = metrics.TerminationUpstreamReset
-			case classified.Termination != "":
+			case classified.Kind != "":
 				// Set by the error handler for an upstream failure.
-				term = classified.Termination
+				term = classified.Kind
 			}
 
 			// A handler that returned without writing anything is answered
@@ -238,7 +238,7 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 			// The classified reason travels with its termination, so a query on
 			// the terminal record alone can tell an upstream failure from an
 			// ordinary completion.
-			if term == classified.Termination && classified.Reason != "" {
+			if term == classified.Kind && classified.Reason != "" {
 				attrs = append(attrs, slog.String("reason", string(classified.Reason)))
 			}
 

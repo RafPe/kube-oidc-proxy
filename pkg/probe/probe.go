@@ -13,7 +13,6 @@ import (
 	"net"
 	"net/http"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,6 +20,9 @@ import (
 	"time"
 
 	"k8s.io/apiserver/pkg/authentication/authenticator"
+
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/authn"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
@@ -61,6 +63,35 @@ type pendingIssuer struct {
 type IssuerReadiness struct {
 	IssuerURL string
 	FakeJWT   string
+}
+
+// fakeJWTKey signs the probe token. The token is meant to fail verification:
+// what the probe reads is how the authenticator refuses it, which tells an
+// issuer still fetching its keys from one that has them. Nothing trusts this
+// key, so it need not be secret.
+var fakeJWTKey = []byte("this-is-a-32-byte-long-secret-key!!!!")
+
+// NewIssuerReadiness builds the readiness entry for an issuer: a JWT naming
+// the issuer, signed with a key no issuer holds.
+func NewIssuerReadiness(issuerURL string) (IssuerReadiness, error) {
+	sig, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.HS256, Key: fakeJWTKey},
+		(&jose.SignerOptions{}).WithType("JWT"))
+	if err != nil {
+		return IssuerReadiness{}, fmt.Errorf("creating the probe token signer: %w", err)
+	}
+
+	cl := jwt.Claims{
+		Subject:   "fake",
+		Issuer:    issuerURL,
+		NotBefore: jwt.NewNumericDate(time.Date(2016, 1, 1, 0, 0, 0, 0, time.UTC)),
+	}
+
+	token, err := jwt.Signed(sig).Claims(cl).Serialize()
+	if err != nil {
+		return IssuerReadiness{}, fmt.Errorf("signing the probe token: %w", err)
+	}
+	return IssuerReadiness{IssuerURL: issuerURL, FakeJWT: token}, nil
 }
 
 // HealthCheck tracks per-issuer OIDC initialization and answers readiness
@@ -121,32 +152,62 @@ type Server struct {
 	serving *httpserve.Serving
 }
 
-// NewServer builds a readiness Server that probes the given issuers via
-// oidcAuthenticator and serves the readiness endpoint on port. It does not
-// bind or serve until Start is called.
+// Config is what the readiness probe needs from the command.
+type Config struct {
+	// Addr is the host:port the readiness listener binds, in the same form
+	// the metrics listener takes.
+	Addr string
+
+	// Issuers are the issuers readiness waits for, each with the fake JWT
+	// used to probe whether its authenticator has fetched its JWKS.
+	Issuers []IssuerReadiness
+
+	// RequireAllIssuers makes readiness wait for every issuer rather than
+	// any one.
+	RequireAllIssuers bool
+
+	// Authenticator is the OIDC token authenticator the issuers are probed
+	// through.
+	Authenticator authenticator.Token
+
+	// Metrics receives the issuer and readiness gauges. Optional: nil records
+	// nothing.
+	Metrics *metrics.Recorder
+}
+
+// NewServer builds a readiness Server for cfg. It does not bind or serve until
+// Start is called. With a recorder, it seeds the readiness gauge and one
+// issuer series per configured issuer at 0, so an issuer that never
+// initializes is visible rather than absent.
 //
 // root must be the process root logger, not a component-bound one: unlike its
 // sibling constructors, the probe reports under two components (readiness for
 // the latch, oidc for the per-issuer records) and derives both itself. A nil
 // root yields loggers that discard every record, so a partially wired caller
 // cannot panic on a probe.
-func NewServer(port int, issuers []IssuerReadiness, requireAll bool, oidcAuthenticator authenticator.Token, root *slog.Logger) *Server {
+func NewServer(cfg Config, root *slog.Logger) *Server {
 	root = logging.OrDiscard(root)
 
 	h := &HealthCheck{
 		readinessLogger:   logging.ForComponent(root, logging.ComponentReadiness),
 		oidcLogger:        logging.ForComponent(root, logging.ComponentOIDC),
-		oidcAuthenticator: oidcAuthenticator,
-		issuers:           issuers,
-		requireAll:        requireAll,
+		oidcAuthenticator: cfg.Authenticator,
+		issuers:           cfg.Issuers,
+		requireAll:        cfg.RequireAllIssuers,
 		initialized:       make(map[string]bool),
+		metrics:           cfg.Metrics,
+	}
+
+	cfg.Metrics.SetReady(false)
+	for _, issuer := range cfg.Issuers {
+		cfg.Metrics.SetIssuerInitialized(authn.IssuerName(issuer.IssuerURL), false)
 	}
 
 	return &Server{
 		hc:              h,
 		shutdownTimeout: shutdownTimeout,
 		srv: &http.Server{
-			Addr:    net.JoinHostPort("0.0.0.0", strconv.Itoa(port)),
+			Addr:    cfg.Addr,
 			Handler: h.handler(),
 
 			// Bound how long a client may take to send its headers. The
@@ -156,19 +217,6 @@ func NewServer(port int, issuers []IssuerReadiness, requireAll bool, oidcAuthent
 			ReadHeaderTimeout: readHeaderTimeout,
 		},
 	}
-}
-
-// WithMetrics sets the recorder the probe publishes its issuer and readiness
-// gauges to, and seeds one series per configured issuer at 0 so an issuer
-// that never initializes is visible rather than absent. A nil recorder
-// records nothing.
-func (s *Server) WithMetrics(r *metrics.Recorder) *Server {
-	s.hc.metrics = r
-	r.SetReady(false)
-	for _, issuer := range s.hc.issuers {
-		r.SetIssuerInitialized(authn.IssuerName(issuer.IssuerURL), false)
-	}
-	return s
 }
 
 // SetServing records that the proxy has started serving, so readiness may now
@@ -228,16 +276,6 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	s.serving = serving
 	return nil
-}
-
-// Shutdown gracefully stops the readiness server with a bounded timeout. It is
-// safe to call more than once and is invoked automatically when the context
-// passed to Start is cancelled. Before Start there is nothing to stop.
-func (s *Server) Shutdown() error {
-	if s.serving == nil {
-		return nil
-	}
-	return s.serving.Shutdown()
 }
 
 // Wait blocks until serving and the graceful shutdown have both finished and

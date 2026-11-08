@@ -139,9 +139,9 @@ change with a changelog entry.
 
 ## Label values
 
-Every label is a closed set. The sets repeat the vocabularies the
-[log records](./logging.md#field-reference) use, so a log query and a PromQL
-query select the same thing.
+Every label is a closed set, defined once in `pkg/metrics/labels.go`. The
+[log records](./logging.md#field-reference) use the same types, so a log query
+and a PromQL query select the same thing.
 
 | Label | Values |
 | --- | --- |

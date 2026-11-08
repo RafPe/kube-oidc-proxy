@@ -31,7 +31,7 @@ to conflate because two of them share the word "mode".
 | One issuer, configured with flags | `oidc.clientId`, `oidc.issuerUrl`, `oidc.usernameClaim`, or `oidc.existingSecret` (the `--oidc-*` flags) | Mirrors the API server's own OIDC flags one-to-one. Username and group prefixes, required claims and signing algorithms are flags too. |
 | One or more issuers, with claim expressions and validation rules | `authenticationConfig.content` (`--authentication-config`) | The Kubernetes `AuthenticationConfiguration` format. Worth using for a single issuer as soon as you need CEL: synthesized groups, `extra` for audit, numeric-ID pinning. Mutually exclusive with the flags above. |
 | Bearer tokens that are not OIDC tokens, such as ServiceAccount tokens | `tokenPassthrough` (`--token-passthrough`, alpha) | Tried only after OIDC validation fails; validated with a `TokenReview` and forwarded without impersonation. Independent of the two choices above. |
-| Forward authenticated requests without impersonating | `--disable-impersonation` (alpha) | The API server authenticates the request itself. Rarely wanted; see [No impersonation](#no-impersonation). |
+| Forward authenticated requests without impersonating | `--disable-impersonation` (alpha) | The request reaches the API server anonymous: the proxy consumes the token and adds no credentials. Rarely wanted; see [No impersonation](#no-impersonation). |
 
 The first two are the mutually exclusive pair. The binary refuses to start
 when both `--authentication-config` and issuer-specific `--oidc-*` flags are
@@ -333,9 +333,13 @@ documented in [Caching and API-server protection](./caching.md#tokenreview-resul
 ## No impersonation
 
 Disable impersonation entirely: after a request authenticates, it is forwarded
-as-is, with no header changes and no authentication injected by the proxy. The
-OIDC bearer token stays in the request. Useful for fronting endpoints that
-implement no authentication or authorization of their own.
+with no `Impersonate-*` headers added and no credentials of the proxy's own.
+Authentication consumes the OIDC bearer token, so the request reaches the API
+server as `system:anonymous`, carrying any `Impersonate-*` headers the client
+sent untouched and unchecked by the proxy. The API server's anonymous
+authentication and RBAC are then the only controls on what the request may
+do. Useful for fronting endpoints that implement no authentication or
+authorization of their own.
 
 ```text
 --disable-impersonation
