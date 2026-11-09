@@ -22,7 +22,6 @@
 #          source code.
 #    KUBE_GIT_TREE_STATE - "clean" indicates no changes since the git commit id
 #        "dirty" indicates source code changes after the git commit id
-#        "archive" indicates the tree was produced by 'git archive'
 #    KUBE_GIT_VERSION - "vX.Y" used to indicate the last release version.
 #    KUBE_GIT_MAJOR - The major part of the version
 #    KUBE_GIT_MINOR - The minor component of the version
@@ -35,19 +34,6 @@ kube::version::get_version_vars() {
   if [[ -n ${KUBE_GIT_VERSION_FILE-} ]]; then
     kube::version::load_version_vars "${KUBE_GIT_VERSION_FILE}"
     return
-  fi
-
-  # If the kubernetes source was exported through git archive, then
-  # we likely don't have a git tree, but these magic values may be filled in.
-  if [[ '$Format:%%$' == "%" ]]; then
-    KUBE_GIT_COMMIT='$Format:%H$'
-    KUBE_GIT_TREE_STATE="archive"
-    # When a 'git archive' is exported, the '$Format:%D$' below will look
-    # something like 'HEAD -> release-1.8, tag: v1.8.3' where then 'tag: '
-    # can be extracted from it.
-    if [[ '$Format:%D$' =~ tag:\ (v[^ ,]+) ]]; then
-     KUBE_GIT_VERSION="${BASH_REMATCH[1]}"
-    fi
   fi
 
   local git=(git --work-tree "${KUBE_ROOT}")
@@ -135,19 +121,18 @@ kube::version::load_version_vars() {
   source "${version_file}"
 }
 
+# Prints the -X flag that stamps $2 into the build-information variable $1
+# of cmd/app/options (see cmd/app/options/version.go). Every key passed here
+# must name a string variable declared there, or the stamp is silently dropped.
 kube::version::ldflag() {
   local key=${1}
   local val=${2}
 
-  # If you update these, also update the list pkg/version/def.bzl.
   echo "-X '${KUBE_GO_PACKAGE}/cmd/app/options.${key}=${val}'"
-  echo "-X '${KUBE_GO_PACKAGE}/vendor/k8s.io/client-go/pkg/version.${key}=${val}'"
 }
 
 # Prints the value that needs to be passed to the -ldflags parameter of go build
-# in order to set the Kubernetes based on the git tree status.
-# IMPORTANT: if you update any of these, also update the lists in
-# pkg/version/def.bzl and hack/print-workspace-status.sh.
+# in order to stamp the build information from the git tree status.
 kube::version::ldflags() {
   kube::version::get_version_vars
 

@@ -25,6 +25,7 @@ import (
 	clientauthv1 "k8s.io/client-go/kubernetes/typed/authentication/v1"
 	"k8s.io/utils/clock"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/ctxerr"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 )
@@ -38,23 +39,18 @@ const (
 	DefaultFailureCacheTTL = 10 * time.Second
 )
 
-// tokenCacheSize bounds the number of cached review results. Cache keys are
-// derived from attacker-supplied bearer tokens, so the cache must evict (LRU)
-// rather than grow without bound: without a cap, a flood of unique invalid
-// tokens would each pin an entry for the full failure TTL. 8192 entries hold
-// the live tokens of a large cluster for one TTL while keeping the worst case
-// to a few megabytes. It is sized for this cache alone; nothing ties it to the
-// SubjectAccessReview decision cache.
+// tokenCacheSize bounds the number of cached review results. Cache keys derive
+// from attacker-supplied bearer tokens, so the cache evicts (LRU) rather than
+// let a flood of unique invalid tokens grow it; 8192 entries hold a large
+// cluster's live tokens for one TTL in a few megabytes.
 const tokenCacheSize = 8192
 
 // ErrCreateTokenReview is the one error class the authenticator New returns:
 // every error from AuthenticateToken wraps it, whether the API server could
 // not be reached, did not answer in time, or answered with a status error. It
 // marks a dependency failure, not a verdict on the token (a refused token is
-// ok=false with a nil error), and it is what callers match with errors.Is to
-// tell the two apart. The underlying error (including
-// context.Canceled/DeadlineExceeded) is wrapped alongside it so it remains
-// detectable too.
+// ok=false with a nil error). The underlying error (including
+// context.Canceled/DeadlineExceeded) is wrapped alongside it.
 var ErrCreateTokenReview = errors.New("create TokenReview")
 
 // liveReviewer submits a TokenReview to the API server for every call. New
@@ -222,7 +218,7 @@ func (c *cachedReviewer) AuthenticateToken(ctx context.Context, token string) (*
 }
 
 // recordCacheLookup reports one cache consultation, as a record and as a
-// metric, so the two can never disagree about what the cache did.
+// metric.
 func (c *cachedReviewer) recordCacheLookup(ctx context.Context, result metrics.CacheResult, attrs ...slog.Attr) {
 	attrs = append([]slog.Attr{slog.String("cache_result", string(result))}, attrs...)
 	logging.Emit(ctx, c.reviewer.logger, logging.EventCacheTokenReviewLookup, attrs...)
@@ -262,8 +258,11 @@ func writeLengthPrefixed(h hash.Hash, b []byte, s string) {
 // the API server answers but does not authenticate the token, and an error
 // wrapping ErrCreateTokenReview when the review itself failed; callers must
 // treat both as unauthenticated (fail closed).
-func (r *liveReviewer) AuthenticateToken(ctx context.Context, token string) (*authenticator.Response, bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, r.timeout)
+//
+// The reviewer records its own outcome: authn.tokenreview.completed for an
+// answer, authn.tokenreview.failed for a review that got none.
+func (r *liveReviewer) AuthenticateToken(requestCtx context.Context, token string) (*authenticator.Response, bool, error) {
+	ctx, cancel := context.WithTimeout(requestCtx, r.timeout)
 	defer cancel()
 
 	start := time.Now()
@@ -274,10 +273,10 @@ func (r *liveReviewer) AuthenticateToken(ctx context.Context, token string) (*au
 	switch {
 	case err != nil:
 		r.metrics.ReviewRequest(metrics.ReviewTokenReview, metrics.ReviewOutcomeFor(err, false), time.Since(start))
-		return nil, false, fmt.Errorf("%w: %w", ErrCreateTokenReview, err)
+		return nil, false, r.failed(requestCtx, fmt.Errorf("%w: %w", ErrCreateTokenReview, err))
 	case len(resp.Status.Error) > 0:
 		r.metrics.ReviewRequest(metrics.ReviewTokenReview, metrics.ReviewError, time.Since(start))
-		return nil, false, fmt.Errorf("%w: status error: %s", ErrCreateTokenReview, resp.Status.Error)
+		return nil, false, r.failed(requestCtx, fmt.Errorf("%w: status error: %s", ErrCreateTokenReview, resp.Status.Error))
 	}
 	r.metrics.ReviewRequest(metrics.ReviewTokenReview, metrics.ReviewOutcomeFor(nil, resp.Status.Authenticated), time.Since(start))
 
@@ -293,6 +292,22 @@ func (r *liveReviewer) AuthenticateToken(ctx context.Context, token string) (*au
 		Audiences: authenticator.Audiences(resp.Status.Audiences),
 		User:      userInfoFrom(resp.Status.User),
 	}, true, nil
+}
+
+// failed emits authn.tokenreview.failed for err and returns it. requestCtx is
+// the caller's context, not the one bounded by the review timeout: a review
+// that failed because the client itself went away is a per-request condition
+// at DEBUG, so a client cannot drive the ERROR stream by hanging up
+// mid-request, while the reviewer's own timeout expiring is a dependency
+// failure and stays an ERROR.
+func (r *liveReviewer) failed(requestCtx context.Context, err error) error {
+	reason, level := metrics.ReasonAuthenticationDependencyError, slog.LevelError
+	if ctxerr.ClientGone(requestCtx, err) {
+		reason, level = metrics.ReasonClientCanceled, slog.LevelDebug
+	}
+	logging.EmitLevel(requestCtx, r.logger, logging.EventAuthnTokenReviewFailed, level,
+		slog.String("reason", string(reason)), logging.ErrAttr(err))
+	return err
 }
 
 // userInfoFrom converts the TokenReview status identity into the

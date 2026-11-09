@@ -34,7 +34,7 @@ func TestSARCacheSwitchedOffCountsOneAPICallPerRequest(t *testing.T) {
 	s := New(fake.New(nil), Config{Metrics: rec, Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 	requester := &user.DefaultInfo{Name: "alice"}
 	for i := 0; i < 2; i++ {
-		if _, err := s.ResolveImpersonation(impersonateUserRequest("jjackson"), requester); err != nil {
+		if _, _, err := s.ConsumeImpersonation(impersonateUserRequest("jjackson"), requester); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -52,7 +52,7 @@ func TestSARCacheHitDoesNotReachTheAPIServer(t *testing.T) {
 	s := New(fake.New(nil), Config{Metrics: rec, Timeout: DefaultTimeout, AllowCacheTTL: 10 * time.Second, DenyCacheTTL: 10 * time.Second, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 	requester := &user.DefaultInfo{Name: "alice"}
 	for i := 0; i < 3; i++ {
-		if _, err := s.ResolveImpersonation(impersonateUserRequest("jjackson"), requester); err != nil {
+		if _, _, err := s.ConsumeImpersonation(impersonateUserRequest("jjackson"), requester); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -66,7 +66,7 @@ func TestSARCacheHitDoesNotReachTheAPIServer(t *testing.T) {
 	if v, _ := metricstest.Value(t, g, metricReviewRequests, map[string]string{"review": "sar", "outcome": "allow"}); v != 1 {
 		t.Fatalf("API calls = %v, want 1", v)
 	}
-	if _, err := s.ResolveImpersonation(impersonateUserRequest("mallory"), requester); err == nil {
+	if _, _, err := s.ConsumeImpersonation(impersonateUserRequest("mallory"), requester); err == nil {
 		t.Fatal("expected a denial for mallory")
 	}
 	if v, _ := metricstest.Value(t, g, metricReviewRequests, map[string]string{"review": "sar", "outcome": "deny"}); v != 1 {
@@ -100,7 +100,7 @@ func TestCoalescedSARCallersCountOneAPICall(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				_, err := s.ResolveImpersonation(impersonateUserRequest("jjackson"), requester)
+				_, _, err := s.ConsumeImpersonation(impersonateUserRequest("jjackson"), requester)
 				errs <- err
 			}()
 		}

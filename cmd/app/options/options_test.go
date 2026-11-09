@@ -2,15 +2,63 @@
 package options
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	certutil "k8s.io/client-go/util/cert"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/authz/subjectaccessreview"
 )
+
+// newTestOptions returns options bound to a command, as New and AddFlags
+// leave them. With no flag set they pass Validate, so a table case changes
+// only what it is about and a success case can assert a nil error.
+func newTestOptions(t *testing.T) (*Options, *cobra.Command) {
+	t.Helper()
+	o := New()
+	cmd := &cobra.Command{Use: "test"}
+	o.AddFlags(cmd)
+	if err := o.Validate(cmd); err != nil {
+		t.Fatalf("Validate() on the defaults = %v, want nil", err)
+	}
+	return o, cmd
+}
+
+// checkValidateError fails t unless err is nil when want is empty, or
+// carries every message in want otherwise.
+func checkValidateError(t *testing.T, err error, want ...string) {
+	t.Helper()
+	if len(want) == 0 {
+		if err != nil {
+			t.Fatalf("Validate() = %v, want nil", err)
+		}
+		return
+	}
+	if err == nil {
+		t.Fatalf("Validate() = nil, want errors containing %q", want)
+	}
+	for _, w := range want {
+		if !strings.Contains(err.Error(), w) {
+			t.Errorf("Validate() = %v, want an error containing %q", err, w)
+		}
+	}
+}
+
+// writeFile writes data to a new file under t's temporary directory and
+// returns its path.
+func writeFile(t *testing.T, name string, data []byte) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
 
 func TestOidcFlagsChanged(t *testing.T) {
 	tests := map[string]struct {
@@ -40,9 +88,7 @@ func TestOidcFlagsChanged(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			o := New()
-			cmd := &cobra.Command{}
-			o.AddFlags(cmd)
+			o, cmd := newTestOptions(t)
 
 			// Guard against a silently-empty derivation: if FlagSet("OIDC")
 			// returned a fresh empty set, oidcFlagsChanged would always report
@@ -69,52 +115,178 @@ func TestOidcFlagsChanged(t *testing.T) {
 }
 
 func TestValidate_MutualExclusivity(t *testing.T) {
+	const wantErr = "--authentication-config and the issuer-specific --oidc-* flags are mutually exclusive"
+
+	certPEM, keyPEM, err := certutil.GenerateSelfSignedCertKey("client", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certFile := writeFile(t, "client.crt", certPEM)
+	keyFile := writeFile(t, "client.key", keyPEM)
+
 	tests := map[string]struct {
-		configFile    string
-		changedFlags  []string
-		wantErrSubstr string
+		args    []string
+		wantErr string
 	}{
 		"both authentication-config and oidc-issuer-url is an error": {
-			configFile:    "/some/path",
-			changedFlags:  []string{"oidc-issuer-url"},
-			wantErrSubstr: "mutually exclusive",
+			args:    []string{"--oidc-issuer-url=https://issuer.example.com"},
+			wantErr: wantErr,
 		},
 		"both authentication-config and oidc-ca-file is an error": {
-			configFile:    "/some/path",
-			changedFlags:  []string{"oidc-ca-file"},
-			wantErrSubstr: "mutually exclusive",
+			args:    []string{"--oidc-ca-file=" + certFile},
+			wantErr: wantErr,
 		},
-		"authentication-config without oidc flags is not a mutual exclusivity error": {
-			configFile: "/some/path",
-		},
+		"authentication-config without oidc flags is valid": {},
 		"authentication-config accepts shared OIDC TLS credentials": {
-			configFile:   "/some/path",
-			changedFlags: []string{"oidc-tls-client-cert-file"},
+			args: []string{"--oidc-tls-client-cert-file=" + certFile, "--oidc-tls-client-key-file=" + keyFile},
+		},
+	}
+
+	configFile := writeFile(t, "authentication.yaml", nil)
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			o, cmd := newTestOptions(t)
+			if err := cmd.ParseFlags(append([]string{"--authentication-config=" + configFile}, tc.args...)); err != nil {
+				t.Fatal(err)
+			}
+
+			if tc.wantErr == "" {
+				checkValidateError(t, o.Validate(cmd))
+			} else {
+				checkValidateError(t, o.Validate(cmd), tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestValidate_ReservedIdentityPrefixes pins that a single-issuer prefix that
+// would mint reserved identities for every user is refused with the other
+// flag errors, each prefix reported on its own, and that the --oidc-*
+// prefixes are not checked with --authentication-config, which ignores them.
+func TestValidate_ReservedIdentityPrefixes(t *testing.T) {
+	const (
+		usernameErr = `--oidc-username-prefix "system:" would prefix every authenticated identity`
+		groupsErr   = `--oidc-groups-prefix "system:serviceaccount:" would prefix every authenticated identity`
+	)
+
+	tests := map[string]struct {
+		usernamePrefix string
+		groupsPrefix   string
+		configFile     bool
+		wantErrs       []string
+	}{
+		"no prefixes": {},
+		"ordinary prefixes": {
+			usernamePrefix: "oidc:",
+			groupsPrefix:   "oidc:",
+		},
+		"reserved username prefix": {
+			usernamePrefix: "system:",
+			wantErrs:       []string{usernameErr},
+		},
+		"reserved groups prefix": {
+			groupsPrefix: "system:serviceaccount:",
+			wantErrs:     []string{groupsErr},
+		},
+		"both reserved prefixes are reported together": {
+			usernamePrefix: "system:",
+			groupsPrefix:   "system:serviceaccount:",
+			wantErrs:       []string{usernameErr, groupsErr},
+		},
+		"reserved prefix ignored in multi-issuer mode": {
+			usernamePrefix: "system:",
+			configFile:     true,
 		},
 	}
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			o := New()
-			cmd := &cobra.Command{}
-			o.AddFlags(cmd)
-
-			o.AuthenticationConfig.ConfigFile = tc.configFile
-			for _, flagName := range tc.changedFlags {
-				if err := cmd.Flags().Set(flagName, "https://issuer.example.com"); err != nil {
-					t.Fatalf("setting flag %q: %v", flagName, err)
-				}
+			o, cmd := newTestOptions(t)
+			// Set on the options rather than the flags: in multi-issuer mode
+			// changing an --oidc-* flag is itself an error.
+			o.OIDCAuthentication.UsernamePrefix = tc.usernamePrefix
+			o.OIDCAuthentication.GroupsPrefix = tc.groupsPrefix
+			if tc.configFile {
+				o.AuthenticationConfig.ConfigFile = writeFile(t, "authentication.yaml", nil)
 			}
 
-			err := o.Validate(cmd)
-			if tc.wantErrSubstr == "" {
-				if err != nil && strings.Contains(err.Error(), "mutually exclusive") {
-					t.Errorf("Validate() unexpected mutual exclusivity error: %v", err)
-				}
+			checkValidateError(t, o.Validate(cmd), tc.wantErrs...)
+		})
+	}
+}
+
+// TestValidate_ExtraHeadersRequireImpersonation pins that each extra user
+// header flag is refused, by name, with --disable-impersonation: the headers
+// belong to the impersonated request, which is never sent.
+func TestValidate_ExtraHeadersRequireImpersonation(t *testing.T) {
+	tests := map[string]struct {
+		args     []string
+		wantErrs []string
+	}{
+		"extra headers with impersonation are valid": {
+			args: []string{"--extra-user-header-client-ip", "--extra-user-headers=team=a"},
+		},
+		"disabled impersonation alone is valid": {
+			args: []string{"--disable-impersonation"},
+		},
+		"client IP header with disabled impersonation is rejected": {
+			args:     []string{"--disable-impersonation", "--extra-user-header-client-ip"},
+			wantErrs: []string{"--extra-user-header-client-ip cannot be used with --disable-impersonation"},
+		},
+		"both header flags with disabled impersonation are each rejected": {
+			args: []string{"--disable-impersonation", "--extra-user-header-client-ip", "--extra-user-headers=team=a"},
+			wantErrs: []string{
+				"--extra-user-header-client-ip cannot be used with --disable-impersonation",
+				"--extra-user-headers cannot be used with --disable-impersonation",
+			},
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			o, cmd := newTestOptions(t)
+			if err := cmd.ParseFlags(tc.args); err != nil {
+				t.Fatal(err)
+			}
+			checkValidateError(t, o.Validate(cmd), tc.wantErrs...)
+		})
+	}
+}
+
+// TestValidate_ProxyListFlags pins that --trusted-proxies and
+// --allow-reserved-groups are checked with the other flags, by the proxy's
+// own rules, and reported under their flag names.
+func TestValidate_ProxyListFlags(t *testing.T) {
+	tests := map[string]struct {
+		args    []string
+		wantErr string
+	}{
+		"valid trusted proxies": {
+			args: []string{"--trusted-proxies=10.0.0.0/8,2001:db8::/32"},
+		},
+		"valid reserved groups": {
+			args: []string{"--allow-reserved-groups=system:monitoring"},
+		},
+		"malformed trusted proxy CIDR is rejected": {
+			args:    []string{"--trusted-proxies=10.0.0.0/8,bogus"},
+			wantErr: `--trusted-proxies: invalid trusted-proxy CIDR "bogus"`,
+		},
+		"unreserved allowed group is rejected": {
+			args:    []string{"--allow-reserved-groups=admins"},
+			wantErr: `--allow-reserved-groups: allowed reserved group "admins" does not carry the reserved "system:" prefix`,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			o, cmd := newTestOptions(t)
+			if err := cmd.ParseFlags(tc.args); err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantErr == "" {
+				checkValidateError(t, o.Validate(cmd))
 			} else {
-				if err == nil || !strings.Contains(err.Error(), tc.wantErrSubstr) {
-					t.Errorf("Validate() error = %v, want error containing %q", err, tc.wantErrSubstr)
-				}
+				checkValidateError(t, o.Validate(cmd), tc.wantErr)
 			}
 		})
 	}
@@ -129,7 +301,7 @@ func TestValidate_TokenPassthroughCacheTTLs(t *testing.T) {
 		successTTL         time.Duration
 		failureTTL         time.Duration
 		passthroughEnabled bool
-		wantErrSubstr      string
+		wantErr            string
 	}{
 		"defaults are valid": {
 			successTTL: 10 * time.Second,
@@ -144,43 +316,38 @@ func TestValidate_TokenPassthroughCacheTTLs(t *testing.T) {
 			successTTL:         -1 * time.Second,
 			failureTTL:         10 * time.Second,
 			passthroughEnabled: true,
-			wantErrSubstr:      "--token-passthrough-cache-success-ttl must not be negative",
+			wantErr:            "--token-passthrough-cache-success-ttl must not be negative",
 		},
 		"negative failure TTL is rejected": {
 			successTTL:         10 * time.Second,
 			failureTTL:         -1 * time.Second,
 			passthroughEnabled: true,
-			wantErrSubstr:      "--token-passthrough-cache-failure-ttl must not be negative",
+			wantErr:            "--token-passthrough-cache-failure-ttl must not be negative",
 		},
 		"negative success TTL is rejected even with passthrough disabled": {
-			successTTL:    -1 * time.Second,
-			failureTTL:    10 * time.Second,
-			wantErrSubstr: "--token-passthrough-cache-success-ttl must not be negative",
+			successTTL: -1 * time.Second,
+			failureTTL: 10 * time.Second,
+			wantErr:    "--token-passthrough-cache-success-ttl must not be negative",
 		},
 		"negative failure TTL is rejected even with passthrough disabled": {
-			successTTL:    10 * time.Second,
-			failureTTL:    -1 * time.Second,
-			wantErrSubstr: "--token-passthrough-cache-failure-ttl must not be negative",
+			successTTL: 10 * time.Second,
+			failureTTL: -1 * time.Second,
+			wantErr:    "--token-passthrough-cache-failure-ttl must not be negative",
 		},
 	}
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			o := New()
-			cmd := &cobra.Command{}
-			o.AddFlags(cmd)
+			o, cmd := newTestOptions(t)
 
 			o.App.TokenPassthrough.Enabled = tc.passthroughEnabled
 			o.App.TokenPassthrough.SuccessCacheTTL = tc.successTTL
 			o.App.TokenPassthrough.FailureCacheTTL = tc.failureTTL
 
-			err := o.Validate(cmd)
-			if tc.wantErrSubstr == "" {
-				if err != nil && strings.Contains(err.Error(), "cache") {
-					t.Errorf("Validate() unexpected cache TTL error: %v", err)
-				}
-			} else if err == nil || !strings.Contains(err.Error(), tc.wantErrSubstr) {
-				t.Errorf("Validate() error = %v, want error containing %q", err, tc.wantErrSubstr)
+			if tc.wantErr == "" {
+				checkValidateError(t, o.Validate(cmd))
+			} else {
+				checkValidateError(t, o.Validate(cmd), tc.wantErr)
 			}
 		})
 	}
@@ -190,7 +357,7 @@ func TestValidate_TokenPassthroughCacheTTLs(t *testing.T) {
 // --token-passthrough-request-timeout is rejected whether or not
 // --token-passthrough is enabled, like the cache TTLs beside it.
 func TestValidate_TokenPassthroughRequestTimeout(t *testing.T) {
-	const wantErrSubstr = "--token-passthrough-request-timeout must be greater than zero"
+	const wantErr = "--token-passthrough-request-timeout must be greater than 0"
 
 	for name, tc := range map[string]struct {
 		timeout            time.Duration
@@ -203,23 +370,22 @@ func TestValidate_TokenPassthroughRequestTimeout(t *testing.T) {
 		"negative is rejected with passthrough off": {timeout: -time.Second, wantErr: true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			o := New()
-			cmd := &cobra.Command{}
-			o.AddFlags(cmd)
+			o, cmd := newTestOptions(t)
 
 			o.App.TokenPassthrough.Enabled = tc.passthroughEnabled
 			o.App.TokenPassthrough.Timeout = tc.timeout
 
-			err := o.Validate(cmd)
-			if got := err != nil && strings.Contains(err.Error(), wantErrSubstr); got != tc.wantErr {
-				t.Errorf("Validate() error = %v, want request timeout error: %v", err, tc.wantErr)
+			if tc.wantErr {
+				checkValidateError(t, o.Validate(cmd), wantErr)
+			} else {
+				checkValidateError(t, o.Validate(cmd))
 			}
 		})
 	}
 }
 
 func TestValidate_SubjectAccessReviewTimeout(t *testing.T) {
-	const wantErrSubstr = "--subject-access-review-timeout must be greater than 0"
+	const wantErr = "--subject-access-review-timeout must be greater than 0"
 
 	tests := map[string]struct {
 		timeout time.Duration
@@ -233,16 +399,14 @@ func TestValidate_SubjectAccessReviewTimeout(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			o := New()
-			cmd := &cobra.Command{}
-			o.AddFlags(cmd)
+			o, cmd := newTestOptions(t)
 
 			o.App.SubjectAccessReview.Timeout = tc.timeout
 
-			err := o.Validate(cmd)
-			gotErr := err != nil && strings.Contains(err.Error(), wantErrSubstr)
-			if gotErr != tc.wantErr {
-				t.Errorf("Validate() timeout error present = %v (err=%v), want %v", gotErr, err, tc.wantErr)
+			if tc.wantErr {
+				checkValidateError(t, o.Validate(cmd), wantErr)
+			} else {
+				checkValidateError(t, o.Validate(cmd))
 			}
 		})
 	}
@@ -250,16 +414,16 @@ func TestValidate_SubjectAccessReviewTimeout(t *testing.T) {
 
 func TestValidate_SubjectAccessReviewCacheTTLs(t *testing.T) {
 	flags := map[string]struct {
-		wantErrSubstr string
-		set           func(o *Options, ttl time.Duration)
+		wantErr string
+		set     func(o *Options, ttl time.Duration)
 	}{
 		"subject-access-review-cache-allow-ttl": {
-			wantErrSubstr: "--subject-access-review-cache-allow-ttl must not be negative",
-			set:           func(o *Options, ttl time.Duration) { o.App.SubjectAccessReview.AllowCacheTTL = ttl },
+			wantErr: "--subject-access-review-cache-allow-ttl must not be negative",
+			set:     func(o *Options, ttl time.Duration) { o.App.SubjectAccessReview.AllowCacheTTL = ttl },
 		},
 		"subject-access-review-cache-deny-ttl": {
-			wantErrSubstr: "--subject-access-review-cache-deny-ttl must not be negative",
-			set:           func(o *Options, ttl time.Duration) { o.App.SubjectAccessReview.DenyCacheTTL = ttl },
+			wantErr: "--subject-access-review-cache-deny-ttl must not be negative",
+			set:     func(o *Options, ttl time.Duration) { o.App.SubjectAccessReview.DenyCacheTTL = ttl },
 		},
 	}
 
@@ -278,16 +442,14 @@ func TestValidate_SubjectAccessReviewCacheTTLs(t *testing.T) {
 		t.Run(flagName, func(t *testing.T) {
 			for name, tc := range tests {
 				t.Run(name, func(t *testing.T) {
-					o := New()
-					cmd := &cobra.Command{}
-					o.AddFlags(cmd)
+					o, cmd := newTestOptions(t)
 
 					flag.set(o, tc.ttl)
 
-					err := o.Validate(cmd)
-					gotErr := err != nil && strings.Contains(err.Error(), flag.wantErrSubstr)
-					if gotErr != tc.wantErr {
-						t.Errorf("Validate() TTL error present = %v (err=%v), want %v", gotErr, err, tc.wantErr)
+					if tc.wantErr {
+						checkValidateError(t, o.Validate(cmd), flag.wantErr)
+					} else {
+						checkValidateError(t, o.Validate(cmd))
 					}
 				})
 			}
@@ -296,7 +458,7 @@ func TestValidate_SubjectAccessReviewCacheTTLs(t *testing.T) {
 }
 
 func TestValidate_MaxImpersonationHeaderValues(t *testing.T) {
-	const wantErrSubstr = "--max-impersonation-header-values must be greater than 0"
+	const wantErr = "--max-impersonation-header-values must be greater than 0"
 
 	tests := map[string]struct {
 		max     int
@@ -310,19 +472,27 @@ func TestValidate_MaxImpersonationHeaderValues(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			o := New()
-			cmd := &cobra.Command{}
-			o.AddFlags(cmd)
+			o, cmd := newTestOptions(t)
 
 			o.App.MaxImpersonationHeaderValues = tc.max
 
-			err := o.Validate(cmd)
-			gotErr := err != nil && strings.Contains(err.Error(), wantErrSubstr)
-			if gotErr != tc.wantErr {
-				t.Errorf("Validate() max header values error present = %v (err=%v), want %v", gotErr, err, tc.wantErr)
+			if tc.wantErr {
+				checkValidateError(t, o.Validate(cmd), wantErr)
+			} else {
+				checkValidateError(t, o.Validate(cmd))
 			}
 		})
 	}
+}
+
+// TestValidate_SecurePortCollidesWithReadinessProbe pins that the secure
+// port and the readiness probe cannot share a port, reported by both flags.
+func TestValidate_SecurePortCollidesWithReadinessProbe(t *testing.T) {
+	o, cmd := newTestOptions(t)
+	if err := cmd.ParseFlags([]string{"--secure-port=8080", "--readiness-probe-port=8080"}); err != nil {
+		t.Fatal(err)
+	}
+	checkValidateError(t, o.Validate(cmd), "--secure-port 8080 is already used by --readiness-probe-port")
 }
 
 // TestValidate_MetricsBindAddressPortCollisions pins that the metrics listener
@@ -331,22 +501,22 @@ func TestValidate_MaxImpersonationHeaderValues(t *testing.T) {
 // a disabled listener, not a port.
 func TestValidate_MetricsBindAddressPortCollisions(t *testing.T) {
 	tests := map[string]struct {
-		bindAddress   string
-		probePort     int
-		securePort    int
-		wantErrSubstr string
+		bindAddress string
+		probePort   int
+		securePort  int
+		wantErr     string
 	}{
 		"collides with the readiness probe port": {
-			bindAddress:   ":8080",
-			probePort:     8080,
-			securePort:    6443,
-			wantErrSubstr: "--metrics-bind-address port 8080 is already used by the readiness probe",
+			bindAddress: ":8080",
+			probePort:   8080,
+			securePort:  6443,
+			wantErr:     "--metrics-bind-address port 8080 is already used by --readiness-probe-port",
 		},
 		"collides with the secure serving port": {
-			bindAddress:   "127.0.0.1:6443",
-			probePort:     8080,
-			securePort:    6443,
-			wantErrSubstr: "--metrics-bind-address port 6443 is already used by the secure serving port",
+			bindAddress: "127.0.0.1:6443",
+			probePort:   8080,
+			securePort:  6443,
+			wantErr:     "--metrics-bind-address port 6443 is already used by --secure-port",
 		},
 		"a distinct port is accepted": {
 			bindAddress: ":9090",
@@ -362,24 +532,62 @@ func TestValidate_MetricsBindAddressPortCollisions(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			o := New()
-			cmd := &cobra.Command{}
-			o.AddFlags(cmd)
+			o, cmd := newTestOptions(t)
 
 			o.Metrics.BindAddress = tc.bindAddress
 			o.App.ReadinessProbePort = tc.probePort
 			o.SecureServing.BindPort = tc.securePort
 
-			err := o.Validate(cmd)
-			if tc.wantErrSubstr == "" {
-				if err != nil && strings.Contains(err.Error(), "--metrics-bind-address") {
-					t.Errorf("Validate() unexpected metrics collision error: %v", err)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tc.wantErrSubstr) {
-				t.Errorf("Validate() error = %v, want error containing %q", err, tc.wantErrSubstr)
+			if tc.wantErr == "" {
+				checkValidateError(t, o.Validate(cmd))
+			} else {
+				checkValidateError(t, o.Validate(cmd), tc.wantErr)
 			}
 		})
 	}
+}
+
+// TestValidate_ReportsEveryFlagErrorAtOnce pins that Validate is the one
+// place flag errors are reported: mistakes in unrelated groups, including the
+// checks that used to run only once the proxy was being built, come back
+// together, and every message names its flag with the -- prefix.
+func TestValidate_ReportsEveryFlagErrorAtOnce(t *testing.T) {
+	o, cmd := newTestOptions(t)
+	if err := cmd.ParseFlags([]string{
+		"--subject-access-review-timeout=0",
+		"--oidc-username-prefix=system:",
+		"--oidc-issuer-url=https://issuer.example.com",
+		"--trusted-proxies=bogus",
+		"--allow-reserved-groups=admins",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := o.Validate(cmd)
+	checkValidateError(t, err,
+		"--subject-access-review-timeout must be greater than 0",
+		"--oidc-username-prefix",
+		"--oidc-issuer-url and --oidc-client-id must be specified together",
+		"--trusted-proxies",
+		"--allow-reserved-groups",
+	)
+
+	for _, e := range flatten(err) {
+		if !strings.HasPrefix(e.Error(), "--") {
+			t.Errorf("error %q does not start with the --flag it concerns", e)
+		}
+	}
+}
+
+// flatten returns the leaves of a tree of joined errors.
+func flatten(err error) []error {
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		return []error{err}
+	}
+	var leaves []error
+	for _, e := range joined.Unwrap() {
+		leaves = append(leaves, flatten(e)...)
+	}
+	return leaves
 }

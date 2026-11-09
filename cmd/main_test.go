@@ -27,7 +27,7 @@ func TestRunReportsValidationErrors(t *testing.T) {
 	if code := run([]string{"--oidc-issuer-url=https://issuer.example.com"}, &stderr); code != 1 {
 		t.Fatalf("exit status = %d, want 1", code)
 	}
-	if !strings.Contains(stderr.String(), "oidc-issuer-url and oidc-client-id should be specified together") {
+	if !strings.Contains(stderr.String(), "--oidc-issuer-url and --oidc-client-id must be specified together") {
 		t.Fatalf("stderr = %q, want the validation error", stderr.String())
 	}
 }

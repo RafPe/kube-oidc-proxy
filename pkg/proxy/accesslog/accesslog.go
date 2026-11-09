@@ -6,9 +6,9 @@
 //
 // The record's src_ip is the client IP resolved under the trusted-proxy
 // contract (see package clientip) and carried on the request by reqctx; this
-// package does not resolve addresses itself, so the access record, the audit
-// log and the Remote-Client-IP impersonation extra can never disagree. The raw
-// forwarded chain is still emitted for observability under the
+// package does not resolve addresses itself, so the access record reports the
+// same address as the audit log and the Remote-Client-IP impersonation extra.
+// The raw forwarded chain is still emitted for observability under the
 // explicitly-untrusted "forwarded_for_untrusted" field and must not be treated
 // as identity.
 package accesslog

@@ -9,12 +9,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/util/signals"
-	"github.com/rafpe/kube-oidc-proxy/test/tools/issuer/cmd/options"
-	"github.com/rafpe/kube-oidc-proxy/test/tools/issuer/pkg/issuer"
 )
 
 func main() {
-	opts := new(options.Options)
+	opts := new(options)
 	// These test tools have no logging flags of their own; the shutdown
 	// reporting the handler will do goes to the process default logger.
 	stopCh := signals.NotifyStop(slog.Default())
@@ -24,7 +22,7 @@ func main() {
 		Short: "A very basic OIDC issuer to present a well-known endpoint.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 
-			iss, err := issuer.New(opts.IssuerURL, opts.KeyFile, opts.CertFile, stopCh)
+			iss, err := newIssuer(opts.IssuerURL, opts.KeyFile, opts.CertFile, stopCh)
 			if err != nil {
 				return err
 			}
@@ -40,7 +38,7 @@ func main() {
 		},
 	}
 
-	opts.AddFlags(cmd)
+	opts.addFlags(cmd)
 
 	if err := cmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", err.Error())

@@ -1,0 +1,3 @@
+kind: Fixed
+body: |-
+  An unstamped build reports `v0.0.0-dev`, or the module version and VCS revision Go recorded, instead of a literal `$Format:` placeholder; `hack/lib/version.sh` stamps only variables that exist.

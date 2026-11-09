@@ -154,7 +154,7 @@ func TestImpersonationAppliedLogsHeaderNamesOnly(t *testing.T) {
 func TestOverCapImpersonationRejectedBeforeSubjectAccessReview(t *testing.T) {
 	reviewer := &countingReviewer{Reviewer: fakesubjectaccessreview.New(nil)}
 	sar := subjectaccessreview.New(reviewer, subjectaccessreview.Config{MaxHeaderValues: 2}, slog.New(slog.DiscardHandler))
-	p := newTestProxy(t, withSubjectAccessReviewer(sar))
+	p := newTestProxy(t, withImpersonationAuthorizer(sar))
 
 	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(
 		oidcAnswer(&authenticator.Response{
@@ -224,7 +224,7 @@ func TestSubjectAccessReviewRequesterIsAuthenticated(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			reviewer := &specRecordingReviewer{Reviewer: fakesubjectaccessreview.New(nil)}
 			sar := subjectaccessreview.New(reviewer, subjectaccessreview.Config{MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
-			p := newTestProxy(t, withSubjectAccessReviewer(sar))
+			p := newTestProxy(t, withImpersonationAuthorizer(sar))
 
 			inbound := &authuser.DefaultInfo{Name: "alice", Groups: slices.Clone(groups)}
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -390,7 +390,7 @@ func impersonateBob(t *testing.T, cfg Config, inbound authuser.Info, extras map[
 
 	reviewer := &attributeRecordingReviewer{Reviewer: fakesubjectaccessreview.New(nil)}
 	sar := subjectaccessreview.New(reviewer, subjectaccessreview.Config{MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
-	p := newTestProxy(t, withSubjectAccessReviewer(sar))
+	p := newTestProxy(t, withImpersonationAuthorizer(sar))
 	p.config = &cfg
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)

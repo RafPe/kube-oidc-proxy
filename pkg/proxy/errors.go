@@ -2,7 +2,6 @@
 package proxy
 
 import (
-	"context"
 	"crypto/tls"
 	"errors"
 	"io"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/authn/tokenreview"
 	"github.com/rafpe/kube-oidc-proxy/pkg/authz/subjectaccessreview"
+	"github.com/rafpe/kube-oidc-proxy/pkg/ctxerr"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/accesslog"
@@ -54,7 +54,7 @@ func (p *Proxy) refuse(rw http.ResponseWriter, r *http.Request, err error) {
 	// reason=client_canceled by the same predicate, and the access record
 	// carries the same reason. Checked first, because the review failure
 	// wraps the cancellation.
-	case reqctx.ClientGone(r.Context(), err):
+	case ctxerr.ClientGone(r.Context(), err):
 		p.recordDenial(r, metrics.ReasonClientCanceled, err)
 
 	case errors.Is(err, errUnauthorized):
@@ -77,7 +77,6 @@ func (p *Proxy) refuse(rw http.ResponseWriter, r *http.Request, err error) {
 		// audited instead.
 		deny(http.StatusForbidden, "identities with the reserved \"system:\" prefix are not accepted from an authentication token")
 
-	// The token carried no username claim.
 	case errors.Is(err, errNoName):
 		p.recordDenial(r, metrics.ReasonNoUsernameClaim, err)
 		deny(http.StatusForbidden, "Username claim not available in OIDC Issuer response")
@@ -103,8 +102,7 @@ func (p *Proxy) refuse(rw http.ResponseWriter, r *http.Request, err error) {
 		p.recordDenial(r, metrics.ReasonTooManyImpersonationValues, err)
 		deny(http.StatusRequestHeaderFieldsTooLarge, err.Error())
 
-	// The requester may not impersonate the requested identity. Classified by
-	// typed error (errors.Is), not by message text.
+	// The requester may not impersonate the requested identity.
 	case errors.Is(err, subjectaccessreview.ErrImpersonationNotAllowed):
 		p.recordDenial(r, metrics.ReasonImpersonationDenied, err)
 		deny(http.StatusForbidden, err.Error())
@@ -117,7 +115,6 @@ func (p *Proxy) refuse(rw http.ResponseWriter, r *http.Request, err error) {
 		p.recordDenial(r, metrics.ReasonAuthorizationDependencyError, err)
 		deny(http.StatusInternalServerError, "")
 
-	// Server or unknown error.
 	default:
 		p.failInternal(rw, r, err)
 	}
@@ -130,9 +127,11 @@ func (p *Proxy) refuse(rw http.ResponseWriter, r *http.Request, err error) {
 // terminal record.
 func (p *Proxy) handleUpstreamError(rw http.ResponseWriter, r *http.Request, err error) {
 	switch {
-	// The client went away before the upstream response completed. Nothing is
-	// written back; the connection is already going away.
-	case errors.Is(err, context.Canceled):
+	// The client went away before the upstream response completed: cancelled,
+	// or its own deadline passed. Nothing is written back; the connection is
+	// already going away. The same ctxerr.ClientGone rule as refuse, so a
+	// cancellation the client did not cause is never demoted to client_canceled.
+	case ctxerr.ClientGone(r.Context(), err):
 		logging.Emit(r.Context(), p.upstreamLogger, logging.EventUpstreamRequestCanceled,
 			slog.String("reason", string(metrics.ReasonClientCanceled)))
 

@@ -5,13 +5,16 @@
 package options
 
 import (
+	"io"
+	"os"
+
 	"errors"
 	"fmt"
 
-	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 	"golang.org/x/term"
 
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	apiserveroptions "k8s.io/apiserver/pkg/server/options"
 	cliflag "k8s.io/component-base/cli/flag"
 	"k8s.io/component-base/cli/globalflag"
@@ -62,21 +65,40 @@ func New() *Options {
 	}
 }
 
+// terminalWidth is the column count of the terminal w writes to, or 0 (no
+// wrapping) when w is not a terminal. It measures the writer the help text
+// goes to, not stdin, so redirected help is never wrapped to a stale width.
+func terminalWidth(w io.Writer) int {
+	f, ok := w.(*os.File)
+	if !ok {
+		return 0
+	}
+	cols, _, err := term.GetSize(int(f.Fd()))
+	if err != nil {
+		return 0
+	}
+	return cols
+}
+
 // AddFlags adds every registered flag set to cmd and installs the sectioned
 // help and usage output.
 func (o *Options) AddFlags(cmd *cobra.Command) {
-	// pretty output from kube-apiserver
+	// pretty output from kube-apiserver, wrapped to the width of the terminal
+	// the text is written to (0, no wrapping, when it is not a terminal)
 	usageFmt := "Usage:\n  %s\n"
-	cols, _, _ := term.GetSize(0)
 	cmd.SetUsageFunc(func(cmd *cobra.Command) error {
-		_, _ = fmt.Fprintf(cmd.OutOrStderr(), usageFmt, cmd.UseLine())
-		cliflag.PrintSections(cmd.OutOrStderr(), *o.nfs, cols)
+		out := cmd.OutOrStderr()
+		cols := terminalWidth(out)
+		_, _ = fmt.Fprintf(out, usageFmt, cmd.UseLine())
+		cliflag.PrintSections(out, *o.nfs, cols)
 		return nil
 	})
 
 	cmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n\n"+usageFmt, cmd.Long, cmd.UseLine())
-		cliflag.PrintSections(cmd.OutOrStdout(), *o.nfs, cols)
+		out := cmd.OutOrStdout()
+		cols := terminalWidth(out)
+		_, _ = fmt.Fprintf(out, "%s\n\n"+usageFmt, cmd.Long, cmd.UseLine())
+		cliflag.PrintSections(out, *o.nfs, cols)
 	})
 
 	fs := cmd.Flags()
@@ -86,6 +108,9 @@ func (o *Options) AddFlags(cmd *cobra.Command) {
 }
 
 // Validate checks the parsed options and returns every problem found, joined.
+// It is the one place a flag error is reported: everything that can be
+// checked from the flag values alone is checked here, before anything is
+// built, so an operator sees every mistake in one run.
 func (o *Options) Validate(cmd *cobra.Command) error {
 	var errs []error
 
@@ -96,7 +121,7 @@ func (o *Options) Validate(cmd *cobra.Command) error {
 	authConfigSet := o.AuthenticationConfig.ConfigFile != ""
 
 	if authConfigSet && o.oidcFlagsChanged(cmd) {
-		errs = append(errs, fmt.Errorf("authentication-config and issuer-specific --oidc-* flags are mutually exclusive"))
+		errs = append(errs, errors.New("--authentication-config and the issuer-specific --oidc-* flags are mutually exclusive"))
 	}
 
 	if err := o.OIDCAuthentication.Validate(); err != nil {
@@ -106,6 +131,7 @@ func (o *Options) Validate(cmd *cobra.Command) error {
 		if err := o.OIDCAuthentication.ValidateIssuerFlags(); err != nil {
 			errs = append(errs, err)
 		}
+		errs = append(errs, o.OIDCAuthentication.validateIdentityPrefixes()...)
 	}
 
 	if err := o.SecureServing.Validate(); len(err) > 0 {
@@ -113,7 +139,7 @@ func (o *Options) Validate(cmd *cobra.Command) error {
 	}
 
 	if o.SecureServing.BindPort == o.App.ReadinessProbePort {
-		errs = append(errs, fmt.Errorf("unable to securely serve on port %d (used by readiness probe)", o.SecureServing.BindPort))
+		errs = append(errs, fmt.Errorf("--secure-port %d is already used by --readiness-probe-port", o.SecureServing.BindPort))
 	}
 
 	if err := o.Audit.Validate(); len(err) > 0 {
@@ -130,10 +156,10 @@ func (o *Options) Validate(cmd *cobra.Command) error {
 		// Port() cannot fail here: Validate just accepted the address.
 		port, _ := o.Metrics.Port()
 		if port == o.App.ReadinessProbePort {
-			errs = append(errs, fmt.Errorf("--metrics-bind-address port %d is already used by the readiness probe", port))
+			errs = append(errs, fmt.Errorf("--metrics-bind-address port %d is already used by --readiness-probe-port", port))
 		}
 		if port == o.SecureServing.BindPort {
-			errs = append(errs, fmt.Errorf("--metrics-bind-address port %d is already used by the secure serving port", port))
+			errs = append(errs, fmt.Errorf("--metrics-bind-address port %d is already used by --secure-port", port))
 		}
 	}
 
@@ -142,15 +168,6 @@ func (o *Options) Validate(cmd *cobra.Command) error {
 	}
 
 	return errors.Join(errs...)
-}
-
-// newAuditOptions binds the apiserver's own audit flags under the Audit flag
-// set. The proxy adds nothing to them, so it holds the apiserver type
-// directly.
-func newAuditOptions(nfs *cliflag.NamedFlagSets) *apiserveroptions.AuditOptions {
-	a := apiserveroptions.NewAuditOptions()
-	a.AddFlags(nfs.FlagSet("Audit"))
-	return a
 }
 
 // oidcFlagsChanged reports whether any --oidc-* flag was set on cmd. The flag

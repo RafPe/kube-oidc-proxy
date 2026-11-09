@@ -25,19 +25,19 @@ func (f *Framework) CreateKubeNamespace(ctx context.Context, baseName string) (*
 		},
 	}
 
-	return f.KubeClientSet.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{})
+	return f.helper.KubeClient.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{})
 }
 
 // DeleteKubeNamespace will delete a namespace resource
 func (f *Framework) DeleteKubeNamespace(ctx context.Context, namespace string) error {
-	return f.KubeClientSet.CoreV1().Namespaces().Delete(ctx, namespace, metav1.DeleteOptions{})
+	return f.helper.KubeClient.CoreV1().Namespaces().Delete(ctx, namespace, metav1.DeleteOptions{})
 }
 
 // WaitForKubeNamespaceNotExist will wait for the namespace with the given name
 // to not exist for up to 2 minutes.
 func (f *Framework) WaitForKubeNamespaceNotExist(ctx context.Context, namespace string) error {
 	return wait.PollUntilContextTimeout(ctx, time.Second*2, time.Minute*2, true,
-		namespaceNotExist(f.KubeClientSet, namespace))
+		namespaceNotExist(f.helper.KubeClient, namespace))
 }
 
 func namespaceNotExist(c kubernetes.Interface, namespace string) wait.ConditionWithContextFunc {

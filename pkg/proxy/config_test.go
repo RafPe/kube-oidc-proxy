@@ -262,3 +262,37 @@ func FuzzParseTrustedProxies(f *testing.F) {
 		}
 	})
 }
+
+// TestValidatorsMatchNew pins that the exported validators the command layer
+// reports flag errors with apply New's own rules, carry no package prefix for
+// the caller to wrap, and that New still refuses the same values itself.
+func TestValidatorsMatchNew(t *testing.T) {
+	tests := map[string]struct {
+		validate func() error
+		cfg      Config
+	}{
+		"trusted proxies":         {func() error { return ValidateTrustedProxies([]string{"not-a-cidr"}) }, Config{TrustedProxies: []string{"not-a-cidr"}}},
+		"allowed reserved groups": {func() error { return ValidateAllowedReservedGroups([]string{"monitoring"}) }, Config{AllowedReservedGroups: []string{"monitoring"}}},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			err := tc.validate()
+			if err == nil {
+				t.Fatal("validator accepted an invalid value")
+			}
+			if strings.HasPrefix(err.Error(), "proxy:") {
+				t.Errorf("validator error %q carries the package prefix", err)
+			}
+			deps, root := validDeps(t)
+			if _, err := New(tc.cfg, deps, root); err == nil || !strings.HasPrefix(err.Error(), "proxy: ") {
+				t.Errorf("New error = %v, want the same refusal prefixed with proxy:", err)
+			}
+		})
+	}
+	if err := ValidateTrustedProxies([]string{"10.0.0.0/8"}); err != nil {
+		t.Errorf("ValidateTrustedProxies(valid) = %v", err)
+	}
+	if err := ValidateAllowedReservedGroups([]string{"system:monitoring"}); err != nil {
+		t.Errorf("ValidateAllowedReservedGroups(valid) = %v", err)
+	}
+}

@@ -61,26 +61,23 @@ func (k *Kind) LoadKubeOIDCProxy() error {
 
 func (k *Kind) LoadIssuer() error {
 	binPath := filepath.Join(k.rootPath, "./test/tools/issuer/bin/oidc-issuer-linux")
-	dockerfilePath := filepath.Join(k.rootPath, "./test/tools/issuer")
-	mainPath := filepath.Join(dockerfilePath, "cmd")
+	toolDir := filepath.Join(k.rootPath, "./test/tools/issuer")
 
-	return k.loadImage(binPath, mainPath, IssuerImageName, dockerfilePath)
+	return k.loadImage(binPath, toolDir, IssuerImageName, toolDir)
 }
 
 func (k *Kind) LoadFakeAPIServer() error {
 	binPath := filepath.Join(k.rootPath, "./test/tools/fake-apiserver/bin/fake-apiserver-linux")
-	dockerfilePath := filepath.Join(k.rootPath, "./test/tools/fake-apiserver")
-	mainPath := filepath.Join(dockerfilePath, "cmd")
+	toolDir := filepath.Join(k.rootPath, "./test/tools/fake-apiserver")
 
-	return k.loadImage(binPath, mainPath, FakeAPIServerImageName, dockerfilePath)
+	return k.loadImage(binPath, toolDir, FakeAPIServerImageName, toolDir)
 }
 
 func (k *Kind) LoadAuditWebhook() error {
 	binPath := filepath.Join(k.rootPath, "./test/tools/audit-webhook/bin/audit-webhook")
-	dockerfilePath := filepath.Join(k.rootPath, "./test/tools/audit-webhook")
-	mainPath := filepath.Join(dockerfilePath, "cmd")
+	toolDir := filepath.Join(k.rootPath, "./test/tools/audit-webhook")
 
-	return k.loadImage(binPath, mainPath, AuditWebhookImageName, dockerfilePath)
+	return k.loadImage(binPath, toolDir, AuditWebhookImageName, toolDir)
 }
 
 func (k *Kind) LoadEchoServer() error {

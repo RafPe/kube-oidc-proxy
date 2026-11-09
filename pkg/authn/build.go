@@ -22,11 +22,9 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 )
 
-// oidcHTTPTimeout bounds every call the dedicated client-certificate HTTP
-// client makes to an issuer. It is the same 30s that oidc.New gives the
-// client it builds itself when no client certificate is configured, so an
-// issuer call is bounded at 30s either way; it is set here only because a
-// client handed to oidc.New is used as is.
+// oidcHTTPTimeout bounds every call the client-certificate HTTP client makes
+// to an issuer: the same 30s oidc.New gives the client it builds itself, which
+// a client handed to oidc.New does not get.
 const oidcHTTPTimeout = 30 * time.Second
 
 // configInvalidReason is the closed vocabulary of the reason a
@@ -74,21 +72,29 @@ type Config struct {
 }
 
 // Build constructs the token authenticator for cfg and returns the issuer
-// URLs backing it, in configuration order. oidcLogger carries the per-issuer
-// configuration records and startupLogger the configuration failures a CA
-// file can raise later; Build panics when either is nil. Every per-issuer
-// authenticator is wrapped by AttributeToIssuer, so a request names the issuer
-// that accepted its token.
+// URLs backing it, in configuration order. Every per-issuer authenticator is
+// wrapped by AttributeToIssuer, so a request names the issuer that accepted
+// its token.
+//
+// The authenticator answers ok=false with a nil error for a token no
+// configured issuer claims, and an error for one an issuer claims but cannot
+// verify: a bad signature, an expired token, or an issuer whose keys have not
+// been fetched yet. Its errors carry no class to match; a caller treats every
+// one as a rejected token.
+//
+// root is the root logger: Build reports under two components, so it derives
+// them itself -- oidc for the per-issuer configuration records, startup for
+// the configuration failures a CA file can raise later. Build panics when root
+// is nil.
 //
 // The errors Build builds itself name an issuer by IssuerName and by its
 // position in the configuration, never by its full URL.
-func Build(cfg Config, oidcLogger, startupLogger *slog.Logger) (authenticator.Token, []string, error) {
-	if oidcLogger == nil {
-		panic("authn: nil oidc logger")
+func Build(cfg Config, root *slog.Logger) (authenticator.Token, []string, error) {
+	if root == nil {
+		panic("authn: nil root logger")
 	}
-	if startupLogger == nil {
-		panic("authn: nil startup logger")
-	}
+	oidcLogger := logging.ForComponent(root, logging.ComponentOIDC)
+	startupLogger := logging.ForComponent(root, logging.ComponentStartup)
 
 	// One CEL compiler shared by document validation and every authenticator:
 	// CEL environments are expensive to construct.

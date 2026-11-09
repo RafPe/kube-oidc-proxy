@@ -87,7 +87,7 @@ func TestCheckAuthorizedForImpersonationHeaderValueCap(t *testing.T) {
 			reviewer := &countingFakeReviewer{Reviewer: fake.New(nil)}
 			sar := New(reviewer, Config{Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: tc.max}, slog.New(slog.DiscardHandler))
 
-			target, err := sar.ResolveImpersonation(
+			_, target, err := sar.ConsumeImpersonation(
 				(&http.Request{Header: tc.headers}).WithContext(testRequestContext()), requester)
 
 			if tc.expOver {
@@ -108,7 +108,7 @@ func TestCheckAuthorizedForImpersonationHeaderValueCap(t *testing.T) {
 				}
 			} else {
 				if err != nil {
-					t.Fatalf("ResolveImpersonation() error = %v, want nil", err)
+					t.Fatalf("ConsumeImpersonation() error = %v, want nil", err)
 				}
 				if target == nil {
 					t.Fatal("target = nil, want the impersonated user")
@@ -154,12 +154,12 @@ func impersonationHeaders() http.Header {
 	}
 }
 
-// TestHasImpersonationHeaders pins the predicate that decides whether a
-// request is authorized through ResolveImpersonation at all: any
-// Impersonate- prefixed key, however the client spelled it, counts, including
-// kinds this proxy does not know, so nothing impersonation-shaped is ever
-// forwarded unexamined.
-func TestHasImpersonationHeaders(t *testing.T) {
+// TestConsumeImpersonationWithoutImpersonationHeaders pins what decides
+// whether a request is authorized at all: any Impersonate- prefixed key,
+// however the client spelled it, counts, including kinds this proxy does not
+// know, so nothing impersonation-shaped is ever forwarded unexamined. A request
+// with none is returned as is, with no target and no review sent.
+func TestConsumeImpersonationWithoutImpersonationHeaders(t *testing.T) {
 	noImpersonation := []http.Header{
 		{},
 		{"foo": {"bar", "foo"}},
@@ -182,45 +182,68 @@ func TestHasImpersonationHeaders(t *testing.T) {
 		{"impersonate-Extra": {"bar", "foo"}},
 	}
 
+	requester := &user.DefaultInfo{Name: "alice"}
 	for _, h := range noImpersonation {
-		if HasImpersonationHeaders(h) {
-			t.Errorf("HasImpersonationHeaders(%v) = true, want false", h)
+		reviewer := &countingFakeReviewer{Reviewer: fake.New(nil)}
+		sar := New(reviewer, Config{}, slog.New(slog.DiscardHandler))
+		req := (&http.Request{Header: h}).WithContext(testRequestContext())
+
+		forward, target, err := sar.ConsumeImpersonation(req, requester)
+		if forward != req || target != nil || err != nil {
+			t.Errorf("ConsumeImpersonation(%v) = (%p, %v, %v), want (req, nil, nil)", h, forward, target, err)
+		}
+		if got := reviewer.calls.Load(); got != 0 {
+			t.Errorf("ConsumeImpersonation(%v) sent %d reviews, want 0", h, got)
 		}
 	}
 	for _, h := range hasImpersonation {
-		if !HasImpersonationHeaders(h) {
-			t.Errorf("HasImpersonationHeaders(%v) = false, want true", h)
+		sar := New(fake.New(nil), Config{}, slog.New(slog.DiscardHandler))
+		req := (&http.Request{Header: h}).WithContext(testRequestContext())
+
+		if forward, _, _ := sar.ConsumeImpersonation(req, requester); forward == req {
+			t.Errorf("ConsumeImpersonation(%v) passed the request through unexamined", h)
 		}
 	}
 }
 
-// TestStripImpersonationHeaders pins that the forwarded request keeps every
-// other header and loses every impersonation header, and that the caller's
-// map is left alone.
-func TestStripImpersonationHeaders(t *testing.T) {
+// TestConsumeImpersonationStripsTheConsumedHeaders pins that the request to
+// forward keeps every other header and loses every impersonation header, and
+// that the caller's request is left alone.
+func TestConsumeImpersonationStripsTheConsumedHeaders(t *testing.T) {
 	in := http.Header{
-		"Impersonate-User":      {"bob"},
-		"impersonate-group":     {"a", "b"},
-		"Impersonate-Extra-Foo": {"bar"},
-		"Authorization":         {"Bearer x"},
-		"Accept":                {"application/json", "*/*"},
+		"Impersonate-User":             {"jjackson"},
+		"impersonate-group":            {"group3"},
+		"Impersonate-Extra-Remoteaddr": {"1.2.3.4"},
+		"Authorization":                {"Bearer x"},
+		"Accept":                       {"application/json", "*/*"},
 	}
+	req := (&http.Request{Header: in}).WithContext(testRequestContext())
+	sar := New(fake.New(nil), Config{}, slog.New(slog.DiscardHandler))
 
-	out := StripImpersonationHeaders(in)
+	forward, target, err := sar.ConsumeImpersonation(req, &user.DefaultInfo{Name: "alice"})
+	if err != nil {
+		t.Fatalf("ConsumeImpersonation() error = %v", err)
+	}
+	if target == nil || target.GetName() != "jjackson" {
+		t.Fatalf("target = %v, want jjackson", target)
+	}
 
 	want := http.Header{
 		"Authorization": {"Bearer x"},
 		"Accept":        {"application/json", "*/*"},
 	}
-	if !reflect.DeepEqual(out, want) {
-		t.Errorf("StripImpersonationHeaders = %v, want %v", out, want)
+	if !reflect.DeepEqual(forward.Header, want) {
+		t.Errorf("forwarded headers = %v, want %v", forward.Header, want)
 	}
-	if len(in) != 5 {
-		t.Errorf("caller's headers were modified: %v", in)
+	if forward == req || forward.Context() != req.Context() {
+		t.Error("forwarded request is not a copy of the caller's on the same context")
 	}
-	out["Accept"][0] = "changed"
+	if len(req.Header) != 5 {
+		t.Errorf("caller's headers were modified: %v", req.Header)
+	}
+	forward.Header["Accept"][0] = "changed"
 	if in["Accept"][0] != "application/json" {
-		t.Error("stripped headers share value slices with the caller")
+		t.Error("forwarded headers share value slices with the caller")
 	}
 }
 
@@ -238,7 +261,7 @@ func TestUnknownImpersonationHeaderIsRefusedBeforeAnyReview(t *testing.T) {
 			"Impersonate-Foo":   {"x"},
 		}}).WithContext(testRequestContext())
 
-		_, err := sar.ResolveImpersonation(req, &user.DefaultInfo{Name: "alice"})
+		_, _, err := sar.ConsumeImpersonation(req, &user.DefaultInfo{Name: "alice"})
 		if !errors.Is(err, ErrUnknownImpersonationHeader) {
 			t.Fatalf("error = %v, want ErrUnknownImpersonationHeader", err)
 		}

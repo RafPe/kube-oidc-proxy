@@ -8,23 +8,17 @@ import (
 	"k8s.io/client-go/transport"
 )
 
-// IsImpersonationHeader reports whether key names an impersonation header.
+// isImpersonationHeader reports whether key names an impersonation header.
 // The match is on the Impersonate- prefix, case-insensitively: a header a
 // client spells unusually, or one of a kind this proxy does not know, is still
-// an impersonation attempt. On a request the proxy forwards under its own
-// credentials, every such header is authorized or refused by
-// ResolveImpersonation and then stripped, never forwarded, because
-// the API server would honour it with the proxy's rights.
-// On a request forwarded without them -- token passthrough, or impersonation
-// disabled -- the proxy does not inspect the headers at all: they travel on,
-// and the API server authorizes them against the identity it authenticates.
-func IsImpersonationHeader(key string) bool {
+// an impersonation attempt, and ConsumeImpersonation authorizes or refuses it
+// and never forwards it.
+func isImpersonationHeader(key string) bool {
 	return hasPrefixFold(key, "Impersonate-")
 }
 
 // isKnownImpersonationHeader reports whether key is one of the impersonation
-// header kinds ResolveImpersonation authorizes: user, uid, group or
-// an extra.
+// header kinds ConsumeImpersonation authorizes: user, uid, group or an extra.
 func isKnownImpersonationHeader(key string) bool {
 	return strings.EqualFold(key, transport.ImpersonateUserHeader) ||
 		strings.EqualFold(key, transport.ImpersonateUIDHeader) ||
@@ -32,25 +26,24 @@ func isKnownImpersonationHeader(key string) bool {
 		hasPrefixFold(key, transport.ImpersonateUserExtraHeaderPrefix)
 }
 
-// HasImpersonationHeaders reports whether the headers carry any impersonation
-// header at all, which is what decides whether a request goes through
-// ResolveImpersonation.
-func HasImpersonationHeaders(headers http.Header) bool {
+// hasImpersonationHeaders reports whether the headers carry any impersonation
+// header at all.
+func hasImpersonationHeaders(headers http.Header) bool {
 	for key := range headers {
-		if IsImpersonationHeader(key) {
+		if isImpersonationHeader(key) {
 			return true
 		}
 	}
 	return false
 }
 
-// StripImpersonationHeaders returns a copy of headers without the
-// impersonation headers, for the request that is forwarded once they have
-// been authorized and turned into the outbound identity.
-func StripImpersonationHeaders(headers http.Header) http.Header {
+// stripImpersonationHeaders returns a copy of headers without the
+// impersonation headers. Every value slice is copied too, so the forwarded
+// request shares nothing with the inbound one.
+func stripImpersonationHeaders(headers http.Header) http.Header {
 	out := make(http.Header, len(headers))
 	for key, values := range headers {
-		if IsImpersonationHeader(key) {
+		if isImpersonationHeader(key) {
 			continue
 		}
 		out[key] = append([]string(nil), values...)
@@ -65,12 +58,11 @@ func hasPrefixFold(s, prefix string) bool {
 
 // countImpersonationHeaderValues returns the total number of impersonation
 // header values the request carries: every value of every header
-// IsImpersonationHeader matches, exactly as the consumption loop in
-// ResolveImpersonation matches them.
+// isImpersonationHeader matches, exactly as parseImpersonation matches them.
 func countImpersonationHeaderValues(headers http.Header) int {
 	count := 0
 	for key, values := range headers {
-		if IsImpersonationHeader(key) {
+		if isImpersonationHeader(key) {
 			count += len(values)
 		}
 	}

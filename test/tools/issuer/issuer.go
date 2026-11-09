@@ -1,5 +1,5 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
-package issuer
+package main
 
 import (
 	"crypto/rsa"
@@ -13,7 +13,7 @@ import (
 	"os"
 )
 
-type Issuer struct {
+type issuer struct {
 	issuerURL         string
 	keyFile, certFile string
 
@@ -22,7 +22,7 @@ type Issuer struct {
 	stopCh <-chan struct{}
 }
 
-func New(issuerURL, keyFile, certFile string, stopCh <-chan struct{}) (*Issuer, error) {
+func newIssuer(issuerURL, keyFile, certFile string, stopCh <-chan struct{}) (*issuer, error) {
 	b, err := os.ReadFile(keyFile)
 	if err != nil {
 		return nil, err
@@ -39,7 +39,7 @@ func New(issuerURL, keyFile, certFile string, stopCh <-chan struct{}) (*Issuer, 
 		return nil, err
 	}
 
-	return &Issuer{
+	return &issuer{
 		keyFile:   keyFile,
 		certFile:  certFile,
 		issuerURL: issuerURL,
@@ -48,7 +48,7 @@ func New(issuerURL, keyFile, certFile string, stopCh <-chan struct{}) (*Issuer, 
 	}, nil
 }
 
-func (i *Issuer) Run(bindAddress, listenPort string) (<-chan struct{}, error) {
+func (i *issuer) Run(bindAddress, listenPort string) (<-chan struct{}, error) {
 	serveAddr := fmt.Sprintf("%s:%s", bindAddress, listenPort)
 
 	l, err := net.Listen("tcp", serveAddr)
@@ -78,7 +78,7 @@ func (i *Issuer) Run(bindAddress, listenPort string) (<-chan struct{}, error) {
 	return compCh, nil
 }
 
-func (i *Issuer) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
+func (i *issuer) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	slog.Info("mock issuer: received request", slog.String("url", r.URL.String()))
 
 	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -108,7 +108,7 @@ func (i *Issuer) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (i *Issuer) wellKnownResponse() []byte {
+func (i *issuer) wellKnownResponse() []byte {
 	return []byte(fmt.Sprintf(`{
  "issuer": "%s",
  "jwks_uri": "%s/certs",
@@ -139,7 +139,7 @@ func (i *Issuer) wellKnownResponse() []byte {
 }`, i.issuerURL, i.issuerURL))
 }
 
-func (i *Issuer) certsDiscovery() []byte {
+func (i *issuer) certsDiscovery() []byte {
 	n := base64.RawURLEncoding.EncodeToString(i.sk.N.Bytes())
 
 	return []byte(fmt.Sprintf(`{

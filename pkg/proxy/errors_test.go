@@ -302,11 +302,13 @@ func TestErrorRequesterDeadlineIsClientCanceled(t *testing.T) {
 }
 
 // TestErrorClientGoneNeedsBothSignals pins that refuse demotes a failure to
-// client_canceled by reqctx.ClientGone, the predicate the reviews use: only a
+// client_canceled by ctxerr.ClientGone, the predicate the reviews use: only a
 // context error on a request whose own context has ended. A cancellation
 // while the client is still attached is the proxy's own failure, and a
 // non-context review failure while the client hangs up is still the
 // dependency's, so the access record agrees with the review's own record.
+// handleUpstreamError applies the same rule; see
+// TestUpstreamCancelWithClientAttachedIsInternal.
 func TestErrorClientGoneNeedsBothSignals(t *testing.T) {
 	ended, cancel := stdcontext.WithCancel(stdcontext.Background())
 	cancel()

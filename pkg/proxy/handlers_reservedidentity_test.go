@@ -182,14 +182,14 @@ func TestWithAuthenticateRequestAllowsAllowlistedReservedGroup(t *testing.T) {
 }
 
 // TestReservedIdentityRejectedBeforeSubjectAccessReview is the ordering
-// property that makes the guard meaningful. ResolveImpersonation
-// builds its SubjectAccessReview with the requester's own groups, so a forged
+// property that makes the guard meaningful. ConsumeImpersonation builds its
+// SubjectAccessReview with the requester's own groups, so a forged
 // system: group would otherwise feed the authorization decision — not merely
 // the impersonation headers. No review may be submitted at all.
 func TestReservedIdentityRejectedBeforeSubjectAccessReview(t *testing.T) {
 	reviewer := &countingReviewer{Reviewer: fakesubjectaccessreview.New(nil)}
 	sar := subjectaccessreview.New(reviewer, subjectaccessreview.Config{MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
-	p := newTestProxy(t, withSubjectAccessReviewer(sar))
+	p := newTestProxy(t, withImpersonationAuthorizer(sar))
 
 	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(
 		oidcAnswer(&authenticator.Response{

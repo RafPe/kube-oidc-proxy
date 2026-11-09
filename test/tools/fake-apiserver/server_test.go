@@ -1,5 +1,5 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
-package server
+package main
 
 import (
 	"io"
@@ -21,7 +21,7 @@ func TestServeHTTP_ReflectsRequestHeadersAndBody(t *testing.T) {
 	req.Header.Set("Impersonate-Extra-Key2", "foo")
 
 	rec := httptest.NewRecorder()
-	new(Server).ServeHTTP(rec, req)
+	new(server).ServeHTTP(rec, req)
 
 	resp := rec.Result()
 	defer resp.Body.Close()
@@ -57,7 +57,7 @@ func TestServeHTTP_BodyIsNotInterpretableAsHTML(t *testing.T) {
 	req.Header.Set("Content-Type", "text/html")
 
 	rec := httptest.NewRecorder()
-	new(Server).ServeHTTP(rec, req)
+	new(server).ServeHTTP(rec, req)
 
 	resp := rec.Result()
 	defer resp.Body.Close()
@@ -79,7 +79,7 @@ func TestServeHTTP_DoesNotReflectFramingHeaders(t *testing.T) {
 	req.Header.Set("Connection", "close")
 
 	rec := httptest.NewRecorder()
-	new(Server).ServeHTTP(rec, req)
+	new(server).ServeHTTP(rec, req)
 
 	// Inspect the recorder's header map directly: http.Response synthesises
 	// framing fields, which would mask what the handler actually set.

@@ -34,7 +34,9 @@ const (
 
 // Resolve returns the authoritative client IP for a request given the peer
 // address, the X-Forwarded-For chain, and the trusted proxy networks. It is
-// IPv4/IPv6 aware and ignores malformed forwarded entries.
+// IPv4/IPv6 aware. A malformed hop met while walking the chain ends the walk
+// and the direct peer is returned, because nothing to its left can be
+// trusted; the hop is never skipped.
 func Resolve(remoteAddr, xff string, trusted []*net.IPNet) string {
 	peer := PeerHost(remoteAddr)
 

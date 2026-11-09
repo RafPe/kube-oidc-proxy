@@ -55,7 +55,7 @@ var _ = framework.CasesDescribe("AuthenticationConfiguration multi-issuer", Orde
 		))
 		Expect(err).NotTo(HaveOccurred())
 
-		_, err = f.KubeClientSet.CoreV1().ConfigMaps(f.Namespace.Name).Create(
+		_, err = f.Helper().KubeClient.CoreV1().ConfigMaps(f.Namespace.Name).Create(
 			ctx,
 			&corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: authConfigVolume},

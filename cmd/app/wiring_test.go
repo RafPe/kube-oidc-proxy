@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
@@ -16,57 +15,6 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy"
 )
-
-func TestCheckReservedIdentityPrefixes(t *testing.T) {
-	tests := map[string]struct {
-		usernamePrefix string
-		groupsPrefix   string
-		configFile     string
-		wantErr        bool
-	}{
-		"no prefixes": {},
-		"ordinary prefixes": {
-			usernamePrefix: "oidc:",
-			groupsPrefix:   "oidc:",
-		},
-		"reserved username prefix": {
-			usernamePrefix: "system:",
-			wantErr:        true,
-		},
-		"reserved groups prefix": {
-			groupsPrefix: "system:serviceaccount:",
-			wantErr:      true,
-		},
-		// --oidc-* prefixes are ignored entirely when an authentication
-		// configuration file is in use, so they must not fail startup.
-		"reserved prefix ignored in multi-issuer mode": {
-			usernamePrefix: "system:",
-			configFile:     "/etc/kube-oidc-proxy/authentication.yaml",
-		},
-	}
-
-	for name, test := range tests {
-		t.Run(name, func(t *testing.T) {
-			opts := &options.Options{
-				OIDCAuthentication: &options.OIDCAuthenticationOptions{
-					UsernamePrefix: test.usernamePrefix,
-					GroupsPrefix:   test.groupsPrefix,
-				},
-				AuthenticationConfig: &options.AuthenticationConfigOptions{ConfigFile: test.configFile},
-				App:                  &options.KubeOIDCProxyOptions{},
-			}
-
-			err := checkReservedIdentityPrefixes(opts)
-
-			if test.wantErr && err == nil {
-				t.Error("checkReservedIdentityPrefixes() = nil, want an error")
-			}
-			if !test.wantErr && err != nil {
-				t.Errorf("checkReservedIdentityPrefixes() = %v, want nil", err)
-			}
-		})
-	}
-}
 
 // TestLogConfigLoaded pins the startup record that fixes what this pod is
 // configured to do. It is the record an operator diffs between two pods, so
@@ -187,7 +135,7 @@ func TestProxyConfigMapsEveryProxyFlag(t *testing.T) {
 		"--allow-reserved-groups=system:masters",
 	)
 
-	want := &proxy.Config{
+	want := proxy.Config{
 		TokenPassthrough:                true,
 		DisableImpersonation:            true,
 		FlushInterval:                   2 * time.Second,
@@ -218,32 +166,42 @@ func TestBuildTokenReviewerOnlyWithPassthrough(t *testing.T) {
 // TestConfigHash pins the three properties the startup record relies on: the
 // digest is stable, it changes with any non-secret value, and it never
 // depends on a secret, so two pods differing only in a credential compare
-// equal and the digest cannot be used to test a guessed credential.
+// equal and the digest cannot be used to test a guessed credential. It runs
+// against the command's real flag set, so every secretFlags entry must name a
+// flag the proxy actually registers.
 func TestConfigHash(t *testing.T) {
 	hash := func(args ...string) string {
 		t.Helper()
-		fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
-		fs.String("issuer", "", "")
-		fs.String("token", "", "")
-		fs.String("password", "", "")
-		if err := fs.Parse(args); err != nil {
+		opts := options.New()
+		cmd := &cobra.Command{Use: "test"}
+		opts.AddFlags(cmd)
+		if err := cmd.ParseFlags(args); err != nil {
 			t.Fatal(err)
 		}
-		return configHash(fs)
+		return configHash(cmd.Flags())
 	}
 
-	base := hash("--issuer=https://a")
+	opts := options.New()
+	cmd := &cobra.Command{Use: "test"}
+	opts.AddFlags(cmd)
+	for name := range secretFlags {
+		if cmd.Flags().Lookup(name) == nil {
+			t.Errorf("secretFlags names --%s, which the command does not register", name)
+		}
+	}
+
+	base := hash("--oidc-issuer-url=https://a")
 	if len(base) != configHashLength {
 		t.Fatalf("hash %q has length %d, want %d", base, len(base), configHashLength)
 	}
-	if again := hash("--issuer=https://a"); again != base {
+	if again := hash("--oidc-issuer-url=https://a"); again != base {
 		t.Fatalf("hash not stable: %q then %q", base, again)
 	}
-	if other := hash("--issuer=https://b"); other == base {
+	if other := hash("--oidc-issuer-url=https://b"); other == base {
 		t.Fatal("hash unchanged by a different issuer")
 	}
-	if secret := hash("--issuer=https://a", "--token=t0k3n", "--password=pw"); secret != base {
-		t.Fatalf("hash depends on a secret flag: %q vs %q", secret, base)
+	if secret := hash("--oidc-issuer-url=https://a", "--token=t0k3n"); secret != base {
+		t.Fatalf("hash depends on the --token value: %q vs %q", secret, base)
 	}
 }
 

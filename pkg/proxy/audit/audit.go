@@ -46,8 +46,7 @@ var longRunningRequests = genericfilters.BasicLongRunningRequestCheck(
 	sets.NewString("attach", "exec", "proxy", "log", "portforward"))
 
 // IsLongRunning reports whether the request is one of the long-running kinds
-// above, using the same rule the audit backend applies so a lifecycle record
-// and an audit event never disagree about a watch or an exec.
+// above, using the same rule the audit backend applies.
 //
 // It answers false when the request carries no RequestInfo: nothing has
 // resolved it into a verb and a resource yet, so there is no basis on which to

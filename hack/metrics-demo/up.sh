@@ -82,7 +82,7 @@ step "build and load the mock issuer image $ISSUER_IMAGE"
 # The same build test/kind/image.go's LoadIssuer performs: a static linux
 # binary for the host architecture, into the Dockerfile's expected path.
 CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" \
-  go build -o test/tools/issuer/bin/oidc-issuer-linux ./test/tools/issuer/cmd
+  go build -o test/tools/issuer/bin/oidc-issuer-linux ./test/tools/issuer
 docker build -t "$ISSUER_IMAGE" test/tools/issuer
 "${KIND[@]}" load docker-image "$ISSUER_IMAGE" --name "$CLUSTER"
 

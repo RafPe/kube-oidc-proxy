@@ -53,8 +53,8 @@ func TestIssuerNameNeverReachesImpersonationHeaders(t *testing.T) {
 	// really builds Impersonate-Extra- headers, so the scan below has
 	// something to scan and cannot pass vacuously.
 	p := newTestProxy(t, withConfig(Config{ExtraUserHeadersClientIPEnabled: true}),
-		func(d *Dependencies) {
-			d.OIDCTokenAuthenticator = authn.AttributeToIssuer(leakProbeIssuerName, d.OIDCTokenAuthenticator)
+		func(a *newArgs) {
+			a.deps.OIDCTokenAuthenticator = authn.AttributeToIssuer(leakProbeIssuerName, a.deps.OIDCTokenAuthenticator)
 		})
 
 	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(

@@ -31,8 +31,9 @@ func testRequestContext() context.Context {
 // error with %w.
 var errReview = errors.New("error authorizing the request")
 
-// stores the context for each test case
-type testT struct {
+// consumeCase is one ConsumeImpersonation scenario: who asks, which identity
+// the request asks to impersonate, and the outcome expected.
+type consumeCase struct {
 	// the already authenticated user
 	requester user.Info
 
@@ -53,7 +54,7 @@ type testT struct {
 }
 
 func TestSubjectAccessReview(t *testing.T) {
-	tests := map[string]testT{
+	tests := map[string]consumeCase{
 		"if all reviews pass, user is authorized to impersonate": {
 			requester: &user.DefaultInfo{
 				Name:   "mmosley",
@@ -251,12 +252,12 @@ func TestSubjectAccessReview(t *testing.T) {
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			runTest(t, name, test)
+			runConsumeCase(t, name, test)
 		})
 	}
 }
 
-func runTest(t *testing.T, name string, test testT) {
+func runConsumeCase(t *testing.T, name string, test consumeCase) {
 
 	extras := map[string]v1.ExtraValue{}
 
@@ -283,7 +284,7 @@ func runTest(t *testing.T, name string, test testT) {
 		headers["Impersonate-doesnotexist"] = []string{"doesnotmatter"}
 	}
 
-	target, err := testReviewer.ResolveImpersonation(
+	_, target, err := testReviewer.ConsumeImpersonation(
 		(&http.Request{
 			Header: headers,
 		}).WithContext(testRequestContext()), test.requester)
@@ -294,10 +295,10 @@ func runTest(t *testing.T, name string, test testT) {
 	// message-only errors that are only comparable by value.
 	if test.expErrorRbac != nil {
 		if !errors.Is(err, ErrCreateSubjectAccessReview) {
-			t.Errorf("ResolveImpersonation() error = %v, want errors.Is(%v)", err, ErrCreateSubjectAccessReview)
+			t.Errorf("ConsumeImpersonation() error = %v, want errors.Is(%v)", err, ErrCreateSubjectAccessReview)
 		}
 		if !errors.Is(err, errReview) {
-			t.Errorf("ResolveImpersonation() error = %v, want errors.Is(%v) (underlying error must survive multi-%%w wrap)", err, errReview)
+			t.Errorf("ConsumeImpersonation() error = %v, want errors.Is(%v) (underlying error must survive multi-%%w wrap)", err, errReview)
 		}
 	} else if !reflect.DeepEqual(test.expErr, err) {
 		t.Errorf("unexpected error, exp=%t got %t", test.expErr, err)

@@ -13,6 +13,12 @@ import (
 )
 
 type Config struct {
+	// DisableImpersonation forwards authenticated requests without
+	// impersonation and without the proxy's own credentials
+	// (--disable-impersonation): authentication consumed the OIDC token, so
+	// the request reaches the API server as system:anonymous, and any client
+	// Impersonate-* headers travel on unchecked by the proxy, for the API
+	// server to authorize against that anonymous identity.
 	DisableImpersonation bool
 
 	// TokenPassthrough lets a bearer token the OIDC authenticator rejects be
@@ -38,6 +44,24 @@ type Config struct {
 	TrustedProxies []string
 }
 
+// ValidateAllowedReservedGroups reports whether groups is a valid
+// AllowedReservedGroups value, by the rule New applies, so the command layer
+// can report a bad flag alongside its other flag errors. The error carries no
+// package prefix; the caller names the flag.
+func ValidateAllowedReservedGroups(groups []string) error {
+	_, err := parseAllowedReservedGroups(groups)
+	return err
+}
+
+// ValidateTrustedProxies reports whether cidrs is a valid TrustedProxies
+// value, by the rule New applies, so the command layer can report a bad flag
+// alongside its other flag errors. The error carries no package prefix; the
+// caller names the flag.
+func ValidateTrustedProxies(cidrs []string) error {
+	_, err := parseTrustedProxies(cidrs)
+	return err
+}
+
 // parseAllowedReservedGroups turns the configured allowlist into a set. Every
 // entry must itself carry the reserved prefix: allowing a group that was never
 // going to be refused is a no-op, and silently accepting it would hide a typo
@@ -52,12 +76,12 @@ func parseAllowedReservedGroups(groups []string) (sets.Set[string], error) {
 	for _, group := range groups {
 		switch {
 		case strings.TrimSpace(group) == "":
-			return nil, errors.New("proxy: allowed reserved group must not be empty")
+			return nil, errors.New("allowed reserved group must not be empty")
 		case !strings.HasPrefix(group, ReservedIdentityPrefix):
-			return nil, fmt.Errorf("proxy: allowed reserved group %q does not carry the reserved %q prefix, so listing it has no effect",
+			return nil, fmt.Errorf("allowed reserved group %q does not carry the reserved %q prefix, so listing it has no effect",
 				group, ReservedIdentityPrefix)
 		case group == authuser.AllAuthenticated:
-			return nil, fmt.Errorf("proxy: allowed reserved group %q is always permitted, so listing it has no effect", group)
+			return nil, fmt.Errorf("allowed reserved group %q is always permitted, so listing it has no effect", group)
 		}
 		allowed.Insert(group)
 	}
@@ -77,11 +101,11 @@ func parseTrustedProxies(cidrs []string) ([]*net.IPNet, error) {
 	for _, c := range cidrs {
 		c = strings.TrimSpace(c)
 		if c == "" {
-			return nil, errors.New("proxy: empty trusted-proxy CIDR")
+			return nil, errors.New("empty trusted-proxy CIDR")
 		}
 		_, network, err := net.ParseCIDR(c)
 		if err != nil {
-			return nil, fmt.Errorf("proxy: invalid trusted-proxy CIDR %q: %w", c, err)
+			return nil, fmt.Errorf("invalid trusted-proxy CIDR %q: %w", c, err)
 		}
 		nets = append(nets, network)
 	}

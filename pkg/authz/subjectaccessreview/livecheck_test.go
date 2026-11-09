@@ -270,7 +270,7 @@ func TestLiveCheckFailureEvents(t *testing.T) {
 
 		done := make(chan error, 1)
 		go func() {
-			_, err := s.ResolveImpersonation(req, loggingTestRequester())
+			_, _, err := s.ConsumeImpersonation(req, loggingTestRequester())
 			done <- err
 		}()
 
@@ -317,7 +317,7 @@ func TestLiveCheckFailureEvents(t *testing.T) {
 
 		done := make(chan error, 1)
 		go func() {
-			_, err := s.ResolveImpersonation(req, loggingTestRequester())
+			_, _, err := s.ConsumeImpersonation(req, loggingTestRequester())
 			done <- err
 		}()
 
@@ -430,9 +430,9 @@ func TestImpersonationResolvedEvent(t *testing.T) {
 	h.Set("Impersonate-User", "bob")
 	req := (&http.Request{Header: h}).WithContext(logging.WithRequestID(context.Background(), "r1"))
 
-	target, err := s.ResolveImpersonation(req, loggingTestRequester())
+	_, target, err := s.ConsumeImpersonation(req, loggingTestRequester())
 	if err != nil {
-		t.Fatalf("ResolveImpersonation() error = %v", err)
+		t.Fatalf("ConsumeImpersonation() error = %v", err)
 	}
 	if target == nil || target.GetName() != "bob" {
 		t.Fatalf("target = %v, want the impersonated user bob", target)

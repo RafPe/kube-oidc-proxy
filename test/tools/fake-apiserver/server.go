@@ -1,5 +1,5 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
-package server
+package main
 
 import (
 	"encoding/pem"
@@ -28,13 +28,13 @@ var hopByHopHeaders = map[string]bool{
 	"Upgrade":             true,
 }
 
-type Server struct {
+type server struct {
 	keyFile, certFile string
 
 	stopCh <-chan struct{}
 }
 
-func New(keyFile, certFile string, stopCh <-chan struct{}) (*Server, error) {
+func newServer(keyFile, certFile string, stopCh <-chan struct{}) (*server, error) {
 	b, err := os.ReadFile(keyFile)
 	if err != nil {
 		return nil, err
@@ -46,14 +46,14 @@ func New(keyFile, certFile string, stopCh <-chan struct{}) (*Server, error) {
 			fmt.Errorf("failed to parse PEM block containing the key: %q", keyFile)
 	}
 
-	return &Server{
+	return &server{
 		keyFile:  keyFile,
 		certFile: certFile,
 		stopCh:   stopCh,
 	}, nil
 }
 
-func (s *Server) Run(bindAddress, listenPort string) (<-chan struct{}, error) {
+func (s *server) Run(bindAddress, listenPort string) (<-chan struct{}, error) {
 	serveAddr := fmt.Sprintf("%s:%s", bindAddress, listenPort)
 
 	l, err := net.Listen("tcp", serveAddr)
@@ -83,7 +83,7 @@ func (s *Server) Run(bindAddress, listenPort string) (<-chan struct{}, error) {
 	return compCh, nil
 }
 
-func (s *Server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
+func (s *server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	slog.Info("fake apiserver: received request", slog.String("remote", r.RemoteAddr), slog.String("url", r.URL.String()))
 
 	// Log header names only, never values. The proxy forwards end-user

@@ -16,6 +16,7 @@ import (
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
 	"github.com/rafpe/kube-oidc-proxy/pkg/authn"
@@ -26,41 +27,11 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy"
 )
 
-// checkReservedIdentityPrefixes refuses to start when the operator's own
-// username or group prefix would itself mint reserved identities for every
-// authenticated user. It is a startup nicety, not the guard: the runtime check
-// in the proxy catches everything this misses, including reserved values that
-// arrive in the claim rather than the prefix.
-//
-// Only the single-issuer path is checked. --oidc-username-prefix and
-// --oidc-groups-prefix are ignored entirely when --authentication-config is set,
-// where prefixes come from the configuration document instead.
-func checkReservedIdentityPrefixes(opts *options.Options) error {
-	if opts.AuthenticationConfig.ConfigFile != "" {
-		return nil
-	}
-
-	for _, prefix := range []struct {
-		flag  string
-		value string
-	}{
-		{flag: "--oidc-username-prefix", value: opts.OIDCAuthentication.UsernamePrefix},
-		{flag: "--oidc-groups-prefix", value: opts.OIDCAuthentication.GroupsPrefix},
-	} {
-		if strings.HasPrefix(prefix.value, proxy.ReservedIdentityPrefix) {
-			return fmt.Errorf("%s=%q would prefix every authenticated identity with the "+
-				"Kubernetes-reserved %q; refusing to start",
-				prefix.flag, prefix.value, proxy.ReservedIdentityPrefix)
-		}
-	}
-
-	return nil
-}
-
 // secretFlags names the flags whose values never reach the log stream, not
 // even folded into config_hash: the hash is a fingerprint operators compare
-// between pods, not a channel for a bearer token.
-var secretFlags = map[string]bool{"token": true, "password": true}
+// between pods, not a channel for a bearer token. The names are client-go's
+// own, which registers the flags (see options.ClientOptions).
+var secretFlags = map[string]bool{clientcmd.FlagBearerToken: true}
 
 // configHash fingerprints the effective non-secret configuration so two pods
 // can be compared without diffing their flags. Every flag contributes its
@@ -197,15 +168,15 @@ func buildTokenReviewer(opts *options.Options, kubeclient kubernetes.Interface, 
 }
 
 // proxyConfig maps the parsed flags onto the proxy's configuration.
-func proxyConfig(opts *options.Options) *proxy.Config {
-	return &proxy.Config{
+func proxyConfig(opts *options.Options) proxy.Config {
+	return proxy.Config{
 		TokenPassthrough:     opts.App.TokenPassthrough.Enabled,
 		DisableImpersonation: opts.App.DisableImpersonation,
 
 		FlushInterval: opts.App.FlushInterval,
 
-		ExtraUserHeaders:                opts.App.ExtraHeaderOptions.ExtraUserHeaders,
-		ExtraUserHeadersClientIPEnabled: opts.App.ExtraHeaderOptions.EnableClientIPExtraUserHeader,
+		ExtraUserHeaders:                opts.App.ExtraHeaders.ExtraUserHeaders,
+		ExtraUserHeadersClientIPEnabled: opts.App.ExtraHeaders.ExtraUserHeadersClientIPEnabled,
 
 		TrustedProxies: opts.App.TrustedProxies,
 

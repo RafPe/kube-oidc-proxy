@@ -6,14 +6,9 @@
 // Getters are named for the value they return (ClientIP, Impersonation,
 // Termination); where that name is also the value's type, the type carries a
 // Record suffix (ImpersonationRecord, TerminationRecord).
-//
-// It also answers the one question every filter asks of a request's context
-// when a dependency call fails: whether the client went away (ClientGone).
 package reqctx
 
 import (
-	"context"
-	"errors"
 	"net"
 	"net/http"
 
@@ -86,18 +81,6 @@ func WithResolvedClient(req *http.Request, trusted []*net.IPNet) *http.Request {
 	return out
 }
 
-// ClientGone reports whether err is a context error caused by the request's
-// own context ending -- the client hung up, or its deadline passed -- rather
-// than by a dependency running out of the proxy's budget. requestCtx is the
-// inbound request's context, not a context derived for the dependency call.
-//
-// It is the single rule for demoting a dependency failure to a client cancel:
-// the review that saw the failure and the access record that reports it both
-// use it, so the two can never disagree.
-func ClientGone(requestCtx context.Context, err error) bool {
-	return requestCtx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
-}
-
 // ClientIP returns the client IP WithResolvedClient recorded for the request.
 // A request that never passed through it reports the direct peer, which is
 // what the contract resolves to when no proxy is trusted, so a caller outside
@@ -159,7 +142,7 @@ type ImpersonationRecord struct {
 // WithRequestID returns a copy of the request carrying id as the request's
 // authoritative correlation id. The id lives under the logging package's key,
 // the one Emit reads to supply request_id to any event that requires it, so
-// the access record and every other record agree on it by construction.
+// the access record and every other record carry the same id.
 func WithRequestID(req *http.Request, id string) *http.Request {
 	return req.WithContext(logging.WithRequestID(req.Context(), id))
 }

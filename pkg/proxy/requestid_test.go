@@ -72,6 +72,29 @@ func TestWithRequestIDAdoptsHeaderFromTrustedProxy(t *testing.T) {
 	}
 }
 
+// TestWithRequestIDLeavesTheInboundRequestAlone pins that the filter rewrites
+// the request-id headers on a copy, as the other header-rewriting filters do:
+// the request it was handed keeps the headers it arrived with.
+func TestWithRequestIDLeavesTheInboundRequestAlone(t *testing.T) {
+	p := newTestProxy(t)
+	var forwarded http.Header
+	h := p.withRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { forwarded = r.Header }))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Audit-ID", "client-id")
+	req.Header.Set("X-Request-ID", "client-trace")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	if got := req.Header.Get("Audit-ID"); got != "client-id" {
+		t.Errorf("inbound Audit-ID = %q, want client-id", got)
+	}
+	if got := req.Header.Get("X-Request-ID"); got != "client-trace" {
+		t.Errorf("inbound X-Request-ID = %q, want client-trace", got)
+	}
+	if forwarded.Get("Audit-ID") == "client-id" || forwarded.Get("X-Request-ID") != "" {
+		t.Errorf("forwarded headers not rewritten: %v", forwarded)
+	}
+}
+
 func TestWithRequestIDBoundsAndSanitisesInbound(t *testing.T) {
 	p := newTestProxy(t, withConfig(Config{TrustedProxies: []string{"10.0.0.0/8"}}))
 	var id string

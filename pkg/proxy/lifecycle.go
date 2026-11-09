@@ -201,8 +201,8 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 			logging.Emit(ctx, p.requestLogger, logging.EventRequestResponseCompleted,
 				completionAttrs(rec, status, term, classified, duration)...)
 
-			// One request, one record, one observation: the metric carries the
-			// same status and termination the record does, by construction.
+			// One request, one record, one observation: the metric is built
+			// from the same status and termination as the record.
 			p.metrics.RequestFinished(metrics.RequestObservation{
 				Verb:        verb,
 				Scope:       scope,

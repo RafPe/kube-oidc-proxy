@@ -1,19 +1,21 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
-package options
+package main
 
 import (
 	"github.com/spf13/cobra"
 )
 
-type Options struct {
+type options struct {
 	BindAddress string
 	ListenPort  string
+
+	IssuerURL string
 
 	KeyFile  string
 	CertFile string
 }
 
-func (o *Options) AddFlags(cmd *cobra.Command) {
+func (o *options) addFlags(cmd *cobra.Command) {
 	cmd.PersistentFlags().StringVar(&o.BindAddress, "bind-address",
 		"0.0.0.0", "Bound Address to listen and serve on.")
 
@@ -21,16 +23,20 @@ func (o *Options) AddFlags(cmd *cobra.Command) {
 		"6443", "Port to serve HTTPS.")
 	o.must(cmd.MarkPersistentFlagRequired("secure-port"))
 
+	cmd.PersistentFlags().StringVar(&o.IssuerURL, "issuer-url",
+		"", "URL of the issuer that appears in well-known responses.")
+	o.must(cmd.MarkPersistentFlagRequired("issuer-url"))
+
 	cmd.PersistentFlags().StringVar(&o.KeyFile, "tls-private-key-file",
-		"/etc/apiserver/key.pem", "File location to key for serving.")
+		"/tls/key.pem", "File location to key for serving.")
 	o.must(cmd.MarkPersistentFlagRequired("tls-private-key-file"))
 
 	cmd.PersistentFlags().StringVar(&o.CertFile, "tls-cert-file",
-		"/etc/apiserver/key.pem", "File location to certificate for serving.")
+		"/tls/cert.pem", "File location to certificate for serving.")
 	o.must(cmd.MarkPersistentFlagRequired("tls-cert-file"))
 }
 
-func (o *Options) must(err error) {
+func (o *options) must(err error) {
 	if err != nil {
 		panic(err)
 	}

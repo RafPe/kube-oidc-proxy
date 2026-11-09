@@ -9,27 +9,24 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/util/signals"
-	"github.com/rafpe/kube-oidc-proxy/test/tools/audit-webhook/cmd/options"
-	"github.com/rafpe/kube-oidc-proxy/test/tools/audit-webhook/pkg/sink"
 )
 
 func main() {
-	opts := new(options.Options)
+	opts := new(options)
 	// These test tools have no logging flags of their own; the shutdown
 	// reporting the handler will do goes to the process default logger.
 	stopCh := signals.NotifyStop(slog.Default())
 
 	cmd := &cobra.Command{
-		Use:   "audit-webhook",
-		Short: "An server that implements a Kubernetes audit webhook sink",
+		Use:   "fake-apiserver",
+		Short: "A fake apiserver that will respond to requests with the same body and headers",
 		RunE: func(cmd *cobra.Command, args []string) error {
-
-			wh, err := sink.New(opts.LogPath, opts.KeyFile, opts.CertFile, stopCh)
+			srv, err := newServer(opts.KeyFile, opts.CertFile, stopCh)
 			if err != nil {
 				return err
 			}
 
-			compCh, err := wh.Run(opts.BindAddress, opts.ListenPort)
+			compCh, err := srv.Run(opts.BindAddress, opts.ListenPort)
 			if err != nil {
 				return err
 			}
@@ -40,7 +37,7 @@ func main() {
 		},
 	}
 
-	opts.AddFlags(cmd)
+	opts.addFlags(cmd)
 
 	if err := cmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", err.Error())

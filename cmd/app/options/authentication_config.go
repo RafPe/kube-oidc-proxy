@@ -37,7 +37,7 @@ func (o *AuthenticationConfigOptions) Validate() error {
 		return nil
 	}
 	if _, err := os.Stat(o.ConfigFile); err != nil {
-		return fmt.Errorf("authentication-config file %q: %w", o.ConfigFile, err)
+		return fmt.Errorf("--authentication-config file %q: %w", o.ConfigFile, err)
 	}
 	return nil
 }

@@ -79,15 +79,13 @@ func deploy() {
 	err = cfg.Validate()
 	errExit(err)
 
-	helper := helper.NewHelper(cfg)
-
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	errExit(err)
 
 	kubeClient, err := kubernetes.NewForConfig(config)
 	errExit(err)
 
-	helper.KubeClient = kubeClient
+	helper := helper.NewHelper(cfg, kubeClient)
 
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{

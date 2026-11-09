@@ -70,7 +70,7 @@ func buildRunCommand(opts *options.Options, out io.Writer, notifyStop func(*slog
 // run is the command body. It builds the root logger and the stop trigger,
 // then runs the proxy through its three phases: startup, serve and shutdown.
 func run(cmd *cobra.Command, opts *options.Options, out io.Writer, notifyStop func(*slog.Logger) <-chan struct{}) error {
-	if opts.Version.Requested(cmd) {
+	if opts.Version.Requested() {
 		opts.Version.PrintVersionAndExit()
 	}
 	if err := opts.Validate(cmd); err != nil {
@@ -168,10 +168,6 @@ type running struct {
 func startup(ctx context.Context, cmd *cobra.Command, opts *options.Options, root *slog.Logger, recorder *metrics.Recorder) (*running, error) {
 	startupLogger := logging.ForComponent(root, logging.ComponentStartup)
 
-	if err := checkReservedIdentityPrefixes(opts); err != nil {
-		return nil, err
-	}
-
 	restConfig, err := buildRESTConfig(opts, cmd)
 	if err != nil {
 		return nil, err
@@ -188,7 +184,7 @@ func startup(ctx context.Context, cmd *cobra.Command, opts *options.Options, roo
 		return nil, fmt.Errorf("setting up secure serving: %w", err)
 	}
 
-	subjectAccessReviewer := subjectaccessreview.New(
+	impersonationAuthorizer := subjectaccessreview.New(
 		kubeclient.AuthorizationV1().SubjectAccessReviews(),
 		subjectaccessreview.Config{
 			Timeout:         opts.App.SubjectAccessReview.Timeout,
@@ -200,8 +196,7 @@ func startup(ctx context.Context, cmd *cobra.Command, opts *options.Options, roo
 		logging.ForComponent(root, logging.ComponentSAR),
 	)
 
-	tokenAuthenticator, issuerURLs, err := authn.Build(authenticatorConfig(opts),
-		logging.ForComponent(root, logging.ComponentOIDC), startupLogger)
+	tokenAuthenticator, issuerURLs, err := authn.Build(authenticatorConfig(opts), root)
 	if err != nil {
 		return nil, err
 	}
@@ -218,17 +213,15 @@ func startup(ctx context.Context, cmd *cobra.Command, opts *options.Options, roo
 
 	tokenReviewer := buildTokenReviewer(opts, kubeclient, recorder, root)
 
-	p, err := proxy.New(proxy.Dependencies{
-		Logger:                 root,
-		RestConfig:             restConfig,
-		OIDCTokenAuthenticator: tokenAuthenticator,
-		Auditor:                auditor,
-		TokenReviewer:          tokenReviewer,
-		SubjectAccessReviewer:  subjectAccessReviewer,
-		SecureServingInfo:      secureServingInfo,
-		Config:                 proxyConfig(opts),
-		Metrics:                recorder,
-	})
+	p, err := proxy.New(proxyConfig(opts), proxy.Dependencies{
+		RestConfig:              restConfig,
+		OIDCTokenAuthenticator:  tokenAuthenticator,
+		Auditor:                 auditor,
+		TokenReviewer:           tokenReviewer,
+		ImpersonationAuthorizer: impersonationAuthorizer,
+		SecureServingInfo:       secureServingInfo,
+		Metrics:                 recorder,
+	}, root)
 	if err != nil {
 		return nil, err
 	}

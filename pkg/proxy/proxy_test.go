@@ -161,12 +161,20 @@ func newTestAuditor(t *testing.T, root *slog.Logger) *audit.Audit {
 	return auditor
 }
 
+// newArgs is what newTestProxy passes to New, gathered so an option can adjust
+// any of it.
+type newArgs struct {
+	cfg  Config
+	deps Dependencies
+	root *slog.Logger
+}
+
 // newTestProxy builds a Proxy through New, from fakes: a mock OIDC
 // authenticator and token reviewer, a SubjectAccessReview over the fake
 // review client, a real metrics recorder and one log capture. opts adjust the
-// Dependencies before New sees them, so a test that needs a different
-// configuration or reviewer gets it wired the way the binary wires it.
-func newTestProxy(t *testing.T, opts ...func(*Dependencies)) *fakeProxy {
+// arguments before New sees them, so a test that needs a different
+// configuration or authorizer gets it wired the way the binary wires it.
+func newTestProxy(t *testing.T, opts ...func(*newArgs)) *fakeProxy {
 	t.Helper()
 
 	ctrl := gomock.NewController(t)
@@ -191,22 +199,23 @@ func newTestProxy(t *testing.T, opts ...func(*Dependencies)) *fakeProxy {
 		t.Fatalf("metrics.New: %v", err)
 	}
 
-	deps := Dependencies{
-		Logger:                 root,
-		RestConfig:             &rest.Config{Host: "https://kube.example.com"},
-		OIDCTokenAuthenticator: fakeToken,
-		TokenReviewer:          fakeReviewer,
-		SubjectAccessReviewer:  sar,
-		SecureServingInfo:      new(server.SecureServingInfo),
-		Config:                 &Config{},
-		Auditor:                newTestAuditor(t, root),
-		Metrics:                recorder,
+	args := newArgs{
+		deps: Dependencies{
+			RestConfig:              &rest.Config{Host: "https://kube.example.com"},
+			OIDCTokenAuthenticator:  fakeToken,
+			TokenReviewer:           fakeReviewer,
+			ImpersonationAuthorizer: sar,
+			SecureServingInfo:       new(server.SecureServingInfo),
+			Auditor:                 newTestAuditor(t, root),
+			Metrics:                 recorder,
+		},
+		root: root,
 	}
 	for _, opt := range opts {
-		opt(&deps)
+		opt(&args)
 	}
 
-	p, err := New(deps)
+	p, err := New(args.cfg, args.deps, args.root)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -234,25 +243,25 @@ func newTestProxy(t *testing.T, opts ...func(*Dependencies)) *fakeProxy {
 // it derives from a Config (the parsed trusted proxies and reserved-group
 // allowlist, the transport for unimpersonated requests) exactly as it does in
 // production.
-func withConfig(cfg Config) func(*Dependencies) {
-	return func(d *Dependencies) {
-		d.Config = &cfg
+func withConfig(cfg Config) func(*newArgs) {
+	return func(a *newArgs) {
+		a.cfg = cfg
 	}
 }
 
 // withLogger has newTestProxy build the proxy on root instead of its own
 // capture, for a test that needs a different verbosity.
-func withLogger(root *slog.Logger) func(*Dependencies) {
-	return func(d *Dependencies) {
-		d.Logger = root
+func withLogger(root *slog.Logger) func(*newArgs) {
+	return func(a *newArgs) {
+		a.root = root
 	}
 }
 
-// withSubjectAccessReviewer has newTestProxy wire sar in place of its default
-// reviewer.
-func withSubjectAccessReviewer(sar *subjectaccessreview.Authorizer) func(*Dependencies) {
-	return func(d *Dependencies) {
-		d.SubjectAccessReviewer = sar
+// withImpersonationAuthorizer has newTestProxy wire sar in place of its
+// default authorizer.
+func withImpersonationAuthorizer(sar *subjectaccessreview.Authorizer) func(*newArgs) {
+	return func(a *newArgs) {
+		a.deps.ImpersonationAuthorizer = sar
 	}
 }
 
@@ -284,6 +293,59 @@ func TestRoundTripLogsTokenReviewPassthrough(t *testing.T) {
 	}
 
 	p.ctrl.Finish()
+}
+
+// TestReverseProxyWiring pins the handler Start serves at the bottom of the
+// filter chain: its transport is roundTrip and its failures go to
+// handleUpstreamError (a request with no forwarding decision reaches the
+// first and is answered 500 by the second), it flushes at the configured
+// interval, and what it only logs arrives as a WARN on the upstream component.
+// The ErrorLog record carries no event_type, so it is written to a capture of
+// its own rather than the one the package sweep holds to the registry.
+func TestReverseProxyWiring(t *testing.T) {
+	root, logs := logtest.New(t, 0)
+	p := newTestProxy(t, withConfig(Config{FlushInterval: 250 * time.Millisecond}), withLogger(root))
+
+	rp, err := p.reverseProxy()
+	if err != nil {
+		t.Fatalf("reverseProxy: %v", err)
+	}
+	if rp.FlushInterval != 250*time.Millisecond {
+		t.Errorf("FlushInterval = %v, want 250ms", rp.FlushInterval)
+	}
+
+	rw := httptest.NewRecorder()
+	rp.ServeHTTP(rw, withTestRequestID(httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil)))
+	if rw.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", rw.Code)
+	}
+	if got := logs.Only(t, logging.EventRequestHandlerFailed).String("error_message"); !strings.Contains(got, errNoImpersonationConfig.Error()) {
+		t.Errorf("request.handler.failed error_message = %q, want it to name %q", got, errNoImpersonationConfig)
+	}
+
+	rp.ErrorLog.Print("httputil: ReverseProxy read error during body copy")
+	var found bool
+	for _, r := range logs.Records() {
+		if strings.Contains(r.String("msg"), "body copy") {
+			found = true
+			if r.String("component") != string(logging.ComponentUpstream) || r.String("level") != "WARN" {
+				t.Errorf("ErrorLog record = %v, want component=upstream level=WARN", r)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("ErrorLog wrote no record: %s", logs.Raw())
+	}
+}
+
+// TestReverseProxyRejectsUnparseableHost pins that a malformed API server URL
+// fails Start before anything is served.
+func TestReverseProxyRejectsUnparseableHost(t *testing.T) {
+	p := newTestProxy(t)
+	p.restConfig = &rest.Config{Host: "https://kube.example.com/%zz"}
+	if _, err := p.reverseProxy(); err == nil {
+		t.Fatal("reverseProxy accepted an unparseable host")
+	}
 }
 
 // TestWaitBeforeStartReturns pins that a Proxy that never served has nothing to
@@ -356,8 +418,9 @@ func (s *sweepTB) Fatal(args ...any) {
 }
 
 // validDeps returns a Dependencies value with every required field populated,
-// so individual tests can null out one field to exercise validation.
-func validDeps(t *testing.T) Dependencies {
+// and the root logger to build it on, so individual tests can null out one
+// field to exercise validation.
+func validDeps(t *testing.T) (Dependencies, *slog.Logger) {
 	t.Helper()
 
 	ctrl := gomock.NewController(t)
@@ -366,14 +429,12 @@ func validDeps(t *testing.T) Dependencies {
 	sar := subjectaccessreview.New(fakesubjectaccessreview.New(nil), subjectaccessreview.Config{MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, logging.ForComponent(root, logging.ComponentSAR))
 
 	return Dependencies{
-		Logger:                 root,
-		RestConfig:             &rest.Config{Host: "https://kube.example.com"},
-		OIDCTokenAuthenticator: authntest.NewMockToken(ctrl),
-		SubjectAccessReviewer:  sar,
-		SecureServingInfo:      new(server.SecureServingInfo),
-		Config:                 &Config{},
-		Auditor:                newTestAuditor(t, root),
-	}
+		RestConfig:              &rest.Config{Host: "https://kube.example.com"},
+		OIDCTokenAuthenticator:  authntest.NewMockToken(ctrl),
+		ImpersonationAuthorizer: sar,
+		SecureServingInfo:       new(server.SecureServingInfo),
+		Auditor:                 newTestAuditor(t, root),
+	}, root
 }
 
 // TestNewPanicsOnNilLogger pins that the root logger is a required dependency:
@@ -381,18 +442,18 @@ func validDeps(t *testing.T) Dependencies {
 // to inject one has a wiring bug, so New panics naming the package rather than
 // emitting nothing at runtime.
 func TestNewPanicsOnNilLogger(t *testing.T) {
-	deps := validDeps(t)
-	deps.Logger = nil
+	deps, _ := validDeps(t)
 	defer func() {
 		if r := recover(); r == nil || !strings.Contains(fmt.Sprint(r), "proxy:") {
-			t.Fatalf("New(nil Logger) recovered %v, want a panic naming the proxy package", r)
+			t.Fatalf("New(nil logger) recovered %v, want a panic naming the proxy package", r)
 		}
 	}()
-	_, _ = New(deps)
+	_, _ = New(Config{}, deps, nil)
 }
 
 func TestNewValidatesDependencies(t *testing.T) {
 	tests := map[string]struct {
+		cfg     Config
 		mutate  func(d *Dependencies)
 		wantErr bool
 	}{
@@ -408,33 +469,31 @@ func TestNewValidatesDependencies(t *testing.T) {
 			mutate:  func(d *Dependencies) { d.OIDCTokenAuthenticator = nil },
 			wantErr: true,
 		},
-		"nil SubjectAccessReviewer fails": {
-			mutate:  func(d *Dependencies) { d.SubjectAccessReviewer = nil },
+		"nil ImpersonationAuthorizer fails": {
+			mutate:  func(d *Dependencies) { d.ImpersonationAuthorizer = nil },
 			wantErr: true,
 		},
 		"nil SecureServingInfo fails": {
 			mutate:  func(d *Dependencies) { d.SecureServingInfo = nil },
 			wantErr: true,
 		},
-		"nil Config fails": {
-			mutate:  func(d *Dependencies) { d.Config = nil },
+		"nil Auditor fails": {
+			mutate:  func(d *Dependencies) { d.Auditor = nil },
 			wantErr: true,
 		},
 		"TokenReview enabled without reviewer fails": {
-			mutate: func(d *Dependencies) {
-				d.Config = &Config{TokenPassthrough: true}
-				d.TokenReviewer = nil
-			},
+			cfg:     Config{TokenPassthrough: true},
+			mutate:  func(d *Dependencies) { d.TokenReviewer = nil },
 			wantErr: true,
 		},
 	}
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			deps := validDeps(t)
+			deps, root := validDeps(t)
 			tc.mutate(&deps)
 
-			p, err := New(deps)
+			p, err := New(tc.cfg, deps, root)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("New(%s): expected an error, got nil", name)
@@ -451,15 +510,14 @@ func TestNewValidatesDependencies(t *testing.T) {
 	}
 }
 
-// TestNewCopiesExtraUserHeaders verifies New copies the caller's Config and its
+// TestNewCopiesExtraUserHeaders verifies New copies the caller's
 // ExtraUserHeaders map at the construction boundary, so mutating the caller's
 // map afterward cannot change proxy behavior.
 func TestNewCopiesExtraUserHeaders(t *testing.T) {
-	deps := validDeps(t)
+	deps, root := validDeps(t)
 	src := map[string][]string{"team": {"platform"}}
-	deps.Config = &Config{ExtraUserHeaders: src}
 
-	p, err := New(deps)
+	p, err := New(Config{ExtraUserHeaders: src}, deps, root)
 	if err != nil {
 		t.Fatalf("New returned unexpected error: %v", err)
 	}

@@ -1,11 +1,11 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
-package options
+package main
 
 import (
 	"github.com/spf13/cobra"
 )
 
-type Options struct {
+type options struct {
 	BindAddress string
 	ListenPort  string
 
@@ -15,7 +15,7 @@ type Options struct {
 	CertFile string
 }
 
-func (o *Options) AddFlags(cmd *cobra.Command) {
+func (o *options) addFlags(cmd *cobra.Command) {
 	cmd.PersistentFlags().StringVar(&o.BindAddress, "bind-address",
 		"0.0.0.0", "Bound Address to listen and serve on.")
 
@@ -26,15 +26,15 @@ func (o *Options) AddFlags(cmd *cobra.Command) {
 		"/var/log/audit", "Filepath to write audit logs to.")
 
 	cmd.PersistentFlags().StringVar(&o.KeyFile, "tls-private-key-file",
-		"/etc/oidc/key.pem", "File location to key for serving.")
+		"/tls/key.pem", "File location to key for serving.")
 	o.must(cmd.MarkPersistentFlagRequired("tls-private-key-file"))
 
 	cmd.PersistentFlags().StringVar(&o.CertFile, "tls-cert-file",
-		"/etc/oidc/key.pem", "File location to certificate for serving.")
+		"/tls/cert.pem", "File location to certificate for serving.")
 	o.must(cmd.MarkPersistentFlagRequired("tls-cert-file"))
 }
 
-func (o *Options) must(err error) {
+func (o *options) must(err error) {
 	if err != nil {
 		panic(err)
 	}

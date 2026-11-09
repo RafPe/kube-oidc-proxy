@@ -1,5 +1,5 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
-package sink
+package main
 
 import (
 	"crypto/rsa"
@@ -16,7 +16,7 @@ import (
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 )
 
-type Sink struct {
+type sink struct {
 	logPath           string
 	keyFile, certFile string
 
@@ -26,7 +26,7 @@ type Sink struct {
 	mu     sync.Mutex
 }
 
-func New(logPath, keyFile, certFile string, stopCh <-chan struct{}) (*Sink, error) {
+func newSink(logPath, keyFile, certFile string, stopCh <-chan struct{}) (*sink, error) {
 	b, err := os.ReadFile(keyFile)
 	if err != nil {
 		return nil, err
@@ -43,7 +43,7 @@ func New(logPath, keyFile, certFile string, stopCh <-chan struct{}) (*Sink, erro
 		return nil, err
 	}
 
-	return &Sink{
+	return &sink{
 		logPath:  logPath,
 		keyFile:  keyFile,
 		certFile: certFile,
@@ -52,7 +52,7 @@ func New(logPath, keyFile, certFile string, stopCh <-chan struct{}) (*Sink, erro
 	}, nil
 }
 
-func (s *Sink) Run(bindAddress, listenPort string) (<-chan struct{}, error) {
+func (s *sink) Run(bindAddress, listenPort string) (<-chan struct{}, error) {
 	serveAddr := fmt.Sprintf("%s:%s", bindAddress, listenPort)
 
 	l, err := net.Listen("tcp", serveAddr)
@@ -82,7 +82,7 @@ func (s *Sink) Run(bindAddress, listenPort string) (<-chan struct{}, error) {
 	return compCh, nil
 }
 
-func (s *Sink) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
+func (s *sink) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	slog.Info("audit webhook: received request", slog.String("remote", r.RemoteAddr), slog.String("url", r.URL.String()))
 
 	var events auditv1.EventList

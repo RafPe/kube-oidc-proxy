@@ -82,27 +82,16 @@ func TestNewIssuerAuthenticator_Construction(t *testing.T) {
 	}
 }
 
-// TestBuildPanicsOnNilLoggers pins that a missing logger is a wiring mistake
+// TestBuildPanicsOnNilLogger pins that a missing logger is a wiring mistake
 // that fails at construction, naming the package and the logger.
-func TestBuildPanicsOnNilLoggers(t *testing.T) {
+func TestBuildPanicsOnNilLogger(t *testing.T) {
 	cfg := Config{Issuer: IssuerConfig{URL: "https://vault.example.com", ClientID: "my-client", UsernameClaim: "sub"}}
-	tests := map[string]struct {
-		oidcLogger, startupLogger *slog.Logger
-		want                      string
-	}{
-		"nil oidc logger":    {nil, discardLogger(), "authn: nil oidc logger"},
-		"nil startup logger": {discardLogger(), nil, "authn: nil startup logger"},
-	}
-	for name, tc := range tests {
-		t.Run(name, func(t *testing.T) {
-			defer func() {
-				if got := recover(); got != tc.want {
-					t.Fatalf("Build panic = %v, want %q", got, tc.want)
-				}
-			}()
-			_, _, _ = Build(cfg, tc.oidcLogger, tc.startupLogger)
-		})
-	}
+	defer func() {
+		if got, want := recover(), "authn: nil root logger"; got != want {
+			t.Fatalf("Build panic = %v, want %q", got, want)
+		}
+	}()
+	_, _, _ = Build(cfg, nil)
 }
 
 func TestJWTAuthenticatorFromIssuer_RequiredClaims(t *testing.T) {
@@ -156,7 +145,7 @@ func TestBuildTokenAuthenticator_SingleIssuer(t *testing.T) {
 		SigningAlgs:   []string{"RS256"},
 	}}
 
-	authn, issuerURLs, err := Build(cfg, discardLogger(), discardLogger())
+	authn, issuerURLs, err := Build(cfg, discardLogger())
 	if err != nil {
 		t.Fatalf("Build() unexpected error: %v", err)
 	}
@@ -165,6 +154,23 @@ func TestBuildTokenAuthenticator_SingleIssuer(t *testing.T) {
 	}
 	if want := []string{cfg.Issuer.URL}; len(issuerURLs) != len(want) || issuerURLs[0] != want[0] {
 		t.Errorf("Build() issuerURLs = %v, want %v", issuerURLs, want)
+	}
+}
+
+// TestBuildDerivesTheOIDCComponent pins that Build reports the issuers it
+// configured under the oidc component it derives from the root logger.
+func TestBuildDerivesTheOIDCComponent(t *testing.T) {
+	root, cap := logtest.New(t, 0)
+	defer logtest.AssertRegistered(t, cap)
+	cfg := Config{Issuer: IssuerConfig{URL: "https://vault.example.com", ClientID: "my-client", UsernameClaim: "sub"}}
+
+	if _, _, err := Build(cfg, root); err != nil {
+		t.Fatalf("Build() unexpected error: %v", err)
+	}
+
+	rec := cap.Only(t, logging.EventOIDCIssuerConfigured)
+	if got := rec.String("component"); got != string(logging.ComponentOIDC) {
+		t.Errorf("component = %q, want %q", got, logging.ComponentOIDC)
 	}
 }
 
@@ -198,7 +204,7 @@ jwt:
 `
 	configPath := writeTempFile(t, configContent)
 
-	authn, issuerURLs, err := Build(Config{ConfigFile: configPath}, discardLogger(), discardLogger())
+	authn, issuerURLs, err := Build(Config{ConfigFile: configPath}, discardLogger())
 	if err != nil {
 		t.Fatalf("Build() unexpected error: %v", err)
 	}
@@ -245,7 +251,7 @@ jwt:
 		t.Fatal(err)
 	}
 
-	authn, issuerURLs, err := Build(Config{ConfigFile: path}, discardLogger(), discardLogger())
+	authn, issuerURLs, err := Build(Config{ConfigFile: path}, discardLogger())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -259,7 +265,7 @@ jwt:
 }
 
 func TestBuildTokenAuthenticator_AuthConfig_InvalidFile(t *testing.T) {
-	_, _, err := Build(Config{ConfigFile: "/does/not/exist.yaml"}, discardLogger(), discardLogger())
+	_, _, err := Build(Config{ConfigFile: "/does/not/exist.yaml"}, discardLogger())
 	if err == nil {
 		t.Error("Build() expected error for missing config file, got nil")
 	}
@@ -338,7 +344,7 @@ jwt:
 	if err := os.WriteFile(config, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := Build(Config{ConfigFile: config}, slog.New(slog.DiscardHandler), slog.New(slog.DiscardHandler))
+	_, _, err := Build(Config{ConfigFile: config}, discardLogger())
 	// The name alone does not say which two entries have to be changed, so
 	// the refusal names both by position; the full URLs are never in it.
 	want := `issuers jwt[0] and jwt[1] share the name "idp.example.com"; issuers must differ by host`
@@ -397,7 +403,7 @@ func TestBuildErrorNamesIssuerByHost(t *testing.T) {
 		TLSClientCertFile: filepath.Join(t.TempDir(), "missing.crt"),
 		TLSClientKeyFile:  filepath.Join(t.TempDir(), "missing.key"),
 	}
-	_, _, err := Build(cfg, discardLogger(), discardLogger())
+	_, _, err := Build(cfg, discardLogger())
 	if err == nil || !strings.Contains(err.Error(), `building authenticator for issuer "idp.example.com"`) {
 		t.Fatalf("Build = %v, want the failure attributed to idp.example.com", err)
 	}

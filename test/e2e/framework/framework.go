@@ -52,8 +52,9 @@ func requireDefaultConfig() *config.Config {
 type Framework struct {
 	BaseName string
 
-	KubeClientSet kubernetes.Interface
-	ProxyClient   kubernetes.Interface
+	// ProxyClient reaches the cluster through the proxy. The direct, admin
+	// client is Helper().KubeClient.
+	ProxyClient kubernetes.Interface
 
 	Namespace *corev1.Namespace
 
@@ -132,23 +133,22 @@ func (f *Framework) BeforeEach(ctx context.Context) {
 	if f.config == nil {
 		f.config = requireDefaultConfig()
 	}
-	f.helper = helper.NewHelper(f.config)
 
 	By("Creating a kubernetes client")
 
 	config, err := clientcmd.BuildConfigFromFlags("", f.config.KubeConfigPath)
 	Expect(err).NotTo(HaveOccurred())
 
-	f.KubeClientSet, err = kubernetes.NewForConfig(config)
+	kubeClient, err := kubernetes.NewForConfig(config)
 	Expect(err).NotTo(HaveOccurred())
+
+	f.helper = helper.NewHelper(f.config, kubeClient)
 
 	By("Building a namespace api object")
 	f.Namespace, err = f.CreateKubeNamespace(ctx, f.BaseName)
 	Expect(err).NotTo(HaveOccurred())
 
 	By("Using the namespace " + f.Namespace.Name)
-
-	f.helper.KubeClient = f.KubeClientSet
 
 	By("Deploying mock OIDC Issuer")
 	issuerKeyBundle, issuerURL, err := f.helper.DeployIssuer(ctx, f.Namespace.Name)

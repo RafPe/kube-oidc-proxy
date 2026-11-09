@@ -55,7 +55,7 @@ type authResponse struct {
 func runHandlersCases(t *testing.T, tests map[string]handlersCase) {
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			var opts []func(*Dependencies)
+			var opts []func(*newArgs)
 			if test.config != nil {
 				opts = append(opts, withConfig(*test.config))
 			}

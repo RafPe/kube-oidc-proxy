@@ -1,9 +1,19 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
 
 // Package subjectaccessreview authorizes impersonation requests by submitting
-// SubjectAccessReviews to the API server. It exposes typed, sentinel-backed
-// errors so HTTP handlers can select a response status via errors.Is rather
-// than by matching message text.
+// SubjectAccessReviews to the API server.
+//
+// It also owns the impersonation-header grammar: which request headers are
+// impersonation headers (any Impersonate- prefix, in any case), which kinds of
+// them the proxy knows, and how an Impersonate-Extra- header decodes to a key.
+// Authorizer.ConsumeImpersonation is the one entry point: it authorizes every
+// such header and returns the request to forward without them, so no caller
+// needs the grammar to keep a client's raw headers from travelling on under
+// the proxy's own credentials.
+//
+// Every error a caller acts on is a sentinel or matches one (an
+// *ImpersonationAuthError matches ErrImpersonationNotAllowed), so callers
+// classify errors with errors.Is, never by matching message text.
 package subjectaccessreview
 
 import (
@@ -49,32 +59,27 @@ var (
 	ErrUnforwardableExtraKey = errors.New("impersonation extra key cannot be forwarded unchanged")
 
 	// ErrCreateSubjectAccessReview is the sentinel wrapping a failure to submit a
-	// SubjectAccessReview to the API server. Callers can match it with errors.Is;
-	// the underlying error (including context.Canceled/DeadlineExceeded) is wrapped
-	// alongside it so it remains detectable too.
+	// SubjectAccessReview to the API server. The underlying error (including
+	// context.Canceled/DeadlineExceeded) is wrapped alongside it.
 	ErrCreateSubjectAccessReview = errors.New("create SubjectAccessReview")
 
 	// ErrImpersonationNotAllowed is the sentinel that classifies an authorization
 	// denial: the requester is not permitted to impersonate a requested resource.
-	// Every denial returned by ResolveImpersonation is an
-	// *ImpersonationAuthError, which matches this sentinel via errors.Is. HTTP
-	// handlers select a 403 with errors.Is(err, ErrImpersonationNotAllowed)
-	// instead of matching on message text.
+	// Every denial ConsumeImpersonation returns is an *ImpersonationAuthError,
+	// which matches it.
 	ErrImpersonationNotAllowed = errors.New("not allowed to impersonate")
 
 	// ErrTooManyImpersonationHeaderValues is the sentinel that classifies a
 	// request carrying more impersonation header values than the configured cap.
 	// Each value costs one SubjectAccessReview round trip to the API server, so
-	// the count is capped before any review is sent. HTTP handlers select a 431
-	// with errors.Is; this is not an authorization decision, so it deliberately
-	// does not classify as ErrImpersonationNotAllowed.
+	// the count is capped before any review is sent. It is not an authorization
+	// decision, so it does not match ErrImpersonationNotAllowed.
 	ErrTooManyImpersonationHeaderValues = errors.New("too many impersonation header values")
 )
 
 // TargetKind is one of the closed set of impersonation target kinds, as the
-// access record's target_kind reports them. It is also the vocabulary
-// ImpersonationAuthError speaks, so the proxy never has to recover a kind from
-// message text.
+// access record's target_kind reports them and ImpersonationAuthError carries
+// them.
 type TargetKind string
 
 const (
@@ -85,10 +90,8 @@ const (
 )
 
 // ImpersonationAuthError reports that a requester is not authorized to
-// impersonate a particular target. It classifies as ErrImpersonationNotAllowed
-// through errors.Is so callers can select an HTTP 403 without inspecting the
-// message string, and it carries the refused target as structured fields so
-// the access record never parses the client-facing message.
+// impersonate a particular target. It matches ErrImpersonationNotAllowed, and
+// it carries the refused target as structured fields for the access record.
 type ImpersonationAuthError struct {
 	// Requester is the name of the authenticated user attempting impersonation.
 	Requester string
@@ -121,33 +124,20 @@ func (e *ImpersonationAuthError) TargetName() string {
 	return e.Target
 }
 
-// Is reports whether e should be treated as ErrImpersonationNotAllowed, letting
-// errors.Is classify any denial regardless of the concrete resource involved.
+// Is matches ErrImpersonationNotAllowed.
 func (e *ImpersonationAuthError) Is(target error) bool {
 	return target == ErrImpersonationNotAllowed
 }
 
-// DefaultTimeout is the default value for the SAR authorization budget, and
-// what a zero Config.Timeout means. It bounds the total time spent authorizing
-// a single request's impersonation via SubjectAccessReviews. It covers the
-// whole sequence of checks, not each call, so a stalled API server cannot hold
-// a client connection open indefinitely (the SAR client inherits
-// rest.Config.Timeout, which defaults to zero).
+// DefaultTimeout is the budget a zero Config.Timeout means. The SAR client
+// inherits rest.Config.Timeout, which defaults to none, so this budget is what
+// stops a stalled API server holding a client connection open.
 const DefaultTimeout = 5 * time.Second
 
-// DefaultMaxHeaderValues is the default cap, and what a zero
-// Config.MaxHeaderValues means, on the total number of
-// impersonation header values accepted per request (one Impersonate-User plus
-// every Impersonate-Group, Impersonate-Uid and Impersonate-Extra-* value).
-// Each value costs one serial SubjectAccessReview round trip to the API
-// server, so the count bounds the per-request amplification a client can
-// drive. kube-apiserver itself places no count limit on impersonation values
-// (only its ~1MiB total header size limit applies, which admits thousands of
-// values), but its per-value authorization is an in-process check, not a
-// network call. 64 comfortably covers realistic clients — kubectl --as/
-// --as-group sends a handful of values, and programmatic identity forwarding
-// rarely exceeds a few dozen groups — while keeping the worst case at 64
-// round trips inside the shared timeout budget.
+// DefaultMaxHeaderValues is the cap a zero Config.MaxHeaderValues means on the
+// impersonation header values one request may carry. Each value costs one
+// serial SubjectAccessReview round trip; 64 is well above what kubectl
+// --as/--as-group or programmatic group forwarding send.
 const DefaultMaxHeaderValues = 64
 
 // Authorizer authorizes impersonation requests by submitting a
@@ -251,25 +241,40 @@ func New(client clientazv1.SubjectAccessReviewInterface, cfg Config, logger *slo
 	}
 }
 
-// ResolveImpersonation inspects the request's impersonation headers,
-// verifies via SubjectAccessReview that requester is allowed to impersonate
-// each requested target, and returns the resulting impersonated user. The
-// caller only calls it for a request HasImpersonationHeaders reports
-// impersonation headers on. An authorization denial is returned as an
-// *ImpersonationAuthError, which matches ErrImpersonationNotAllowed via
-// errors.Is.
+// ConsumeImpersonation authorizes the request's impersonation headers and
+// returns the request to forward and the identity it impersonates.
 //
-// Targets are reviewed in a fixed order whatever order the header map
-// iterates in -- the user, then each group, then each extra by key, then the
-// uid -- so a request refused on several targets is always refused on the same
-// one.
+// A request with no impersonation header is returned as is with a nil target,
+// and no review is sent. Otherwise every requested target is reviewed in a
+// fixed order whatever order the header map iterates in -- the user, then each
+// group, then each extra by key, then the uid -- so a request refused on
+// several targets is always refused on the same one. An authorization denial
+// is an *ImpersonationAuthError.
 //
-// The request is read, never modified. The caller forwards the request, so the
-// caller removes the consumed headers (StripImpersonationHeaders) before client-go's
-// impersonating round tripper sees it: that round tripper leaves a request
-// that already carries Impersonate-User untouched, which would forward the
-// client's raw headers under the proxy's own credentials.
-func (a *Authorizer) ResolveImpersonation(req *http.Request, requester user.Info) (user.Info, error) {
+// On success the returned request is a shallow copy of req whose header map
+// is a fresh copy without any impersonation header; req itself is not
+// modified. The headers must not travel on: client-go's impersonating round
+// tripper leaves a request that already carries Impersonate-User untouched,
+// which would forward the client's raw headers under the proxy's own
+// credentials.
+func (a *Authorizer) ConsumeImpersonation(req *http.Request, requester user.Info) (*http.Request, user.Info, error) {
+	if !hasImpersonationHeaders(req.Header) {
+		return req, nil, nil
+	}
+
+	target, err := a.resolveImpersonation(req, requester)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	forward := req.WithContext(req.Context())
+	forward.Header = stripImpersonationHeaders(req.Header)
+	return forward, target, nil
+}
+
+// resolveImpersonation reviews the impersonation headers of a request that
+// carries at least one and returns the identity they ask for.
+func (a *Authorizer) resolveImpersonation(req *http.Request, requester user.Info) (user.Info, error) {
 	// Refuse over-wide requests before spending anything: every impersonation
 	// header value below costs one serial SAR round trip, and the value count
 	// is entirely client-controlled. Counting mirrors parseImpersonation

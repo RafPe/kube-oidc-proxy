@@ -92,8 +92,7 @@ func TestUpdateFixtures(t *testing.T) {
 // emitFixture emits one access record through LogDecision and returns it
 // decoded. The allow case is alice impersonating bob, each carrying extras
 // that must be counted rather than logged; the deny case is the impersonation
-// refusal. Both cases are deterministic so the
-// golden file is stable.
+// refusal. Both cases are deterministic so the golden file is stable.
 func emitFixture(t *testing.T, name string) map[string]any {
 	t.Helper()
 

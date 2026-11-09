@@ -11,8 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/http/httputil"
-	"net/url"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -83,10 +81,11 @@ func TestOIDCSuccessEmitsAuthnOIDCSucceeded(t *testing.T) {
 	p.ctrl.Finish()
 }
 
-// TestTokenReviewDependencyFailureIsError separates the two ways a TokenReview
-// can fail to admit a request. An API server that could not answer is an
-// operator-visible dependency failure carrying the error text; it is not a
-// verdict on the credential, so it must not be recorded as a completed review.
+// TestTokenReviewDependencyFailureIsError pins that a TokenReview that could
+// not be answered fails closed with the reviewer's own error, and that the
+// proxy adds no record of its own: the reviewer reports authn.tokenreview.failed
+// itself (see package tokenreview), so a second one here would double every
+// failure.
 func TestTokenReviewDependencyFailureIsError(t *testing.T) {
 	p := newTestProxy(t)
 	p.fakeReviewer.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(
@@ -98,16 +97,8 @@ func TestTokenReviewDependencyFailureIsError(t *testing.T) {
 		t.Fatalf("reviewToken = %v, want tokenreview.ErrCreateTokenReview: the path must fail closed", err)
 	}
 
-	rec := p.logs.Only(t, logging.EventAuthnTokenReviewFailed)
-	assertRecord(t, rec, logging.EventAuthnTokenReviewFailed, logging.ComponentTokenReview, "test-request-id")
-	if got := rec.String("level"); got != "ERROR" {
-		t.Errorf("level = %q, want ERROR", got)
-	}
-	if got := rec.String("reason"); got != string(metrics.ReasonAuthenticationDependencyError) {
-		t.Errorf("reason = %q, want %q", got, metrics.ReasonAuthenticationDependencyError)
-	}
-	if got := rec.String("error_message"); got != errReviewUnavailable.Error() {
-		t.Errorf("error_message = %q, want %q", got, errReviewUnavailable.Error())
+	if got := p.logs.ByEvent(logging.EventAuthnTokenReviewFailed); len(got) != 0 {
+		t.Errorf("the proxy wrote a failure record the reviewer already owns: %s", p.logs.Raw())
 	}
 	if got := p.logs.ByEvent(logging.EventAuthnTokenReviewCompleted); len(got) != 0 {
 		t.Errorf("an unanswerable TokenReview was recorded as completed: %s", p.logs.Raw())
@@ -116,11 +107,10 @@ func TestTokenReviewDependencyFailureIsError(t *testing.T) {
 	p.ctrl.Finish()
 }
 
-// TestTokenReviewClientDisconnectIsNotAnError pins the other side of that
-// split: a review that failed because the client itself hung up is not the
-// API server's fault, so it is recorded at DEBUG as client_canceled, and the
-// request is refused without a response and without any ERROR record a
-// client could drive by disconnecting.
+// TestTokenReviewClientDisconnectIsNotAnError pins that a review that failed
+// because the client itself hung up is not the API server's fault: the
+// request is refused as client_canceled without a response and without any
+// ERROR record a client could drive by disconnecting.
 func TestTokenReviewClientDisconnectIsNotAnError(t *testing.T) {
 	p := newTestProxy(t)
 	p.config = &Config{TokenPassthrough: true}
@@ -141,13 +131,6 @@ func TestTokenReviewClientDisconnectIsNotAnError(t *testing.T) {
 		t.Error("a request whose review failed reached the next handler")
 	})).ServeHTTP(rw, req)
 
-	rec := p.logs.Only(t, logging.EventAuthnTokenReviewFailed)
-	if got := rec.String("level"); got != "DEBUG" {
-		t.Errorf("level = %q, want DEBUG", got)
-	}
-	if got := rec.String("reason"); got != string(metrics.ReasonClientCanceled) {
-		t.Errorf("reason = %q, want %q", got, metrics.ReasonClientCanceled)
-	}
 	for _, r := range p.logs.Records() {
 		if r.String("level") == "ERROR" {
 			t.Errorf("a client disconnect produced an ERROR record: %v", r)
@@ -170,8 +153,10 @@ func TestClientCancellationEmitsUpstreamRequestCanceled(t *testing.T) {
 	p := newTestProxy(t)
 
 	req := reservedIdentityRequest(t, nil)
+	ctx, cancel := context.WithCancel(req.Context())
+	cancel()
 	rw := httptest.NewRecorder()
-	p.handleUpstreamError(rw, req, context.Canceled)
+	p.handleUpstreamError(rw, req.WithContext(ctx), context.Canceled)
 
 	rec := p.logs.Only(t, logging.EventUpstreamRequestCanceled)
 	assertRecord(t, rec, logging.EventUpstreamRequestCanceled, logging.ComponentUpstream, "test-request-id")
@@ -183,6 +168,31 @@ func TestClientCancellationEmitsUpstreamRequestCanceled(t *testing.T) {
 	}
 	if got := p.logs.ByEvent(logging.EventRequestAccessDecided); len(got) != 0 {
 		t.Errorf("the upstream error handler wrote an access decision: %s", p.logs.Raw())
+	}
+}
+
+// TestUpstreamCancelWithClientAttachedIsInternal pins that handleUpstreamError
+// demotes a failure to client_canceled by ctxerr.ClientGone, the rule refuse
+// uses (see TestErrorClientGoneNeedsBothSignals). A context.Canceled while the
+// request's own context is still live was not caused by the client, so it is
+// the proxy's own failure: answered 500 and reported as
+// request.handler.failed, never silently dropped as a client cancel that
+// would leave the terminal record reporting a 200.
+func TestUpstreamCancelWithClientAttachedIsInternal(t *testing.T) {
+	p := newTestProxy(t)
+
+	rw := httptest.NewRecorder()
+	p.handleUpstreamError(rw, reservedIdentityRequest(t, nil), context.Canceled)
+
+	if rw.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", rw.Code)
+	}
+	if n := len(p.logs.ByEvent(logging.EventUpstreamRequestCanceled)); n != 0 {
+		t.Errorf("upstream.request.canceled records = %d, want 0: %s", n, p.logs.Raw())
+	}
+	rec := p.logs.Only(t, logging.EventRequestHandlerFailed)
+	if got := rec.String("reason"); got != string(metrics.ReasonInternalError) {
+		t.Errorf("reason = %q, want %q", got, metrics.ReasonInternalError)
 	}
 }
 
@@ -334,13 +344,10 @@ func TestClientCancelAfterAdmissionRecordsOneAccessDecision(t *testing.T) {
 	defer cancel()
 	p.clientTransport = &cancelingRT{cancel: cancel}
 
-	target, err := url.Parse("https://127.0.0.1:6443")
+	reverseProxy, err := p.reverseProxy()
 	if err != nil {
 		t.Fatal(err)
 	}
-	reverseProxy := httputil.NewSingleHostReverseProxy(target)
-	reverseProxy.Transport = roundTripperFunc(p.roundTrip)
-	reverseProxy.ErrorHandler = p.handleUpstreamError
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/default/pods", nil).WithContext(ctx)
 	req.RemoteAddr = "1.2.3.4:5555"

@@ -112,7 +112,7 @@ func TestCacheAllowHitAndExpiry(t *testing.T) {
 	sar := newCachedSAR(reviewer, 10*time.Second, 30*time.Second, clk)
 
 	for i := 0; i < 3; i++ {
-		target, err := sar.ResolveImpersonation(impersonateUserRequest("bob"), cacheTestRequester())
+		_, target, err := sar.ConsumeImpersonation(impersonateUserRequest("bob"), cacheTestRequester())
 		if err != nil {
 			t.Fatalf("check %d: unexpected error: %v", i, err)
 		}
@@ -126,7 +126,7 @@ func TestCacheAllowHitAndExpiry(t *testing.T) {
 
 	clk.Advance(11 * time.Second)
 
-	if _, err := sar.ResolveImpersonation(impersonateUserRequest("bob"), cacheTestRequester()); err != nil {
+	if _, _, err := sar.ConsumeImpersonation(impersonateUserRequest("bob"), cacheTestRequester()); err != nil {
 		t.Fatalf("post-expiry check: unexpected error: %v", err)
 	}
 	if got := reviewer.calls.Load(); got != 2 {
@@ -146,7 +146,7 @@ func TestCacheDenyThenAllowAfterRBACChange(t *testing.T) {
 
 	wantDenial := ImpersonationAuthError{Requester: "mmosley", Kind: TargetUser, Target: "bob"}
 
-	target, err := sar.ResolveImpersonation(impersonateUserRequest("bob"), cacheTestRequester())
+	_, target, err := sar.ConsumeImpersonation(impersonateUserRequest("bob"), cacheTestRequester())
 	if target != nil {
 		t.Fatalf("live deny: target = %+v, want nil", target)
 	}
@@ -161,7 +161,7 @@ func TestCacheDenyThenAllowAfterRBACChange(t *testing.T) {
 	// RBAC changes: the reviewer would now allow, but the cached denial holds.
 	reviewer.set(allowAll)
 
-	target, err = sar.ResolveImpersonation(impersonateUserRequest("bob"), cacheTestRequester())
+	_, target, err = sar.ConsumeImpersonation(impersonateUserRequest("bob"), cacheTestRequester())
 	if target != nil {
 		t.Fatalf("cached deny: target = %+v, want nil", target)
 	}
@@ -178,7 +178,7 @@ func TestCacheDenyThenAllowAfterRBACChange(t *testing.T) {
 
 	clk.Advance(31 * time.Second)
 
-	target, err = sar.ResolveImpersonation(impersonateUserRequest("bob"), cacheTestRequester())
+	_, target, err = sar.ConsumeImpersonation(impersonateUserRequest("bob"), cacheTestRequester())
 	if err != nil {
 		t.Fatalf("post-expiry check: unexpected error: %v", err)
 	}
@@ -199,13 +199,13 @@ func TestCacheDenyTTLZeroRechecksImmediately(t *testing.T) {
 	reviewer.set(denyAll)
 	sar := newCachedSAR(reviewer, 10*time.Second, 0, clk)
 
-	if _, err := sar.ResolveImpersonation(impersonateUserRequest("bob"), cacheTestRequester()); !errors.Is(err, ErrImpersonationNotAllowed) {
+	if _, _, err := sar.ConsumeImpersonation(impersonateUserRequest("bob"), cacheTestRequester()); !errors.Is(err, ErrImpersonationNotAllowed) {
 		t.Fatalf("first check: error = %v, want denial", err)
 	}
 
 	reviewer.set(allowAll)
 
-	target, err := sar.ResolveImpersonation(impersonateUserRequest("bob"), cacheTestRequester())
+	_, target, err := sar.ConsumeImpersonation(impersonateUserRequest("bob"), cacheTestRequester())
 	if err != nil || target == nil || target.GetName() != "bob" {
 		t.Fatalf("second check: target = %+v, err = %v, want immediate allow (denials must not be cached with TTL 0)", target, err)
 	}
@@ -224,7 +224,7 @@ func TestErrorsNeverCached(t *testing.T) {
 	sar := newCachedSAR(reviewer, 10*time.Second, 30*time.Second, clk)
 
 	for i := 0; i < 2; i++ {
-		_, err := sar.ResolveImpersonation(impersonateUserRequest("bob"), cacheTestRequester())
+		_, _, err := sar.ConsumeImpersonation(impersonateUserRequest("bob"), cacheTestRequester())
 		if !errors.Is(err, ErrCreateSubjectAccessReview) || !errors.Is(err, transient) {
 			t.Fatalf("check %d: error = %v, want the wrapped transient error", i, err)
 		}
@@ -239,7 +239,7 @@ func TestErrorsNeverCached(t *testing.T) {
 	// The API server recovers; the very next check must go live and succeed.
 	reviewer.set(allowAll)
 
-	target, err := sar.ResolveImpersonation(impersonateUserRequest("bob"), cacheTestRequester())
+	_, target, err := sar.ConsumeImpersonation(impersonateUserRequest("bob"), cacheTestRequester())
 	if err != nil || target == nil || target.GetName() != "bob" {
 		t.Fatalf("post-recovery check: target = %+v, err = %v, want allow", target, err)
 	}
@@ -259,7 +259,7 @@ func TestCacheDisabled(t *testing.T) {
 	}
 
 	for i := 0; i < 2; i++ {
-		if _, err := sar.ResolveImpersonation(impersonateUserRequest("bob"), cacheTestRequester()); err != nil {
+		if _, _, err := sar.ConsumeImpersonation(impersonateUserRequest("bob"), cacheTestRequester()); err != nil {
 			t.Fatalf("check %d: unexpected error: %v", i, err)
 		}
 	}
@@ -314,7 +314,7 @@ func TestOversizedSpecNotCached(t *testing.T) {
 	}
 
 	for i := 0; i < 2; i++ {
-		target, err := sar.ResolveImpersonation(impersonateUserRequest(huge), cacheTestRequester())
+		_, target, err := sar.ConsumeImpersonation(impersonateUserRequest(huge), cacheTestRequester())
 		if err != nil || target == nil || target.GetName() != huge {
 			t.Fatalf("check %d: target name mismatch or err = %v, want live allow", i, err)
 		}

@@ -28,9 +28,9 @@ const (
 // chain the call site sits.
 func (p *Proxy) withRequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		inbound := validRequestID(r.Header.Get(headerAuditID))
+		inbound := acceptedRequestID(r.Header.Get(headerAuditID))
 		if inbound == "" {
-			inbound = validRequestID(r.Header.Get(headerRequestID))
+			inbound = acceptedRequestID(r.Header.Get(headerRequestID))
 		}
 
 		id := string(uuid.NewUUID())
@@ -44,17 +44,23 @@ func (p *Proxy) withRequestID(next http.Handler) http.Handler {
 			}
 		}
 
-		r.Header.Set(headerAuditID, id)
-		r.Header.Del(headerRequestID)
+		// The rewrite goes on a copy of the header map, so the request the
+		// filter received is left exactly as it arrived.
+		h := r.Header.Clone()
+		h.Set(headerAuditID, id)
+		h.Del(headerRequestID)
+		r = reqctx.WithRequestID(r, id)
+		r.Header = h
 		w.Header().Set(headerAuditID, id)
 
-		next.ServeHTTP(w, reqctx.WithRequestID(r, id))
+		next.ServeHTTP(w, r)
 	})
 }
 
-// validRequestID accepts printable ASCII without spaces, at most
-// maxRequestIDLen bytes; anything else is treated as absent.
-func validRequestID(v string) string {
+// acceptedRequestID returns v when it is printable ASCII without spaces, at
+// most maxRequestIDLen bytes, and "" otherwise, so a rejected id is treated as
+// absent.
+func acceptedRequestID(v string) string {
 	if v == "" || len(v) > maxRequestIDLen {
 		return ""
 	}
