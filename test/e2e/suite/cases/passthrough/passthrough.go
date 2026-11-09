@@ -2,6 +2,7 @@
 package passthrough
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -90,19 +91,22 @@ var _ = framework.CasesDescribe("Passthrough", Ordered, ContinueOnFailure, Label
 		Expect(err).NotTo(HaveOccurred())
 
 		_, err = client.CoreV1().Pods(f.Namespace.Name).List(ctx, metav1.ListOptions{})
-		kErr, ok := err.(*k8sErrors.StatusError)
-		if !ok {
-			Expect(err).NotTo(HaveOccurred())
+		var statusErr *k8sErrors.StatusError
+		if !errors.As(err, &statusErr) {
+			Expect(fmt.Errorf("expected a status error from the proxy, got=%v", err)).NotTo(HaveOccurred())
 		}
 
 		expRespBody := "Unauthorized"
-		resp := kErr.Status().Details.Causes[0].Message
+		resp := statusErr.Error()
+		if details := statusErr.Status().Details; details != nil && len(details.Causes) > 0 {
+			resp = details.Causes[0].Message
+		}
 
 		// Check body and status code the token was rejected
-		if int(kErr.Status().Code) != http.StatusUnauthorized ||
+		if int(statusErr.Status().Code) != http.StatusUnauthorized ||
 			resp != expRespBody {
 			Expect(fmt.Errorf("expected status code %d with body %q, got= %d %q",
-				http.StatusUnauthorized, expRespBody, int(kErr.Status().Code), resp)).NotTo(HaveOccurred())
+				http.StatusUnauthorized, expRespBody, int(statusErr.Status().Code), resp)).NotTo(HaveOccurred())
 		}
 	})
 

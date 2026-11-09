@@ -171,8 +171,8 @@ func TestValidate_TokenPassthroughCacheTTLs(t *testing.T) {
 			o.AddFlags(cmd)
 
 			o.App.TokenPassthrough.Enabled = tc.passthroughEnabled
-			o.App.TokenPassthrough.CacheSuccessTTL = tc.successTTL
-			o.App.TokenPassthrough.CacheFailureTTL = tc.failureTTL
+			o.App.TokenPassthrough.SuccessCacheTTL = tc.successTTL
+			o.App.TokenPassthrough.FailureCacheTTL = tc.failureTTL
 
 			err := o.Validate(cmd)
 			if tc.wantErrSubstr == "" {
@@ -208,7 +208,7 @@ func TestValidate_TokenPassthroughRequestTimeout(t *testing.T) {
 			o.AddFlags(cmd)
 
 			o.App.TokenPassthrough.Enabled = tc.passthroughEnabled
-			o.App.TokenPassthrough.RequestTimeout = tc.timeout
+			o.App.TokenPassthrough.Timeout = tc.timeout
 
 			err := o.Validate(cmd)
 			if got := err != nil && strings.Contains(err.Error(), wantErrSubstr); got != tc.wantErr {
@@ -237,7 +237,7 @@ func TestValidate_SubjectAccessReviewTimeout(t *testing.T) {
 			cmd := &cobra.Command{}
 			o.AddFlags(cmd)
 
-			o.App.SubjectAccessReviewTimeout = tc.timeout
+			o.App.SubjectAccessReview.Timeout = tc.timeout
 
 			err := o.Validate(cmd)
 			gotErr := err != nil && strings.Contains(err.Error(), wantErrSubstr)
@@ -255,11 +255,11 @@ func TestValidate_SubjectAccessReviewCacheTTLs(t *testing.T) {
 	}{
 		"subject-access-review-cache-allow-ttl": {
 			wantErrSubstr: "--subject-access-review-cache-allow-ttl must not be negative",
-			set:           func(o *Options, ttl time.Duration) { o.App.SubjectAccessReviewAllowCacheTTL = ttl },
+			set:           func(o *Options, ttl time.Duration) { o.App.SubjectAccessReview.AllowCacheTTL = ttl },
 		},
 		"subject-access-review-cache-deny-ttl": {
 			wantErrSubstr: "--subject-access-review-cache-deny-ttl must not be negative",
-			set:           func(o *Options, ttl time.Duration) { o.App.SubjectAccessReviewDenyCacheTTL = ttl },
+			set:           func(o *Options, ttl time.Duration) { o.App.SubjectAccessReview.DenyCacheTTL = ttl },
 		},
 	}
 

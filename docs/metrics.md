@@ -155,7 +155,7 @@ and a PromQL query select the same thing.
 | `reason` | Empty on allow; on deny one of `unauthorized`, `reserved_identity`, `no_username_claim`, `impersonation_denied`, `too_many_impersonation_values`, `malformed_impersonation`, `client_canceled`, `internal_error`, `upstream_error`, `authentication_dependency_error`, `authorization_dependency_error`. |
 | `review` | `tokenreview`, `sar`. |
 | `outcome` (review) | `allow`, `deny`, `timeout`, `canceled`, `error`, classified from the API call itself. For a TokenReview, `allow` means authenticated. |
-| `cache` / `result` | `tokenreview` or `sar`; `hit`, `miss`, `bypass`. For `sar`, `bypass` is a review spec too large to cache or a cache disabled by a zero TTL. For `tokenreview` only `hit` and `miss` occur: with both TTLs at zero the cache layer is not constructed and no lookup is counted. |
+| `cache` / `result` | `tokenreview` or `sar`; `hit`, `miss`, `bypass`. For `sar`, `bypass` is a review spec too large to cache. For `tokenreview` only `hit` and `miss` occur. With both TTLs at zero neither cache is constructed and no lookup is counted. |
 | `issuer_name` | The configured issuer's host, as in the log records. Never the URL. Two issuers sharing a host are refused at startup. |
 | `operation` | `run`: the backend failed to start. |
 

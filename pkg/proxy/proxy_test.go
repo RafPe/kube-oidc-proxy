@@ -180,12 +180,9 @@ func newTestProxy(t *testing.T, opts ...func(*Dependencies)) *fakeProxy {
 	root, logs := logtest.New(t, 2)
 	trackCapture(logs)
 
-	sar, err := subjectaccessreview.New(fakesubjectaccessreview.New(nil),
+	sar := subjectaccessreview.New(fakesubjectaccessreview.New(nil),
 		subjectaccessreview.Config{MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues},
 		logging.ForComponent(root, logging.ComponentSAR))
-	if err != nil {
-		t.Fatalf("building SubjectAccessReview: %v", err)
-	}
 
 	// A real recorder, not a fake: the tests assert on the exposition the
 	// binary would serve, including help strings and label names.
@@ -253,15 +250,15 @@ func withLogger(root *slog.Logger) func(*Dependencies) {
 
 // withSubjectAccessReviewer has newTestProxy wire sar in place of its default
 // reviewer.
-func withSubjectAccessReviewer(sar *subjectaccessreview.SubjectAccessReview) func(*Dependencies) {
+func withSubjectAccessReviewer(sar *subjectaccessreview.Authorizer) func(*Dependencies) {
 	return func(d *Dependencies) {
 		d.SubjectAccessReviewer = sar
 	}
 }
 
 // TestRoundTripLogsTokenReviewPassthrough pins the access record on the
-// TokenReview passthrough path: the request never reaches impersonation, and
-// before this change it produced no record at all.
+// TokenReview passthrough path: the request never reaches impersonation, so
+// roundTrip is the only place its admission is recorded.
 func TestRoundTripLogsTokenReviewPassthrough(t *testing.T) {
 	p := newTestProxy(t, withConfig(Config{TokenPassthrough: true}))
 
@@ -269,8 +266,8 @@ func TestRoundTripLogsTokenReviewPassthrough(t *testing.T) {
 	p.fakeReviewer.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(
 		&authenticator.Response{User: &user.DefaultInfo{Name: "system:serviceaccount:default:sa"}}, true, nil)
 
-	handler := p.withHandlers(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-		if _, err := p.RoundTrip(req); err != nil {
+	handler := p.withFilterChain(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		if _, err := p.roundTrip(req); err != nil {
 			t.Errorf("unexpected error: %s", err)
 		}
 	}))
@@ -366,10 +363,7 @@ func validDeps(t *testing.T) Dependencies {
 	ctrl := gomock.NewController(t)
 	root, _ := logtest.New(t, 0)
 
-	sar, err := subjectaccessreview.New(fakesubjectaccessreview.New(nil), subjectaccessreview.Config{MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, logging.ForComponent(root, logging.ComponentSAR))
-	if err != nil {
-		t.Fatalf("building SubjectAccessReview: %v", err)
-	}
+	sar := subjectaccessreview.New(fakesubjectaccessreview.New(nil), subjectaccessreview.Config{MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, logging.ForComponent(root, logging.ComponentSAR))
 
 	return Dependencies{
 		Logger:                 root,
@@ -382,15 +376,19 @@ func validDeps(t *testing.T) Dependencies {
 	}
 }
 
-// TestNewRequiresLogger pins that the root logger is a required dependency:
-// there is no package-level logger to fall back on, so a caller that forgets to
-// inject one must fail at construction rather than emit nothing at runtime.
-func TestNewRequiresLogger(t *testing.T) {
+// TestNewPanicsOnNilLogger pins that the root logger is a required dependency:
+// there is no package-level logger to fall back on, and a caller that forgets
+// to inject one has a wiring bug, so New panics naming the package rather than
+// emitting nothing at runtime.
+func TestNewPanicsOnNilLogger(t *testing.T) {
 	deps := validDeps(t)
 	deps.Logger = nil
-	if _, err := New(deps); err == nil || !strings.Contains(err.Error(), "Logger is required") {
-		t.Fatalf("err = %v", err)
-	}
+	defer func() {
+		if r := recover(); r == nil || !strings.Contains(fmt.Sprint(r), "proxy:") {
+			t.Fatalf("New(nil Logger) recovered %v, want a panic naming the proxy package", r)
+		}
+	}()
+	_, _ = New(deps)
 }
 
 func TestNewValidatesDependencies(t *testing.T) {

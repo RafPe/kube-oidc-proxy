@@ -106,14 +106,17 @@ const (
 	callTimeout = 30 * time.Second
 )
 
+// options are the command-line flags.
+type options struct {
+	state     string
+	namespace string
+	duration  time.Duration
+	interval  time.Duration
+	once      bool
+}
+
 func main() {
-	opts := struct {
-		state     string
-		namespace string
-		duration  time.Duration
-		interval  time.Duration
-		once      bool
-	}{}
+	var opts options
 	flag.StringVar(&opts.state, "state", "hack/metrics-demo/.state", "directory up.sh wrote the demo's kubeconfig and key material to")
 	flag.StringVar(&opts.namespace, "namespace", "proxy", "namespace the proxy and the demo workload run in")
 	flag.DurationVar(&opts.duration, "duration", 10*time.Minute, "how long to keep generating traffic")
@@ -123,13 +126,13 @@ func main() {
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
-	if err := run(logger, opts.state, opts.namespace, opts.duration, opts.interval, opts.once); err != nil {
+	if err := run(logger, opts); err != nil {
 		logger.Error("load generator failed", slog.String("error_message", err.Error()))
 		os.Exit(1)
 	}
 }
 
-func run(logger *slog.Logger, statePath, namespace string, duration, interval time.Duration, once bool) error {
+func run(logger *slog.Logger, opts options) error {
 	// Ctrl-C on a foreground run, or a SIGTERM, cancels this context instead
 	// of killing the process where it stands. Everything below hangs off it -
 	// the calls in flight, the timed loop, and the port-forwards, which close
@@ -138,18 +141,18 @@ func run(logger *slog.Logger, statePath, namespace string, duration, interval ti
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	st, err := loadState(statePath)
+	st, err := loadState(opts.state)
 	if err != nil {
 		return err
 	}
 
-	tun, err := newTunnel(ctx, st.kubeconfig, namespace, proxyService, proxyServicePort, "https", logger)
+	tun, err := newTunnel(ctx, st.kubeconfig, opts.namespace, proxyService, proxyServicePort, "https", logger)
 	if err != nil {
 		return err
 	}
 	defer tun.Close()
 
-	g, err := newGenerator(logger, st, namespace, tun)
+	g, err := newGenerator(logger, st, opts.namespace, tun)
 	if err != nil {
 		return err
 	}
@@ -165,11 +168,11 @@ func run(logger *slog.Logger, statePath, namespace string, duration, interval ti
 
 	scenarios := g.scenarios()
 
-	if once {
+	if opts.once {
 		return g.runOnce(ctx, logger, scenarios)
 	}
 
-	return g.runFor(ctx, logger, scenarios, duration, interval)
+	return g.runFor(ctx, logger, scenarios, opts.duration, opts.interval)
 }
 
 // runOnce runs every scenario once and fails if any of its calls produced an

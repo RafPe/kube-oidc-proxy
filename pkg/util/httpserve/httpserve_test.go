@@ -2,10 +2,15 @@
 package httpserve
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -100,9 +105,29 @@ func TestShutdownTimeoutIsReported(t *testing.T) {
 // zero here would be an unbounded read, write or idle period on a port
 // anything in the cluster can dial.
 func TestNewHTTPServerIsHardened(t *testing.T) {
-	srv := NewHTTPServer("127.0.0.1:0", http.NotFoundHandler())
+	srv := NewHTTPServer("127.0.0.1:0", http.NotFoundHandler(), slog.New(slog.DiscardHandler))
 	if srv.ReadHeaderTimeout <= 0 || srv.ReadTimeout <= 0 || srv.WriteTimeout != WriteTimeout ||
 		srv.IdleTimeout <= 0 || srv.MaxHeaderBytes <= 0 {
 		t.Fatalf("server limits not all set: %+v", srv)
+	}
+}
+
+// TestNewHTTPServerReportsThroughTheLogger pins where net/http's own reports
+// about the listener go: to the owner's logger at ERROR, never to the standard
+// log package, which would put an unstructured line beside the log stream.
+func TestNewHTTPServerReportsThroughTheLogger(t *testing.T) {
+	var out bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&out, nil)).With(slog.String("component", "metrics"))
+	srv := NewHTTPServer("127.0.0.1:0", http.NotFoundHandler(), logger)
+
+	srv.ErrorLog.Print("http: panic serving 10.0.0.1:1234: boom")
+
+	var rec map[string]any
+	if err := json.Unmarshal(out.Bytes(), &rec); err != nil {
+		t.Fatalf("ErrorLog output is not one JSON record: %q", out.String())
+	}
+	if rec["level"] != "ERROR" || rec["component"] != "metrics" ||
+		!strings.Contains(fmt.Sprint(rec["msg"]), "panic serving") {
+		t.Fatalf("ErrorLog record = %v, want an ERROR record under the owner's component", rec)
 	}
 }

@@ -125,7 +125,7 @@ func (r *Recorder) Gatherer() prometheus.Gatherer {
 // handler serves the exposition on GET (and HEAD) /metrics. Everything else
 // is 404 or 405 with an Allow header: no pprof, no reset, no index page.
 // logger receives the gathering errors promhttp would otherwise print to
-// stderr. It is unexported so NewServer, which refuses a nil logger, is the
+// stderr. It is unexported so NewServer, which panics on a nil logger, is the
 // one way to build it. A nil recorder serves 404 for everything.
 func (r *Recorder) handler(logger *slog.Logger) http.Handler {
 	if r == nil {

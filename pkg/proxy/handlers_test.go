@@ -24,6 +24,7 @@ import (
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	authuser "k8s.io/apiserver/pkg/authentication/user"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/authn/tokenreview"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
@@ -89,12 +90,12 @@ func TestOIDCSuccessEmitsAuthnOIDCSucceeded(t *testing.T) {
 func TestTokenReviewDependencyFailureIsError(t *testing.T) {
 	p := newTestProxy(t)
 	p.fakeReviewer.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(
-		nil, false, errors.New("apiserver unreachable"))
+		nil, false, errReviewUnavailable)
 
 	req := reservedIdentityRequest(t, nil)
 
-	if err := p.reviewToken(req); !errors.Is(err, errTokenReviewUnavailable) {
-		t.Fatalf("reviewToken = %v, want errTokenReviewUnavailable: the path must fail closed", err)
+	if err := p.reviewToken(req); !errors.Is(err, tokenreview.ErrCreateTokenReview) {
+		t.Fatalf("reviewToken = %v, want tokenreview.ErrCreateTokenReview: the path must fail closed", err)
 	}
 
 	rec := p.logs.Only(t, logging.EventAuthnTokenReviewFailed)
@@ -105,8 +106,8 @@ func TestTokenReviewDependencyFailureIsError(t *testing.T) {
 	if got := rec.String("reason"); got != string(metrics.ReasonAuthenticationDependencyError) {
 		t.Errorf("reason = %q, want %q", got, metrics.ReasonAuthenticationDependencyError)
 	}
-	if got := rec.String("error_message"); got != "apiserver unreachable" {
-		t.Errorf("error_message = %q, want %q", got, "apiserver unreachable")
+	if got := rec.String("error_message"); got != errReviewUnavailable.Error() {
+		t.Errorf("error_message = %q, want %q", got, errReviewUnavailable.Error())
 	}
 	if got := p.logs.ByEvent(logging.EventAuthnTokenReviewCompleted); len(got) != 0 {
 		t.Errorf("an unanswerable TokenReview was recorded as completed: %s", p.logs.Raw())
@@ -132,7 +133,7 @@ func TestTokenReviewClientDisconnectIsNotAnError(t *testing.T) {
 	p.fakeReviewer.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(
 		func(context.Context, string) (*authenticator.Response, bool, error) {
 			cancel()
-			return nil, false, fmt.Errorf("review: %w", context.Canceled)
+			return nil, false, fmt.Errorf("%w: %w", tokenreview.ErrCreateTokenReview, context.Canceled)
 		})
 
 	rw := httptest.NewRecorder()
@@ -163,7 +164,7 @@ func TestTokenReviewClientDisconnectIsNotAnError(t *testing.T) {
 // TestClientCancellationEmitsUpstreamRequestCanceled pins the upstream cancel:
 // the client went away while the API server was answering, so nothing is
 // written back. It is routine, so the record is DEBUG. The access decision is
-// RoundTrip's, written before the upstream call; the error handler writes
+// roundTrip's, written before the upstream call; the error handler writes
 // none of its own.
 func TestClientCancellationEmitsUpstreamRequestCanceled(t *testing.T) {
 	p := newTestProxy(t)
@@ -188,8 +189,8 @@ func TestClientCancellationEmitsUpstreamRequestCanceled(t *testing.T) {
 // TestOIDCFailureEmitsAuthnOIDCFailed asserts that a token that was present
 // and failed OIDC validation produces the structured failure event, carrying
 // the request id from the context and the resolved client IP -- never the raw
-// peer address with its port. Routing is unchanged: the request still falls
-// through to the token-review path.
+// peer address with its port. The request then falls through to the
+// token-review path.
 func TestOIDCFailureEmitsAuthnOIDCFailed(t *testing.T) {
 	p := newTestProxy(t)
 	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(nil, false, errors.New("oidc: token is expired"))
@@ -265,7 +266,7 @@ func (c *countingReviewer) Create(ctx context.Context, req *azv1.SubjectAccessRe
 // TestUpstreamErrorHandlerClassifiesTransportErrors pins the upstream handler:
 // a transport failure on the hop to the API server is answered 502, carries a
 // classified termination on its own upstream record, and never writes a second
-// access decision -- RoundTrip already recorded the admission.
+// access decision -- roundTrip already recorded the admission.
 func TestUpstreamErrorHandlerClassifiesTransportErrors(t *testing.T) {
 	cases := map[string]struct {
 		err  error
@@ -320,7 +321,7 @@ func (c *cancelingRT) RoundTrip(req *http.Request) (*http.Response, error) {
 
 // TestClientCancelAfterAdmissionRecordsOneAccessDecision drives an authorized
 // request through the whole chain into the reverse proxy and takes the client
-// away before the upstream answers. RoundTrip has already written the AuSuccess
+// away before the upstream answers. roundTrip has already written the AuSuccess
 // access record, so the cancel that follows must not write a second, AuFail
 // one: a kubectl call abandoned during a slow apiserver patch would otherwise
 // manufacture an authorization failure for a user who was allowed through.
@@ -338,7 +339,7 @@ func TestClientCancelAfterAdmissionRecordsOneAccessDecision(t *testing.T) {
 		t.Fatal(err)
 	}
 	reverseProxy := httputil.NewSingleHostReverseProxy(target)
-	reverseProxy.Transport = p.Proxy
+	reverseProxy.Transport = roundTripperFunc(p.roundTrip)
 	reverseProxy.ErrorHandler = p.handleUpstreamError
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/default/pods", nil).WithContext(ctx)

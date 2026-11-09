@@ -3,6 +3,7 @@ package logging
 
 import (
 	"log/slog"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -42,7 +43,7 @@ func TestEventTypeGrammar(t *testing.T) {
 		}
 		seen[e] = true
 	}
-	if got, want := len(AllEventTypes()), 41; got != want {
+	if got, want := len(AllEventTypes()), 40; got != want {
 		t.Errorf("registry has %d events, want %d", got, want)
 	}
 }
@@ -90,5 +91,23 @@ func TestEventAttr(t *testing.T) {
 func TestAllComponentsClosedSet(t *testing.T) {
 	if got, want := len(AllComponents()), 12; got != want {
 		t.Fatalf("got %d components, want %d", got, want)
+	}
+}
+
+// TestRetiredEventTypesAreNeverReused pins the retirement rule in
+// docs/logging.md: a retired name is never registered again, and the Retired
+// table there lists every one of them.
+func TestRetiredEventTypesAreNeverReused(t *testing.T) {
+	doc, err := os.ReadFile("../../docs/logging.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range retired {
+		if _, ok := e.Spec(); ok {
+			t.Errorf("retired event type %q is registered again", e)
+		}
+		if !strings.Contains(string(doc), "| `"+string(e)+"` | `event_type` |") {
+			t.Errorf("retired event type %q is missing from docs/logging.md's Retired table", e)
+		}
 	}
 }

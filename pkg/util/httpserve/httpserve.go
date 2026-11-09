@@ -11,6 +11,7 @@ package httpserve
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"time"
@@ -36,11 +37,14 @@ const (
 
 // NewHTTPServer returns an http.Server for addr and h carrying the listener limits
 // the auxiliary listeners share, so the readiness and metrics ports cannot be
-// hardened differently.
-func NewHTTPServer(addr string, h http.Handler) *http.Server {
+// hardened differently. What net/http itself reports about the listener (a
+// recovered handler panic, an accept error) goes to logger at ERROR, so it
+// lands on the log stream under the owner's component.
+func NewHTTPServer(addr string, h http.Handler, logger *slog.Logger) *http.Server {
 	return &http.Server{
 		Addr:              addr,
 		Handler:           h,
+		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelError),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      WriteTimeout,

@@ -49,12 +49,6 @@ var (
 	errNoName                = errors.New("no name in OIDC info")
 	errNoImpersonationConfig = errors.New("no impersonation configuration in context")
 
-	// errTokenReviewUnavailable classifies a TokenReview the API server could
-	// not answer: a dependency failure, not a verdict on the token. The
-	// request is still refused as unauthenticated (fail closed), but the
-	// access record says why.
-	errTokenReviewUnavailable = errors.New("token review unavailable")
-
 	// errReservedIdentity classifies an authenticated identity whose username or
 	// groups carry the Kubernetes-reserved "system:" prefix. Such an identity may
 	// never originate from a token claim; see checkReservedIdentity.
@@ -64,7 +58,7 @@ var (
 type Proxy struct {
 	oidcRequestAuthenticator *bearertoken.Authenticator
 	tokenReviewer            authenticator.Token
-	subjectAccessReviewer    *subjectaccessreview.SubjectAccessReview
+	subjectAccessReviewer    *subjectaccessreview.Authorizer
 	secureServingInfo        *server.SecureServingInfo
 	auditor                  *audit.Audit
 
@@ -128,9 +122,9 @@ type Proxy struct {
 // starts the backend before Start and flushes it once the proxy has stopped
 // serving.
 type Dependencies struct {
-	// Logger is the process root logger. New derives one component logger per
-	// collaborator from it; there is no package-level fallback, so it is
-	// required.
+	// Logger is the process root logger. New derives the request, oidc,
+	// tokenreview and upstream component loggers from it, so it takes the root
+	// rather than any one of them. Required: New panics on nil.
 	Logger *slog.Logger
 
 	RestConfig *rest.Config
@@ -140,15 +134,21 @@ type Dependencies struct {
 	OIDCTokenAuthenticator authenticator.Token
 
 	// Auditor records the audit events of every request the proxy handles,
-	// refused ones included. Required; an auditor built from nil options
-	// configures no backend but keeps every audit filter in the chain.
+	// refused ones included, and supplies the request resolution and
+	// long-running rule the whole chain shares (see package audit). Required;
+	// an auditor built from nil options configures no backend but keeps every
+	// audit filter in the chain.
 	Auditor *audit.Audit
 
 	// TokenReviewer authenticates passthrough bearer tokens, typically the
 	// authenticator tokenreview.New returns, which applies the result cache
-	// its Config asks for.
+	// its Config asks for. A review that could not be answered must return an
+	// error wrapping tokenreview.ErrCreateTokenReview: that is what refuses
+	// the request as a dependency failure (401, reason
+	// authentication_dependency_error). Any other error is the proxy's own
+	// failure and answers 500.
 	TokenReviewer         authenticator.Token
-	SubjectAccessReviewer *subjectaccessreview.SubjectAccessReview
+	SubjectAccessReviewer *subjectaccessreview.Authorizer
 	SecureServingInfo     *server.SecureServingInfo
 	Config                *Config
 
@@ -157,10 +157,11 @@ type Dependencies struct {
 }
 
 // New validates deps and constructs a Proxy. Invalid configurations fail here,
-// at construction, rather than on the first request.
+// at construction, rather than on the first request. A nil Logger is a wiring
+// bug rather than a configuration error, so it panics.
 func New(deps Dependencies) (*Proxy, error) {
 	if deps.Logger == nil {
-		return nil, errors.New("proxy: Logger is required")
+		panic("proxy: New called with a nil Logger")
 	}
 	if deps.RestConfig == nil {
 		return nil, errors.New("proxy: RestConfig is required")
@@ -188,11 +189,10 @@ func New(deps Dependencies) (*Proxy, error) {
 
 	// Copy the Config and its mutable map at the construction boundary so that
 	// mutating the caller's Config (or the map it shares) after New cannot alter
-	// proxy behavior.
+	// proxy behavior. The two slices need no copy: they are read only here, and
+	// parsed into values of the Proxy's own.
 	cfg := *deps.Config
 	cfg.ExtraUserHeaders = cloneExtra(deps.Config.ExtraUserHeaders)
-	cfg.TrustedProxies = append([]string(nil), deps.Config.TrustedProxies...)
-	cfg.AllowedReservedGroups = append([]string(nil), deps.Config.AllowedReservedGroups...)
 
 	// Validate trusted-proxy CIDRs up front so a bad configuration fails at
 	// construction rather than silently trusting nothing at request time.
@@ -257,21 +257,26 @@ func New(deps Dependencies) (*Proxy, error) {
 func (p *Proxy) Start(ctx context.Context) error {
 	upstream, err := url.Parse(p.restConfig.Host)
 	if err != nil {
-		return fmt.Errorf("failed to parse url: %w", err)
+		return fmt.Errorf("proxy: parsing API server URL %q: %w", p.restConfig.Host, err)
 	}
 
 	proxyHandler := httputil.NewSingleHostReverseProxy(upstream)
-	proxyHandler.Transport = p
+	proxyHandler.Transport = roundTripperFunc(p.roundTrip)
 	proxyHandler.ErrorHandler = p.handleUpstreamError
 	proxyHandler.FlushInterval = p.config.FlushInterval
+	// Every failure the reverse proxy can hand to a handler goes to
+	// ErrorHandler. What it only logs -- an upstream body that broke mid-copy,
+	// which the terminal record already reports as a termination -- arrives
+	// as a WARN on the upstream component rather than as plain text on stderr.
+	proxyHandler.ErrorLog = slog.NewLogLogger(p.upstreamLogger.Handler(), slog.LevelWarn)
 
-	go p.flushWarnLimiter(ctx) //nolint:gosec // G118: the final flush runs after ctx is cancelled and must not be scoped to it.
+	go p.warnLimiter.Run(ctx, p.requestLogger)
 
 	// The apiserver's Serve stops on a closed channel, which is what the
 	// context's Done channel is.
-	stopped, listenerStopped, err := p.secureServingInfo.Serve(p.withHandlers(proxyHandler), time.Second*60, ctx.Done())
+	stopped, listenerStopped, err := p.secureServingInfo.Serve(p.withFilterChain(proxyHandler), time.Second*60, ctx.Done())
 	if err != nil {
-		return err
+		return fmt.Errorf("proxy: serving: %w", err)
 	}
 	p.stopped, p.listenerStopped = stopped, listenerStopped
 	return nil
@@ -287,27 +292,15 @@ func (p *Proxy) Wait() {
 	<-p.stopped
 }
 
-// flushWarnLimiter reports what the warning limiter dropped, once per interval
-// and once more as the proxy stops so a burst suppressed just before shutdown
-// is still accounted for.
-func (p *Proxy) flushWarnLimiter(ctx context.Context) {
-	ticker := time.NewTicker(warnLimiterInterval)
-	defer ticker.Stop()
+// roundTripperFunc adapts a function to http.RoundTripper, so the reverse
+// proxy's transport need not be an exported method of Proxy.
+type roundTripperFunc func(*http.Request) (*http.Response, error)
 
-	for {
-		select {
-		case <-ticker.C:
-			p.warnLimiter.Flush(context.Background(), p.requestLogger)
-		case <-ctx.Done():
-			p.warnLimiter.Flush(context.Background(), p.requestLogger)
-			return
-		}
-	}
-}
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
-// RoundTrip is the reverse proxy's transport: it forwards an admitted request
+// roundTrip is the reverse proxy's transport: it forwards an admitted request
 // to the API server the way the filter chain decided.
-func (p *Proxy) RoundTrip(req *http.Request) (*http.Response, error) {
+func (p *Proxy) roundTrip(req *http.Request) (*http.Response, error) {
 	imp := reqctx.Impersonation(req)
 	if imp == nil {
 		return nil, errNoImpersonationConfig
@@ -335,8 +328,9 @@ func (p *Proxy) RoundTrip(req *http.Request) (*http.Response, error) {
 
 // reviewToken asks the API server's TokenReview whether it accepts the
 // request's bearer token, recording the attempt. It returns nil when the token
-// is accepted, errUnauthorized when it is missing or rejected, and
-// errTokenReviewUnavailable when the reviewer could not answer.
+// is accepted, errUnauthorized when it is missing or rejected, and the
+// reviewer's own error, wrapping tokenreview.ErrCreateTokenReview, when the
+// reviewer could not answer.
 func (p *Proxy) reviewToken(req *http.Request) error {
 	ctx := req.Context()
 
@@ -353,13 +347,13 @@ func (p *Proxy) reviewToken(req *http.Request) error {
 		// itself went away is a per-request condition at DEBUG, so a client
 		// cannot drive the ERROR stream by hanging up mid-request.
 		reason, level := metrics.ReasonAuthenticationDependencyError, slog.LevelError
-		if clientGone(ctx, err) {
+		if reqctx.ClientGone(ctx, err) {
 			reason, level = metrics.ReasonClientCanceled, slog.LevelDebug
 		}
 		logging.EmitLevel(ctx, p.tokenReviewLogger, logging.EventAuthnTokenReviewFailed, level,
 			slog.String("reason", string(reason)), logging.ErrAttr(err))
 		p.metrics.AuthenticationAttempt(metrics.AuthMethodTokenReview, metrics.AuthError)
-		return fmt.Errorf("%w: %w", errTokenReviewUnavailable, err)
+		return err
 	}
 
 	// The reviewer answered, and it has already recorded the outcome: a live
@@ -374,17 +368,10 @@ func (p *Proxy) reviewToken(req *http.Request) error {
 	return nil
 }
 
-// clientGone reports whether err is a context error caused by the request's
-// own context ending -- the client hung up, or its deadline passed -- rather
-// than by a dependency running out of the proxy's budget.
-func clientGone(ctx context.Context, err error) bool {
-	return ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
-}
-
 // recordDecision writes the one access record a request produces and counts
 // it. Every decision goes through here, so the metric and the record can never
 // disagree about what was decided, and this is where the one-per-request rule
-// is kept: RoundTrip records an admitted request before the upstream call, so
+// is kept: roundTrip records an admitted request before the upstream call, so
 // a failure arriving after that -- a client that cancelled, an upstream that
 // broke -- has no decision left to make and is dropped here.
 func (p *Proxy) recordDecision(req *http.Request, d accesslog.Decision) {

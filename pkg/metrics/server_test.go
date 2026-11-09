@@ -4,6 +4,7 @@ package metrics
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -21,20 +22,19 @@ import (
 // newTestServer builds a Server on addr exposing a fresh recorder.
 func newTestServer(t *testing.T, addr string, logger *slog.Logger) *Server {
 	t.Helper()
-	s, err := NewServer(ServerConfig{Addr: addr, Recorder: newTestRecorder(t)}, logger)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return s
+	return NewServer(ServerConfig{Addr: addr, Recorder: newTestRecorder(t)}, logger)
 }
 
-// TestNewServerRequiresALogger pins the constructor contract the proxy's
-// other constructors share: a nil logger fails at construction, not as a
-// panic on the first failed scrape.
-func TestNewServerRequiresALogger(t *testing.T) {
-	if _, err := NewServer(ServerConfig{Addr: "127.0.0.1:0", Recorder: newTestRecorder(t)}, nil); err == nil {
-		t.Fatal("NewServer with a nil logger returned no error")
-	}
+// TestNewServerPanicsWithoutALogger pins the constructor contract the proxy's
+// other constructors share: a nil logger panics at construction, naming the
+// package, not on the first failed scrape.
+func TestNewServerPanicsWithoutALogger(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil || !strings.HasPrefix(fmt.Sprint(r), "metrics: ") {
+			t.Fatalf("NewServer with a nil logger: recovered %v, want a panic naming the package", r)
+		}
+	}()
+	NewServer(ServerConfig{Addr: "127.0.0.1:0", Recorder: newTestRecorder(t)}, nil)
 }
 
 // TestScrapeTimeoutFitsTheWriteTimeout pins the invariant the 503 on a slow

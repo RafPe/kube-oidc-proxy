@@ -95,14 +95,14 @@ func TestHeadersConfig(t *testing.T) {
 
 			var handler http.Handler
 			handler = http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-				_, err := p.RoundTrip(req)
+				_, err := p.roundTrip(req)
 				if err != nil {
 					t.Errorf("unexpected error: %s", err)
 					t.FailNow()
 				}
 			})
 
-			handler = p.withHandlers(handler)
+			handler = p.withFilterChain(handler)
 			handler.ServeHTTP(w, req)
 
 			w.Result()

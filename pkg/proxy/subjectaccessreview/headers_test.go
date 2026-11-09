@@ -85,10 +85,7 @@ func TestCheckAuthorizedForImpersonationHeaderValueCap(t *testing.T) {
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			reviewer := &countingFakeReviewer{FakeReviewer: fake.New(nil)}
-			sar, err := New(reviewer, Config{Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: tc.max}, slog.New(slog.DiscardHandler))
-			if err != nil {
-				t.Fatalf("New() error = %v", err)
-			}
+			sar := New(reviewer, Config{Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: tc.max}, slog.New(slog.DiscardHandler))
 
 			target, err := sar.ResolveImpersonation(
 				(&http.Request{Header: tc.headers}).WithContext(testRequestContext()), requester)
@@ -137,10 +134,7 @@ func TestNewSettlesTheMaxHeaderValues(t *testing.T) {
 		"a positive value is kept":   {3, 3},
 	} {
 		t.Run(name, func(t *testing.T) {
-			s, err := New(fake.New(nil), Config{MaxHeaderValues: test.max}, slog.New(slog.DiscardHandler))
-			if err != nil {
-				t.Fatalf("New() error = %v", err)
-			}
+			s := New(fake.New(nil), Config{MaxHeaderValues: test.max}, slog.New(slog.DiscardHandler))
 			if s.maxHeaderValues != test.exp {
 				t.Errorf("maxHeaderValues = %d, want %d", s.maxHeaderValues, test.exp)
 			}
@@ -237,17 +231,14 @@ func TestStripImpersonationHeaders(t *testing.T) {
 func TestUnknownImpersonationHeaderIsRefusedBeforeAnyReview(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		reviewer := &countingFakeReviewer{FakeReviewer: fake.New(nil)}
-		sar, err := New(reviewer, Config{Timeout: DefaultTimeout, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
-		if err != nil {
-			t.Fatal(err)
-		}
+		sar := New(reviewer, Config{Timeout: DefaultTimeout, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 		req := (&http.Request{Header: http.Header{
 			"Impersonate-User":  {"bob"},
 			"Impersonate-Group": {"a", "b"},
 			"Impersonate-Foo":   {"x"},
 		}}).WithContext(testRequestContext())
 
-		_, err = sar.ResolveImpersonation(req, &user.DefaultInfo{Name: "alice"})
+		_, err := sar.ResolveImpersonation(req, &user.DefaultInfo{Name: "alice"})
 		if !errors.Is(err, ErrUnknownImpersonationHeader) {
 			t.Fatalf("error = %v, want ErrUnknownImpersonationHeader", err)
 		}

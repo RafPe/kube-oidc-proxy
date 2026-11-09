@@ -169,8 +169,11 @@ than infer. All three carry `request_id`, so they join the request's
 
 - `hit` — answered from memory, no API-server round trip.
 - `miss` — nothing cached, or the entry had expired; a live review follows.
-- `bypass` — the cache was not consulted at all: the TTL is `0`, or the SAR
-  spec was too large to key. A live review follows.
+- `bypass` — the SAR spec was too large to cache, so the cache was not
+  consulted. A live review follows.
+
+A disabled cache (both TTLs `0`) records no lookup at all: no
+`cache.*.lookup` record and no cache metric, only the live review.
 
 `request_coalesced=true` on `authz.sar.completed` means this request joined a
 review another request already had in flight, rather than issuing a second

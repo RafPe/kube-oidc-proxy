@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"syscall"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/authn/tokenreview"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/accesslog"
@@ -42,16 +43,6 @@ func (p *Proxy) refuse(rw http.ResponseWriter, r *http.Request, err error) {
 		})).ServeHTTP(rw, r)
 	}
 
-	if err == nil {
-		// Nothing was decided about a request, so nothing is recorded about
-		// one; the proxy bug is still reported.
-		logging.EmitLevel(r.Context(), p.requestLogger, logging.EventRequestHandlerFailed, slog.LevelError,
-			slog.String("reason", string(metrics.ReasonInternalError)),
-			slog.String("error_message", "error handler called with nil error"))
-		http.Error(rw, "", http.StatusInternalServerError)
-		return
-	}
-
 	// The access record carries the classified reason, so every branch below
 	// records why the request was refused before it writes the response.
 	switch {
@@ -60,49 +51,47 @@ func (p *Proxy) refuse(rw http.ResponseWriter, r *http.Request, err error) {
 	// written back; the connection is already going away. No upstream call
 	// was made, so there is no upstream record either: the review that saw it
 	// reported authn.tokenreview.failed or authz.sar.failed with
-	// reason=client_canceled, and the access record carries the same reason.
-	// Checked first, because the review failure wraps the cancellation.
-	case errors.Is(err, context.Canceled),
-		(errors.Is(err, errTokenReviewUnavailable) || errors.Is(err, subjectaccessreview.ErrCreateSubjectAccessReview)) &&
-			r.Context().Err() != nil:
-		p.logDenied(r, metrics.ReasonClientCanceled, err)
+	// reason=client_canceled by the same predicate, and the access record
+	// carries the same reason. Checked first, because the review failure
+	// wraps the cancellation.
+	case reqctx.ClientGone(r.Context(), err):
+		p.recordDenial(r, metrics.ReasonClientCanceled, err)
 
 	case errors.Is(err, errUnauthorized):
-		p.logDenied(r, metrics.ReasonUnauthorized, err)
+		p.recordDenial(r, metrics.ReasonUnauthorized, err)
 		unauthenticated()
 
 	// The TokenReview could not be answered. The proxy fails closed, so the
 	// client sees the same 401 as for a rejected token, but the access record
 	// carries the dependency failure authn.tokenreview.failed reported.
-	case errors.Is(err, errTokenReviewUnavailable):
-		p.logDenied(r, metrics.ReasonAuthenticationDependencyError, err)
+	case errors.Is(err, tokenreview.ErrCreateTokenReview):
+		p.recordDenial(r, metrics.ReasonAuthenticationDependencyError, err)
 		unauthenticated()
 
 	// Authenticated, but the identity is one a token must never mint: an
 	// exploit attempt or a badly broken claim mapping, not an ordinary denial.
 	case errors.Is(err, errReservedIdentity):
 		p.logAnomaly(r, metrics.ReasonReservedIdentity)
-		p.logDenied(r, metrics.ReasonReservedIdentity, err)
+		p.recordDenial(r, metrics.ReasonReservedIdentity, err)
 		// The client body carries no claim values; they are logged and
 		// audited instead.
 		deny(http.StatusForbidden, "identities with the reserved \"system:\" prefix are not accepted from an authentication token")
 
 	// The token carried no username claim.
 	case errors.Is(err, errNoName):
-		p.logDenied(r, metrics.ReasonNoUsernameClaim, err)
+		p.recordDenial(r, metrics.ReasonNoUsernameClaim, err)
 		deny(http.StatusForbidden, "Username claim not available in OIDC Issuer response")
 
-	// Groups, uid or extras with no user to refine. Like an unknown
-	// impersonation header below, it is refused by its shape before any
-	// SubjectAccessReview, so it answers with the same 400.
-	case errors.Is(err, subjectaccessreview.ErrNoImpersonationUser):
-		p.logDenied(r, metrics.ReasonMalformedImpersonation, err)
-		deny(http.StatusBadRequest, err.Error())
-
-	// An Impersonate- header of a kind the proxy does not know. Not logged as
-	// a failure of the proxy's own: a client can send it on every request.
-	case errors.Is(err, subjectaccessreview.ErrUnknownImpersonationHeader):
-		p.logDenied(r, metrics.ReasonMalformedImpersonation, err)
+	// Impersonation headers refused by their shape before any
+	// SubjectAccessReview: groups, uid or extras with no user to refine, an
+	// Impersonate- header of a kind the proxy does not know, or an extra key
+	// the API server would receive under a different name. Not logged as a
+	// failure of the proxy's own: a client can send any of them on every
+	// request.
+	case errors.Is(err, subjectaccessreview.ErrNoImpersonationUser),
+		errors.Is(err, subjectaccessreview.ErrUnknownImpersonationHeader),
+		errors.Is(err, subjectaccessreview.ErrUnforwardableExtraKey):
+		p.recordDenial(r, metrics.ReasonMalformedImpersonation, err)
 		deny(http.StatusBadRequest, err.Error())
 
 	// Far more impersonation header values than any client legitimately
@@ -111,13 +100,13 @@ func (p *Proxy) refuse(rw http.ResponseWriter, r *http.Request, err error) {
 	// not an authorization denial.
 	case errors.Is(err, subjectaccessreview.ErrTooManyImpersonationHeaderValues):
 		p.logAnomaly(r, metrics.ReasonTooManyImpersonationValues)
-		p.logDenied(r, metrics.ReasonTooManyImpersonationValues, err)
+		p.recordDenial(r, metrics.ReasonTooManyImpersonationValues, err)
 		deny(http.StatusRequestHeaderFieldsTooLarge, err.Error())
 
 	// The requester may not impersonate the requested identity. Classified by
 	// typed error (errors.Is), not by message text.
 	case errors.Is(err, subjectaccessreview.ErrImpersonationNotAllowed):
-		p.logDenied(r, metrics.ReasonImpersonationDenied, err)
+		p.recordDenial(r, metrics.ReasonImpersonationDenied, err)
 		deny(http.StatusForbidden, err.Error())
 
 	// The SubjectAccessReview could not be submitted, or the API server did
@@ -125,7 +114,7 @@ func (p *Proxy) refuse(rw http.ResponseWriter, r *http.Request, err error) {
 	// reported it at ERROR, so this is not a request.handler.failed of the
 	// proxy's own: the access record carries the dependency reason instead.
 	case errors.Is(err, subjectaccessreview.ErrCreateSubjectAccessReview):
-		p.logDenied(r, metrics.ReasonAuthorizationDependencyError, err)
+		p.recordDenial(r, metrics.ReasonAuthorizationDependencyError, err)
 		deny(http.StatusInternalServerError, "")
 
 	// Server or unknown error.
@@ -134,7 +123,7 @@ func (p *Proxy) refuse(rw http.ResponseWriter, r *http.Request, err error) {
 	}
 }
 
-// handleUpstreamError is the reverse proxy's ErrorHandler. RoundTrip wrote the
+// handleUpstreamError is the reverse proxy's ErrorHandler. roundTrip wrote the
 // request's access decision before it called the API server, so a failure
 // here is not a second decision: it is reported on the upstream component, and
 // the termination it classifies is handed to the lifecycle filter for the
@@ -156,7 +145,7 @@ func (p *Proxy) handleUpstreamError(rw http.ResponseWriter, r *http.Request, err
 			logging.ErrAttr(err))
 		http.Error(rw, "", http.StatusBadGateway)
 
-	// Not the transport: RoundTrip found no forwarding decision on the
+	// Not the transport: roundTrip found no forwarding decision on the
 	// request, or the reverse proxy could not complete a protocol upgrade.
 	// Both are the proxy's own failure.
 	default:
@@ -202,7 +191,7 @@ func upstreamTermination(err error) metrics.Termination {
 func (p *Proxy) failInternal(rw http.ResponseWriter, r *http.Request, err error) {
 	logging.EmitLevel(r.Context(), p.requestLogger, logging.EventRequestHandlerFailed, slog.LevelError,
 		slog.String("reason", string(metrics.ReasonInternalError)), logging.ErrAttr(err))
-	p.logDenied(r, metrics.ReasonInternalError, err)
+	p.recordDenial(r, metrics.ReasonInternalError, err)
 	http.Error(rw, "", http.StatusInternalServerError)
 }
 
@@ -219,10 +208,11 @@ func (p *Proxy) logAnomaly(r *http.Request, reason metrics.Reason) {
 		slog.String("src_ip", reqctx.ClientIP(r)), slog.String("reason", string(reason)))
 }
 
-// logDenied writes the access record for a refused request. The impersonation
+// recordDenial records the access decision for a refused request, through
+// recordDecision: the access record and the decision metric. The impersonation
 // target, when the error names one, is taken from the typed error rather than
 // parsed back out of the client-facing message.
-func (p *Proxy) logDenied(r *http.Request, reason metrics.Reason, err error) {
+func (p *Proxy) recordDenial(r *http.Request, reason metrics.Reason, err error) {
 	d := accesslog.Decision{
 		Allowed:    false,
 		Reason:     reason,

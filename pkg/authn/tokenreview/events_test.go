@@ -26,22 +26,22 @@ func authenticatedResponse(*authv1.TokenReview) (*authv1.TokenReview, error) {
 // newLoggingTokenReview builds a live reviewer that logs through root as the
 // tokenreview component, so the records a review emits are observable.
 func newLoggingTokenReview(root *slog.Logger, create func(*authv1.TokenReview) (*authv1.TokenReview, error)) *liveReviewer {
-	return newReviewer(&fake.FakeReviewer{CreateFn: create}, Config{}, logging.ForComponent(root, logging.ComponentTokenReview))
+	return newLiveReviewer(&fake.FakeReviewer{CreateFn: create}, Config{}, logging.ForComponent(root, logging.ComponentTokenReview))
 }
 
 // newCachedWithFake builds a cached reviewer that logs through root as the
 // tokenreview component and answers every review with create. Both TTLs are
 // non-zero so the cache is live and hit/miss lookups are observable.
-func newCachedWithFake(t *testing.T, root *slog.Logger, create func(*authv1.TokenReview) (*authv1.TokenReview, error)) *cachedTokenReview {
+func newCachedWithFake(t *testing.T, root *slog.Logger, create func(*authv1.TokenReview) (*authv1.TokenReview, error)) *cachedReviewer {
 	t.Helper()
 
-	return newCachedTokenReview(newLoggingTokenReview(root, create), 10*time.Second, 10*time.Second, tokenCacheSize, clock.RealClock{})
+	return newCachedReviewer(newLoggingTokenReview(root, create), 10*time.Second, 10*time.Second, tokenCacheSize, clock.RealClock{})
 }
 
-// TestCachedTokenReviewEvents pins the records the cache layer emits: one
+// TestCachedReviewerEvents pins the records the cache layer emits: one
 // lookup per call reporting miss then hit, the cached outcome on the hit, and
 // never the bearer token itself.
-func TestCachedTokenReviewEvents(t *testing.T) {
+func TestCachedReviewerEvents(t *testing.T) {
 	root, cap := logtest.New(t, 2)
 	defer logtest.AssertRegistered(t, cap)
 	tr := newCachedWithFake(t, root, authenticatedResponse)
@@ -145,10 +145,10 @@ func TestTokenReviewFailureEmitsNoCompletedEvent(t *testing.T) {
 	}
 }
 
-// TestCachedTokenReviewHitCarriesNoDuration pins the timing boundary: only a
+// TestCachedReviewerHitCarriesNoDuration pins the timing boundary: only a
 // live review reports duration_ms, so a cache hit can never be mistaken for a
 // very fast API server.
-func TestCachedTokenReviewHitCarriesNoDuration(t *testing.T) {
+func TestCachedReviewerHitCarriesNoDuration(t *testing.T) {
 	root, cap := logtest.New(t, 2)
 	defer logtest.AssertRegistered(t, cap)
 	tr := newCachedWithFake(t, root, authenticatedResponse)

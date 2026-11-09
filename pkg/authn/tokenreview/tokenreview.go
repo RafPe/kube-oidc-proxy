@@ -34,8 +34,8 @@ import (
 // because a zero TTL is how that class of caching is switched off.
 const (
 	DefaultTimeout         = 10 * time.Second
-	DefaultCacheSuccessTTL = 10 * time.Second
-	DefaultCacheFailureTTL = 10 * time.Second
+	DefaultSuccessCacheTTL = 10 * time.Second
+	DefaultFailureCacheTTL = 10 * time.Second
 )
 
 // tokenCacheSize bounds the number of cached review results. Cache keys are
@@ -47,16 +47,18 @@ const (
 // SubjectAccessReview decision cache.
 const tokenCacheSize = 8192
 
-// ErrCreateTokenReview is the sentinel wrapping every failed TokenReview: the
-// API server could not be reached, did not answer in time, or answered with a
-// status error. It marks a dependency failure, not a verdict on the token, so
-// callers can tell the two apart with errors.Is. The underlying error
-// (including context.Canceled/DeadlineExceeded) is wrapped alongside it so it
-// remains detectable too.
+// ErrCreateTokenReview is the one error class the authenticator New returns:
+// every error from AuthenticateToken wraps it, whether the API server could
+// not be reached, did not answer in time, or answered with a status error. It
+// marks a dependency failure, not a verdict on the token (a refused token is
+// ok=false with a nil error), and it is what callers match with errors.Is to
+// tell the two apart. The underlying error (including
+// context.Canceled/DeadlineExceeded) is wrapped alongside it so it remains
+// detectable too.
 var ErrCreateTokenReview = errors.New("create TokenReview")
 
 // liveReviewer submits a TokenReview to the API server for every call. New
-// fronts it with the result cache Config asks for; see withCache.
+// fronts it with a cachedReviewer unless Config switches the cache off.
 type liveReviewer struct {
 	// logger is the tokenreview-component logger every record this reviewer
 	// emits goes through, so each carries component=tokenreview. The
@@ -83,11 +85,11 @@ type Config struct {
 	// DefaultTimeout.
 	Timeout time.Duration
 
-	// CacheSuccessTTL and CacheFailureTTL bound how long an authenticated or
-	// unauthenticated answer is reused. Zero disables that class of caching;
-	// both zero disables the cache. See withCache for the trade-off.
-	CacheSuccessTTL time.Duration
-	CacheFailureTTL time.Duration
+	// SuccessCacheTTL and FailureCacheTTL bound how long an authenticated or
+	// unauthenticated answer is reused. Zero disables that class of caching,
+	// and both zero switch the cache off. See New for the trade-off.
+	SuccessCacheTTL time.Duration
+	FailureCacheTTL time.Duration
 
 	// Metrics receives the API-call and cache observations. Optional: nil
 	// records nothing.
@@ -97,77 +99,68 @@ type Config struct {
 // New returns the authenticator that passes a bearer token through to the API
 // server's TokenReview, with the result cache cfg asks for in front of it.
 //
-// logger is the tokenreview-component logger and is required: a nil logger is
-// a wiring mistake, refused here rather than panicking on the first request.
-func New(client clientauthv1.TokenReviewInterface, cfg Config, logger *slog.Logger) (authenticator.Token, error) {
+// Authenticated reviews are cached for cfg.SuccessCacheTTL and unauthenticated
+// ones for cfg.FailureCacheTTL. Errors (API server unreachable, timeout,
+// status error) are never cached, so a transient failure is retried on the
+// next request and the path stays fail-closed. With both TTLs zero or
+// negative the cache is switched off: the uncached reviewer is returned, every
+// request runs its own TokenReview, and no cache lookup is recorded.
+//
+// A cache miss runs the TokenReview on the caller's own context, so the
+// configured review timeout applies in full (including values above 30s) and
+// cancelling the inbound request cancels its in-flight review. The deliberate
+// trade-off is that concurrent misses for one token are not collapsed into a
+// single review: each runs its own, so the cache only ever subtracts load.
+// (The upstream kube-apiserver token cache deduplicates via singleflight
+// instead, but pays for it by running lookups on a detached context with a
+// hardcoded 30s cap, which would silently truncate longer configured timeouts
+// and detach client cancellation.)
+//
+// Security: a cached success outlives token revocation for up to
+// SuccessCacheTTL, so a token deleted or invalidated at the API server may
+// still pass through this proxy until its cache entry expires. Keep it small;
+// the kube-apiserver's own precedent is 10s.
+//
+// logger is the tokenreview-component logger; New panics when it is nil.
+func New(client clientauthv1.TokenReviewInterface, cfg Config, logger *slog.Logger) authenticator.Token {
 	if logger == nil {
-		return nil, errors.New("tokenreview: logger is required")
+		panic("tokenreview: nil logger")
 	}
-	return withCache(newReviewer(client, cfg, logger), cfg.CacheSuccessTTL, cfg.CacheFailureTTL), nil
-}
 
-// newReviewer builds the uncached reviewer, settling every default at
-// construction so the reviewer needs no zero-value accommodation.
-func newReviewer(client clientauthv1.TokenReviewInterface, cfg Config, logger *slog.Logger) *liveReviewer {
 	timeout := cfg.Timeout
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
-	return &liveReviewer{
+	reviewer := &liveReviewer{
 		logger:    logger,
 		client:    client,
 		audiences: cfg.Audiences,
 		timeout:   timeout,
 		metrics:   cfg.Metrics,
 	}
+
+	if cfg.SuccessCacheTTL <= 0 && cfg.FailureCacheTTL <= 0 {
+		return reviewer
+	}
+	return newCachedReviewer(reviewer, cfg.SuccessCacheTTL, cfg.FailureCacheTTL, tokenCacheSize, clock.RealClock{})
 }
 
-// withCache wraps reviewer in a TokenReview result cache. Successful reviews
-// are cached for successTTL and unauthenticated results for failureTTL.
-// Errors (API server unreachable, timeout, status.Error) are never cached, so
-// a transient failure is retried on the next request and the path stays
-// fail-closed. When both TTLs are zero (or negative) the reviewer is returned
-// unwrapped and behaves exactly as before caching existed.
-//
-// A cache miss runs the TokenReview on the caller's own context, so caching
-// preserves the uncached request contract exactly: the configured review
-// timeout applies in full (including values above 30s) and cancelling the
-// inbound request cancels its in-flight review. The deliberate trade-off is
-// that concurrent misses for one token are not collapsed into a single
-// review — each runs its own, exactly as every request did before caching
-// existed — so the cache only ever subtracts load. (The upstream
-// kube-apiserver token cache deduplicates via singleflight instead, but pays
-// for it by running lookups on a detached context with a hardcoded 30s cap,
-// which would silently truncate longer configured timeouts and detach client
-// cancellation.)
-//
-// Security: a cached success outlives token revocation for up to successTTL,
-// so a token deleted or invalidated at the API server may still pass through
-// this proxy until its cache entry expires. Keep successTTL small; the
-// kube-apiserver's own precedent is 10s.
+// newCachedReviewer builds the cache layer with an explicit entry cap and
+// clock; both are parameters only so tests can exercise eviction and expiry
+// cheaply and deterministically.
 //
 // Cache keys are an HMAC-SHA256, keyed with a per-instance random key, over
 // the length-prefixed token and configured audiences (mirroring the upstream
 // cache's keyFunc): tokens are never stored in memory as map keys, keys
 // cannot be precomputed or length-extended, and two audience sets can never
-// collide — each withCache call also owns a private cache.
-func withCache(reviewer *liveReviewer, successTTL, failureTTL time.Duration) authenticator.Token {
-	if successTTL <= 0 && failureTTL <= 0 {
-		return reviewer
-	}
-	return newCachedTokenReview(reviewer, successTTL, failureTTL, tokenCacheSize, clock.RealClock{})
-}
-
-// newCachedTokenReview builds the cache layer with an explicit entry cap and
-// clock; both are parameters only so tests can exercise eviction and expiry
-// cheaply and deterministically.
-func newCachedTokenReview(reviewer *liveReviewer, successTTL, failureTTL time.Duration, size int, clk utilcache.Clock) *cachedTokenReview {
+// collide; each cache is also private to its reviewer.
+func newCachedReviewer(reviewer *liveReviewer, successTTL, failureTTL time.Duration, size int, clk utilcache.Clock) *cachedReviewer {
 	randomKey := make([]byte, 32)
 	if _, err := rand.Read(randomKey); err != nil {
 		panic(err) // rand.Read never fails
 	}
 
-	return &cachedTokenReview{
+	return &cachedReviewer{
 		reviewer:   reviewer,
 		successTTL: successTTL,
 		failureTTL: failureTTL,
@@ -180,12 +173,12 @@ func newCachedTokenReview(reviewer *liveReviewer, successTTL, failureTTL time.Du
 	}
 }
 
-// cachedTokenReview caches the delegate reviewer's results in a
+// cachedReviewer caches the delegate reviewer's results in a
 // fixed-capacity LRU store. Entries past their TTL are dropped on lookup, and
 // once the store holds tokenCacheSize entries every insertion evicts the
 // least recently used one, so a flood of unique (attacker-controlled) tokens
 // recycles the same fixed slots instead of growing memory.
-type cachedTokenReview struct {
+type cachedReviewer struct {
 	reviewer   *liveReviewer
 	successTTL time.Duration
 	failureTTL time.Duration
@@ -194,22 +187,22 @@ type cachedTokenReview struct {
 	hashPool *sync.Pool
 }
 
-var _ authenticator.Token = (*cachedTokenReview)(nil)
+var _ authenticator.Token = (*cachedReviewer)(nil)
 
-// cachedReview is the cacheable subset of an AuthenticateToken result. Errors
+// cacheEntry is the cacheable subset of an AuthenticateToken result. Errors
 // are deliberately unrepresentable: only definitive answers are cached.
-type cachedReview struct {
+type cacheEntry struct {
 	resp *authenticator.Response
 	ok   bool
 }
 
-func (c *cachedTokenReview) AuthenticateToken(ctx context.Context, token string) (*authenticator.Response, bool, error) {
+func (c *cachedReviewer) AuthenticateToken(ctx context.Context, token string) (*authenticator.Response, bool, error) {
 	key := cacheKey(c.hashPool, token, c.reviewer.audiences)
 
 	if v, hit := c.cache.Get(key); hit {
-		record := v.(cachedReview)
-		c.recordCacheLookup(ctx, metrics.CacheHit, slog.Bool("authenticated", record.ok))
-		return record.resp, record.ok, nil
+		entry := v.(cacheEntry)
+		c.recordCacheLookup(ctx, metrics.CacheHit, slog.Bool("authenticated", entry.ok))
+		return entry.resp, entry.ok, nil
 	}
 	c.recordCacheLookup(ctx, metrics.CacheMiss)
 
@@ -220,9 +213,9 @@ func (c *cachedTokenReview) AuthenticateToken(ctx context.Context, token string)
 
 	switch {
 	case ok && c.successTTL > 0:
-		c.cache.Add(key, cachedReview{resp: resp, ok: true}, c.successTTL)
+		c.cache.Add(key, cacheEntry{resp: resp, ok: true}, c.successTTL)
 	case !ok && c.failureTTL > 0:
-		c.cache.Add(key, cachedReview{}, c.failureTTL)
+		c.cache.Add(key, cacheEntry{}, c.failureTTL)
 	}
 
 	return resp, ok, nil
@@ -230,7 +223,7 @@ func (c *cachedTokenReview) AuthenticateToken(ctx context.Context, token string)
 
 // recordCacheLookup reports one cache consultation, as a record and as a
 // metric, so the two can never disagree about what the cache did.
-func (c *cachedTokenReview) recordCacheLookup(ctx context.Context, result metrics.CacheResult, attrs ...slog.Attr) {
+func (c *cachedReviewer) recordCacheLookup(ctx context.Context, result metrics.CacheResult, attrs ...slog.Attr) {
 	attrs = append([]slog.Attr{slog.String("cache_result", string(result))}, attrs...)
 	logging.Emit(ctx, c.reviewer.logger, logging.EventCacheTokenReviewLookup, attrs...)
 	c.reviewer.metrics.CacheLookup(metrics.ReviewTokenReview, result)
@@ -269,26 +262,26 @@ func writeLengthPrefixed(h hash.Hash, b []byte, s string) {
 // the API server answers but does not authenticate the token, and an error
 // wrapping ErrCreateTokenReview when the review itself failed; callers must
 // treat both as unauthenticated (fail closed).
-func (t *liveReviewer) AuthenticateToken(ctx context.Context, token string) (*authenticator.Response, bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, t.timeout)
+func (r *liveReviewer) AuthenticateToken(ctx context.Context, token string) (*authenticator.Response, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
 	start := time.Now()
 
-	resp, err := t.client.Create(ctx, t.buildReview(token), metav1.CreateOptions{})
+	resp, err := r.client.Create(ctx, r.buildReview(token), metav1.CreateOptions{})
 	// Observed at the one place the API server is called: the outcome is the
 	// call's, not the caller's, so a cache hit or a fallback never counts.
 	switch {
 	case err != nil:
-		t.metrics.ReviewRequest(metrics.ReviewTokenReview, metrics.ReviewOutcomeFor(err, false), time.Since(start))
+		r.metrics.ReviewRequest(metrics.ReviewTokenReview, metrics.ReviewOutcomeFor(err, false), time.Since(start))
 		return nil, false, fmt.Errorf("%w: %w", ErrCreateTokenReview, err)
 	case len(resp.Status.Error) > 0:
-		t.metrics.ReviewRequest(metrics.ReviewTokenReview, metrics.ReviewError, time.Since(start))
+		r.metrics.ReviewRequest(metrics.ReviewTokenReview, metrics.ReviewError, time.Since(start))
 		return nil, false, fmt.Errorf("%w: status error: %s", ErrCreateTokenReview, resp.Status.Error)
 	}
-	t.metrics.ReviewRequest(metrics.ReviewTokenReview, metrics.ReviewOutcomeFor(nil, resp.Status.Authenticated), time.Since(start))
+	r.metrics.ReviewRequest(metrics.ReviewTokenReview, metrics.ReviewOutcomeFor(nil, resp.Status.Authenticated), time.Since(start))
 
-	logging.Emit(ctx, t.logger, logging.EventAuthnTokenReviewCompleted,
+	logging.Emit(ctx, r.logger, logging.EventAuthnTokenReviewCompleted,
 		slog.Bool("authenticated", resp.Status.Authenticated),
 		slog.Int64("duration_ms", time.Since(start).Milliseconds()))
 
@@ -319,11 +312,11 @@ func userInfoFrom(ui authv1.UserInfo) user.Info {
 	return info
 }
 
-func (t *liveReviewer) buildReview(token string) *authv1.TokenReview {
+func (r *liveReviewer) buildReview(token string) *authv1.TokenReview {
 	return &authv1.TokenReview{
 		Spec: authv1.TokenReviewSpec{
 			Token:     token,
-			Audiences: t.audiences,
+			Audiences: r.audiences,
 		},
 	}
 }

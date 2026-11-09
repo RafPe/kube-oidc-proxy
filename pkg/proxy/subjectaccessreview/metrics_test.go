@@ -29,12 +29,9 @@ func newMetricsRecorder(t *testing.T) *metrics.Recorder {
 	return r
 }
 
-func TestSARCacheBypassCountsOneAPICallPerRequest(t *testing.T) {
+func TestSARCacheSwitchedOffCountsOneAPICallPerRequest(t *testing.T) {
 	rec := newMetricsRecorder(t)
-	s, err := New(fake.New(nil), Config{Metrics: rec, Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := New(fake.New(nil), Config{Metrics: rec, Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 	requester := &user.DefaultInfo{Name: "alice"}
 	for i := 0; i < 2; i++ {
 		if _, err := s.ResolveImpersonation(impersonateUserRequest("jjackson"), requester); err != nil {
@@ -42,8 +39,8 @@ func TestSARCacheBypassCountsOneAPICallPerRequest(t *testing.T) {
 		}
 	}
 	g := rec.Gatherer()
-	if v, _ := metricstest.Value(t, g, metricCacheLookups, map[string]string{"cache": "sar", "result": "bypass"}); v != 2 {
-		t.Fatalf("bypass lookups = %v, want 2 (TTLs are zero)", v)
+	if v, _ := metricstest.Value(t, g, metricCacheLookups, map[string]string{"cache": "sar", "result": "bypass"}); v != 0 {
+		t.Fatalf("bypass lookups = %v, want 0 (a switched-off cache is never consulted)", v)
 	}
 	if v, _ := metricstest.Value(t, g, metricReviewRequests, map[string]string{"review": "sar", "outcome": "allow"}); v != 2 {
 		t.Fatalf("API calls = %v, want 2", v)
@@ -52,10 +49,7 @@ func TestSARCacheBypassCountsOneAPICallPerRequest(t *testing.T) {
 
 func TestSARCacheHitDoesNotReachTheAPIServer(t *testing.T) {
 	rec := newMetricsRecorder(t)
-	s, err := New(fake.New(nil), Config{Metrics: rec, Timeout: DefaultTimeout, AllowCacheTTL: 10 * time.Second, DenyCacheTTL: 10 * time.Second, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := New(fake.New(nil), Config{Metrics: rec, Timeout: DefaultTimeout, AllowCacheTTL: 10 * time.Second, DenyCacheTTL: 10 * time.Second, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 	requester := &user.DefaultInfo{Name: "alice"}
 	for i := 0; i < 3; i++ {
 		if _, err := s.ResolveImpersonation(impersonateUserRequest("jjackson"), requester); err != nil {
@@ -96,10 +90,7 @@ func TestCoalescedSARCallersCountOneAPICall(t *testing.T) {
 		// never block a caller, and the flight admits only one caller to
 		// Create anyway.
 		gate := &gateReviewer{entered: make(chan struct{}, 1), release: make(chan struct{})}
-		s, err := New(gate, Config{Metrics: rec, Timeout: DefaultTimeout, AllowCacheTTL: 10 * time.Second, DenyCacheTTL: 10 * time.Second, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
-		if err != nil {
-			t.Fatal(err)
-		}
+		s := New(gate, Config{Metrics: rec, Timeout: DefaultTimeout, AllowCacheTTL: 10 * time.Second, DenyCacheTTL: 10 * time.Second, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 		requester := &user.DefaultInfo{Name: "alice"}
 
 		const callers = 5

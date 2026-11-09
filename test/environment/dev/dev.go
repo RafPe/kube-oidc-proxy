@@ -66,7 +66,7 @@ func deploy() {
 	errExit(err)
 
 	fmt.Printf("> reloading all images\n")
-	errExit(env.Kind().LoadAllImages())
+	errExit(env.LoadImages())
 
 	kubeconfig := env.KubeConfigPath()
 

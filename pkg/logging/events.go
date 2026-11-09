@@ -46,7 +46,6 @@ const (
 	EventProxyServerStopped         EventType = "proxy.server.stopped"
 	EventProxyShutdownStarted       EventType = "proxy.shutdown.started"
 	EventProxyShutdownCompleted     EventType = "proxy.shutdown.completed"
-	EventProxyHookCompleted         EventType = "proxy.hook.completed"
 	EventAuditBackendStarted        EventType = "audit.backend.started"
 	EventAuditFlushCompleted        EventType = "audit.flush.completed"
 	EventUpstreamRequestFailed      EventType = "upstream.request.failed"
@@ -300,14 +299,7 @@ var registry = map[EventType]EventSpec{
 		Level:      slog.LevelInfo,
 		Required:   []string{"duration_ms"},
 		Message:    "shutdown completed",
-		Summary:    "Listeners stopped, readiness stopped and pre-shutdown hooks finished.",
-	},
-	EventProxyHookCompleted: {
-		Components: []Component{ComponentShutdown},
-		Level:      slog.LevelInfo,
-		Required:   []string{"hook", "duration_ms"},
-		Message:    "shutdown hook completed",
-		Summary:    "One record per pre-shutdown hook that finished.",
+		Summary:    "Listeners stopped, readiness stopped and the audit backend flushed.",
 	},
 	EventAuditBackendStarted: {
 		Components: []Component{ComponentAudit},
@@ -365,6 +357,17 @@ var registry = map[EventType]EventSpec{
 		Message:    "metrics scrape failed",
 		Summary:    "Gathering or encoding the exposition failed; the scrape was answered with 500.",
 	},
+}
+
+// retired lists the event_type values that shipped and are no longer emitted.
+// They have no constant, so nothing can emit one, and a test fails if a
+// registered event takes one of the names back or if docs/logging.md's
+// Retired table, which says why each one went, leaves one out.
+var retired = []EventType{
+	"audit.backend.failed",
+	"audit.flush.failed",
+	"proxy.hook.completed",
+	"proxy.hook.failed",
 }
 
 // AllEventTypes returns every registered event type, sorted by string value.

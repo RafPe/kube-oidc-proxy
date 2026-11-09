@@ -21,7 +21,9 @@ import (
 // Each WarningKey gets its own bucket, so a flood of one kind of anomaly
 // cannot hide the first occurrence of another. What was dropped is reported
 // rather than lost: Flush emits one log.warning.suppressed summary per key
-// that dropped records since the previous flush.
+// that dropped records since the previous flush, and Run calls Flush on the
+// cadence the Limiter was built with, so the interval_seconds a summary
+// reports is the interval it actually covers.
 //
 // The clock is injected so a test can reason about the bucket without
 // sleeping.
@@ -54,7 +56,7 @@ type limiterEntry struct {
 }
 
 // NewLimiter returns a Limiter admitting ratePerSecond records per second per
-// key with the given burst, and summarising what it dropped every
+// key with the given burst, whose Run summarises what it dropped every
 // summaryEvery. The rate is a plain float64 so a caller does not have to know
 // which bucket implementation backs it; it is converted internally. A nil
 // clock means time.Now.
@@ -90,6 +92,27 @@ func (l *Limiter) Allow(key WarningKey) bool {
 	entry.dropped++
 
 	return false
+}
+
+// Run flushes the Limiter every summaryEvery until ctx is cancelled, then once
+// more, so a burst suppressed just before shutdown is still accounted for. It
+// blocks; start it in its own goroutine.
+func (l *Limiter) Run(ctx context.Context, logger *slog.Logger) {
+	ticker := time.NewTicker(l.summaryEvery)
+	defer ticker.Stop()
+
+	// The summaries are not scoped to ctx: the final one is written after ctx
+	// has ended.
+	flushCtx := context.WithoutCancel(ctx)
+	for {
+		select {
+		case <-ticker.C:
+			l.Flush(flushCtx, logger)
+		case <-ctx.Done():
+			l.Flush(flushCtx, logger)
+			return
+		}
+	}
 }
 
 // Flush emits one log.warning.suppressed record per key that dropped warnings

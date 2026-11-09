@@ -107,8 +107,12 @@ yet) or `transient` (the JWKS endpoint is failing but the fetch is being
 retried). `ready_issuers`/`total_issuers` on any of these records tells you
 how far initialization has got without reading the probe.
 
-`issuer_name` is the **configured** issuer name, bounded to 256 characters and
-sanitized. The full issuer URL is never logged, on any record. The same
+`issuer_name` is the **host** of the configured issuer URL, bounded to 256
+characters and sanitized. The proxy's own records never carry the full issuer
+URL, except a `proxy.startup.failed` for an issuer configuration the Kubernetes
+JWT authenticator rejects; bridged `component=k8s` records from that
+authenticator can quote it as well (see
+[logging: redaction](./logging.md#redaction)). The same
 `issuer_name` also appears on `request.access.decided`, which is how you tell
 which issuer accepted a given token:
 

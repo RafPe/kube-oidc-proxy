@@ -11,6 +11,7 @@ import (
 
 	authv1 "k8s.io/api/authentication/v1"
 	"k8s.io/apiserver/pkg/authentication/user"
+	clientauthv1 "k8s.io/client-go/kubernetes/typed/authentication/v1"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/authn/tokenreview/fake"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
@@ -19,6 +20,13 @@ import (
 // discardLogger stands in for the component logger New requires, for the
 // tests that assert on behaviour rather than on records.
 var discardLogger = slog.New(slog.DiscardHandler)
+
+// newLiveReviewer returns the uncached reviewer New builds for cfg, with the
+// cache switched off.
+func newLiveReviewer(client clientauthv1.TokenReviewInterface, cfg Config, logger *slog.Logger) *liveReviewer {
+	cfg.SuccessCacheTTL, cfg.FailureCacheTTL = 0, 0
+	return New(client, cfg, logger).(*liveReviewer)
+}
 
 // testRequestContext returns a context carrying a request id, exactly as the
 // proxy's request filter installs one in production. Every record this package
@@ -86,7 +94,7 @@ func TestAuthenticateToken(t *testing.T) {
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			tReviewer := newReviewer(fake.New().WithCreate(test.reviewResp, test.errResp), Config{}, discardLogger)
+			tReviewer := newLiveReviewer(fake.New().WithCreate(test.reviewResp, test.errResp), Config{}, discardLogger)
 
 			resp, ok, err := tReviewer.AuthenticateToken(testRequestContext(), "test-token")
 
@@ -120,10 +128,10 @@ func TestAuthenticateToken(t *testing.T) {
 	}
 }
 
-// TestNewReviewerSettlesTheTimeout pins the timeout plumbing: the configured
+// TestNewSettlesTheTimeout pins the timeout plumbing: the configured
 // value is used, and zero or negative falls back to the default at
 // construction, so the reviewer needs no zero-value accommodation.
-func TestNewReviewerSettlesTheTimeout(t *testing.T) {
+func TestNewSettlesTheTimeout(t *testing.T) {
 	tests := map[string]struct {
 		timeout time.Duration
 		exp     time.Duration
@@ -135,7 +143,7 @@ func TestNewReviewerSettlesTheTimeout(t *testing.T) {
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			if got := newReviewer(fake.New(), Config{Timeout: test.timeout}, discardLogger).timeout; got != test.exp {
+			if got := newLiveReviewer(fake.New(), Config{Timeout: test.timeout}, discardLogger).timeout; got != test.exp {
 				t.Errorf("unexpected review timeout, exp=%s got=%s", test.exp, got)
 			}
 		})
@@ -157,15 +165,16 @@ func unauthenticatedReview() *authv1.TokenReview {
 	}
 }
 
-// TestNewRejectsNilLogger pins that a missing logger is refused at
-// construction rather than panicking on the first passthrough request.
-func TestNewRejectsNilLogger(t *testing.T) {
-	if _, err := New(fake.New(), Config{}, nil); err == nil {
-		t.Fatal("New() with a nil logger succeeded, want an error")
-	}
-	if _, err := New(fake.New(), Config{}, discardLogger); err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
+// TestNewPanicsOnNilLogger pins that a missing logger is a wiring mistake that
+// fails at construction, naming the package, rather than on the first
+// passthrough request.
+func TestNewPanicsOnNilLogger(t *testing.T) {
+	defer func() {
+		if got := recover(); got != "tokenreview: nil logger" {
+			t.Fatalf("New(nil logger) panic = %v, want %q", got, "tokenreview: nil logger")
+		}
+	}()
+	New(fake.New(), Config{}, nil)
 }
 
 // TestFailedReviewKeepsTheContextErrorMatchable pins that wrapping a failure
@@ -178,10 +187,7 @@ func TestFailedReviewKeepsTheContextErrorMatchable(t *testing.T) {
 			return nil, ctx.Err()
 		},
 	}
-	tr, err := New(client, Config{CacheSuccessTTL: DefaultCacheSuccessTTL, CacheFailureTTL: DefaultCacheFailureTTL}, discardLogger)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
+	tr := New(client, Config{SuccessCacheTTL: DefaultSuccessCacheTTL, FailureCacheTTL: DefaultFailureCacheTTL}, discardLogger)
 
 	ctx, cancel := context.WithCancel(testRequestContext())
 	cancel()

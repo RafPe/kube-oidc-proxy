@@ -1,0 +1,3 @@
+kind: Security
+body: |-
+  The Helm chart's ClusterRole grants each resource only the verb the proxy uses (`create` on tokenreviews and subjectaccessreviews, `impersonate` on users, groups, serviceaccounts, uids and the proxy's userextras) and drops `userextras/scopes`, which nothing uses. Forward that extra through `rbac.userExtras` if you rely on it.

@@ -140,14 +140,15 @@ The proxy embeds the API server's audit stack rather than reimplementing it.
    `ResponseComplete`, using kube-apiserver's own definition of long-running.
    An hour-long `exec` therefore leaves a trace at its start, and still leaves
    one if the proxy is stopped before the session ends.
-6. **Shutdown.** The backend is flushed as a pre-shutdown hook, and
-   `audit.flush.completed` records that the flush finished. The bundled
+6. **Shutdown.** The backend is flushed once the proxy has stopped serving,
+   and `audit.flush.completed` records that the flush finished and how long it
+   took. The bundled
    backends cannot report a flush that dropped events through it: the upstream
    backend interface returns nothing from `Shutdown()`, and the buffered
    webhook backend reports a delivery failure through the Kubernetes error
    handler instead. Such a failure therefore surfaces as a bridged
-   `component=k8s` ERROR record in the log stream, not as a failed hook or a
-   non-zero exit; alert on that record.
+   `component=k8s` ERROR record in the log stream, not as a failed flush
+   record or a non-zero exit; alert on that record.
 
 ## Writing a policy
 

@@ -3,7 +3,6 @@ package metrics
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -46,19 +45,18 @@ type ServerConfig struct {
 }
 
 // NewServer builds a Server exposing cfg.Recorder on cfg.Addr. It does not
-// bind until Start. logger is required, as it is for the proxy's other
-// constructors: a nil one is a wiring mistake, refused here rather than
-// surfacing as a panic on the first failed scrape. A test passes a
-// discarding logger.
-func NewServer(cfg ServerConfig, logger *slog.Logger) (*Server, error) {
+// bind until Start. logger is the metrics component logger; a nil one is a
+// wiring mistake and panics here rather than on the first failed scrape. A
+// test passes a discarding logger.
+func NewServer(cfg ServerConfig, logger *slog.Logger) *Server {
 	if logger == nil {
-		return nil, errors.New("metrics: logger is required")
+		panic("metrics: nil logger")
 	}
 	return &Server{
 		logger:          logger,
 		shutdownTimeout: shutdownTimeout,
-		srv:             httpserve.NewHTTPServer(cfg.Addr, cfg.Recorder.handler(logger)),
-	}, nil
+		srv:             httpserve.NewHTTPServer(cfg.Addr, cfg.Recorder.handler(logger), logger),
+	}
 }
 
 // Addr returns the address the listener is bound to, which differs from the

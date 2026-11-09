@@ -70,7 +70,7 @@ func TestOIDCFailureThenTokenReviewSuccessIsTwoAttempts(t *testing.T) {
 func TestTokenReviewDependencyFailureIsAnErrorAttempt(t *testing.T) {
 	p := newTestProxy(t, withConfig(Config{TokenPassthrough: true}))
 	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "svc").Return(nil, false, errors.New("not an oidc token"))
-	p.fakeReviewer.EXPECT().AuthenticateToken(gomock.Any(), "svc").Return(nil, false, errors.New("apiserver unreachable"))
+	p.fakeReviewer.EXPECT().AuthenticateToken(gomock.Any(), "svc").Return(nil, false, errReviewUnavailable)
 	req := watchRequest()
 	req.Header.Set("Authorization", "bearer svc")
 	serveChain(t, p, req, noopHandler)
@@ -87,7 +87,7 @@ func TestRecordDecisionCountsAnAllowOnce(t *testing.T) {
 		t.Fatalf("decisions{oidc,allow} = %v, want 1", v)
 	}
 	// A second denial on the same request is not a second decision.
-	p.logDenied(req, metrics.ReasonUpstreamError, errors.New("late"))
+	p.recordDenial(req, metrics.ReasonUpstreamError, errors.New("late"))
 	if v, _ := metricstest.Value(t, p.metrics.Gatherer(), metricAccessDecisions, map[string]string{"decision": "deny"}); v != 0 {
 		t.Fatalf("a second decision was counted: %v", v)
 	}

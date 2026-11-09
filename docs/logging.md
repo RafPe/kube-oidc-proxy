@@ -31,7 +31,7 @@ event-specific field:
 | `msg` | string | static text per event, never interpolated | query on `event_type`, not `msg` |
 | `schema_version` | int | `1` | bumped only on a breaking field change |
 | `component` | string | `startup`, `server`, `oidc`, `readiness`, `request`, `tokenreview`, `sar`, `audit`, `upstream`, `shutdown`, `metrics`, `k8s` | which subsystem spoke; `k8s` marks bridged library output |
-| `event_type` | string | `<domain>.<object>.<action>`, one of the 41 registered values | absent on `component=k8s` records |
+| `event_type` | string | `<domain>.<object>.<action>`, one of the 40 registered values | absent on library output; see below |
 
 An access decision looks like this (line-wrapped here, one line in the stream):
 
@@ -46,10 +46,22 @@ An access decision looks like this (line-wrapped here, one line in the stream):
  "inbound_extra_omitted":1}
 ```
 
-Records bridged from the Kubernetes libraries (client-go, apimachinery, the
-apiserver filters) carry `component=k8s` and **no** `event_type`. That absence
-is the filter: `event_type` present means the proxy said it, `component=k8s`
-means a library did.
+Records the proxy did not write itself carry **no** `event_type`. That absence
+is the filter: `event_type` present means the proxy said it.
+
+- Records bridged from the Kubernetes libraries (client-go, apimachinery, the
+  apiserver filters) carry `component=k8s`.
+- Lines the Go standard library logs for a server or a reverse proxy the proxy
+  configured carry that subsystem's component: an `http.Server` error on the
+  readiness or metrics listener is an ERROR with `component=readiness` or
+  `component=metrics`, and an upstream response body that broke mid-copy is a
+  WARN with `component=upstream`.
+- Anything else the standard `log` package receives, such as net/http's
+  client Transport reporting an unsolicited response on an idle connection,
+  arrives as an INFO with no `component`.
+- One stream cannot be redirected: the main listener is built by the
+  Kubernetes apiserver library, which drops TLS handshake errors to klog
+  `V(5)` and writes its other `http.Server` errors to stderr as plain text.
 
 ## Compatibility
 
@@ -58,7 +70,7 @@ across upgrades.
 
 1. **Append-only.** New `event_type` values may be added in any release. An
    existing value is never repurposed and never renamed in place; a retired
-   value keeps its constant so the string is never reused.
+   value is listed under [Retired](#retired) so the string is never reused.
 2. **Adding a value does not bump `schema_version`.** A query that matches one
    value is unaffected by the existence of a new one, so a new event is not a
    breaking change. `schema_version` moves only when field parsing breaks.
@@ -68,9 +80,9 @@ across upgrades.
    [development: log contract](./development.md#log-contract).
 4. **Query on `event_type`, not `msg`.** `msg` is static human text and may be
    reworded. `event_type` is the machine contract.
-5. **`component=k8s` records have no `event_type`.** They come from Kubernetes
-   libraries through the klog bridge, keep their own wording, and are excluded
-   from every rule above.
+5. **Library output has no `event_type`.** Bridged `component=k8s` records and
+   standard-library log lines keep their own wording and are excluded from
+   every rule above.
 
 ### Versioning
 
@@ -82,12 +94,16 @@ query:
 - **Renaming a value after it has shipped is breaking.** A record carries one
   `event_type`, so there is no overlap window and emitting both names
   double-counts. The recovery is: add the new value, stop the old one in the
-  same release, keep the old constant marked retired so the string is never
-  reused, publish an `event_type IN (old, new)` migration query, and announce it
+  same release, retire the old name as below so the string is never reused,
+  publish an `event_type IN (old, new)` migration query, and announce it
   in the changelog. At least one minor release of notice, one major for anything
   under `request.*` or `authn.*`.
 - **Retiring a value because its code path was removed is not breaking.**
-  Queries return nothing instead of failing. Keep the constant marked retired.
+  Queries return nothing instead of failing. A retired value loses its
+  constant and its registry entry, so nothing can emit it; its name moves to
+  the `retired` list in `pkg/logging/events.go` and to the [Retired](#retired)
+  table, and a test fails if a registered event reuses it or the table leaves
+  it out.
 - **`schema_version` bumps only when field parsing breaks**: a field removed or
   retyped, or a closed value set narrowed. Not for a new event, a new optional
   field, or a widened value set.
@@ -101,6 +117,10 @@ These values and fields are no longer emitted. Their names are never reused.
 
 | Name | Kind | Why it was retired |
 | --- | --- | --- |
+| `audit.backend.failed` | `event_type` | An audit backend that fails to start stops the process, which reports it once as `proxy.startup.failed`; a second record of the same failure said nothing new. |
+| `audit.flush.failed` | `event_type` | No bundled audit backend can report a failed flush, so it never fired; a lost flush shows up only as the backend's own error, bridged as a `component=k8s` ERROR record. See [startup, shutdown and exit status](#startup-shutdown-and-exit-status). |
+| `proxy.hook.completed` | `event_type` | The audit flush was its only producer, and `audit.flush.completed` already records the same flush and its duration; one flush is reported once. |
+| `hook` | field of `proxy.hook.completed` | Retired with its event. |
 | `proxy.hook.failed` | `event_type` | Its only producer was a failed audit flush, and no audit backend can report one; see [startup, shutdown and exit status](#startup-shutdown-and-exit-status). |
 | `inbound_extra` | field of `request.access.decided` | It could never be populated. Its allowlist named the extras the proxy itself sets (`Remote-Client-IP`, `originaluser.jetstack.io-*`), but the proxy sets those on the forwarded request, never on the authenticated identity the field read, and an authenticator cannot mint those keys. |
 | `outbound_extra` | field of `request.access.decided` | It never carried an extra the proxy set. The only values that ever reached it were client-asserted `Impersonate-Extra-originaluser.jetstack.io-*` headers for keys the proxy owns. The record already carries what the proxy-set extras say: `src_ip` and the `inbound_*` fields. |
@@ -116,7 +136,7 @@ extra the identity carried: extras are never logged.
 | --- | --- | --- |
 | ERROR | The process cannot serve correctly: audit backend start failure, a lost audit flush (as a bridged `component=k8s` record), the API server unreachable for a `SubjectAccessReview` or `TokenReview`, an internal invariant breach, an unreadable CA. | always |
 | WARN | Degraded state and anomalies: an issuer pending with a reason (on state change only), a forwarded header dropped, repeated reserved-identity attempts, header-cap attempts. | always |
-| INFO | Lifecycle (effective config and version, issuer configured and initialized, ready, serving, shutdown milestones, hook results) and the access record for every request, unsampled. | `-v=0` |
+| INFO | Lifecycle (effective config and version, issuer configured and initialized, ready, serving, shutdown milestones, the audit flush) and the access record for every request, unsampled. | `-v=0` |
 | DEBUG | Per-request internals: the auth path taken, cache hit or miss, the live `SubjectAccessReview`, impersonation header names, client cancellation. | `-v>=1` |
 
 WARN and ERROR are never hidden, whatever `-v` says. Denials are INFO on the
@@ -133,7 +153,7 @@ Both flags are documented in the
 
 ## Event registry
 
-41 registered values, generated from the registry. "Required" lists the fields
+40 registered values, generated from the registry. "Required" lists the fields
 that must be present beyond `time`, `level`, `msg`, `schema_version`,
 `component` and `event_type`; conditional fields are described in the summary.
 
@@ -161,10 +181,9 @@ that must be present beyond `time`, `level`, `msg`, `schema_version`,
 | `oidc.issuer.pending` | `oidc` | WARN | `issuer_name`, `issuer_state`, `pending_reason`, `ready_issuers`, `total_issuers` | The pending set or a pending reason changed. Carries issuer_state=pending; not emitted on every scrape. |
 | `proxy.config.invalid` | `startup` | ERROR | `reason`, `error_message` | The configuration cannot be used, including a CA bundle that cannot be read. |
 | `proxy.config.loaded` | `startup` | INFO | `version`, `config_hash`, `issuer_count`, `readiness_mode` | The effective non-secret configuration is fixed. |
-| `proxy.hook.completed` | `shutdown` | INFO | `hook`, `duration_ms` | One record per pre-shutdown hook that finished. |
 | `proxy.server.started` | `server` | INFO | `address` | The secure listener is serving. |
 | `proxy.server.stopped` | `server` | INFO | `duration_ms` | The secure listener stopped. |
-| `proxy.shutdown.completed` | `shutdown` | INFO | `duration_ms` | Listeners stopped, readiness stopped and pre-shutdown hooks finished. |
+| `proxy.shutdown.completed` | `shutdown` | INFO | `duration_ms` | Listeners stopped, readiness stopped and the audit backend flushed. |
 | `proxy.shutdown.started` | `shutdown` | INFO | `signal` | A termination signal was received. The forced exit is the same event with forced=true. |
 | `proxy.startup.failed` | `startup` | ERROR | `error_message` | The process could not reach serving after the logger was built; it exits non-zero without a second, unstructured error line. |
 | `readiness.proxy.ready` | `readiness` | INFO | `ready_issuers`, `total_issuers`, `readiness_mode` | Readiness latched to ready. |
@@ -211,7 +230,7 @@ If an alias is ever added it goes in this table with a status of `alias`.
 | `k8s_namespace` | string | namespace | new | `request.access.decided` | absent for cluster-scoped requests |
 | `k8s_name` | string | object name, max 256 chars | new | `request.access.decided` | absent on list and watch |
 | `auth_method` | string | `oidc`, `tokenreview`, `none` | new | `request.access.decided` | `none` is the no-token 401 path |
-| `issuer_name` | string | configured issuer name, max 256 chars | new | `request.access.decided`, `oidc.issuer.*` | never the full issuer URL |
+| `issuer_name` | string | host of the configured issuer URL, max 256 chars | new | `request.access.decided`, `oidc.issuer.*` | never the full issuer URL |
 | `reason` | string | closed set, see [reason vocabularies](#reason-vocabularies) | new | `request.access.decided` on `AuFail`, and on error records | |
 | `decision` | string | `allow`, `deny` | new | `request.access.decided`, `cache.sar.lookup`, `authz.sar.completed` | authorization outcome |
 | `inbound_user` | string | username, sanitized, max 256 chars | frozen | `request.access.decided` | |
@@ -236,7 +255,7 @@ If an alias is ever added it goes in this table with a status of `alias`.
 
 | Field | Type | Values / format | Records | Notes |
 | --- | --- | --- | --- | --- |
-| `cache_result` | string | `hit`, `miss`, `bypass` | `cache.sar.lookup`, `cache.tokenreview.lookup` | `bypass` covers a disabled cache and an oversized SAR spec; `miss` includes expired |
+| `cache_result` | string | `hit`, `miss`, `bypass` | `cache.sar.lookup`, `cache.tokenreview.lookup` | `bypass` means a SAR spec too large to cache; a disabled cache records no lookup; `miss` includes expired |
 | `request_coalesced` | bool | `true`, `false` | `authz.sar.completed` | `true` only for a request that joined another request's in-flight review; the request that ran it reports `false` |
 | `decision` | string | `allow`, `deny` | `cache.sar.lookup`, `authz.sar.completed` | on a SAR cache hit |
 | `authenticated` | bool | `true`, `false` | `authn.tokenreview.completed`, `cache.tokenreview.lookup` | on a TokenReview cache hit |
@@ -256,7 +275,6 @@ logged. The cache identity is in the event type, not in a field.
 | `pending_reason` | string | `not_initialized`, `transient` | `oidc.issuer.pending` |
 | `ready_issuers`, `total_issuers` | int | counts | `oidc.issuer.initialized`, `oidc.issuer.pending`, `readiness.proxy.ready` |
 | `readiness_mode` | string | `any`, `all` | `proxy.config.loaded`, `readiness.proxy.ready` |
-| `hook` | string | pre-shutdown hook name | `proxy.hook.completed` |
 | `suppressed_event_type` | string | the `event_type` of the suppressed records | `log.warning.suppressed` |
 | `warning_reason` | string | the suppressed records' `reason`; `headers_dropped` for `request.headers.dropped`, which carries none | `log.warning.suppressed` |
 | `suppressed_count` | int | records dropped in the interval | `log.warning.suppressed` |
@@ -540,8 +558,9 @@ This table is for whoever writes the ingest pipeline that copies them.
 
 - Never logged: bearer tokens, `Authorization` and `Cookie` values, any header
   not on the allowlist, request and response bodies, cache keys, arbitrary
-  claims and extras, configured extra-header values, the `User-Agent` header,
-  full issuer URLs.
+  claims and extras, configured extra-header values, the `User-Agent` header.
+  Full issuer URLs are kept off first-party records with the one exception
+  described under `issuer_name` below.
 - Identity extras are never logged. That an identity carried extras is
   reported as a count (`inbound_extra_omitted`, `outbound_extra_omitted`),
   never as content.
@@ -553,7 +572,14 @@ This table is for whoever writes the ingest pipeline that copies them.
   `outbound_groups_omitted` reporting the drop.
 - Prefer a classified `reason` over raw error text at INFO and WARN. A truncated
   `error_message` appears only on internal failures and at DEBUG.
-- `issuer_name` is the host of the issuer URL. Full issuer URLs are never logged.
+- `issuer_name` is the host of the issuer URL. First-party records (those
+  with an `event_type`) never carry the full issuer URL, with one exception: a
+  configuration the process refuses to start with. `proxy.startup.failed`
+  carries the error that rejected it, and a validation error from the
+  Kubernetes JWT authenticator quotes the issuer URL it rejected, so the
+  operator can find the bad entry. Bridged `component=k8s` records keep the
+  libraries' own wording and can quote the URL too, for example the OIDC
+  authenticator's own error when an issuer's discovery fails.
 
 ## See also
 

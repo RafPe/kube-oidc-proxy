@@ -22,15 +22,16 @@ import (
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 )
 
-// fakeAuthenticator simulates the union authenticator: tokens listed in notInit
-// hit an issuer whose JWKS is not yet fetched; every other token reaches
-// an initialized issuer and fails ordinary verification. A per-token error
-// may be supplied via override to model alternate phrasings and transient
-// failures.
+// fakeAuthenticator simulates the union authenticator, which routes a token to
+// an issuer by its iss claim: issuers listed in notInit have not fetched their
+// JWKS yet; every other issuer is initialized and fails ordinary verification
+// of the probe token. A per-issuer error may be supplied via override to model
+// alternate phrasings and transient failures. Every map is keyed by issuer
+// URL.
 //
 // It is a stateful fake rather than the generated authntest.MockToken on
 // purpose: tests flip an issuer from pending to initialized between checks and
-// read per-token call counts after concurrent probes, which is the behaviour
+// read per-issuer call counts after concurrent probes, which is the behaviour
 // under test. A gomock expectation list would have to script every call in
 // advance and could not express "however many calls, answer from the current
 // state".
@@ -42,70 +43,77 @@ type fakeAuthenticator struct {
 }
 
 func (f *fakeAuthenticator) AuthenticateToken(_ context.Context, token string) (*authenticator.Response, bool, error) {
+	issuerURL := issuerOf(token)
 	f.mu.Lock()
 	if f.calls == nil {
 		f.calls = make(map[string]int)
 	}
-	f.calls[token]++
+	f.calls[issuerURL]++
 	f.mu.Unlock()
 
-	if err, ok := f.override[token]; ok {
+	if err, ok := f.override[issuerURL]; ok {
 		return nil, false, err
 	}
-	if f.notInit[token] {
+	if f.notInit[issuerURL] {
 		return nil, false, errors.New("oidc: authenticator not initialized")
 	}
 	return nil, false, errors.New("oidc: verify token: signature invalid")
 }
 
-func (f *fakeAuthenticator) callCount(token string) int {
+func (f *fakeAuthenticator) callCount(issuerURL string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.calls[token]
+	return f.calls[issuerURL]
+}
+
+// issuerOf returns the iss claim of a probe token, or "" for a token that is
+// not one.
+func issuerOf(token string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Issuer string `json:"iss"`
+	}
+	if err := json.Unmarshal(raw, &claims); err != nil {
+		return ""
+	}
+	return claims.Issuer
 }
 
 // newTestServerWithAuthenticator builds an unstarted Server probing issuers
 // through authn. It reports through a discarding logger; a test that asserts
 // on records uses newTestServerWithLogger. An unstarted server needs no
 // address: check is driven directly.
-func newTestServerWithAuthenticator(t testing.TB, requireAll bool, authn authenticator.Token, issuers ...IssuerReadiness) *Server {
+func newTestServerWithAuthenticator(t testing.TB, requireAll bool, authn authenticator.Token, issuerURLs ...string) *Server {
 	t.Helper()
-	return newTestServerWithRoot(t, slog.New(slog.DiscardHandler), requireAll, authn, issuers...)
+	return newTestServerWithRoot(t, slog.New(slog.DiscardHandler), requireAll, authn, issuerURLs...)
 }
 
-func newTestServerWithRoot(t testing.TB, root *slog.Logger, requireAll bool, authn authenticator.Token, issuers ...IssuerReadiness) *Server {
+func newTestServerWithRoot(t testing.TB, root *slog.Logger, requireAll bool, authn authenticator.Token, issuerURLs ...string) *Server {
 	t.Helper()
-	s, err := NewServer(Config{Issuers: issuers, RequireAllIssuers: requireAll, Authenticator: authn}, root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return s
+	return NewServer(Config{IssuerURLs: issuerURLs, Mode: ReadinessModeFor(requireAll), Authenticator: authn}, root)
 }
 
-func newTestServer(t testing.TB, requireAll bool, notInit map[string]bool, issuers ...IssuerReadiness) *Server {
+func newTestServer(t testing.TB, requireAll bool, notInit map[string]bool, issuerURLs ...string) *Server {
 	t.Helper()
-	return newTestServerWithAuthenticator(t, requireAll, &fakeAuthenticator{notInit: notInit}, issuers...)
+	return newTestServerWithAuthenticator(t, requireAll, &fakeAuthenticator{notInit: notInit}, issuerURLs...)
 }
 
 // newTestServerWithLogger builds a Server reporting through root.
-// notInit is keyed by issuer URL rather than by fake JWT, which is what a test
-// asserting on records cares about; the translation to the token keying
-// fakeAuthenticator uses happens here.
-func newTestServerWithLogger(t testing.TB, root *slog.Logger, requireAll bool, notInit map[string]bool, issuers ...IssuerReadiness) *Server {
+func newTestServerWithLogger(t testing.TB, root *slog.Logger, requireAll bool, notInit map[string]bool, issuerURLs ...string) *Server {
 	t.Helper()
-
-	notInitByToken := make(map[string]bool, len(notInit))
-	for _, issuer := range issuers {
-		if notInit[issuer.IssuerURL] {
-			notInitByToken[issuer.FakeJWT] = true
-		}
-	}
-	return newTestServerWithRoot(t, root, requireAll, &fakeAuthenticator{notInit: notInitByToken}, issuers...)
+	return newTestServerWithRoot(t, root, requireAll, &fakeAuthenticator{notInit: notInit}, issuerURLs...)
 }
 
 func TestCheckReadiness(t *testing.T) {
-	issuerA := IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"}
-	issuerB := IssuerReadiness{IssuerURL: "https://b.example.com", FakeJWT: "jwt-b"}
+	issuerA := "https://a.example.com"
+	issuerB := "https://b.example.com"
 
 	tests := []struct {
 		name       string
@@ -116,19 +124,19 @@ func TestCheckReadiness(t *testing.T) {
 		{
 			name:       "default mode: one of two initialized is ready",
 			requireAll: false,
-			notInit:    map[string]bool{"jwt-b": true},
+			notInit:    map[string]bool{issuerB: true},
 			wantReady:  true,
 		},
 		{
 			name:       "default mode: none initialized is not ready",
 			requireAll: false,
-			notInit:    map[string]bool{"jwt-a": true, "jwt-b": true},
+			notInit:    map[string]bool{issuerA: true, issuerB: true},
 			wantReady:  false,
 		},
 		{
 			name:       "require-all: one pending is not ready",
 			requireAll: true,
-			notInit:    map[string]bool{"jwt-b": true},
+			notInit:    map[string]bool{issuerB: true},
 			wantReady:  false,
 		},
 		{
@@ -161,7 +169,7 @@ func TestCheckReadiness(t *testing.T) {
 // serving. An initialized issuer on a process that is not yet answering
 // requests is not readiness.
 func TestCheckNotReadyBeforeServing(t *testing.T) {
-	issuerA := IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"}
+	issuerA := "https://a.example.com"
 	h := newTestServer(t, true, nil, issuerA)
 
 	err := h.check()
@@ -180,7 +188,7 @@ func TestCheckNotReadyBeforeServing(t *testing.T) {
 // that reports not-ready before serving reports ready once SetServing is
 // called, so the gate delays readiness rather than blocking it permanently.
 func TestCheckReadyAfterServing(t *testing.T) {
-	issuerA := IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"}
+	issuerA := "https://a.example.com"
 	h := newTestServer(t, true, nil, issuerA)
 
 	if err := h.check(); err == nil {
@@ -198,7 +206,7 @@ func TestCheckReadyAfterServing(t *testing.T) {
 // the probe response can tell why the pod is held back.
 func TestReadyEndpointReportsNotServing(t *testing.T) {
 	h := newTestServer(t, false, nil,
-		IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"})
+		"https://a.example.com")
 	handler := h.handler()
 
 	rec := httptest.NewRecorder()
@@ -228,7 +236,7 @@ func TestReadyEndpointReportsNotServing(t *testing.T) {
 }
 
 func TestCheckReadinessIsSticky(t *testing.T) {
-	issuerA := IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"}
+	issuerA := "https://a.example.com"
 	notInit := map[string]bool{}
 	h := newTestServer(t, false, notInit, issuerA)
 	h.SetServing()
@@ -238,7 +246,7 @@ func TestCheckReadinessIsSticky(t *testing.T) {
 	}
 
 	// Simulate the issuer regressing to uninitialized: readiness must stick.
-	notInit["jwt-a"] = true
+	notInit[issuerA] = true
 	if err := h.check(); err != nil {
 		t.Fatalf("expected readiness to be sticky, got: %v", err)
 	}
@@ -250,10 +258,10 @@ func TestCheckReadinessIsSticky(t *testing.T) {
 // transition to initialized and be logged, while the already-initialized
 // issuer is not re-probed.
 func TestCheckContinuesProbingPendingAfterLatch(t *testing.T) {
-	issuerA := IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"}
-	issuerB := IssuerReadiness{IssuerURL: "https://b.example.com", FakeJWT: "jwt-b"}
+	issuerA := "https://a.example.com"
+	issuerB := "https://b.example.com"
 
-	notInit := map[string]bool{"jwt-b": true}
+	notInit := map[string]bool{issuerB: true}
 	h := newTestServer(t, false, notInit, issuerA, issuerB)
 	h.SetServing()
 	fake := h.oidcAuthenticator.(*fakeAuthenticator)
@@ -265,8 +273,8 @@ func TestCheckContinuesProbingPendingAfterLatch(t *testing.T) {
 		t.Fatal("expected readiness to have latched")
 	}
 
-	aCallsAfterFirst := fake.callCount("jwt-a")
-	bCallsAfterFirst := fake.callCount("jwt-b")
+	aCallsAfterFirst := fake.callCount(issuerA)
+	bCallsAfterFirst := fake.callCount(issuerB)
 	if aCallsAfterFirst != 1 || bCallsAfterFirst != 1 {
 		t.Fatalf("expected 1 call each after first Check, got a=%d b=%d", aCallsAfterFirst, bCallsAfterFirst)
 	}
@@ -279,25 +287,25 @@ func TestCheckContinuesProbingPendingAfterLatch(t *testing.T) {
 		t.Fatalf("expected nil error once latched even with issuer B pending, got: %v", err)
 	}
 
-	if got := fake.callCount("jwt-a"); got != aCallsAfterFirst {
+	if got := fake.callCount(issuerA); got != aCallsAfterFirst {
 		t.Fatalf("expected initialized issuer A not to be re-probed, call count changed from %d to %d", aCallsAfterFirst, got)
 	}
-	if got := fake.callCount("jwt-b"); got <= bCallsAfterFirst {
+	if got := fake.callCount(issuerB); got <= bCallsAfterFirst {
 		t.Fatalf("expected pending issuer B to still be probed, call count did not increase (still %d)", got)
 	}
 
 	// Now let issuer B initialize and confirm the transition is picked up
 	// and it is subsequently no longer re-probed either.
-	delete(notInit, "jwt-b")
+	delete(notInit, issuerB)
 	if err := h.check(); err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
-	bCallsAfterInit := fake.callCount("jwt-b")
+	bCallsAfterInit := fake.callCount(issuerB)
 
 	if err := h.check(); err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
-	if got := fake.callCount("jwt-b"); got != bCallsAfterInit {
+	if got := fake.callCount(issuerB); got != bCallsAfterInit {
 		t.Fatalf("expected issuer B not to be re-probed once initialized, call count changed from %d to %d", bCallsAfterInit, got)
 	}
 }
@@ -306,11 +314,11 @@ func TestCheckContinuesProbingPendingAfterLatch(t *testing.T) {
 // wording "... is not initialized" is still recognised as pending and does not
 // falsely latch readiness.
 func TestCheckAlternatePhrasingKeepsPending(t *testing.T) {
-	issuerA := IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"}
+	issuerA := "https://a.example.com"
 
 	authn := &fakeAuthenticator{
 		override: map[string]error{
-			"jwt-a": errors.New("oidc: authenticator for issuer is not initialized"),
+			issuerA: errors.New("oidc: authenticator for issuer is not initialized"),
 		},
 	}
 	h := newTestServerWithAuthenticator(t, true, authn, issuerA)
@@ -322,7 +330,7 @@ func TestCheckAlternatePhrasingKeepsPending(t *testing.T) {
 	if h.ready {
 		t.Fatal("readiness must not latch while the only issuer is uninitialized")
 	}
-	if h.initialized[issuerA.IssuerURL] {
+	if h.initialized[issuerA] {
 		t.Fatal("issuer must not be marked initialized for a 'not initialized' error")
 	}
 }
@@ -331,7 +339,7 @@ func TestCheckAlternatePhrasingKeepsPending(t *testing.T) {
 // error leaves the issuer pending instead of being mistaken for a fetched JWKS
 // (which would falsely latch readiness).
 func TestCheckTransientErrorDoesNotLatch(t *testing.T) {
-	issuerA := IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"}
+	issuerA := "https://a.example.com"
 
 	tests := map[string]error{
 		"context deadline": context.DeadlineExceeded,
@@ -344,7 +352,7 @@ func TestCheckTransientErrorDoesNotLatch(t *testing.T) {
 
 	for name, retErr := range tests {
 		t.Run(name, func(t *testing.T) {
-			authn := &fakeAuthenticator{override: map[string]error{"jwt-a": retErr}}
+			authn := &fakeAuthenticator{override: map[string]error{issuerA: retErr}}
 			h := newTestServerWithAuthenticator(t, true, authn, issuerA)
 			h.SetServing()
 
@@ -354,7 +362,7 @@ func TestCheckTransientErrorDoesNotLatch(t *testing.T) {
 			if h.ready {
 				t.Fatal("readiness must not latch on a transient error")
 			}
-			if h.initialized[issuerA.IssuerURL] {
+			if h.initialized[issuerA] {
 				t.Fatal("issuer must not be marked initialized on a transient error")
 			}
 		})
@@ -362,10 +370,10 @@ func TestCheckTransientErrorDoesNotLatch(t *testing.T) {
 }
 
 // TestHandlerRejectsNonGET verifies the readiness/liveness endpoints answer GET
-// but reject other methods with 405, preserving the previous handler's contract.
+// but reject other methods with 405.
 func TestHandlerRejectsNonGET(t *testing.T) {
 	h := newTestServer(t, false, nil,
-		IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"})
+		"https://a.example.com")
 	// Serving, so GET /ready exercises the readiness path rather than the gate.
 	h.SetServing()
 	handler := h.handler()
@@ -400,19 +408,16 @@ func (timeoutError) Temporary() bool { return true }
 // naming a different issuer would probe the wrong one.
 func TestNewIssuerReadinessNamesTheIssuer(t *testing.T) {
 	const issuerURL = "https://issuer.example.com/realm"
-	r, err := NewIssuerReadiness(issuerURL)
-	if err != nil {
-		t.Fatalf("NewIssuerReadiness: %v", err)
-	}
-	if r.IssuerURL != issuerURL {
-		t.Fatalf("IssuerURL = %q, want %q", r.IssuerURL, issuerURL)
+	r := newIssuerReadiness(issuerURL)
+	if r.issuerURL != issuerURL {
+		t.Fatalf("issuerURL = %q, want %q", r.issuerURL, issuerURL)
 	}
 
 	// Decoded by hand, as the probe builds it: a JOSE library here would only
 	// check what the three asserts below already pin.
-	parts := strings.Split(r.FakeJWT, ".")
+	parts := strings.Split(r.fakeJWT, ".")
 	if len(parts) != 3 {
-		t.Fatalf("probe token has %d parts, want 3: %q", len(parts), r.FakeJWT)
+		t.Fatalf("probe token has %d parts, want 3: %q", len(parts), r.fakeJWT)
 	}
 	decode := func(part string, into any) {
 		t.Helper()

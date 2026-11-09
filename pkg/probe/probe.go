@@ -89,11 +89,11 @@ type pendingIssuer struct {
 	reason    pendingReason
 }
 
-// IssuerReadiness pairs an issuer with the fake JWT used to probe whether
+// issuerReadiness pairs an issuer with the fake JWT used to probe whether
 // its authenticator has completed JWKS initialization.
-type IssuerReadiness struct {
-	IssuerURL string
-	FakeJWT   string
+type issuerReadiness struct {
+	issuerURL string
+	fakeJWT   string
 }
 
 // fakeJWTKey signs the probe token. The token is meant to fail verification:
@@ -105,12 +105,14 @@ var fakeJWTKey = []byte("this-is-a-32-byte-long-secret-key!!!!")
 // fakeJWTHeader is the probe token's JOSE header, base64url-encoded once.
 var fakeJWTHeader = base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
 
-// NewIssuerReadiness builds the readiness entry for an issuer: an HS256 JWT
+// newIssuerReadiness builds the readiness entry for an issuer: an HS256 JWT
 // naming the issuer, signed with a key no issuer holds. It is assembled by
 // hand because a throwaway token is all the probe needs, and a JOSE library
 // for it alone would be one more dependency in the proxy binary.
-func NewIssuerReadiness(issuerURL string) (IssuerReadiness, error) {
-	claims, err := json.Marshal(struct {
+func newIssuerReadiness(issuerURL string) issuerReadiness {
+	// Marshalling two strings and an integer cannot fail, so the error is
+	// not a path this function has.
+	claims, _ := json.Marshal(struct {
 		Subject   string `json:"sub"`
 		Issuer    string `json:"iss"`
 		NotBefore int64  `json:"nbf"`
@@ -119,15 +121,12 @@ func NewIssuerReadiness(issuerURL string) (IssuerReadiness, error) {
 		Issuer:    issuerURL,
 		NotBefore: time.Date(2016, 1, 1, 0, 0, 0, 0, time.UTC).Unix(),
 	})
-	if err != nil {
-		return IssuerReadiness{}, fmt.Errorf("probe: encoding the token claims: %w", err)
-	}
 
 	signingInput := fakeJWTHeader + "." + base64.RawURLEncoding.EncodeToString(claims)
 	mac := hmac.New(sha256.New, fakeJWTKey)
 	mac.Write([]byte(signingInput))
 	token := signingInput + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-	return IssuerReadiness{IssuerURL: issuerURL, FakeJWT: token}, nil
+	return issuerReadiness{issuerURL: issuerURL, fakeJWT: token}
 }
 
 // Server is the readiness probe: it tracks per-issuer OIDC initialization,
@@ -153,8 +152,8 @@ type Server struct {
 	metrics *metrics.Recorder
 
 	oidcAuthenticator authenticator.Token
-	issuers           []IssuerReadiness
-	requireAll        bool
+	issuers           []issuerReadiness
+	mode              ReadinessMode
 
 	serving atomic.Bool
 
@@ -186,13 +185,14 @@ type Config struct {
 	// the metrics listener takes.
 	Addr string
 
-	// Issuers are the issuers readiness waits for, each with the fake JWT
-	// used to probe whether its authenticator has fetched its JWKS.
-	Issuers []IssuerReadiness
+	// IssuerURLs are the issuers readiness waits for. The probe builds the
+	// fake JWT it sends each one to learn whether its authenticator has
+	// fetched its JWKS.
+	IssuerURLs []string
 
-	// RequireAllIssuers makes readiness wait for every issuer rather than
-	// any one.
-	RequireAllIssuers bool
+	// Mode is whether readiness waits for any one issuer or for all of them.
+	// The zero value is ReadinessAny.
+	Mode ReadinessMode
 
 	// Authenticator is the OIDC token authenticator the issuers are probed
 	// through.
@@ -208,33 +208,42 @@ type Config struct {
 // issuer series per configured issuer at 0, so an issuer that never
 // initializes is visible rather than absent.
 //
-// root must be the process root logger, not a component-bound one: unlike its
-// sibling constructors, the probe reports under two components (readiness for
-// the latch, oidc for the per-issuer records) and derives both itself. It is
-// required, as it is for the proxy's other constructors; a test passes a
-// discarding logger.
-func NewServer(cfg Config, root *slog.Logger) (*Server, error) {
+// root is the process root logger: a constructor that reports under one
+// component takes that component's logger, and one that reports under several
+// takes root and derives them. The probe reports under two (readiness for the
+// latch and the listener, oidc for the per-issuer records). A nil root is a
+// wiring mistake and panics; a test passes a discarding logger.
+func NewServer(cfg Config, root *slog.Logger) *Server {
 	if root == nil {
-		return nil, errors.New("probe: logger is required")
+		panic("probe: nil logger")
+	}
+
+	mode := cfg.Mode
+	if mode == "" {
+		mode = ReadinessAny
+	}
+	issuers := make([]issuerReadiness, 0, len(cfg.IssuerURLs))
+	for _, issuerURL := range cfg.IssuerURLs {
+		issuers = append(issuers, newIssuerReadiness(issuerURL))
 	}
 
 	s := &Server{
 		readinessLogger:   logging.ForComponent(root, logging.ComponentReadiness),
 		oidcLogger:        logging.ForComponent(root, logging.ComponentOIDC),
 		oidcAuthenticator: cfg.Authenticator,
-		issuers:           cfg.Issuers,
-		requireAll:        cfg.RequireAllIssuers,
+		issuers:           issuers,
+		mode:              mode,
 		initialized:       make(map[string]bool),
 		metrics:           cfg.Metrics,
 		shutdownTimeout:   shutdownTimeout,
 	}
-	s.srv = httpserve.NewHTTPServer(cfg.Addr, s.handler())
+	s.srv = httpserve.NewHTTPServer(cfg.Addr, s.handler(), s.readinessLogger)
 
 	cfg.Metrics.SetReady(false)
-	for _, issuer := range cfg.Issuers {
-		cfg.Metrics.SetIssuerInitialized(authn.IssuerName(issuer.IssuerURL), false)
+	for _, issuerURL := range cfg.IssuerURLs {
+		cfg.Metrics.SetIssuerInitialized(authn.IssuerName(issuerURL), false)
 	}
-	return s, nil
+	return s
 }
 
 // SetServing records that the proxy has started serving. Until it is called,
@@ -248,9 +257,8 @@ func (s *Server) SetServing() {
 // endpoint that is always healthy once this probe listener is up — it is
 // deliberately not gated on SetServing, since the process is alive long before
 // the proxy serves and gating it would invite restarts during startup — and a
-// readiness endpoint driven by check. Both endpoints only answer GET (returning 405
-// otherwise, matching the previous healthcheck handler); unknown paths yield
-// 404 via the ServeMux default.
+// readiness endpoint driven by check. Both endpoints answer only GET; any other
+// method gets 405, and an unknown path 404 from the ServeMux default.
 func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/live", getOnly(func(w http.ResponseWriter, _ *http.Request) {
@@ -385,9 +393,9 @@ func (s *Server) check() error {
 	// so the potentially slow AuthenticateToken calls run lock-free. No blocking
 	// authenticator call may run while s.mu is held (#53).
 	s.mu.Lock()
-	toProbe := make([]IssuerReadiness, 0, len(s.issuers))
+	toProbe := make([]issuerReadiness, 0, len(s.issuers))
 	for _, issuer := range s.issuers {
-		if !s.initialized[issuer.IssuerURL] {
+		if !s.initialized[issuer.issuerURL] {
 			toProbe = append(toProbe, issuer)
 		}
 	}
@@ -399,13 +407,13 @@ func (s *Server) check() error {
 	for _, issuer := range toProbe {
 		// The issuer counts as initialized only once its authenticator reaches
 		// token verification, which the fake token always fails.
-		if _, _, err := s.oidcAuthenticator.AuthenticateToken(ctx, issuer.FakeJWT); err != nil {
+		if _, _, err := s.oidcAuthenticator.AuthenticateToken(ctx, issuer.fakeJWT); err != nil {
 			if reason, isPending := classifyPending(err); isPending {
-				pending = append(pending, pendingIssuer{issuerURL: issuer.IssuerURL, reason: reason})
+				pending = append(pending, pendingIssuer{issuerURL: issuer.issuerURL, reason: reason})
 				continue
 			}
 		}
-		newlyInitialized = append(newlyInitialized, issuer.IssuerURL)
+		newlyInitialized = append(newlyInitialized, issuer.issuerURL)
 	}
 
 	// Re-acquire the lock to record results and evaluate readiness.
@@ -418,10 +426,10 @@ func (s *Server) check() error {
 		return nil
 	}
 
-	if s.requireAll && len(pending) > 0 {
+	if s.mode == ReadinessAll && len(pending) > 0 {
 		return errors.New("OIDC providers not yet initialized")
 	}
-	if !s.requireAll && len(s.initialized) == 0 {
+	if s.mode != ReadinessAll && len(s.initialized) == 0 {
 		return errors.New("no OIDC provider initialized yet")
 	}
 
@@ -430,7 +438,7 @@ func (s *Server) check() error {
 	logging.Emit(ctx, s.readinessLogger, logging.EventReadinessProxyReady,
 		slog.Int("ready_issuers", len(s.initialized)),
 		slog.Int("total_issuers", len(s.issuers)),
-		slog.String("readiness_mode", string(ReadinessModeFor(s.requireAll))))
+		slog.String("readiness_mode", string(s.mode)))
 	return nil
 }
 

@@ -15,14 +15,15 @@ import (
 
 	authv1 "k8s.io/api/authentication/v1"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
+	"k8s.io/utils/clock"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/authn/tokenreview/fake"
 )
 
-// TestWithCache exercises the cached reviewer end to end against a counting
+// TestCachedReviewer exercises the cached reviewer end to end against a counting
 // fake: which results are served from cache, which always go back to the API
 // server, and how the TTLs bound reuse.
-func TestWithCache(t *testing.T) {
+func TestCachedReviewer(t *testing.T) {
 	type step struct {
 		token   string
 		advance time.Duration
@@ -143,7 +144,7 @@ func TestWithCache(t *testing.T) {
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			var calls atomic.Int64
-			reviewer := newReviewer(&fake.FakeReviewer{
+			reviewer := newLiveReviewer(&fake.FakeReviewer{
 				CreateFn: func(review *authv1.TokenReview) (*authv1.TokenReview, error) {
 					return test.create(calls.Add(1), review)
 				},
@@ -152,7 +153,7 @@ func TestWithCache(t *testing.T) {
 			clock := &fakeClock{now: time.Unix(1000, 0)}
 			var cached authenticator.Token = reviewer
 			if test.successTTL > 0 || test.failureTTL > 0 {
-				cached = newCachedTokenReview(reviewer, test.successTTL, test.failureTTL, tokenCacheSize, clock)
+				cached = newCachedReviewer(reviewer, test.successTTL, test.failureTTL, tokenCacheSize, clock)
 			}
 
 			for i, s := range test.steps {
@@ -174,12 +175,27 @@ func TestWithCache(t *testing.T) {
 	}
 }
 
-// TestWithCacheZeroTTLsReturnsBareReviewer pins that disabling both TTLs keeps
-// the exact pre-cache behaviour: no cache layer at all.
-func TestWithCacheZeroTTLsReturnsBareReviewer(t *testing.T) {
-	reviewer := newReviewer(fake.New(), Config{}, discardLogger)
-	if got := withCache(reviewer, 0, 0); got != reviewer {
-		t.Errorf("expected the bare reviewer back for zero TTLs, got %T", got)
+// TestNewBuildsTheCacheOnlyWhenATTLIsPositive pins how the cache is switched
+// off: with both TTLs zero New returns the uncached reviewer and no cache
+// layer exists; either TTL positive puts the cache in front of it.
+func TestNewBuildsTheCacheOnlyWhenATTLIsPositive(t *testing.T) {
+	tests := map[string]struct {
+		successTTL, failureTTL time.Duration
+		wantCached             bool
+	}{
+		"both zero":         {0, 0, false},
+		"both negative":     {-time.Second, -time.Second, false},
+		"success TTL only":  {time.Second, 0, true},
+		"failure TTL only":  {0, time.Second, true},
+		"both TTLs present": {time.Second, time.Second, true},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := New(fake.New(), Config{SuccessCacheTTL: test.successTTL, FailureCacheTTL: test.failureTTL}, discardLogger)
+			if _, cached := got.(*cachedReviewer); cached != test.wantCached {
+				t.Errorf("New() = %T, want cached=%t", got, test.wantCached)
+			}
+		})
 	}
 }
 
@@ -190,7 +206,7 @@ func TestCachedReviewHonoursCallerCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(testRequestContext())
 	defer cancel()
 
-	reviewer := newReviewer(&fake.FakeReviewer{
+	reviewer := newLiveReviewer(&fake.FakeReviewer{
 		CreateCtxFn: func(reviewCtx context.Context, _ *authv1.TokenReview) (*authv1.TokenReview, error) {
 			// Cancel the inbound request while its review is in flight;
 			// the review's context must observe the cancellation.
@@ -204,7 +220,7 @@ func TestCachedReviewHonoursCallerCancellation(t *testing.T) {
 		},
 	}, Config{}, discardLogger)
 
-	cached := withCache(reviewer, 10*time.Second, 10*time.Second)
+	cached := newCachedReviewer(reviewer, 10*time.Second, 10*time.Second, tokenCacheSize, clock.RealClock{})
 
 	start := time.Now()
 	resp, ok, err := cached.AuthenticateToken(ctx, "token-a")
@@ -228,14 +244,14 @@ func TestCachedReviewHonoursTimeoutAboveThirtySeconds(t *testing.T) {
 
 	var gotDeadline time.Time
 	var hadDeadline bool
-	reviewer := newReviewer(&fake.FakeReviewer{
+	reviewer := newLiveReviewer(&fake.FakeReviewer{
 		CreateCtxFn: func(reviewCtx context.Context, _ *authv1.TokenReview) (*authv1.TokenReview, error) {
 			gotDeadline, hadDeadline = reviewCtx.Deadline()
 			return authenticatedReview(), nil
 		},
 	}, Config{Timeout: configured}, discardLogger)
 
-	cached := withCache(reviewer, 10*time.Second, 10*time.Second)
+	cached := newCachedReviewer(reviewer, 10*time.Second, 10*time.Second, tokenCacheSize, clock.RealClock{})
 
 	before := time.Now()
 	if _, ok, err := cached.AuthenticateToken(testRequestContext(), "token-a"); err != nil || !ok {
@@ -269,10 +285,8 @@ func TestCachedReviewSeparatesAudienceSets(t *testing.T) {
 		},
 	}
 
-	cachedAud1 := withCache(newReviewer(client, Config{Audiences: []string{"aud-1"}}, discardLogger),
-		10*time.Second, 10*time.Second)
-	cachedAud2 := withCache(newReviewer(client, Config{Audiences: []string{"aud-2"}}, discardLogger),
-		10*time.Second, 10*time.Second)
+	cachedAud1 := New(client, Config{Audiences: []string{"aud-1"}, SuccessCacheTTL: 10 * time.Second, FailureCacheTTL: 10 * time.Second}, discardLogger)
+	cachedAud2 := New(client, Config{Audiences: []string{"aud-2"}, SuccessCacheTTL: 10 * time.Second, FailureCacheTTL: 10 * time.Second}, discardLogger)
 
 	for i := range 2 {
 		if _, ok, err := cachedAud1.AuthenticateToken(testRequestContext(), "token-a"); err != nil || !ok {
@@ -327,14 +341,14 @@ func TestCachedReviewBoundsEntryCount(t *testing.T) {
 	const extra = 8
 
 	var calls atomic.Int64
-	reviewer := newReviewer(&fake.FakeReviewer{
+	reviewer := newLiveReviewer(&fake.FakeReviewer{
 		CreateFn: func(*authv1.TokenReview) (*authv1.TokenReview, error) {
 			calls.Add(1)
 			return unauthenticatedReview(), nil
 		},
 	}, Config{}, discardLogger)
 
-	cached := withCache(reviewer, time.Hour, time.Hour).(*cachedTokenReview)
+	cached := newCachedReviewer(reviewer, time.Hour, time.Hour, tokenCacheSize, clock.RealClock{})
 
 	for i := range tokenCacheSize + extra {
 		token := fmt.Sprintf("unique-token-%d", i)
@@ -372,14 +386,14 @@ func TestCachedReviewBoundsEntryCount(t *testing.T) {
 
 // TestCachedReviewConcurrentMissesRunIndependently pins the documented
 // no-singleflight contract: concurrent misses for the same token each run
-// their own live review, exactly as every request did before caching existed.
+// their own live review, exactly as an uncached reviewer would.
 // The fake only answers once both reviews are in flight, so any collapsing of
 // the two misses into one review fails the test.
 func TestCachedReviewConcurrentMissesRunIndependently(t *testing.T) {
 	bothInFlight := make(chan struct{})
 
 	var calls atomic.Int64
-	reviewer := newReviewer(&fake.FakeReviewer{
+	reviewer := newLiveReviewer(&fake.FakeReviewer{
 		CreateCtxFn: func(context.Context, *authv1.TokenReview) (*authv1.TokenReview, error) {
 			if calls.Add(1) == 2 {
 				close(bothInFlight)
@@ -393,7 +407,7 @@ func TestCachedReviewConcurrentMissesRunIndependently(t *testing.T) {
 		},
 	}, Config{}, discardLogger)
 
-	cached := withCache(reviewer, 10*time.Second, 10*time.Second)
+	cached := newCachedReviewer(reviewer, 10*time.Second, 10*time.Second, tokenCacheSize, clock.RealClock{})
 
 	var wg sync.WaitGroup
 	errs := make([]error, 2)
@@ -422,14 +436,14 @@ func TestCachedReviewSendsConfiguredAudiences(t *testing.T) {
 	audiences := []string{"aud-1", "aud-2"}
 
 	var gotAudiences []string
-	reviewer := newReviewer(&fake.FakeReviewer{
+	reviewer := newLiveReviewer(&fake.FakeReviewer{
 		CreateFn: func(review *authv1.TokenReview) (*authv1.TokenReview, error) {
 			gotAudiences = review.Spec.Audiences
 			return authenticatedReview(), nil
 		},
 	}, Config{Audiences: audiences}, discardLogger)
 
-	cached := withCache(reviewer, 10*time.Second, 10*time.Second)
+	cached := newCachedReviewer(reviewer, 10*time.Second, 10*time.Second, tokenCacheSize, clock.RealClock{})
 
 	if _, ok, err := cached.AuthenticateToken(testRequestContext(), "token-a"); err != nil || !ok {
 		t.Fatalf("unexpected review result, ok=%t err=%v", ok, err)

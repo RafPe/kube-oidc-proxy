@@ -29,7 +29,7 @@ const (
 
 	// The originaluser.jetstack.io-* keys carry the authenticated identity on a
 	// request that impersonates someone else (kubectl --as), so the API
-	// server's audit log records who really acted. Unchanged from upstream.
+	// server's audit log records who really acted.
 	ExtraKeyOriginalUser   = "originaluser.jetstack.io-user"
 	ExtraKeyOriginalGroups = "originaluser.jetstack.io-groups"
 	ExtraKeyOriginalUID    = "originaluser.jetstack.io-uid"
@@ -146,6 +146,26 @@ func asAuthenticated(inbound authuser.Info) authuser.Info {
 	}
 }
 
+// impersonatedGroups returns a copy of the groups kube-apiserver's
+// impersonation filter gives the identity it impersonates, so the API server
+// sees the same identity whether a client impersonates through the proxy or
+// directly: system:anonymous gets system:unauthenticated; any other user gets
+// system:authenticated, unless its groups already hold it or
+// system:unauthenticated.
+func impersonatedGroups(name string, groups []string) []string {
+	out := slices.Clone(groups)
+	if name == authuser.Anonymous {
+		if !slices.Contains(out, authuser.AllUnauthenticated) {
+			out = append(out, authuser.AllUnauthenticated)
+		}
+		return out
+	}
+	if !slices.Contains(out, authuser.AllAuthenticated) && !slices.Contains(out, authuser.AllUnauthenticated) {
+		out = append(out, authuser.AllAuthenticated)
+	}
+	return out
+}
+
 // authenticatedGroups returns a copy of groups that includes
 // system:authenticated, added only if absent. It copies because user.Info
 // implementations are not required to return fresh slices, so appending to
@@ -161,7 +181,8 @@ func authenticatedGroups(groups []string) []string {
 // outboundIdentity builds the identity the API server is asked to impersonate
 // for a request authenticated as inbound: target when the client impersonated
 // someone (and the SubjectAccessReviews allowed it), inbound itself otherwise.
-// The identity is enriched with the system:authenticated group, the client IP
+// The identity is enriched with the group kube-apiserver would add (see
+// impersonatedGroups), the client IP
 // and configured extras, and, when impersonating, with the original identity
 // so the API server's audit log records who really acted.
 func (p *Proxy) outboundIdentity(req *http.Request, inbound, target authuser.Info) (*transport.ImpersonationConfig, error) {
@@ -172,7 +193,7 @@ func (p *Proxy) outboundIdentity(req *http.Request, inbound, target authuser.Inf
 
 	// Both collections are copies: writing into GetExtra() could otherwise
 	// mutate cached or shared authenticator state.
-	groups := authenticatedGroups(forwarded.GetGroups())
+	groups := impersonatedGroups(forwarded.GetName(), forwarded.GetGroups())
 	extra := cloneExtra(forwarded.GetExtra())
 
 	// The impersonated identity's extras are whatever the client asked for in

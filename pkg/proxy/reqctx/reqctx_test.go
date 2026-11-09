@@ -2,6 +2,9 @@
 package reqctx
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -305,6 +308,31 @@ func TestWithImpersonationSetsUserOnlyWhenImpersonating(t *testing.T) {
 			u, _ := genericapirequest.UserFrom(req.Context())
 			if u.GetName() != tc.wantUser {
 				t.Errorf("request user = %q, want %q", u.GetName(), tc.wantUser)
+			}
+		})
+	}
+}
+
+func TestClientGone(t *testing.T) {
+	live := context.Background()
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	tests := map[string]struct {
+		ctx  context.Context
+		err  error
+		want bool
+	}{
+		"request ended, cancellation":      {ended, context.Canceled, true},
+		"request ended, wrapped deadline":  {ended, fmt.Errorf("review: %w", context.DeadlineExceeded), true},
+		"request ended, non-context error": {ended, errors.New("apiserver 500"), false},
+		"request live, cancellation":       {live, context.Canceled, false},
+		"request live, deadline":           {live, context.DeadlineExceeded, false},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := ClientGone(tc.ctx, tc.err); got != tc.want {
+				t.Errorf("ClientGone = %t, want %t", got, tc.want)
 			}
 		})
 	}

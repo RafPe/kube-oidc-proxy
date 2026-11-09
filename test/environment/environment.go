@@ -6,9 +6,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"k8s.io/client-go/kubernetes"
-	"sigs.k8s.io/kind/pkg/cluster/nodes"
-
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/versions"
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
 )
@@ -17,11 +14,11 @@ const (
 	defaultRootPath = "../../."
 )
 
+// Environment is the kind cluster the e2e suite and the dev tool run against,
+// together with the repository root its images are built from.
 type Environment struct {
-	kind *kind.Kind
-
-	rootPath  string
-	nodeImage string
+	kind     *kind.Kind
+	rootPath string
 }
 
 func New(masterNodesCount, workerNodesCount int) (*Environment, error) {
@@ -44,9 +41,8 @@ func New(masterNodesCount, workerNodesCount int) (*Environment, error) {
 	kind := kind.New(rootPath, nodeImage, masterNodesCount, workerNodesCount)
 
 	return &Environment{
-		rootPath:  rootPath,
-		nodeImage: nodeImage,
-		kind:      kind,
+		rootPath: rootPath,
+		kind:     kind,
 	}, nil
 }
 
@@ -55,11 +51,12 @@ func (e *Environment) Create() error {
 		return fmt.Errorf("failed to create kind cluster: %w", err)
 	}
 
-	if err := e.kind.LoadAllImages(); err != nil {
-		return err
-	}
+	return e.LoadImages()
+}
 
-	return nil
+// LoadImages builds and loads every image the suite deploys into the cluster.
+func (e *Environment) LoadImages() error {
+	return e.kind.LoadAllImages()
 }
 
 func (e *Environment) Destroy() error {
@@ -72,41 +69,12 @@ func (e *Environment) Destroy() error {
 	return nil
 }
 
-func (e *Environment) KubeClient() *kubernetes.Clientset {
-	return e.kind.KubeClient()
-}
-
 func (e *Environment) KubeConfigPath() string {
 	return e.kind.KubeConfigPath()
 }
 
 func (e *Environment) RootPath() string {
 	return e.rootPath
-}
-
-func (e *Environment) Node(name string) (*nodes.Node, error) {
-	ns, err := e.kind.Nodes()
-	if err != nil {
-		return nil, err
-	}
-
-	var node *nodes.Node
-	for _, n := range ns {
-		if n.String() == name {
-			node = &n
-			break
-		}
-	}
-
-	if node == nil {
-		return nil, fmt.Errorf("failed to find node %q", name)
-	}
-
-	return node, nil
-}
-
-func (e *Environment) Kind() *kind.Kind {
-	return e.kind
 }
 
 func RootPath() (string, error) {

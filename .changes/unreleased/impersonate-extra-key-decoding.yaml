@@ -1,0 +1,3 @@
+kind: Security
+body: |-
+  `Impersonate-Extra-` keys are lowercased and percent-decoded as kube-apiserver decodes them before they are authorized, so `Impersonate-Extra-example.com%2Fscope` is reviewed and forwarded as `example.com/scope`. A key the proxy cannot forward unchanged (for example one that decodes to upper case) is refused with 400 before any review.

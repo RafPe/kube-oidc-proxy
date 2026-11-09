@@ -2,11 +2,18 @@
 
 // Package audit wires the Kubernetes apiserver audit backend into the proxy,
 // emitting audit events for proxied requests.
+//
+// It also owns the two request classifications the audit backend depends on,
+// and the rest of the proxy chain reuses them rather than keeping its own:
+// RequestInfo resolution (WithRequestInfo, which the proxy runs once, high in
+// its chain) and the kube-apiserver long-running rule (IsLongRunning). Both
+// live here because the audit event's verb, objectRef and stages are decided
+// by them; a lifecycle record or metric that classified a request differently
+// would disagree with the audit log about the same request.
 package audit
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -84,10 +91,11 @@ type Config struct {
 // New creates the auditor for proxied requests: mostly a wrapper that combines
 // the apiserver's audit handlers with the proxy.
 //
-// logger is the audit-component logger and is required.
+// logger is the audit-component logger; New panics on nil. The error reports
+// audit options that cannot be applied.
 func New(cfg Config, logger *slog.Logger) (*Audit, error) {
 	if logger == nil {
-		return nil, errors.New("audit: logger is required")
+		panic("audit: New called with a nil logger")
 	}
 
 	serverConfig := &server.Config{
@@ -141,7 +149,7 @@ func (a *Audit) Start(ctx context.Context) error {
 	// context's Done channel is.
 	if err := a.serverConfig.AuditBackend.Run(ctx.Done()); err != nil {
 		a.metrics.AuditBackendFailure(metrics.AuditRun)
-		return fmt.Errorf("failed to run the audit backend: %w", err)
+		return fmt.Errorf("audit: running the backend: %w", err)
 	}
 
 	// The upstream backends describe themselves by type ("log",

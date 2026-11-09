@@ -86,10 +86,11 @@ func run(cmd *cobra.Command, opts *options.Options, out io.Writer, notifyStop fu
 
 	// Also make root the process default. This binary's own code never reads
 	// slog.Default; the reason is the standard log package, which SetDefault
-	// redirects into root's handler. net/http writes there for a listener
-	// whose ErrorLog is nil -- the readiness and metrics listeners -- so a
-	// recovered handler panic or an accept error would otherwise be an
-	// unstructured line on stderr beside the JSON stream.
+	// redirects into root's handler. Library code this binary cannot hand a
+	// logger still writes there -- net/http's client Transport reports an
+	// unsolicited response on an idle connection, and a failure to enable
+	// HTTP/2, through log.Printf -- and each such line would otherwise be
+	// unstructured text on stderr beside the JSON stream.
 	slog.SetDefault(root)
 
 	// From here on every failure is a record on the configured stream, and the
@@ -123,7 +124,7 @@ func run(cmd *cobra.Command, opts *options.Options, out io.Writer, notifyStop fu
 	// port-in-use failure is then the first thing reported, and a scrape that
 	// arrives before readiness sees build_info and the runtime collectors, as
 	// it does on any Kubernetes component.
-	recorder, stopMetrics, err := startMetrics(opts, root)
+	recorder, metricsListener, err := startMetrics(opts, root)
 	if err != nil {
 		return fail(err)
 	}
@@ -133,14 +134,14 @@ func run(cmd *cobra.Command, opts *options.Options, out io.Writer, notifyStop fu
 		// A listener that overran its drain is reported as
 		// metrics.server.failed by the server itself, and the exit status
 		// already says startup failed.
-		_ = stopMetrics()
+		_ = metricsListener.Stop()
 		return fail(err)
 	}
 
 	serve(root, opts, started)
 
 	// Each failure was already reported on the stream by its owner.
-	if err := shutdown(root, started.probe.Wait, flushAuditStep(started.auditor, root), stopMetrics); err != nil {
+	if err := shutdown(root, started.probe, started.auditor, metricsListener); err != nil {
 		return fmt.Errorf("%w: %w", ErrReported, err)
 	}
 	return nil
@@ -160,11 +161,10 @@ type running struct {
 // proxy listeners, all of which stop when ctx is cancelled. Neither listener
 // reports ready yet: serve does that.
 //
-// A constructor from this repository names its own package in the errors it
-// returns ("audit: ...", "probe: ..."), so those are returned as they are
-// unless the call site knows something the callee does not, such as which
-// issuer. A third-party failure, such as building the client, is wrapped here
-// with what was being built.
+// A function from this repository names its own package in the errors it
+// returns ("audit: ...", "probe: ..."), so those are returned as they are. A
+// third-party failure, such as building the client or binding the secure
+// port, is wrapped here with what was being done.
 func startup(ctx context.Context, cmd *cobra.Command, opts *options.Options, root *slog.Logger, recorder *metrics.Recorder) (*running, error) {
 	startupLogger := logging.ForComponent(root, logging.ComponentStartup)
 
@@ -185,23 +185,20 @@ func startup(ctx context.Context, cmd *cobra.Command, opts *options.Options, roo
 
 	secureServingInfo := new(server.SecureServingInfo)
 	if err := opts.SecureServing.ApplyTo(&secureServingInfo); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("setting up secure serving: %w", err)
 	}
 
-	subjectAccessReviewer, err := subjectaccessreview.New(
+	subjectAccessReviewer := subjectaccessreview.New(
 		kubeclient.AuthorizationV1().SubjectAccessReviews(),
 		subjectaccessreview.Config{
-			Timeout:         opts.App.SubjectAccessReviewTimeout,
-			AllowCacheTTL:   opts.App.SubjectAccessReviewAllowCacheTTL,
-			DenyCacheTTL:    opts.App.SubjectAccessReviewDenyCacheTTL,
+			Timeout:         opts.App.SubjectAccessReview.Timeout,
+			AllowCacheTTL:   opts.App.SubjectAccessReview.AllowCacheTTL,
+			DenyCacheTTL:    opts.App.SubjectAccessReview.DenyCacheTTL,
 			MaxHeaderValues: opts.App.MaxImpersonationHeaderValues,
 			Metrics:         recorder,
 		},
 		logging.ForComponent(root, logging.ComponentSAR),
 	)
-	if err != nil {
-		return nil, err
-	}
 
 	tokenAuthenticator, issuerURLs, err := authn.Build(authenticatorConfig(opts),
 		logging.ForComponent(root, logging.ComponentOIDC), startupLogger)
@@ -219,10 +216,7 @@ func startup(ctx context.Context, cmd *cobra.Command, opts *options.Options, roo
 		return nil, err
 	}
 
-	tokenReviewer, err := buildTokenReviewer(opts, kubeclient, recorder, root)
-	if err != nil {
-		return nil, err
-	}
+	tokenReviewer := buildTokenReviewer(opts, kubeclient, recorder, root)
 
 	p, err := proxy.New(proxy.Dependencies{
 		Logger:                 root,
@@ -239,30 +233,23 @@ func startup(ctx context.Context, cmd *cobra.Command, opts *options.Options, roo
 		return nil, err
 	}
 
+	readinessMode := probe.ReadinessModeFor(opts.App.ReadinessRequireAllIssuers)
 	logConfigLoaded(startupLogger, configSummary{
 		version:       opts.Version.Version(),
 		configHash:    configHash(cmd.Flags()),
 		issuerCount:   len(issuerURLs),
-		readinessMode: probe.ReadinessModeFor(opts.App.ReadinessRequireAllIssuers),
+		readinessMode: readinessMode,
 	})
 
-	probes, err := issuerProbes(issuerURLs)
-	if err != nil {
-		return nil, err
-	}
-
-	probeServer, err := probe.NewServer(probe.Config{
+	probeServer := probe.NewServer(probe.Config{
 		// The kubelet probes the pod IP, so the listener binds every
 		// interface.
-		Addr:              net.JoinHostPort("0.0.0.0", strconv.Itoa(opts.App.ReadinessProbePort)),
-		Issuers:           probes,
-		RequireAllIssuers: opts.App.ReadinessRequireAllIssuers,
-		Authenticator:     tokenAuthenticator,
-		Metrics:           recorder,
+		Addr:          net.JoinHostPort("0.0.0.0", strconv.Itoa(opts.App.ReadinessProbePort)),
+		IssuerURLs:    issuerURLs,
+		Mode:          readinessMode,
+		Authenticator: tokenAuthenticator,
+		Metrics:       recorder,
 	}, root)
-	if err != nil {
-		return nil, err
-	}
 	if err := probeServer.Start(ctx); err != nil {
 		return nil, err
 	}

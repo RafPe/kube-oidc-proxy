@@ -24,14 +24,11 @@ type KubeOIDCProxyOptions struct {
 
 	FlushInterval time.Duration
 
-	SubjectAccessReviewTimeout       time.Duration
-	SubjectAccessReviewAllowCacheTTL time.Duration
-	SubjectAccessReviewDenyCacheTTL  time.Duration
-
 	MaxImpersonationHeaderValues int
 
-	ExtraHeaderOptions ExtraHeaderOptions
-	TokenPassthrough   TokenPassthroughOptions
+	ExtraHeaderOptions  ExtraHeaderOptions
+	SubjectAccessReview SubjectAccessReviewOptions
+	TokenPassthrough    TokenPassthroughOptions
 
 	TrustedProxies []string
 
@@ -41,15 +38,27 @@ type KubeOIDCProxyOptions struct {
 // TokenPassthroughOptions configure passing a non-OIDC bearer token through to
 // the API server after a TokenReview accepts it.
 type TokenPassthroughOptions struct {
-	Audiences      []string
-	RequestTimeout time.Duration
-	Enabled        bool
+	Audiences []string
+	Timeout   time.Duration
+	Enabled   bool
 
-	// CacheSuccessTTL and CacheFailureTTL bound how long TokenReview results
+	// SuccessCacheTTL and FailureCacheTTL bound how long TokenReview results
 	// are reused without a fresh API server round trip. Zero disables caching
 	// for that result class. Review errors are never cached.
-	CacheSuccessTTL time.Duration
-	CacheFailureTTL time.Duration
+	SuccessCacheTTL time.Duration
+	FailureCacheTTL time.Duration
+}
+
+// SubjectAccessReviewOptions configure the SubjectAccessReviews that authorize
+// a request's impersonation.
+type SubjectAccessReviewOptions struct {
+	Timeout time.Duration
+
+	// AllowCacheTTL and DenyCacheTTL bound how long a definitive decision is
+	// reused without a fresh API server round trip. Zero disables caching for
+	// that decision class. Review errors are never cached.
+	AllowCacheTTL time.Duration
+	DenyCacheTTL  time.Duration
 }
 
 // ExtraHeaderOptions configure the extra user headers the proxy adds to every
@@ -88,33 +97,6 @@ func (k *KubeOIDCProxyOptions) AddFlags(fs *pflag.FlagSet) *KubeOIDCProxyOptions
 			"immediately after each write. Streaming requests such as 'kubectl exec' "+
 			"will ignore this option and flush immediately.")
 
-	fs.DurationVar(&k.SubjectAccessReviewTimeout, "subject-access-review-timeout", subjectaccessreview.DefaultTimeout,
-		"Timeout applied when authorizing a request's impersonation via "+
-			"SubjectAccessReviews. This is a single shared budget across all SAR "+
-			"calls for one request (not per-call), derived from the inbound request "+
-			"context so client cancellation still propagates. Must be greater than 0.")
-
-	fs.DurationVar(&k.SubjectAccessReviewAllowCacheTTL, "subject-access-review-cache-allow-ttl",
-		subjectaccessreview.DefaultAllowCacheTTL,
-		"How long an allowed impersonation SubjectAccessReview decision is served "+
-			"from an in-memory cache before being re-checked against the API server. "+
-			"The tradeoff is revocation lag: revoking a requester's RBAC "+
-			"impersonation grant can take up to this long to be enforced while an "+
-			"allow decision is cached. The default matches the delegating-"+
-			"authorization default in k8s.io/apiserver. Set to 0 to disable caching "+
-			"of allowed decisions and re-check every request. Must not be negative. "+
-			"Only definitive decisions are cached; API-server errors never are.")
-
-	fs.DurationVar(&k.SubjectAccessReviewDenyCacheTTL, "subject-access-review-cache-deny-ttl",
-		subjectaccessreview.DefaultDenyCacheTTL,
-		"How long a denied impersonation SubjectAccessReview decision is served "+
-			"from an in-memory cache before being re-checked against the API server. "+
-			"A newly granted RBAC impersonation permission can take up to this long "+
-			"to be honoured. The default matches the delegating-authorization "+
-			"default in k8s.io/apiserver. Set to 0 to disable caching of denied "+
-			"decisions. Must not be negative. Only definitive decisions are cached; "+
-			"API-server errors never are.")
-
 	fs.IntVar(&k.MaxImpersonationHeaderValues, "max-impersonation-header-values", subjectaccessreview.DefaultMaxHeaderValues,
 		"Maximum total number of impersonation header values accepted per request "+
 			"(the Impersonate-User value plus every Impersonate-Group, Impersonate-Uid "+
@@ -147,10 +129,44 @@ func (k *KubeOIDCProxyOptions) AddFlags(fs *pflag.FlagSet) *KubeOIDCProxyOptions
 			"permitted because the proxy adds it to every request itself, and there is "+
 			"no way to permit a reserved username.")
 
+	k.SubjectAccessReview.AddFlags(fs)
 	k.TokenPassthrough.AddFlags(fs)
 	k.ExtraHeaderOptions.AddFlags(fs)
 
 	return k
+}
+
+// AddFlags binds the SubjectAccessReview flags to fs and returns r for
+// chaining.
+func (r *SubjectAccessReviewOptions) AddFlags(fs *pflag.FlagSet) *SubjectAccessReviewOptions {
+	fs.DurationVar(&r.Timeout, "subject-access-review-timeout", subjectaccessreview.DefaultTimeout,
+		"Timeout applied when authorizing a request's impersonation via "+
+			"SubjectAccessReviews. This is a single shared budget across all SAR "+
+			"calls for one request (not per-call), derived from the inbound request "+
+			"context so client cancellation still propagates. Must be greater than 0.")
+
+	fs.DurationVar(&r.AllowCacheTTL, "subject-access-review-cache-allow-ttl",
+		subjectaccessreview.DefaultAllowCacheTTL,
+		"How long an allowed impersonation SubjectAccessReview decision is served "+
+			"from an in-memory cache before being re-checked against the API server. "+
+			"The tradeoff is revocation lag: revoking a requester's RBAC "+
+			"impersonation grant can take up to this long to be enforced while an "+
+			"allow decision is cached. The default matches the delegating-"+
+			"authorization default in k8s.io/apiserver. Set to 0 to disable caching "+
+			"of allowed decisions and re-check every request. Must not be negative. "+
+			"Only definitive decisions are cached; API-server errors never are.")
+
+	fs.DurationVar(&r.DenyCacheTTL, "subject-access-review-cache-deny-ttl",
+		subjectaccessreview.DefaultDenyCacheTTL,
+		"How long a denied impersonation SubjectAccessReview decision is served "+
+			"from an in-memory cache before being re-checked against the API server. "+
+			"A newly granted RBAC impersonation permission can take up to this long "+
+			"to be honoured. The default matches the delegating-authorization "+
+			"default in k8s.io/apiserver. Set to 0 to disable caching of denied "+
+			"decisions. Must not be negative. Only definitive decisions are cached; "+
+			"API-server errors never are.")
+
+	return r
 }
 
 // AddFlags binds the token passthrough flags to fs and returns t for chaining.
@@ -162,12 +178,12 @@ func (t *TokenPassthroughOptions) AddFlags(fs *pflag.FlagSet) *TokenPassthroughO
 		"provided, the audience will default to the audience of the Kubernetes "+
 		"apiserver. Only used when --token-passthrough is also enabled.")
 
-	fs.DurationVar(&t.RequestTimeout, "token-passthrough-request-timeout", tokenreview.DefaultTimeout, ""+
+	fs.DurationVar(&t.Timeout, "token-passthrough-request-timeout", tokenreview.DefaultTimeout, ""+
 		"Timeout for each TokenReview request the proxy sends to the target API server "+
 		"when validating a passthrough token. Only used when --token-passthrough is "+
 		"also enabled.")
 
-	fs.DurationVar(&t.CacheSuccessTTL, "token-passthrough-cache-success-ttl", tokenreview.DefaultCacheSuccessTTL, ""+
+	fs.DurationVar(&t.SuccessCacheTTL, "token-passthrough-cache-success-ttl", tokenreview.DefaultSuccessCacheTTL, ""+
 		"How long a successful TokenReview result is cached and reused without a new "+
 		"request to the target API server. A cached success outlives token revocation "+
 		"for up to this duration, so keep it low; the default matches the "+
@@ -175,7 +191,7 @@ func (t *TokenPassthroughOptions) AddFlags(fs *pflag.FlagSet) *TokenPassthroughO
 		"disable caching successful results. Only used when --token-passthrough is "+
 		"also enabled.")
 
-	fs.DurationVar(&t.CacheFailureTTL, "token-passthrough-cache-failure-ttl", tokenreview.DefaultCacheFailureTTL, ""+
+	fs.DurationVar(&t.FailureCacheTTL, "token-passthrough-cache-failure-ttl", tokenreview.DefaultFailureCacheTTL, ""+
 		"How long an unauthenticated TokenReview result is cached, shielding the "+
 		"target API server from repeated reviews of the same invalid token (for "+
 		"example during an OIDC issuer outage with --token-passthrough enabled). "+
@@ -222,26 +238,26 @@ func (k *KubeOIDCProxyOptions) Validate() error {
 	// dormant until the feature is switched on. Zero is meaningful for the
 	// cache TTLs (it disables that class of caching); only negatives are
 	// configuration mistakes.
-	if k.TokenPassthrough.RequestTimeout <= 0 {
+	if k.TokenPassthrough.Timeout <= 0 {
 		errs = append(errs, errors.New("--token-passthrough-request-timeout must be greater than zero"))
 	}
-	if k.TokenPassthrough.CacheSuccessTTL < 0 {
+	if k.TokenPassthrough.SuccessCacheTTL < 0 {
 		errs = append(errs, errors.New("--token-passthrough-cache-success-ttl must not be negative"))
 	}
-	if k.TokenPassthrough.CacheFailureTTL < 0 {
+	if k.TokenPassthrough.FailureCacheTTL < 0 {
 		errs = append(errs, errors.New("--token-passthrough-cache-failure-ttl must not be negative"))
 	}
 
-	if k.SubjectAccessReviewTimeout <= 0 {
-		errs = append(errs, fmt.Errorf("--subject-access-review-timeout must be greater than 0, got %s", k.SubjectAccessReviewTimeout))
+	if k.SubjectAccessReview.Timeout <= 0 {
+		errs = append(errs, fmt.Errorf("--subject-access-review-timeout must be greater than 0, got %s", k.SubjectAccessReview.Timeout))
 	}
 
-	if k.SubjectAccessReviewAllowCacheTTL < 0 {
-		errs = append(errs, fmt.Errorf("--subject-access-review-cache-allow-ttl must not be negative (0 disables caching of allowed decisions), got %s", k.SubjectAccessReviewAllowCacheTTL))
+	if k.SubjectAccessReview.AllowCacheTTL < 0 {
+		errs = append(errs, fmt.Errorf("--subject-access-review-cache-allow-ttl must not be negative (0 disables caching of allowed decisions), got %s", k.SubjectAccessReview.AllowCacheTTL))
 	}
 
-	if k.SubjectAccessReviewDenyCacheTTL < 0 {
-		errs = append(errs, fmt.Errorf("--subject-access-review-cache-deny-ttl must not be negative (0 disables caching of denied decisions), got %s", k.SubjectAccessReviewDenyCacheTTL))
+	if k.SubjectAccessReview.DenyCacheTTL < 0 {
+		errs = append(errs, fmt.Errorf("--subject-access-review-cache-deny-ttl must not be negative (0 disables caching of denied decisions), got %s", k.SubjectAccessReview.DenyCacheTTL))
 	}
 
 	if k.MaxImpersonationHeaderValues <= 0 {

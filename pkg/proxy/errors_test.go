@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/authn/tokenreview"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
@@ -65,17 +66,7 @@ func tryHandler(t *testing.T, expCode int, err error, handle func(*Proxy, http.R
 }
 
 func TestError(t *testing.T) {
-	// no error
-	frw, records := tryError(t, http.StatusInternalServerError, nil)
-	if len(frw.buffer) != 1 {
-		t.Errorf("unexpected response, exp='\n' got='%s'", frw.buffer)
-	}
-	// Nothing was decided about a request, so nothing is recorded about one.
-	if got := records.ByEvent(logging.EventRequestAccessDecided); len(got) != 0 {
-		t.Errorf("an access record was written for a nil error: %s", records.Raw())
-	}
-
-	frw, records = tryError(t, http.StatusUnauthorized, errUnauthorized)
+	frw, records := tryError(t, http.StatusUnauthorized, errUnauthorized)
 	if exp := []byte("Unauthorized\n"); !bytes.Equal(frw.buffer, exp) {
 		t.Errorf("unexpected response, exp='%s' got='%s'", exp, frw.buffer)
 	}
@@ -104,10 +95,6 @@ func TestErrorHandlerInternalFailureEmitsHandlerFailed(t *testing.T) {
 		err            error
 		wantErrMessage string
 	}{
-		"called with no error": {
-			err:            nil,
-			wantErrMessage: "error handler called with nil error",
-		},
 		"impersonation configuration missing": {
 			err:            errNoImpersonationConfig,
 			wantErrMessage: errNoImpersonationConfig.Error(),
@@ -172,7 +159,7 @@ func TestErrorClassifiesEveryReason(t *testing.T) {
 		"unauthorized": {errUnauthorized, http.StatusUnauthorized, metrics.ReasonUnauthorized},
 		// The proxy fails closed, so the client sees the 401 a rejected token
 		// gets; only the reason says the reviewer could not answer.
-		"token review unavailable": {fmt.Errorf("%w: %w", errTokenReviewUnavailable, errors.New("apiserver unreachable")),
+		"token review unavailable": {errReviewUnavailable,
 			http.StatusUnauthorized, metrics.ReasonAuthenticationDependencyError},
 		"reserved identity": {fmt.Errorf("%w: username %q", errReservedIdentity, "system:masters"),
 			http.StatusForbidden, metrics.ReasonReservedIdentity},
@@ -193,6 +180,8 @@ func TestErrorClassifiesEveryReason(t *testing.T) {
 		"no impersonation user": {subjectaccessreview.ErrNoImpersonationUser, http.StatusBadRequest, metrics.ReasonMalformedImpersonation},
 		"unknown impersonation header": {fmt.Errorf("%w: %q", subjectaccessreview.ErrUnknownImpersonationHeader, "Impersonate-Foo"),
 			http.StatusBadRequest, metrics.ReasonMalformedImpersonation},
+		"unforwardable extra key": {fmt.Errorf("%w: %q", subjectaccessreview.ErrUnforwardableExtraKey, "Impersonate-Extra-%41bc"),
+			http.StatusBadRequest, metrics.ReasonMalformedImpersonation},
 		"unknown": {errors.New("boom"), http.StatusInternalServerError, metrics.ReasonInternalError},
 	}
 
@@ -205,7 +194,7 @@ func TestErrorClassifiesEveryReason(t *testing.T) {
 }
 
 // TestUpstreamTransportFailureIsNotAnAccessDecision pins the one-record rule:
-// the access decision is written exactly once per request, by RoundTrip, at
+// the access decision is written exactly once per request, by roundTrip, at
 // the moment the request is admitted. A transport failure afterwards is not a
 // second decision -- the request was already allowed -- so the upstream error
 // handler answers 502 and reports the failure on its own upstream record.
@@ -223,7 +212,7 @@ func TestUpstreamTransportFailureIsNotAnAccessDecision(t *testing.T) {
 }
 
 // TestUpstreamNonTransportFailureIsInternal pins the upstream handler's other
-// branch: an error that is not the transport's -- RoundTrip finding no
+// branch: an error that is not the transport's -- roundTrip finding no
 // forwarding decision on the request -- is the proxy's own failure, a 500
 // with request.handler.failed, and never a 502.
 func TestUpstreamNonTransportFailureIsInternal(t *testing.T) {
@@ -244,8 +233,12 @@ func TestUpstreamNonTransportFailureIsInternal(t *testing.T) {
 func TestErrorCanceledIsRecordedWithoutAResponse(t *testing.T) {
 	p := newTestProxy(t)
 
+	ctx, cancel := stdcontext.WithCancel(stdcontext.Background())
+	cancel()
+
 	frw := newFakeRW()
-	p.refuse(frw, newFakeR(), fmt.Errorf("%w: %w", subjectaccessreview.ErrCreateSubjectAccessReview, stdcontext.Canceled))
+	p.refuse(frw, withTestRequestID(newFakeR().WithContext(ctx)),
+		fmt.Errorf("%w: %w", subjectaccessreview.ErrCreateSubjectAccessReview, stdcontext.Canceled))
 
 	if got := frw.header.Get("StatusCode"); got != "" {
 		t.Errorf("a status code was written for a canceled request: %q", got)
@@ -266,7 +259,7 @@ func TestDependencyFailureIsNotAHandlerFailure(t *testing.T) {
 		err        error
 		wantReason metrics.Reason
 	}{
-		"token review": {fmt.Errorf("%w: %w", errTokenReviewUnavailable, errors.New("apiserver unreachable")),
+		"token review": {errReviewUnavailable,
 			metrics.ReasonAuthenticationDependencyError},
 		"subject access review": {fmt.Errorf("%w: %w", subjectaccessreview.ErrCreateSubjectAccessReview,
 			stdcontext.DeadlineExceeded), metrics.ReasonAuthorizationDependencyError},
@@ -306,6 +299,46 @@ func TestErrorRequesterDeadlineIsClientCanceled(t *testing.T) {
 		t.Errorf("a status code was written for a request whose client went away: %q", got)
 	}
 	assertDeniedReason(t, p.logs, metrics.ReasonClientCanceled)
+}
+
+// TestErrorClientGoneNeedsBothSignals pins that refuse demotes a failure to
+// client_canceled by reqctx.ClientGone, the predicate the reviews use: only a
+// context error on a request whose own context has ended. A cancellation
+// while the client is still attached is the proxy's own failure, and a
+// non-context review failure while the client hangs up is still the
+// dependency's, so the access record agrees with the review's own record.
+func TestErrorClientGoneNeedsBothSignals(t *testing.T) {
+	ended, cancel := stdcontext.WithCancel(stdcontext.Background())
+	cancel()
+
+	tests := map[string]struct {
+		ctx       stdcontext.Context
+		err       error
+		expCode   int
+		expReason metrics.Reason
+	}{
+		"bare cancellation, client still attached": {stdcontext.Background(), stdcontext.Canceled,
+			http.StatusInternalServerError, metrics.ReasonInternalError},
+		"review answered 500 as the client hung up": {ended,
+			fmt.Errorf("%w: %w", subjectaccessreview.ErrCreateSubjectAccessReview, errors.New("apiserver 500")),
+			http.StatusInternalServerError, metrics.ReasonAuthorizationDependencyError},
+		"token review status error as the client hung up": {ended,
+			fmt.Errorf("%w: status error: boom", tokenreview.ErrCreateTokenReview),
+			http.StatusUnauthorized, metrics.ReasonAuthenticationDependencyError},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			p := newTestProxy(t)
+			frw := newFakeRW()
+			p.refuse(frw, withTestRequestID(newFakeR().WithContext(test.ctx)), test.err)
+
+			if got := frw.header.Get("StatusCode"); got != strconv.Itoa(test.expCode) {
+				t.Errorf("status = %q, want %d", got, test.expCode)
+			}
+			assertDeniedReason(t, p.logs, test.expReason)
+		})
+	}
 }
 
 // TestErrorImpersonationDenialNamesTheTarget pins that the refused target is

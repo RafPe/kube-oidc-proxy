@@ -53,8 +53,7 @@ func TestBridgeMapsKlogVerbosityToDebugAndTagsComponent(t *testing.T) {
 // TestMain guards the invariant behind installKlogBridge: klog's -v is
 // process-global, so no test in this package may leave it changed. Without this
 // a forgotten restore surfaces later as a mysterious failure in whichever test
-// happens to run next, which is the failure mode this package caused once
-// already.
+// happens to run next.
 func TestMain(m *testing.M) {
 	before := klogVerbosity()
 	code := m.Run()
@@ -76,16 +75,16 @@ func klogVerbosity() string {
 	return fs.Lookup("v").Value.String()
 }
 
-// installKlogBridge installs the bridge for the duration of one test and
-// undoes both halves of what it touches: the installed logger and klog's -v,
-// which InstallKlogBridge sets process-wide so klog's own V(n) gate agrees
-// with the slog floor.
+// installKlogBridge installs the bridge for one test and restores klog's -v,
+// which InstallKlogBridge sets process-wide so klog's own V(n) gate agrees with
+// the slog floor. The logger klog holds is never reset: the bridge is installed
+// in klog once per process and only its target changes, so a goroutine a
+// library leaves logging after the test cannot race a reset.
 func installKlogBridge(t *testing.T, root *slog.Logger, verbosity int) {
 	t.Helper()
 	before := klogVerbosity()
 	logging.InstallKlogBridge(root, verbosity)
 	t.Cleanup(func() {
-		klog.ClearLogger()
 		var fs flag.FlagSet
 		klog.InitFlags(&fs)
 		if err := fs.Set("v", before); err != nil {
@@ -111,5 +110,41 @@ func TestInstallKlogBridgeLeavesKlogVerbosityUnchanged(t *testing.T) {
 	// every later test in the binary inherits it.
 	if got := klogVerbosity(); got != before {
 		t.Errorf("klog -v leaked out of the bridge test: got %q, want %q", got, before)
+	}
+}
+
+// TestBridgeKeepsItsRulesOnDerivedLoggers covers the path Kubernetes libraries
+// actually take: klog.FromContext(ctx).WithValues(...) derives a logger through
+// bridgeHandler.WithAttrs, and that derived logger must still tag component=k8s
+// and apply the -v gate to V(n).
+func TestBridgeKeepsItsRulesOnDerivedLoggers(t *testing.T) {
+	for _, verbosity := range []int{0, 1} {
+		t.Run(fmt.Sprintf("v=%d", verbosity), func(t *testing.T) {
+			root, cap := logtest.New(t, verbosity)
+			installKlogBridge(t, root, verbosity)
+
+			derived := klog.LoggerWithValues(klog.Background(), "k", "v")
+			derived.V(1).Info("verbose")
+			derived.Info("plain")
+			klog.Flush()
+
+			byMsg := map[string]logtest.Record{}
+			for _, r := range cap.Records() {
+				byMsg[r.String("msg")] = r
+				if r.String("component") != "k8s" || r.String("k") != "v" {
+					t.Errorf("derived record lost component=k8s or its value: %v", r)
+				}
+			}
+			if _, ok := byMsg["plain"]; !ok {
+				t.Errorf("INFO record from a derived logger dropped: %s", cap.Raw())
+			}
+			verbose, ok := byMsg["verbose"]
+			switch {
+			case verbosity == 0 && ok:
+				t.Errorf("V(1) record from a derived logger passed a -v=0 bridge: %v", verbose)
+			case verbosity == 1 && (!ok || verbose.String("level") != "DEBUG"):
+				t.Errorf("V(1) record from a derived logger at -v=1 = %v, want it at DEBUG", verbose)
+			}
+		})
 	}
 }

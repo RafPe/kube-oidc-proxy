@@ -3,6 +3,7 @@ package proxy
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -12,7 +13,12 @@ import (
 	"k8s.io/apiserver/pkg/authentication/user"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/authn/authntest"
+	"github.com/rafpe/kube-oidc-proxy/pkg/authn/tokenreview"
 )
+
+// errReviewUnavailable is a TokenReview the API server could not answer, as
+// tokenreview's reviewer reports one.
+var errReviewUnavailable = fmt.Errorf("%w: apiserver unreachable", tokenreview.ErrCreateTokenReview)
 
 // TestReviewToken pins the fail-closed contract of the token-review fallback:
 // only an affirmative authenticated result lets a request pass through; a
@@ -39,9 +45,9 @@ func TestReviewToken(t *testing.T) {
 			authHeader: "bearer " + bearer,
 			reviewerResult: func(m *authntest.MockToken) {
 				m.EXPECT().AuthenticateToken(gomock.Any(), bearer).
-					Return(nil, false, errors.New("apiserver unreachable"))
+					Return(nil, false, errReviewUnavailable)
 			},
-			expErr: errTokenReviewUnavailable,
+			expErr: tokenreview.ErrCreateTokenReview,
 		},
 
 		"an unauthenticated result denies": {
@@ -115,7 +121,7 @@ func TestWithTokenReviewStatusCodes(t *testing.T) {
 			authHeader:         "bearer " + bearer,
 			reviewerResult: func(m *authntest.MockToken) {
 				m.EXPECT().AuthenticateToken(gomock.Any(), bearer).
-					Return(nil, false, errors.New("apiserver unreachable"))
+					Return(nil, false, errReviewUnavailable)
 			},
 			expCode: http.StatusUnauthorized,
 		},

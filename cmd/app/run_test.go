@@ -39,9 +39,11 @@ import (
 func neverStop(*slog.Logger) <-chan struct{} { return nil }
 
 // restoreRunGlobals undoes what run sets process-wide once t ends: the default
-// slog logger and the log package output slog.SetDefault redirects, and klog's
-// installed logger and -v, which the klog bridge sets, so later tests in the
-// binary see none of them.
+// slog logger, the log package output slog.SetDefault redirects, and klog's -v,
+// so later tests in the binary see none of them. klog's installed logger is not
+// reset: logging.InstallKlogBridge installs it once per process and only swaps
+// its target, because a Kubernetes library goroutine (the serving certificate
+// reloader) can still log through it after the command has returned.
 func restoreRunGlobals(t *testing.T) {
 	t.Helper()
 	prevDefault := slog.Default()
@@ -53,7 +55,6 @@ func restoreRunGlobals(t *testing.T) {
 		slog.SetDefault(prevDefault)
 		log.SetOutput(prevLogOutput)
 		log.SetFlags(prevLogFlags)
-		klog.ClearLogger()
 		if err := fs.Set("v", prevV); err != nil {
 			t.Errorf("restoring klog -v to %q: %s", prevV, err)
 		}
@@ -176,11 +177,29 @@ func TestRunServesUntilStoppedThenShutsDownCleanly(t *testing.T) {
 	issuer := newFakeIssuer(t)
 
 	certFile, keyFile := writeServingCert(t, dir)
-	securePort, readinessPort, metricsPort := freePort(t), freePort(t), freePort(t)
+
+	// No port is reserved and then released for the command to bind, which
+	// another process could take in between. The secure listener is bound
+	// here and handed over through SecureServing.Listener, which ApplyTo
+	// serves on as given (--secure-port=0 would turn secure serving off
+	// instead). The readiness listener binds port 0 and the test reads the
+	// port back from readiness.server.started. Only the metrics port is
+	// reserved and released, because --metrics-bind-address refuses port 0:
+	// a scrape target must know its port in advance.
+	secureListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The command owns the listener once started; this only frees it when
+	// the command fails before serving.
+	t.Cleanup(func() { _ = secureListener.Close() })
+	securePort := secureListener.Addr().(*net.TCPAddr).Port
+	metricsPort := freePort(t)
 
 	var out syncBuffer
 	stop := make(chan struct{})
 	opts := options.New()
+	opts.SecureServing.Listener = secureListener
 	cmd := buildRunCommand(opts, &out, func(*slog.Logger) <-chan struct{} { return stop })
 	opts.AddFlags(cmd)
 	cmd.SetArgs([]string{
@@ -190,10 +209,9 @@ func TestRunServesUntilStoppedThenShutsDownCleanly(t *testing.T) {
 		"--server=" + apiServer.URL,
 		"--certificate-authority=" + writeCA(t, dir, "api-ca.pem", apiServer),
 		"--bind-address=127.0.0.1",
-		"--secure-port=" + strconv.Itoa(securePort),
 		"--tls-cert-file=" + certFile,
 		"--tls-private-key-file=" + keyFile,
-		"--readiness-probe-port=" + strconv.Itoa(readinessPort),
+		"--readiness-probe-port=0",
 		"--metrics-bind-address=127.0.0.1:" + strconv.Itoa(metricsPort),
 	})
 	cmd.SetOut(io.Discard)
@@ -221,11 +239,18 @@ func TestRunServesUntilStoppedThenShutsDownCleanly(t *testing.T) {
 		return resp.StatusCode, nil
 	}
 
-	readyURL := fmt.Sprintf("http://127.0.0.1:%d/ready", readinessPort)
 	deadline := time.Now().Add(30 * time.Second)
+	var readyURL string
 	for {
-		if code, err := get(readyURL); err == nil && code == http.StatusOK {
-			break
+		if readyURL == "" {
+			if port, ok := startedPort(t, out.String(), logging.EventReadinessServerStarted); ok {
+				readyURL = "http://127.0.0.1:" + port + "/ready"
+			}
+		}
+		if readyURL != "" {
+			if code, err := get(readyURL); err == nil && code == http.StatusOK {
+				break
+			}
 		}
 		select {
 		case err := <-done:
@@ -267,7 +292,6 @@ func TestRunServesUntilStoppedThenShutsDownCleanly(t *testing.T) {
 		logging.EventProxyServerStarted,
 		logging.EventReadinessProxyReady,
 		logging.EventProxyServerStopped,
-		logging.EventProxyHookCompleted,
 		logging.EventProxyShutdownCompleted,
 	} {
 		if seen[want] != 1 {
@@ -298,8 +322,28 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
+// startedPort returns the port in the address of the first event record on
+// stream, once the listener reporting it has bound.
+func startedPort(t *testing.T, stream string, event logging.EventType) (string, bool) {
+	t.Helper()
+	for _, line := range strings.Split(strings.TrimSpace(stream), "\n") {
+		var rec map[string]any
+		if json.Unmarshal([]byte(line), &rec) != nil || rec["event_type"] != string(event) {
+			continue
+		}
+		address, _ := rec["address"].(string)
+		_, port, err := net.SplitHostPort(address)
+		if err != nil {
+			t.Fatalf("%s address = %q: %v", event, address, err)
+		}
+		return port, true
+	}
+	return "", false
+}
+
 // freePort returns a loopback port that was free a moment ago. The listener
-// is released before the command binds it, which is a race the test accepts.
+// is released before the command binds it, a race the one caller accepts for
+// the metrics port only.
 func freePort(t *testing.T) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

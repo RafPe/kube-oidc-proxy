@@ -30,8 +30,8 @@ func IssuerName(issuerURL string) string {
 }
 
 // issuerNames maps configured issuer URLs onto the names the records carry.
-// The full issuer URL is never logged, so a URL with no host becomes the
-// placeholder rather than the URL itself.
+// The proxy's own records name an issuer by this, never by its full URL, so a
+// URL with no host becomes the placeholder rather than the URL itself.
 func issuerNames(issuerURLs []string) []string {
 	if len(issuerURLs) == 0 {
 		return nil
@@ -44,20 +44,19 @@ func issuerNames(issuerURLs []string) []string {
 }
 
 // duplicateIssuerName reports the first issuer name two configured issuer URLs
-// map onto, together with the URL already stored under that name and the one
-// that collided with it. Names are hosts (see IssuerName), so issuers that
-// differ only by path collide -- and then the name alone does not say which
-// two configuration entries have to change.
-func duplicateIssuerName(issuerURLs []string) (name, first, other string, dup bool) {
-	seen := make(map[string]string, len(issuerURLs))
-	names := issuerNames(issuerURLs)
-	for i, n := range names {
-		if firstURL, ok := seen[n]; ok {
-			return n, firstURL, issuerURLs[i], true
+// map onto, together with the positions of the entry already stored under
+// that name and of the one that collided with it. Names are hosts (see
+// IssuerName), so issuers that differ only by path collide -- and then the
+// name alone does not say which two configuration entries have to change.
+func duplicateIssuerName(issuerURLs []string) (name string, first, other int, dup bool) {
+	seen := make(map[string]int, len(issuerURLs))
+	for i, n := range issuerNames(issuerURLs) {
+		if firstIndex, ok := seen[n]; ok {
+			return n, firstIndex, i, true
 		}
-		seen[n] = issuerURLs[i]
+		seen[n] = i
 	}
-	return "", "", "", false
+	return "", 0, 0, false
 }
 
 // logIssuersConfigured reports one record per configured issuer, so a query on

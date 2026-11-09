@@ -5,6 +5,8 @@ metadata:
 {{ include "kube-oidc-proxy.labels" . | indent 4 }}
   name: {{ include "kube-oidc-proxy.fullname" . }}
 rules:
+# Outbound impersonation: requests are forwarded as the authenticated identity,
+# or as the identity kubectl --as asked for, which may be a ServiceAccount.
 - apiGroups:
   - ""
   resources:
@@ -13,24 +15,32 @@ rules:
   - "serviceaccounts"
   verbs:
   - "impersonate"
+# UID impersonation lives in authentication.k8s.io, unlike users and groups
+# which are core, and so do the extra keys the proxy sets on its own:
+# remote-client-ip (--extra-user-header-client-ip), the
+# originaluser.jetstack.io-* keys it adds when it forwards an inbound
+# impersonation, and the credential ID the Kubernetes authenticator puts on
+# every OIDC identity.
 - apiGroups:
   - "authentication.k8s.io"
   resources:
-  - "userextras/scopes"
-  - "userextras/remote-client-ip"
-  - "tokenreviews"
-  # UID impersonation lives in authentication.k8s.io, unlike users/groups
-  # which are core
   - "uids"
-  # to support end user impersonation
+  - "userextras/remote-client-ip"
   - "userextras/authentication.kubernetes.io/credential-id"
   - "userextras/originaluser.jetstack.io-user"
   - "userextras/originaluser.jetstack.io-groups"
   - "userextras/originaluser.jetstack.io-uid"
   - "userextras/originaluser.jetstack.io-extra"
   verbs:
-  - "create"
   - "impersonate"
+# Token passthrough: tokens the OIDC authenticator rejects are validated with a
+# TokenReview.
+- apiGroups:
+  - "authentication.k8s.io"
+  resources:
+  - "tokenreviews"
+  verbs:
+  - "create"
 # Inbound impersonation (kubectl --as): the proxy authorizes every
 # Impersonate-* header value with a SubjectAccessReview before forwarding.
 # Without this grant the review itself is refused and every impersonating

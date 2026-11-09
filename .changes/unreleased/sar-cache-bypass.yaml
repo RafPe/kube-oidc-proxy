@@ -1,0 +1,3 @@
+kind: Fixed
+body: |-
+  A SubjectAccessReview cache switched off with zero TTLs no longer records `bypass` lookups; `bypass` now means only a review too large to cache.

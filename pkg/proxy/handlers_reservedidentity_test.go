@@ -2,7 +2,6 @@
 package proxy
 
 import (
-	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -17,7 +16,6 @@ import (
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
-	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 	fakesubjectaccessreview "github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview/fake"
 )
@@ -190,10 +188,7 @@ func TestWithAuthenticateRequestAllowsAllowlistedReservedGroup(t *testing.T) {
 // the impersonation headers. No review may be submitted at all.
 func TestReservedIdentityRejectedBeforeSubjectAccessReview(t *testing.T) {
 	reviewer := &countingReviewer{FakeReviewer: fakesubjectaccessreview.New(nil)}
-	sar, err := subjectaccessreview.New(reviewer, subjectaccessreview.Config{MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
-	if err != nil {
-		t.Fatalf("creating subject access reviewer: %s", err)
-	}
+	sar := subjectaccessreview.New(reviewer, subjectaccessreview.Config{MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 	p := newTestProxy(t, withSubjectAccessReviewer(sar))
 
 	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(
@@ -202,7 +197,7 @@ func TestReservedIdentityRejectedBeforeSubjectAccessReview(t *testing.T) {
 		}, true, nil))
 
 	var served bool
-	handler := p.withHandlers(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	handler := p.withFilterChain(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		served = true
 	}))
 
@@ -263,32 +258,5 @@ func TestAnomalyIsRateLimitedButAccessRecordIsNot(t *testing.T) {
 	}
 	if n := len(p.logs.ByEvent(logging.EventRequestAnomalyDetected)); n != 3 {
 		t.Fatalf("anomaly records = %d, want burst 3", n)
-	}
-}
-
-// TestFlushWarnLimiterSummarisesOnShutdown covers the shutdown half of the
-// flush loop: a burst suppressed just before the proxy stops is still
-// accounted for, rather than lost with the goroutine.
-func TestFlushWarnLimiterSummarisesOnShutdown(t *testing.T) {
-	p := newTestProxy(t)
-	for i := 0; i < 10; i++ {
-		p.warnLimiter.Allow(logging.WarningKey{Event: logging.EventRequestAnomalyDetected, Reason: string(metrics.ReasonReservedIdentity)})
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		p.flushWarnLimiter(ctx)
-	}()
-	cancel()
-	<-done
-
-	rec := p.logs.Only(t, logging.EventLogWarningSuppressed)
-	if n, _ := rec.Int("suppressed_count"); n != 7 {
-		t.Fatalf("suppressed_count = %d, want 7 (10 offered, burst of 3 allowed)", n)
-	}
-	if rec.String("warning_reason") != string(metrics.ReasonReservedIdentity) {
-		t.Fatalf("%v", rec)
 	}
 }

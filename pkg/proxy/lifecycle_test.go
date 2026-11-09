@@ -21,7 +21,7 @@ import (
 )
 
 // serveWith runs a handler through the two filters that own a request's
-// identity and its lifecycle, in the order withHandlers applies them.
+// identity and its lifecycle, in the order withFilterChain applies them.
 func serveWith(t *testing.T, p *fakeProxy, inner http.HandlerFunc, req *http.Request) *httptest.ResponseRecorder {
 	t.Helper()
 	rw := httptest.NewRecorder()
@@ -145,7 +145,7 @@ func TestClientCancelTermination(t *testing.T) {
 func serveChain(t *testing.T, p *fakeProxy, req *http.Request, inner http.HandlerFunc) *httptest.ResponseRecorder {
 	t.Helper()
 	rw := httptest.NewRecorder()
-	p.withHandlers(inner).ServeHTTP(rw, req)
+	p.withFilterChain(inner).ServeHTTP(rw, req)
 	return rw
 }
 

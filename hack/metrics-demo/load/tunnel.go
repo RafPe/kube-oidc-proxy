@@ -16,12 +16,6 @@ import (
 	"time"
 )
 
-// portForward opens a tunnel to the proxy Service and returns the local port
-// kubectl chose for it. The port is not fixed: a hard-coded one silently
-// attaches this run to a forward left behind by a previous one, which then
-// dies under it and turns every call into "connection refused". kubectl
-// announces the port it picked on stdout, and that line is also the signal
-// that the tunnel is ready, so nothing has to poll for it.
 // tunnel keeps a kubectl port-forward to the proxy Service open for the life
 // of the run. kubectl drops a forward when a client disappears mid-stream
 // ("lost connection to pod" after a broken pipe), and this generator does that
@@ -130,7 +124,7 @@ func (t *tunnel) closedNow() bool {
 }
 
 func (t *tunnel) open() error {
-	port, stop, err := startPortForward(t.ctx, t.kubeconfig, t.namespace, t.target, t.remote, t.ready,
+	port, stop, err := t.startPortForward(
 		// On its own goroutine: this callback runs on the one goroutine that
 		// owns cmd.Wait, and stop() waits for that goroutine to finish, so a
 		// reconnect started here would be something Close has to outlast.
@@ -192,15 +186,16 @@ type portAnnouncement struct {
 	err  error
 }
 
-// startPortForward runs one kubectl port-forward and returns the local port it
-// chose. It gives up after ready if kubectl never announces one, and onDeath
-// is called if the forward later exits on its own.
-func startPortForward(ctx context.Context, kubeconfig, namespace, target string, remote int, ready time.Duration, onDeath func(error)) (int, func(), error) {
+// startPortForward runs one kubectl port-forward of t.target and returns the
+// local port it chose. It gives up after t.ready if kubectl never announces
+// one, and onDeath is called if the forward later exits on its own.
+func (t *tunnel) startPortForward(onDeath func(error)) (int, func(), error) {
+	ctx := t.ctx
 	// #nosec G204 -- the binary is the constant "kubectl"; the variable
 	// arguments are the operator's own --state and --namespace flags and a
 	// target this program composed from names it read out of the cluster.
-	cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfig, "-n", namespace,
-		"port-forward", target, fmt.Sprintf(":%d", remote))
+	cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", t.kubeconfig, "-n", t.namespace,
+		"port-forward", t.target, fmt.Sprintf(":%d", t.remote))
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return 0, nil, err
@@ -226,8 +221,8 @@ func startPortForward(ctx context.Context, kubeconfig, namespace, target string,
 	select {
 	case a := <-announced:
 		port, err = a.port, a.err
-	case <-time.After(ready):
-		err = fmt.Errorf("kubectl port-forward did not announce a local port within %s", ready)
+	case <-time.After(t.ready):
+		err = fmt.Errorf("kubectl port-forward did not announce a local port within %s", t.ready)
 	case <-ctx.Done():
 		err = fmt.Errorf("kubectl port-forward was stopped before it announced a local port: %w", ctx.Err())
 	}
