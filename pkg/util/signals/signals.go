@@ -47,7 +47,7 @@ func NotifyContext(parent context.Context, logger *slog.Logger) (ctx context.Con
 
 	ch := make(chan os.Signal, 2)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
-	handle(logger, ch, cancel, func() { os.Exit(1) })
+	watchSignals(logger, ch, cancel, func() { os.Exit(1) })
 
 	return ctx, func() {
 		signal.Stop(ch)
@@ -55,7 +55,7 @@ func NotifyContext(parent context.Context, logger *slog.Logger) (ctx context.Con
 	}
 }
 
-// handle is NotifyContext's behaviour with the process-wide dependencies passed
+// watchSignals is NotifyContext's behaviour with the process-wide dependencies passed
 // in: the signal source, the shutdown request and the forced exit.
 // NotifyContext supplies the real ones; a test supplies a channel it writes to
 // and an exit it can observe, so the whole sequence is exercised without
@@ -65,7 +65,7 @@ func NotifyContext(parent context.Context, logger *slog.Logger) (ctx context.Con
 // has already started, and restating it says nothing new. The forced exit is
 // the same event with forced=true. Once stop has unregistered the handler, ch
 // receives nothing more and the goroutine simply stays parked.
-func handle(logger *slog.Logger, ch <-chan os.Signal, shutdown, exit func()) {
+func watchSignals(logger *slog.Logger, ch <-chan os.Signal, shutdown, exit func()) {
 	go func() {
 		ctx := context.Background()
 		sig := <-ch

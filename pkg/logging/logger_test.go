@@ -120,3 +120,25 @@ func TestEmitKeepsAnExplicitRequestIDOverTheContext(t *testing.T) {
 		t.Errorf("request_id appears %d times, want 1: %s", n, cap.Raw())
 	}
 }
+
+// TestNewTextFormatWritesKeyValueRecords drives the text branch of New, which
+// only --logging-format=text reaches: the record is logfmt-style key=value
+// pairs, not JSON, and still carries schema_version.
+func TestNewTextFormatWritesKeyValueRecords(t *testing.T) {
+	var buf strings.Builder
+	root, err := logging.New(logging.Options{Format: logging.FormatText, Output: &buf})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	root.Info("hello", slog.String("k", "v"))
+
+	out := buf.String()
+	if strings.HasPrefix(strings.TrimSpace(out), "{") {
+		t.Fatalf("text format wrote JSON: %q", out)
+	}
+	for _, want := range []string{"msg=hello", "k=v", "schema_version="} {
+		if !strings.Contains(out, want) {
+			t.Errorf("text record %q lacks %q", out, want)
+		}
+	}
+}

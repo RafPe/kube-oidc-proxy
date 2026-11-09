@@ -40,7 +40,7 @@ func TestHandlerReportsFirstSignalThenForcedExit(t *testing.T) {
 	exited := make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	handle(logging.ForComponent(root, logging.ComponentShutdown), ch, cancel, func() { close(exited) })
+	watchSignals(logging.ForComponent(root, logging.ComponentShutdown), ch, cancel, func() { close(exited) })
 
 	ch <- syscall.SIGTERM
 
