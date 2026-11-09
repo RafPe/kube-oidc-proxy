@@ -228,7 +228,7 @@ func NewServer(cfg Config, root *slog.Logger) (*Server, error) {
 		metrics:           cfg.Metrics,
 		shutdownTimeout:   shutdownTimeout,
 	}
-	s.srv = httpserve.NewServer(cfg.Addr, s.handler())
+	s.srv = httpserve.NewHTTPServer(cfg.Addr, s.handler())
 
 	cfg.Metrics.SetReady(false)
 	for _, issuer := range cfg.Issuers {

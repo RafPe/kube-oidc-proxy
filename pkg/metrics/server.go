@@ -57,7 +57,7 @@ func NewServer(cfg ServerConfig, logger *slog.Logger) (*Server, error) {
 	return &Server{
 		logger:          logger,
 		shutdownTimeout: shutdownTimeout,
-		srv:             httpserve.NewServer(cfg.Addr, cfg.Recorder.handler(logger)),
+		srv:             httpserve.NewHTTPServer(cfg.Addr, cfg.Recorder.handler(logger)),
 	}, nil
 }
 

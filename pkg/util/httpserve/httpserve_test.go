@@ -96,11 +96,11 @@ func TestShutdownTimeoutIsReported(t *testing.T) {
 	}
 }
 
-// TestNewServerIsHardened pins the limits every auxiliary listener gets: a
+// TestNewHTTPServerIsHardened pins the limits every auxiliary listener gets: a
 // zero here would be an unbounded read, write or idle period on a port
 // anything in the cluster can dial.
-func TestNewServerIsHardened(t *testing.T) {
-	srv := NewServer("127.0.0.1:0", http.NotFoundHandler())
+func TestNewHTTPServerIsHardened(t *testing.T) {
+	srv := NewHTTPServer("127.0.0.1:0", http.NotFoundHandler())
 	if srv.ReadHeaderTimeout <= 0 || srv.ReadTimeout <= 0 || srv.WriteTimeout != WriteTimeout ||
 		srv.IdleTimeout <= 0 || srv.MaxHeaderBytes <= 0 {
 		t.Fatalf("server limits not all set: %+v", srv)

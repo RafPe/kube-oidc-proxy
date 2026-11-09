@@ -34,10 +34,10 @@ const (
 	maxHeaderBytes    = 16 << 10
 )
 
-// NewServer returns an http.Server for addr and h carrying the listener limits
+// NewHTTPServer returns an http.Server for addr and h carrying the listener limits
 // the auxiliary listeners share, so the readiness and metrics ports cannot be
 // hardened differently.
-func NewServer(addr string, h http.Handler) *http.Server {
+func NewHTTPServer(addr string, h http.Handler) *http.Server {
 	return &http.Server{
 		Addr:              addr,
 		Handler:           h,
