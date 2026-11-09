@@ -41,11 +41,11 @@ var _ = framework.CasesDescribe("AuthenticationConfiguration multi-issuer", Orde
 		issuer2URL    *url.URL
 	)
 
-	f.BeforeProxyDeploy = func() {
+	f.BeforeProxyDeploy = func(ctx context.Context) {
 		var err error
 
 		By("Deploying second OIDC issuer")
-		issuer2Bundle, issuer2URL, err = f.Helper().DeployNamedIssuer(f.Namespace.Name, issuer2Name)
+		issuer2Bundle, issuer2URL, err = f.Helper().DeployNamedIssuer(ctx, f.Namespace.Name, issuer2Name)
 		Expect(err).NotTo(HaveOccurred())
 
 		By("Creating AuthenticationConfiguration ConfigMap")
@@ -56,7 +56,7 @@ var _ = framework.CasesDescribe("AuthenticationConfiguration multi-issuer", Orde
 		Expect(err).NotTo(HaveOccurred())
 
 		_, err = f.KubeClientSet.CoreV1().ConfigMaps(f.Namespace.Name).Create(
-			context.TODO(),
+			ctx,
 			&corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: authConfigVolume},
 				Data:       map[string]string{authConfigKey: string(cfgYAML)},
@@ -71,6 +71,9 @@ var _ = framework.CasesDescribe("AuthenticationConfiguration multi-issuer", Orde
 
 	sharedtests.RunTokenValidationTests(f)
 
+	// The specs below mint their own tokens: SignedTokenFor only signs for the
+	// framework's primary issuer, and these need the second issuer or an
+	// audience list SignedTokenFor deliberately does not vary.
 	It("accepts a valid token from the second configured issuer", func() {
 		payload := idtoken.NewPayload(issuer2URL, f.ClientID(), time.Now().Add(time.Minute))
 		sharedtests.ExpectProxyAuthenticated(f, issuer2Bundle, payload)
@@ -96,11 +99,11 @@ var _ = framework.CasesDescribe("AuthenticationConfiguration multi-issuer", Orde
 // whose aud claim is exactly audiences, so a spec can pick which configured
 // audiences a token carries.
 func tokenPayloadWithAudiences(issuerURL *url.URL, audiences []string) []byte {
-	payload, err := json.Marshal(map[string]interface{}{
+	payload, err := json.Marshal(map[string]any{
 		"iss":    issuerURL.String(),
 		"aud":    audiences,
-		"email":  "user@example.com",
-		"groups": []string{"group-1", "group-2"},
+		"email":  idtoken.DefaultUsername,
+		"groups": idtoken.DefaultGroups(),
 		"exp":    time.Now().Add(time.Minute).Unix(),
 	})
 	Expect(err).NotTo(HaveOccurred())

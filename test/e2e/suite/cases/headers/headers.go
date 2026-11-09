@@ -5,30 +5,28 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
-	"github.com/rafpe/kube-oidc-proxy/test/util/idtoken"
 )
 
 var _ = framework.CasesDescribe("Headers", Label("shard-a"), func() {
 	f := framework.NewDefaultFramework("headers")
 
-	JustAfterEach(func() {
+	JustAfterEach(func(ctx SpecContext) {
 		By("Deleting fake API Server")
-		err := f.Helper().DeleteFakeAPIServer(f.Namespace.Name)
+		err := f.Helper().DeleteFakeAPIServer(ctx, f.Namespace.Name)
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("should not respond with any extra headers if none are set on the proxy", func() {
-		extraOIDCVolumes, fakeAPIServerURL, err := f.Helper().DeployFakeAPIServer(f.Namespace.Name)
+	It("should not respond with any extra headers if none are set on the proxy", func(ctx SpecContext) {
+		extraOIDCVolumes, fakeAPIServerURL, err := f.Helper().DeployFakeAPIServer(ctx, f.Namespace.Name)
 		Expect(err).NotTo(HaveOccurred())
 
 		By("Redeploying proxy to send traffic to fake API server")
-		f.DeployProxyWith(extraOIDCVolumes, fmt.Sprintf("--server=%s", fakeAPIServerURL), "--certificate-authority=/fake-apiserver/ca.pem")
+		f.DeployProxyWith(ctx, extraOIDCVolumes, fmt.Sprintf("--server=%s", fakeAPIServerURL), "--certificate-authority=/fake-apiserver/ca.pem")
 
 		resp := sendRequestToProxy(f)
 
@@ -40,13 +38,13 @@ var _ = framework.CasesDescribe("Headers", Label("shard-a"), func() {
 		}
 	})
 
-	It("should respond with remote address and custom extra headers when they are set", func() {
+	It("should respond with remote address and custom extra headers when they are set", func(ctx SpecContext) {
 		By("Deploying fake API Server")
-		extraOIDCVolumes, fakeAPIServerURL, err := f.Helper().DeployFakeAPIServer(f.Namespace.Name)
+		extraOIDCVolumes, fakeAPIServerURL, err := f.Helper().DeployFakeAPIServer(ctx, f.Namespace.Name)
 		Expect(err).NotTo(HaveOccurred())
 
 		By("Redeploying proxy to send traffic to fake API server with extra headers set")
-		f.DeployProxyWith(extraOIDCVolumes, fmt.Sprintf("--server=%s", fakeAPIServerURL), "--certificate-authority=/fake-apiserver/ca.pem",
+		f.DeployProxyWith(ctx, extraOIDCVolumes, fmt.Sprintf("--server=%s", fakeAPIServerURL), "--certificate-authority=/fake-apiserver/ca.pem",
 			"--extra-user-header-client-ip", "--extra-user-headers=key1=foo,key2=foo,key1=bar")
 
 		resp := sendRequestToProxy(f)
@@ -84,14 +82,8 @@ var _ = framework.CasesDescribe("Headers", Label("shard-a"), func() {
 
 func sendRequestToProxy(f *framework.Framework) *http.Response {
 	By("Building request to proxy")
-	tokenPayload := idtoken.NewPayload(
-		f.IssuerURL(), f.ClientID(), time.Now().Add(time.Minute))
-
-	signedToken, err := idtoken.Sign(f.IssuerKeyBundle(), tokenPayload)
-	Expect(err).NotTo(HaveOccurred())
-
 	proxyConfig := f.NewProxyRestConfig()
-	requester := f.Helper().NewRequester(proxyConfig.Transport, signedToken)
+	requester := f.Helper().NewRequester(proxyConfig.Transport, proxyConfig.BearerToken)
 
 	By("Sending request to proxy")
 	reqURL := fmt.Sprintf("%s/foo/bar", proxyConfig.Host)

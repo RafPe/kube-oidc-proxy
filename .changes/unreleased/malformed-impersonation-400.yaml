@@ -1,3 +1,3 @@
 kind: Changed
 body: |-
-  A request whose `Impersonate-*` headers are malformed is refused with 400 Bad Request: an `Impersonate-` header of a kind the proxy does not recognise, and groups, uid or extras sent without `Impersonate-User` (previously 500 Internal Server Error). The response body is unchanged and the access record reports `reason=malformed_impersonation`.
+  A request whose `Impersonate-*` headers are malformed is refused with 400 Bad Request: an `Impersonate-` header of a kind the proxy does not recognise, and groups, uid or extras sent without `Impersonate-User` (previously 500 Internal Server Error). The access record reports `reason=malformed_impersonation`, and the missing-user message now names the real header: `no Impersonate-User header found for request` (was `Impersonation-User`).

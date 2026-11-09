@@ -10,41 +10,41 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
 )
 
-func (h *Helper) DeleteProxy(ns string) error {
-	return h.deleteApp(ns, kind.ProxyImageName, "oidc-ca")
+func (h *Helper) DeleteProxy(ctx context.Context, ns string) error {
+	return h.deleteApp(ctx, ns, kind.ProxyImageName, "oidc-ca")
 }
 
-func (h *Helper) DeleteIssuer(ns string) error {
-	return h.DeleteNamedIssuer(ns, kind.IssuerImageName)
+func (h *Helper) DeleteIssuer(ctx context.Context, ns string) error {
+	return h.DeleteNamedIssuer(ctx, ns, kind.IssuerImageName)
 }
 
-func (h *Helper) DeleteNamedIssuer(ns, name string) error {
-	return h.deleteApp(ns, name)
+func (h *Helper) DeleteNamedIssuer(ctx context.Context, ns, name string) error {
+	return h.deleteApp(ctx, ns, name)
 }
 
-func (h *Helper) DeleteFakeAPIServer(ns string) error {
-	return h.deleteApp(ns, kind.FakeAPIServerImageName)
+func (h *Helper) DeleteFakeAPIServer(ctx context.Context, ns string) error {
+	return h.deleteApp(ctx, ns, kind.FakeAPIServerImageName)
 }
 
-func (h *Helper) deleteApp(ns, name string, extraSecrets ...string) error {
-	err := h.KubeClient.AppsV1().Deployments(ns).Delete(context.TODO(), name, metav1.DeleteOptions{})
+func (h *Helper) deleteApp(ctx context.Context, ns, name string, extraSecrets ...string) error {
+	err := h.KubeClient.AppsV1().Deployments(ns).Delete(ctx, name, metav1.DeleteOptions{})
 	if err != nil && !k8sErrors.IsNotFound(err) {
 		return err
 	}
 
 	for _, s := range append(extraSecrets, name) {
-		err = h.KubeClient.CoreV1().Secrets(ns).Delete(context.TODO(), s, metav1.DeleteOptions{})
+		err = h.KubeClient.CoreV1().Secrets(ns).Delete(ctx, s, metav1.DeleteOptions{})
 		if err != nil && !k8sErrors.IsNotFound(err) {
 			return err
 		}
 	}
 
-	err = h.KubeClient.CoreV1().Services(ns).Delete(context.TODO(), name, metav1.DeleteOptions{})
+	err = h.KubeClient.CoreV1().Services(ns).Delete(ctx, name, metav1.DeleteOptions{})
 	if err != nil && !k8sErrors.IsNotFound(err) {
 		return err
 	}
 
-	err = h.KubeClient.CoreV1().ServiceAccounts(ns).Delete(context.TODO(), name, metav1.DeleteOptions{})
+	err = h.KubeClient.CoreV1().ServiceAccounts(ns).Delete(ctx, name, metav1.DeleteOptions{})
 	if err != nil && !k8sErrors.IsNotFound(err) {
 		return err
 	}

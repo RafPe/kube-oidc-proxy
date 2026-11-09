@@ -31,7 +31,7 @@ event-specific field:
 | `msg` | string | static text per event, never interpolated | query on `event_type`, not `msg` |
 | `schema_version` | int | `1` | bumped only on a breaking field change |
 | `component` | string | `startup`, `server`, `oidc`, `readiness`, `request`, `tokenreview`, `sar`, `audit`, `upstream`, `shutdown`, `metrics`, `k8s` | which subsystem spoke; `k8s` marks bridged library output |
-| `event_type` | string | `<domain>.<object>.<action>`, one of the 43 registered values | absent on `component=k8s` records |
+| `event_type` | string | `<domain>.<object>.<action>`, one of the 41 registered values | absent on `component=k8s` records |
 
 An access decision looks like this (line-wrapped here, one line in the stream):
 
@@ -43,7 +43,7 @@ An access decision looks like this (line-wrapped here, one line in the stream):
  "auth_method":"oidc","issuer_name":"corp","k8s_verb":"list","k8s_api_group":"","k8s_resource":"pods",
  "k8s_namespace":"default","decision":"allow","inbound_user":"alice@example.com",
  "inbound_groups":["platform-admins","system:authenticated"],
- "inbound_extra":{"Remote-Client-IP":["10.42.1.3"]},"inbound_extra_omitted":1}
+ "inbound_extra_omitted":1}
 ```
 
 Records bridged from the Kubernetes libraries (client-go, apimachinery, the
@@ -91,6 +91,22 @@ query:
 - **`schema_version` bumps only when field parsing breaks**: a field removed or
   retyped, or a closed value set narrowed. Not for a new event, a new optional
   field, or a widened value set.
+- **Retiring an optional field that never carried its documented content is
+  not breaking either.** A parser that treats the field as optional sees no
+  change, so `schema_version` stays.
+
+### Retired
+
+These values and fields are no longer emitted. Their names are never reused.
+
+| Name | Kind | Why it was retired |
+| --- | --- | --- |
+| `proxy.hook.failed` | `event_type` | Its only producer was a failed audit flush, and no audit backend can report one; see [startup, shutdown and exit status](#startup-shutdown-and-exit-status). |
+| `inbound_extra` | field of `request.access.decided` | It could never be populated. Its allowlist named the extras the proxy itself sets (`Remote-Client-IP`, `originaluser.jetstack.io-*`), but the proxy sets those on the forwarded request, never on the authenticated identity the field read, and an authenticator cannot mint those keys. |
+| `outbound_extra` | field of `request.access.decided` | It never carried an extra the proxy set. The only values that ever reached it were client-asserted `Impersonate-Extra-originaluser.jetstack.io-*` headers for keys the proxy owns. The record already carries what the proxy-set extras say: `src_ip` and the `inbound_*` fields. |
+
+`inbound_extra_omitted` and `outbound_extra_omitted` stay, and count every
+extra the identity carried: extras are never logged.
 
 ## Verbosity
 
@@ -98,7 +114,7 @@ query:
 
 | Level | Content | Visible at |
 | --- | --- | --- |
-| ERROR | The process cannot serve correctly: audit backend start or flush failure, the API server unreachable for a `SubjectAccessReview` or `TokenReview`, an internal invariant breach, an unreadable CA. | always |
+| ERROR | The process cannot serve correctly: audit backend start failure, a lost audit flush (as a bridged `component=k8s` record), the API server unreachable for a `SubjectAccessReview` or `TokenReview`, an internal invariant breach, an unreadable CA. | always |
 | WARN | Degraded state and anomalies: an issuer pending with a reason (on state change only), a forwarded header dropped, repeated reserved-identity attempts, header-cap attempts. | always |
 | INFO | Lifecycle (effective config and version, issuer configured and initialized, ready, serving, shutdown milestones, hook results) and the access record for every request, unsampled. | `-v=0` |
 | DEBUG | Per-request internals: the auth path taken, cache hit or miss, the live `SubjectAccessReview`, impersonation header names, client cancellation. | `-v>=1` |
@@ -106,9 +122,10 @@ query:
 WARN and ERROR are never hidden, whatever `-v` says. Denials are INFO on the
 access record and are never rate-limited: a bad token must not be able to buy a
 warning line, and denial *rates* belong in metrics. Only
-`request.anomaly.detected`, `request.headers.dropped` and
-`log.warning.suppressed` are token-bucketed; when the bucket drops records,
-`log.warning.suppressed` reports `warning_reason`, `suppressed_count` and
+`request.anomaly.detected` and `request.headers.dropped` are token-bucketed,
+one bucket per event type and reason; when a bucket drops records,
+`log.warning.suppressed` reports `suppressed_event_type`, `warning_reason`
+(only when the suppressed records carry a `reason`), `suppressed_count` and
 `interval_seconds`.
 
 `--logging-format` selects `json` (the default) or `text` for the whole stream.
@@ -117,7 +134,7 @@ Both flags are documented in the
 
 ## Event registry
 
-43 registered values, generated from the registry. "Required" lists the fields
+41 registered values, generated from the registry. "Required" lists the fields
 that must be present beyond `time`, `level`, `msg`, `schema_version`,
 `component` and `event_type`; conditional fields are described in the summary.
 
@@ -125,18 +142,18 @@ that must be present beyond `time`, `level`, `msg`, `schema_version`,
 | `event_type` | components | level | required | summary |
 |---|---|---|---|---|
 | `audit.backend.started` | `audit` | INFO | `backend_kind` | The audit backend is running. |
-| `audit.flush.completed` | `audit` | INFO | `duration_ms` | The pre-shutdown audit flush succeeded. |
+| `audit.flush.completed` | `audit` | INFO | `duration_ms` | The pre-shutdown audit flush finished. The bundled backends cannot report a lost flush here: it surfaces as a bridged component=k8s ERROR record. |
 | `authn.oidc.failed` | `oidc` | DEBUG | `request_id`, `reason` | The OIDC authenticator rejected the token. The denial itself is INFO on request.access.decided. |
 | `authn.oidc.succeeded` | `oidc` | DEBUG | `request_id`, `issuer_name` | The OIDC authenticator accepted the token. Names the issuer that accepted it. |
 | `authn.token.missing` | `tokenreview` | DEBUG | `request_id` | No bearer token was presented on the TokenReview path. |
 | `authn.tokenreview.completed` | `tokenreview` | DEBUG | `request_id`, `authenticated` | A live TokenReview answered, with duration_ms. A cache hit is reported by cache.tokenreview.lookup instead. |
-| `authn.tokenreview.failed` | `tokenreview` | ERROR | `request_id`, `reason`, `error_message` | The API server was unreachable or returned a status error. Carries reason=authentication_dependency_error. |
+| `authn.tokenreview.failed` | `tokenreview` | ERROR or DEBUG | `request_id`, `reason`, `error_message` | The TokenReview call failed: the API server was unreachable or returned a status error. Carries reason=authentication_dependency_error, or reason=client_canceled at DEBUG when the client hung up before the review answered. |
 | `authz.impersonation.resolved` | `sar` | DEBUG | `request_id`, `target_kind`, `target_name` | The whole impersonation sequence was allowed. A denial is request.access.decided with decision=deny and reason=impersonation_denied. |
 | `authz.sar.completed` | `sar` | DEBUG | `request_id`, `decision`, `duration_ms`, `request_coalesced`, `target_kind` | A live or shared SubjectAccessReview returned. Fires once per impersonation header value, so one request can emit several. |
 | `authz.sar.failed` | `sar` | ERROR or DEBUG | `request_id`, `reason`, `error_message` | The SubjectAccessReview call failed. Carries reason=authorization_dependency_error, or reason=client_canceled at DEBUG when the client hung up before the review answered. |
 | `cache.sar.lookup` | `sar` | DEBUG | `request_id`, `cache_result` | One SubjectAccessReview cache consultation. Carries decision on a hit, never the cache key. |
 | `cache.tokenreview.lookup` | `tokenreview` | DEBUG | `request_id`, `cache_result` | One TokenReview cache consultation. Carries authenticated on a hit, never the cache key. |
-| `log.warning.suppressed` | any | WARN | `warning_reason`, `suppressed_count`, `interval_seconds` | Token-bucket summary of dropped warning records. |
+| `log.warning.suppressed` | any | WARN | `suppressed_event_type`, `suppressed_count`, `interval_seconds` | Token-bucket summary of dropped warning records of one event type. Carries warning_reason when the suppressed records carry a reason. |
 | `metrics.scrape.failed` | `metrics` | ERROR | `error_message` | Gathering or encoding the exposition failed; the scrape was answered with 500. |
 | `metrics.server.failed` | `metrics` | ERROR | `error_message` | The metrics HTTP server returned an error. |
 | `metrics.server.started` | `metrics` | INFO | `address` | The metrics listener is serving /metrics. |
@@ -146,7 +163,6 @@ that must be present beyond `time`, `level`, `msg`, `schema_version`,
 | `proxy.config.invalid` | `startup` | ERROR | `reason`, `error_message` | The configuration cannot be used, including a CA bundle that cannot be read. |
 | `proxy.config.loaded` | `startup` | INFO | `version`, `config_hash`, `issuer_count`, `readiness_mode` | The effective non-secret configuration is fixed. |
 | `proxy.hook.completed` | `shutdown` | INFO | `hook`, `duration_ms` | One record per pre-shutdown hook that finished. |
-| `proxy.hook.failed` | `shutdown` | ERROR | `hook`, `error_message` | A pre-shutdown hook returned an error. hook=AuditBackend is a failed audit flush: audit events for requests already served were dropped. |
 | `proxy.server.started` | `server` | INFO | `address` | The secure listener is serving. |
 | `proxy.server.stopped` | `server` | INFO | `duration_ms` | The secure listener stopped. |
 | `proxy.shutdown.completed` | `shutdown` | INFO | `duration_ms` | Listeners stopped, readiness stopped and pre-shutdown hooks finished. |
@@ -154,6 +170,7 @@ that must be present beyond `time`, `level`, `msg`, `schema_version`,
 | `proxy.startup.failed` | `startup` | ERROR | `error_message` | The process could not reach serving after the logger was built; it exits non-zero without a second, unstructured error line. |
 | `readiness.proxy.ready` | `readiness` | INFO | `ready_issuers`, `total_issuers`, `readiness_mode` | Readiness latched to ready. |
 | `readiness.server.failed` | `readiness` | ERROR | `error_message` | The readiness HTTP server returned an error. |
+| `readiness.server.started` | `readiness` | INFO | `address` | The readiness listener is serving the probe endpoints. |
 | `request.access.decided` | `request` | INFO | `request_id`, `event`, `src_ip`, `path`, `http_method`, `auth_method`, `decision` | Authentication, authorization and proxy admission decided for a request. Carries event=AuSuccess\|AuFail. |
 | `request.anomaly.detected` | `request` | WARN | `request_id`, `src_ip`, `reason` | A rejection that indicates an exploit attempt or gross misconfiguration. Token-bucketed; the access record still carries the outcome. |
 | `request.handler.failed` | `request` | ERROR | `request_id`, `reason`, `error_message` | The proxy hit an internal error while handling a request; the access record carries reason=internal_error. |
@@ -202,9 +219,8 @@ If an alias is ever added it goes in this table with a status of `alias`.
 | `inbound_uid` | string | UID, sanitized | frozen | `request.access.decided` | absent when empty |
 | `inbound_groups` | array of string | first 32 groups, sanitized | frozen | `request.access.decided` | the cap is new |
 | `inbound_groups_omitted` | int | groups beyond the cap | new | `request.access.decided` | absent when zero |
-| `inbound_extra` | object | allowlisted impersonation extras only | frozen | `request.access.decided` | `originaluser.jetstack.io-extra` is no longer on the allowlist |
-| `inbound_extra_omitted` | int | count of extras not logged | frozen | `request.access.decided` | |
-| `outbound_user`, `outbound_uid`, `outbound_groups`, `outbound_groups_omitted`, `outbound_extra`, `outbound_extra_omitted` | as the `inbound_*` fields | as the `inbound_*` fields | frozen (the caps are new) | `request.access.decided` when impersonating | compare with `inbound_*` to see who acted as whom |
+| `inbound_extra_omitted` | int | count of the identity's extras, which are never logged | frozen | `request.access.decided` | absent when zero; `inbound_extra` is [retired](#retired) |
+| `outbound_user`, `outbound_uid`, `outbound_groups`, `outbound_groups_omitted`, `outbound_extra_omitted` | as the `inbound_*` fields | as the `inbound_*` fields | frozen (the caps are new) | `request.access.decided` when impersonating | compare with `inbound_*` to see who acted as whom |
 | `target_kind` | string | `user`, `group`, `uid`, `extra`, `serviceaccount`, `unknown` | new | `request.access.decided` on `impersonation_denied`, `authz.sar.completed`, `authz.impersonation.resolved` | replaces parsing the error text |
 | `target_name` | string | impersonation target, sanitized, max 256 chars | new | same as `target_kind` | |
 | `http_status` | int | HTTP status written to the client | new | `request.response.started`, `request.response.completed` | a `200` implied by the first `Write`, or by a handler that returned without writing, is recorded as `200`; `0` only when no response went out, because the connection was hijacked or the handler aborted before writing |
@@ -222,7 +238,7 @@ If an alias is ever added it goes in this table with a status of `alias`.
 | Field | Type | Values / format | Records | Notes |
 | --- | --- | --- | --- | --- |
 | `cache_result` | string | `hit`, `miss`, `bypass` | `cache.sar.lookup`, `cache.tokenreview.lookup` | `bypass` covers a disabled cache and an oversized SAR spec; `miss` includes expired |
-| `request_coalesced` | bool | `true`, `false` | `authz.sar.completed` | singleflight shared one live check between requests |
+| `request_coalesced` | bool | `true`, `false` | `authz.sar.completed` | `true` only for a request that joined another request's in-flight review; the request that ran it reports `false` |
 | `decision` | string | `allow`, `deny` | `cache.sar.lookup`, `authz.sar.completed` | on a SAR cache hit |
 | `authenticated` | bool | `true`, `false` | `authn.tokenreview.completed`, `cache.tokenreview.lookup` | on a TokenReview cache hit |
 | `duration_ms` | int | live call duration | `authz.sar.completed`, `authn.tokenreview.completed` | absent on a cache hit |
@@ -241,11 +257,12 @@ logged. The cache identity is in the event type, not in a field.
 | `pending_reason` | string | `not_initialized`, `transient` | `oidc.issuer.pending` |
 | `ready_issuers`, `total_issuers` | int | counts | `oidc.issuer.initialized`, `oidc.issuer.pending`, `readiness.proxy.ready` |
 | `readiness_mode` | string | `any`, `all` | `proxy.config.loaded`, `readiness.proxy.ready` |
-| `hook` | string | pre-shutdown hook name | `proxy.hook.completed`, `proxy.hook.failed` |
-| `warning_reason` | string | the suppressed record's `reason` | `log.warning.suppressed` |
+| `hook` | string | pre-shutdown hook name | `proxy.hook.completed` |
+| `suppressed_event_type` | string | the `event_type` of the suppressed records | `log.warning.suppressed` |
+| `warning_reason` | string | the suppressed records' `reason` | `log.warning.suppressed`, absent when they carry none |
 | `suppressed_count` | int | records dropped in the interval | `log.warning.suppressed` |
 | `interval_seconds` | int | summary interval | `log.warning.suppressed` |
-| `address` | string | bound listen address | `proxy.server.started` |
+| `address` | string | bound listen address | `proxy.server.started`, `metrics.server.started`, `readiness.server.started` |
 | `signal` | string | `SIGTERM`, `SIGINT` | `proxy.shutdown.started` |
 | `forced` | bool | `true` on the final signal | `proxy.shutdown.started`, absent otherwise |
 | `backend_kind` | string | audit backend type | `audit.backend.started` |
@@ -268,11 +285,8 @@ logged. The cache identity is in the event type, not in a field.
 startup-scoped vocabulary that is deliberately disjoint from the request set so
 a query for a configuration problem can never match request traffic:
 
-`ca_file_unreadable`, `invalid_configuration`.
-
-`ca_file_unreadable` is emitted when the CA bundle named by
-`--oidc-ca-file` cannot be read; `invalid_configuration` is reserved for an
-effective configuration the process refuses.
+`ca_file_unreadable`, emitted when the CA bundle named by `--oidc-ca-file`
+cannot be read.
 
 ### Values explicitly excluded
 
@@ -291,22 +305,15 @@ printing a second, unstructured line. Only a failure before the logger can be
 built, such as an unknown flag or an invalid `--logging-format`, is printed to
 stderr as plain text, because there is nothing else to report through yet.
 
-On shutdown the audit backend is flushed before the process exits, and the
-outcome is logged. With the backends bundled from `k8s.io/apiserver` (`log`,
-and the buffered `webhook`) a lost flush is visible as a bridged
-`component=k8s` ERROR record, `audit.flush.completed` still follows with
-`duration_ms`, and the process exits `0`: those backends do not report an error
-from `Shutdown()`, because the upstream `audit.Backend` interface has no return
-value there, and the buffered backend logs a delivery failure through the
-Kubernetes error handler instead. So with a bundled backend, alert on the
-`component=k8s` ERROR, not on the exit status.
-
-A backend that implements the optional `ShutdownErr() error` extension gets
-stricter handling: a flush it reports as failed is reported once, as
-`proxy.hook.failed` with `hook=AuditBackend`, and makes the
-process **exit non-zero**, on the grounds that a dropped audit event for a
-request this process already served is not a warning to be tidied away. None
-of the bundled backends implement the extension today.
+On shutdown the audit backend is flushed before the process exits, and
+`audit.flush.completed` records how long the flush took. It records that the
+flush finished, not that it succeeded: the upstream `audit.Backend` interface
+returns nothing from `Shutdown()`, and none of the backends bundled from
+`k8s.io/apiserver` (`log`, the buffered `webhook`) has another way to report
+dropped events. The buffered backend logs a delivery failure through the
+Kubernetes error handler instead, so a lost flush is visible only as a bridged
+`component=k8s` ERROR record, and the process still exits `0`. Alert on that
+ERROR, not on the exit status.
 
 ## Correlation
 
@@ -536,9 +543,9 @@ This table is for whoever writes the ingest pipeline that copies them.
   not on the allowlist, request and response bodies, cache keys, arbitrary
   claims and extras, configured extra-header values, the `User-Agent` header,
   full issuer URLs.
-- `originaluser.jetstack.io-extra` is not on the loggable extras allowlist. That
-  extras existed is reported as a bounded count (`inbound_extra_omitted`,
-  `outbound_extra_omitted`), never as content.
+- Identity extras are never logged. That an identity carried extras is
+  reported as a count (`inbound_extra_omitted`, `outbound_extra_omitted`),
+  never as content.
 - Every user-influenced string passes through the `sanitize` helper, which
   strips control characters, so nothing a client sends can inject a second
   record or fake a field.

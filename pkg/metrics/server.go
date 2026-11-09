@@ -3,6 +3,7 @@ package metrics
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -12,19 +13,11 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/util/httpserve"
 )
 
-// Listener timeouts. ReadHeaderTimeout matches the probe listener (gosec
-// G112, Slowloris). WriteTimeout must exceed scrapeTimeout or the 503 the
-// handler writes on a slow gather never reaches the scraper. MaxHeaderBytes
-// leaves room for a bearer token and nothing else.
-const (
-	readHeaderTimeout = 5 * time.Second
-	readTimeout       = 10 * time.Second
-	writeTimeout      = 30 * time.Second
-	idleTimeout       = 60 * time.Second
-	maxHeaderBytes    = 16 << 10
-
-	shutdownTimeout = 5 * time.Second
-)
+// shutdownTimeout bounds the graceful shutdown of the metrics listener. The
+// listener's read, write and header limits are httpserve's, shared with the
+// readiness listener; scrapeTimeout stays inside its WriteTimeout so the 503
+// written on a slow gather reaches the scraper.
+const shutdownTimeout = 5 * time.Second
 
 // Server owns the metrics listener and gives it an explicit lifecycle: Start
 // binds synchronously, the server serves until ctx is cancelled, and Wait
@@ -53,21 +46,19 @@ type ServerConfig struct {
 }
 
 // NewServer builds a Server exposing cfg.Recorder on cfg.Addr. It does not
-// bind until Start. logger is required; a test passes a discarding logger.
-func NewServer(cfg ServerConfig, logger *slog.Logger) *Server {
+// bind until Start. logger is required, as it is for the proxy's other
+// constructors: a nil one is a wiring mistake, refused here rather than
+// surfacing as a panic on the first failed scrape. A test passes a
+// discarding logger.
+func NewServer(cfg ServerConfig, logger *slog.Logger) (*Server, error) {
+	if logger == nil {
+		return nil, errors.New("metrics: logger is required")
+	}
 	return &Server{
 		logger:          logger,
 		shutdownTimeout: shutdownTimeout,
-		srv: &http.Server{
-			Addr:              cfg.Addr,
-			Handler:           cfg.Recorder.Handler(logger),
-			ReadHeaderTimeout: readHeaderTimeout,
-			ReadTimeout:       readTimeout,
-			WriteTimeout:      writeTimeout,
-			IdleTimeout:       idleTimeout,
-			MaxHeaderBytes:    maxHeaderBytes,
-		},
-	}
+		srv:             httpserve.NewServer(cfg.Addr, cfg.Recorder.handler(logger)),
+	}, nil
 }
 
 // Addr returns the address the listener is bound to, which differs from the
@@ -83,12 +74,16 @@ func (s *Server) Addr() string {
 // startup, then serves in the background until ctx is cancelled. Cancellation
 // starts a graceful shutdown bounded by shutdownTimeout; a scrape that does not
 // finish inside it is closed and the timeout is reported through Wait.
+//
+// Start reports metrics.server.started itself, with the bound address: each
+// listener's Start owns its own started record, because only it knows the
+// bind succeeded and where.
 func (s *Server) Start(ctx context.Context) error {
 	serving, err := httpserve.Start(ctx, s.srv, s.shutdownTimeout, func(err error) {
 		logging.Emit(context.Background(), s.logger, logging.EventMetricsServerFailed, logging.ErrAttr(err))
 	})
 	if err != nil {
-		return fmt.Errorf("metrics listener failed to listen on %s: %w", s.srv.Addr, err)
+		return fmt.Errorf("metrics: listening on %s: %w", s.srv.Addr, err)
 	}
 	s.serving = serving
 

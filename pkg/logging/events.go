@@ -3,7 +3,7 @@ package logging
 
 import (
 	"log/slog"
-	"sort"
+	"slices"
 )
 
 // EventType names the shape of a record. Values are exactly three lowercase
@@ -37,6 +37,7 @@ const (
 	EventOIDCIssuerInitialized      EventType = "oidc.issuer.initialized"
 	EventOIDCIssuerPending          EventType = "oidc.issuer.pending"
 	EventReadinessProxyReady        EventType = "readiness.proxy.ready"
+	EventReadinessServerStarted     EventType = "readiness.server.started"
 	EventReadinessServerFailed      EventType = "readiness.server.failed"
 	EventProxyConfigLoaded          EventType = "proxy.config.loaded"
 	EventProxyConfigInvalid         EventType = "proxy.config.invalid"
@@ -46,7 +47,6 @@ const (
 	EventProxyShutdownStarted       EventType = "proxy.shutdown.started"
 	EventProxyShutdownCompleted     EventType = "proxy.shutdown.completed"
 	EventProxyHookCompleted         EventType = "proxy.hook.completed"
-	EventProxyHookFailed            EventType = "proxy.hook.failed"
 	EventAuditBackendStarted        EventType = "audit.backend.started"
 	EventAuditFlushCompleted        EventType = "audit.flush.completed"
 	EventUpstreamRequestFailed      EventType = "upstream.request.failed"
@@ -168,11 +168,12 @@ var registry = map[EventType]EventSpec{
 		Summary:    "A live TokenReview answered, with duration_ms. A cache hit is reported by cache.tokenreview.lookup instead.",
 	},
 	EventAuthnTokenReviewFailed: {
-		Components: []Component{ComponentTokenReview},
-		Level:      slog.LevelError,
-		Required:   []string{"request_id", "reason", "error_message"},
-		Message:    "tokenreview failed",
-		Summary:    "The API server was unreachable or returned a status error. Carries reason=authentication_dependency_error.",
+		Components:    []Component{ComponentTokenReview},
+		Level:         slog.LevelError,
+		AllowedLevels: []slog.Level{slog.LevelDebug},
+		Required:      []string{"request_id", "reason", "error_message"},
+		Message:       "tokenreview failed",
+		Summary:       "The TokenReview call failed: the API server was unreachable or returned a status error. Carries reason=authentication_dependency_error, or reason=client_canceled at DEBUG when the client hung up before the review answered.",
 	},
 	EventAuthzSARCompleted: {
 		Components: []Component{ComponentSAR},
@@ -238,6 +239,13 @@ var registry = map[EventType]EventSpec{
 		Message:    "proxy ready",
 		Summary:    "Readiness latched to ready.",
 	},
+	EventReadinessServerStarted: {
+		Components: []Component{ComponentReadiness},
+		Level:      slog.LevelInfo,
+		Required:   []string{"address"},
+		Message:    "readiness server started",
+		Summary:    "The readiness listener is serving the probe endpoints.",
+	},
 	EventReadinessServerFailed: {
 		Components: []Component{ComponentReadiness},
 		Level:      slog.LevelError,
@@ -301,13 +309,6 @@ var registry = map[EventType]EventSpec{
 		Message:    "shutdown hook completed",
 		Summary:    "One record per pre-shutdown hook that finished.",
 	},
-	EventProxyHookFailed: {
-		Components: []Component{ComponentShutdown},
-		Level:      slog.LevelError,
-		Required:   []string{"hook", "error_message"},
-		Message:    "shutdown hook failed",
-		Summary:    "A pre-shutdown hook returned an error. hook=AuditBackend is a failed audit flush: audit events for requests already served were dropped.",
-	},
 	EventAuditBackendStarted: {
 		Components: []Component{ComponentAudit},
 		Level:      slog.LevelInfo,
@@ -320,7 +321,7 @@ var registry = map[EventType]EventSpec{
 		Level:      slog.LevelInfo,
 		Required:   []string{"duration_ms"},
 		Message:    "audit flush completed",
-		Summary:    "The pre-shutdown audit flush succeeded.",
+		Summary:    "The pre-shutdown audit flush finished. The bundled backends cannot report a lost flush here: it surfaces as a bridged component=k8s ERROR record.",
 	},
 	EventUpstreamRequestFailed: {
 		Components: []Component{ComponentUpstream},
@@ -339,9 +340,9 @@ var registry = map[EventType]EventSpec{
 	EventLogWarningSuppressed: {
 		Components: nil, // any
 		Level:      slog.LevelWarn,
-		Required:   []string{"warning_reason", "suppressed_count", "interval_seconds"},
+		Required:   []string{"suppressed_event_type", "suppressed_count", "interval_seconds"},
 		Message:    "warnings suppressed",
-		Summary:    "Token-bucket summary of dropped warning records.",
+		Summary:    "Token-bucket summary of dropped warning records of one event type. Carries warning_reason when the suppressed records carry a reason.",
 	},
 	EventMetricsServerStarted: {
 		Components: []Component{ComponentMetrics},
@@ -372,7 +373,7 @@ func AllEventTypes() []EventType {
 	for e := range registry {
 		out = append(out, e)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	slices.Sort(out)
 	return out
 }
 

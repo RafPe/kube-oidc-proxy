@@ -72,8 +72,9 @@ them freely in a single configuration, subject to the prefix rule below.
 All issuers feed the same RBAC namespace. Without distinct prefixes, issuer
 B could mint a `sub` or group value that collides with an identity you bound
 for issuer A. Give every issuer a unique `prefix:` (or bake a unique prefix
-into every CEL expression) and never use `prefix: "-"`-style unprefixed
-usernames in a multi-issuer setup.
+into every CEL expression) and never use unprefixed usernames (`prefix: ""`)
+in a multi-issuer setup. The prefix is prepended verbatim: `prefix: "-"` is
+not an opt-out, it makes every username start with `-`.
 
 ## Readiness
 

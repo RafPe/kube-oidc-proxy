@@ -2,9 +2,10 @@
 package logging
 
 import (
+	"cmp"
 	"context"
 	"log/slog"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
@@ -17,10 +18,10 @@ import (
 // access decision, so a denial is always recorded even while the anomaly that
 // explains it is being sampled.
 //
-// Each reason gets its own bucket, so a flood of one kind of anomaly cannot
-// hide the first occurrence of another. What was dropped is reported rather
-// than lost: Flush emits one log.warning.suppressed summary per reason that
-// dropped records since the previous flush.
+// Each WarningKey gets its own bucket, so a flood of one kind of anomaly
+// cannot hide the first occurrence of another. What was dropped is reported
+// rather than lost: Flush emits one log.warning.suppressed summary per key
+// that dropped records since the previous flush.
 //
 // The clock is injected so a test can reason about the bucket without
 // sleeping.
@@ -31,10 +32,19 @@ type Limiter struct {
 	clock        func() time.Time
 
 	mu      sync.Mutex
-	entries map[string]*limiterEntry
+	entries map[WarningKey]*limiterEntry
 }
 
-// limiterEntry is the bucket and the drop count for one reason. The bucket
+// WarningKey names one bucket: the warning record it limits and, for a record
+// that carries a reason field, the reason. Keyed by the record rather than by
+// a free-form string, so the summary reports exactly what was dropped: a
+// record without a reason is summarised without one.
+type WarningKey struct {
+	Event  EventType
+	Reason string
+}
+
+// limiterEntry is the bucket and the drop count for one key. The bucket
 // outlives a flush; only the count is reset, so a flush cannot hand a caller a
 // fresh burst.
 type limiterEntry struct {
@@ -43,7 +53,7 @@ type limiterEntry struct {
 }
 
 // NewLimiter returns a Limiter admitting ratePerSecond records per second per
-// reason with the given burst, and summarising what it dropped every
+// key with the given burst, and summarising what it dropped every
 // summaryEvery. The rate is a plain float64 so a caller does not have to know
 // which bucket implementation backs it; it is converted internally. A nil
 // clock means time.Now.
@@ -56,20 +66,20 @@ func NewLimiter(ratePerSecond float64, burst int, summaryEvery time.Duration, cl
 		burst:        burst,
 		summaryEvery: summaryEvery,
 		clock:        clock,
-		entries:      make(map[string]*limiterEntry),
+		entries:      make(map[WarningKey]*limiterEntry),
 	}
 }
 
-// Allow reports whether a warning carrying the given reason may be emitted
-// now, counting the record when it may not.
-func (l *Limiter) Allow(reason string) bool {
+// Allow reports whether the warning record key names may be emitted now,
+// counting the record when it may not.
+func (l *Limiter) Allow(key WarningKey) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	entry, ok := l.entries[reason]
+	entry, ok := l.entries[key]
 	if !ok {
 		entry = &limiterEntry{limiter: rate.NewLimiter(l.limit, l.burst)}
-		l.entries[reason] = entry
+		l.entries[key] = entry
 	}
 
 	if entry.limiter.AllowN(l.clock(), 1) {
@@ -81,40 +91,46 @@ func (l *Limiter) Allow(reason string) bool {
 	return false
 }
 
-// Flush emits one log.warning.suppressed record per reason that dropped
-// warnings since the previous flush and resets those counts. A reason that
-// dropped nothing produces no record, so a quiet proxy stays quiet.
+// Flush emits one log.warning.suppressed record per key that dropped warnings
+// since the previous flush and resets those counts. A key that dropped
+// nothing produces no record, so a quiet proxy stays quiet.
 func (l *Limiter) Flush(ctx context.Context, logger *slog.Logger) {
 	for _, s := range l.drain() {
-		Emit(ctx, logger, EventLogWarningSuppressed,
-			slog.String("warning_reason", Sanitize(s.reason)),
+		attrs := []slog.Attr{slog.String("suppressed_event_type", string(s.key.Event))}
+		if s.key.Reason != "" {
+			attrs = append(attrs, slog.String("warning_reason", Sanitize(s.key.Reason)))
+		}
+		attrs = append(attrs,
 			slog.Int("suppressed_count", s.dropped),
 			slog.Int("interval_seconds", int(l.summaryEvery.Seconds())))
+		Emit(ctx, logger, EventLogWarningSuppressed, attrs...)
 	}
 }
 
-// suppressed is one reason's drop count as of a flush.
+// suppressed is one key's drop count as of a flush.
 type suppressed struct {
-	reason  string
+	key     WarningKey
 	dropped int
 }
 
-// drain returns the reasons that dropped records and zeroes their counts,
-// sorted so a flush emits its summaries in a stable order rather than in Go's
+// drain returns the keys that dropped records and zeroes their counts, sorted
+// so a flush emits its summaries in a stable order rather than in Go's
 // randomised map order. The lock is not held while records are emitted.
 func (l *Limiter) drain() []suppressed {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	var out []suppressed
-	for reason, entry := range l.entries {
+	for key, entry := range l.entries {
 		if entry.dropped == 0 {
 			continue
 		}
-		out = append(out, suppressed{reason: reason, dropped: entry.dropped})
+		out = append(out, suppressed{key: key, dropped: entry.dropped})
 		entry.dropped = 0
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].reason < out[j].reason })
+	slices.SortFunc(out, func(a, b suppressed) int {
+		return cmp.Or(cmp.Compare(a.key.Event, b.key.Event), cmp.Compare(a.key.Reason, b.key.Reason))
+	})
 
 	return out
 }

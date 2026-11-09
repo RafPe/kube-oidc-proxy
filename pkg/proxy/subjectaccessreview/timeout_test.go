@@ -56,7 +56,7 @@ func (b *blockingReviewer) Create(ctx context.Context, _ *v1.SubjectAccessReview
 	return nil, ctx.Err()
 }
 
-// sarResult carries the return of CheckAuthorizedForImpersonation back from the
+// sarResult carries the return of ResolveImpersonation back from the
 // worker goroutine over a channel, keeping the tests race-clean.
 type sarResult struct {
 	target user.Info
@@ -81,7 +81,7 @@ func TestCheckAuthorizedForImpersonationCanceled(t *testing.T) {
 
 	done := make(chan sarResult, 1)
 	go func() {
-		target, err := sar.CheckAuthorizedForImpersonation(req, requester)
+		target, err := sar.ResolveImpersonation(req, requester)
 		done <- sarResult{target: target, err: err}
 	}()
 
@@ -129,7 +129,7 @@ func TestCheckAuthorizedForImpersonationDeadlineExceeded(t *testing.T) {
 
 	done := make(chan sarResult, 1)
 	go func() {
-		target, err := sar.CheckAuthorizedForImpersonation(req, requester)
+		target, err := sar.ResolveImpersonation(req, requester)
 		done <- sarResult{target: target, err: err}
 	}()
 
@@ -169,7 +169,7 @@ func TestCheckAuthorizedForImpersonationConfiguredTimeout(t *testing.T) {
 
 	done := make(chan sarResult, 1)
 	go func() {
-		target, err := sar.CheckAuthorizedForImpersonation(req, requester)
+		target, err := sar.ResolveImpersonation(req, requester)
 		done <- sarResult{target: target, err: err}
 	}()
 

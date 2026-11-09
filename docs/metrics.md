@@ -109,7 +109,7 @@ and a no-op, when metrics are off.
 | `review_requests_total`, `review_request_duration_seconds` | the single `Create` call of each review client | `ReviewRequest` |
 | `cache_lookups_total` | the two review caches | `CacheLookup` |
 | `oidc_issuer_initialized`, `ready` | the readiness probe's state transitions | `SetIssuerInitialized`, `SetReady` |
-| `audit_backend_failures_total` | the audit backend's start and shutdown | `AuditBackendFailure` |
+| `audit_backend_failures_total` | the audit backend's start | `AuditBackendFailure` |
 
 ## Catalogue
 
@@ -134,7 +134,7 @@ change with a changelog entry.
 | `kube_oidc_proxy_cache_lookups_total` | counter | `cache`, `result` | STABLE | Review cache lookups by cache and result. |
 | `kube_oidc_proxy_oidc_issuer_initialized` | gauge | `issuer_name` | STABLE | 1 once the issuer's authenticator has fetched its JWKS. Reports initialization, not ongoing issuer availability. |
 | `kube_oidc_proxy_ready` | gauge | none | STABLE | 1 once the proxy is serving and readiness has latched. |
-| `kube_oidc_proxy_audit_backend_failures_total` | counter | `operation` | ALPHA | Audit backend failures observable at start and shutdown. Asynchronous delivery failures are not included. |
+| `kube_oidc_proxy_audit_backend_failures_total` | counter | `operation` | ALPHA | Audit backend failures observable at start. Asynchronous delivery failures and lost flushes at shutdown are not included. |
 <!-- metrics:end -->
 
 ## Label values
@@ -157,7 +157,7 @@ and a PromQL query select the same thing.
 | `outcome` (review) | `allow`, `deny`, `timeout`, `canceled`, `error`, classified from the API call itself. For a TokenReview, `allow` means authenticated. |
 | `cache` / `result` | `tokenreview` or `sar`; `hit`, `miss`, `bypass`. For `sar`, `bypass` is a review spec too large to cache or a cache disabled by a zero TTL. For `tokenreview` only `hit` and `miss` occur: with both TTLs at zero the cache layer is not constructed and no lookup is counted. |
 | `issuer_name` | The configured issuer's host, as in the log records. Never the URL. Two issuers sharing a host are refused at startup. |
-| `operation` | `run`, `shutdown`. |
+| `operation` | `run`: the backend failed to start. |
 
 ## Buckets
 
@@ -194,13 +194,11 @@ a 10s default timeout.
   off because it changes the `le` label formatting and therefore series
   identity; the handler still negotiates the Prometheus text or protobuf
   encoding from the scraper's `Accept` header, as promhttp does.
-- `kube_oidc_proxy_audit_backend_failures_total{operation="shutdown"}` is
-  incremented from a pre-shutdown hook. The metrics listener is stopped only
-  after those hooks return, so the series is observable — but only to a scrape
-  that lands inside the drain window, which is shorter than any ordinary scrape
-  interval. Treat the `proxy.hook.failed` log record with `hook=AuditBackend`
-  as the operational signal for that case and the counter as best-effort
-  corroboration.
+- `kube_oidc_proxy_audit_backend_failures_total` counts only a backend that
+  failed to start (`operation="run"`). The upstream audit backends cannot
+  report a flush that lost events at shutdown; the buffered backend reports it
+  through the Kubernetes error handler, which surfaces as a `component=k8s`
+  ERROR log record.
 - Not covered by this catalogue and deliberately so: request and response
   sizes, TLS handshake failures on the proxy listener (they end before HTTP
   handling), and transport failures inside an upgraded stream after the

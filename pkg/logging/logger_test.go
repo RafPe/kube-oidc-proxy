@@ -58,9 +58,9 @@ func TestTextFormatIsValid(t *testing.T) {
 	}
 }
 
-func TestRequestIDFromIsEmptyWhenAbsent(t *testing.T) {
-	if got := logging.RequestIDFrom(context.Background()); got != "" {
-		t.Fatalf("RequestIDFrom on a bare context = %q, want empty", got)
+func TestRequestIDIsEmptyWhenAbsent(t *testing.T) {
+	if got := logging.RequestID(context.Background()); got != "" {
+		t.Fatalf("RequestID on a bare context = %q, want empty", got)
 	}
 }
 

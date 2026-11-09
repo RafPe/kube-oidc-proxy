@@ -6,7 +6,7 @@ package promtext
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	dto "github.com/prometheus/client_model/go"
@@ -38,7 +38,7 @@ func Parse(text string) ([]Sample, error) {
 	for name := range families {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 
 	var out []Sample
 	for _, name := range names {

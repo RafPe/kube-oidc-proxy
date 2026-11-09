@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash"
 	"log/slog"
@@ -46,6 +47,14 @@ const (
 // SubjectAccessReview decision cache.
 const tokenCacheSize = 8192
 
+// ErrCreateTokenReview is the sentinel wrapping every failed TokenReview: the
+// API server could not be reached, did not answer in time, or answered with a
+// status error. It marks a dependency failure, not a verdict on the token, so
+// callers can tell the two apart with errors.Is. The underlying error
+// (including context.Canceled/DeadlineExceeded) is wrapped alongside it so it
+// remains detectable too.
+var ErrCreateTokenReview = errors.New("create TokenReview")
+
 // liveReviewer submits a TokenReview to the API server for every call. New
 // fronts it with the result cache Config asks for; see withCache.
 type liveReviewer struct {
@@ -55,9 +64,9 @@ type liveReviewer struct {
 	// bound onto a logger, and Emit reads it from there.
 	logger *slog.Logger
 
-	reviewRequester clientauthv1.TokenReviewInterface
-	audiences       []string
-	timeout         time.Duration
+	client    clientauthv1.TokenReviewInterface
+	audiences []string
+	timeout   time.Duration
 
 	// metrics receives the API-call and cache observations; nil records nothing.
 	metrics *metrics.Recorder
@@ -88,25 +97,28 @@ type Config struct {
 // New returns the authenticator that passes a bearer token through to the API
 // server's TokenReview, with the result cache cfg asks for in front of it.
 //
-// logger is the tokenreview-component logger. It is required: a nil logger is
-// a wiring mistake, not a request for silence.
-func New(requester clientauthv1.TokenReviewInterface, cfg Config, logger *slog.Logger) authenticator.Token {
-	return withCache(newReviewer(requester, cfg, logger), cfg.CacheSuccessTTL, cfg.CacheFailureTTL)
+// logger is the tokenreview-component logger and is required: a nil logger is
+// a wiring mistake, refused here rather than panicking on the first request.
+func New(client clientauthv1.TokenReviewInterface, cfg Config, logger *slog.Logger) (authenticator.Token, error) {
+	if logger == nil {
+		return nil, errors.New("tokenreview: logger is required")
+	}
+	return withCache(newReviewer(client, cfg, logger), cfg.CacheSuccessTTL, cfg.CacheFailureTTL), nil
 }
 
 // newReviewer builds the uncached reviewer, settling every default at
 // construction so the reviewer needs no zero-value accommodation.
-func newReviewer(requester clientauthv1.TokenReviewInterface, cfg Config, logger *slog.Logger) *liveReviewer {
+func newReviewer(client clientauthv1.TokenReviewInterface, cfg Config, logger *slog.Logger) *liveReviewer {
 	timeout := cfg.Timeout
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
 	return &liveReviewer{
-		logger:          logger,
-		reviewRequester: requester,
-		audiences:       cfg.Audiences,
-		timeout:         timeout,
-		metrics:         cfg.Metrics,
+		logger:    logger,
+		client:    client,
+		audiences: cfg.Audiences,
+		timeout:   timeout,
+		metrics:   cfg.Metrics,
 	}
 }
 
@@ -254,25 +266,25 @@ func writeLengthPrefixed(h hash.Hash, b []byte, s string) {
 
 // AuthenticateToken implements authenticator.Token by submitting a
 // TokenReview for the bearer token. It returns ok=false with a nil error when
-// the API server answers but does not authenticate the token, and a non-nil
-// error when the review itself failed; callers must treat both as
-// unauthenticated (fail closed).
+// the API server answers but does not authenticate the token, and an error
+// wrapping ErrCreateTokenReview when the review itself failed; callers must
+// treat both as unauthenticated (fail closed).
 func (t *liveReviewer) AuthenticateToken(ctx context.Context, token string) (*authenticator.Response, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, t.timeout)
 	defer cancel()
 
 	start := time.Now()
 
-	resp, err := t.reviewRequester.Create(ctx, t.buildReview(token), metav1.CreateOptions{})
+	resp, err := t.client.Create(ctx, t.buildReview(token), metav1.CreateOptions{})
 	// Observed at the one place the API server is called: the outcome is the
 	// call's, not the caller's, so a cache hit or a fallback never counts.
 	switch {
 	case err != nil:
 		t.metrics.ReviewRequest(metrics.ReviewTokenReview, metrics.ReviewOutcomeFor(err, false), time.Since(start))
-		return nil, false, err
+		return nil, false, fmt.Errorf("%w: %w", ErrCreateTokenReview, err)
 	case len(resp.Status.Error) > 0:
 		t.metrics.ReviewRequest(metrics.ReviewTokenReview, metrics.ReviewError, time.Since(start))
-		return nil, false, fmt.Errorf("error authenticating using token review: %s", resp.Status.Error)
+		return nil, false, fmt.Errorf("%w: status error: %s", ErrCreateTokenReview, resp.Status.Error)
 	}
 	t.metrics.ReviewRequest(metrics.ReviewTokenReview, metrics.ReviewOutcomeFor(nil, resp.Status.Authenticated), time.Since(start))
 

@@ -2,12 +2,12 @@
 package proxy
 
 import (
-	"net"
 	"net/http"
 	"unicode"
 
 	"k8s.io/apimachinery/pkg/util/uuid"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/clientip"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 )
 
@@ -36,7 +36,10 @@ func (p *Proxy) withRequestID(next http.Handler) http.Handler {
 		id := string(uuid.NewUUID())
 		if inbound != "" {
 			r = reqctx.WithClientRequestID(r, inbound)
-			if peerIsTrusted(r.RemoteAddr, p.trustedProxies) {
+			// Only a trusted proxy may choose the request's correlation
+			// id; for anyone else the inbound value is kept as
+			// client_request_id and the proxy mints its own.
+			if clientip.PeerTrusted(r.RemoteAddr, p.trustedProxies) {
 				id = inbound
 			}
 		}
@@ -61,12 +64,4 @@ func validRequestID(v string) string {
 		}
 	}
 	return v
-}
-
-// peerIsTrusted reports whether the immediate peer is inside one of the
-// configured trusted-proxy networks. Only such a peer may choose the request's
-// correlation id; for anyone else the inbound value is kept as
-// client_request_id and the proxy mints its own.
-func peerIsTrusted(remoteAddr string, trusted []*net.IPNet) bool {
-	return reqctx.IPInNetworks(reqctx.PeerHost(remoteAddr), trusted)
 }

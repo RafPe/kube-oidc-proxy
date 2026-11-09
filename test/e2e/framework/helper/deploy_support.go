@@ -9,9 +9,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
+	"github.com/rafpe/kube-oidc-proxy/test/util/appdeploy"
 )
 
-func (h *Helper) DeployFakeAPIServer(ns string) ([]corev1.Volume, *url.URL, error) {
+func (h *Helper) DeployFakeAPIServer(ctx context.Context, ns string) ([]corev1.Volume, *url.URL, error) {
 	cnt := corev1.Container{
 		Name:            kind.FakeAPIServerImageName,
 		Image:           kind.FakeAPIServerImageName,
@@ -36,12 +37,17 @@ func (h *Helper) DeployFakeAPIServer(ns string) ([]corev1.Volume, *url.URL, erro
 		},
 	}
 
-	bundle, appURL, err := h.deployApp(ns, kind.FakeAPIServerImageName, corev1.ServiceTypeClusterIP, []corev1.Container{cnt})
+	bundle, appURL, err := h.deployApp(ctx, appdeploy.App{
+		Namespace:   ns,
+		Name:        kind.FakeAPIServerImageName,
+		ServiceType: corev1.ServiceTypeClusterIP,
+		Containers:  []corev1.Container{cnt},
+	})
 	if err != nil {
 		return nil, nil, err
 	}
 
-	sec, err := h.KubeClient.CoreV1().Secrets(ns).Create(context.TODO(), &corev1.Secret{
+	sec, err := h.KubeClient.CoreV1().Secrets(ns).Create(ctx, &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "fake-apiserver-ca-",
 			Namespace:    ns,
@@ -68,7 +74,7 @@ func (h *Helper) DeployFakeAPIServer(ns string) ([]corev1.Volume, *url.URL, erro
 	return extraVolumes, appURL, nil
 }
 
-func (h *Helper) DeployAuditWebhook(ns, logPath string) (corev1.Volume, *url.URL, error) {
+func (h *Helper) DeployAuditWebhook(ctx context.Context, ns, logPath string) (corev1.Volume, *url.URL, error) {
 	cnt := corev1.Container{
 		Name:            kind.AuditWebhookImageName,
 		Image:           kind.AuditWebhookImageName,
@@ -94,12 +100,17 @@ func (h *Helper) DeployAuditWebhook(ns, logPath string) (corev1.Volume, *url.URL
 		},
 	}
 
-	bundle, appURL, err := h.deployApp(ns, kind.AuditWebhookImageName, corev1.ServiceTypeClusterIP, []corev1.Container{cnt})
+	bundle, appURL, err := h.deployApp(ctx, appdeploy.App{
+		Namespace:   ns,
+		Name:        kind.AuditWebhookImageName,
+		ServiceType: corev1.ServiceTypeClusterIP,
+		Containers:  []corev1.Container{cnt},
+	})
 	if err != nil {
 		return corev1.Volume{}, nil, err
 	}
 
-	sec, err := h.KubeClient.CoreV1().Secrets(ns).Create(context.TODO(), &corev1.Secret{
+	sec, err := h.KubeClient.CoreV1().Secrets(ns).Create(ctx, &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "audit-webhook-ca-",
 			Namespace:    ns,

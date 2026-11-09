@@ -32,10 +32,9 @@ import (
 )
 
 const (
-	// readHeaderTimeout bounds how long a client may take to send request
-	// headers to the readiness listener.
-	readHeaderTimeout = 5 * time.Second
-
+	// timeout bounds one readiness check's issuer probes. It stays inside
+	// httpserve.WriteTimeout so the 503 a slow check writes reaches the
+	// kubelet.
 	timeout = time.Second * 10
 
 	// shutdownTimeout bounds the graceful shutdown of the readiness server so a
@@ -121,7 +120,7 @@ func NewIssuerReadiness(issuerURL string) (IssuerReadiness, error) {
 		NotBefore: time.Date(2016, 1, 1, 0, 0, 0, 0, time.UTC).Unix(),
 	})
 	if err != nil {
-		return IssuerReadiness{}, fmt.Errorf("encoding the probe token claims: %w", err)
+		return IssuerReadiness{}, fmt.Errorf("probe: encoding the token claims: %w", err)
 	}
 
 	signingInput := fakeJWTHeader + "." + base64.RawURLEncoding.EncodeToString(claims)
@@ -131,14 +130,18 @@ func NewIssuerReadiness(issuerURL string) (IssuerReadiness, error) {
 	return IssuerReadiness{IssuerURL: issuerURL, FakeJWT: token}, nil
 }
 
-// healthCheck tracks per-issuer OIDC initialization and answers readiness
-// checks. It is safe for concurrent use: its issuer state is guarded by mu.
+// Server is the readiness probe: it tracks per-issuer OIDC initialization,
+// answers the liveness and readiness endpoints, and owns the listener they are
+// served on. It gives that listener an explicit lifecycle: a caller Starts it
+// (binding synchronously), the server serves until the supplied context is
+// cancelled, and Wait reports the terminal serve error.
 //
-// serving is deliberately atomic rather than guarded by mu: check releases mu
-// before the potentially slow AuthenticateToken calls (#53), and the serving
-// flag must stay readable without re-entangling it with that lock.
-type healthCheck struct {
-	// readinessLogger and oidcLogger are the two component loggers this check
+// It is safe for concurrent use: its issuer state is guarded by mu. serving is
+// deliberately atomic rather than guarded by mu: check releases mu before the
+// potentially slow AuthenticateToken calls (#53), and the serving flag must
+// stay readable without re-entangling it with that lock.
+type Server struct {
+	// readinessLogger and oidcLogger are the two component loggers the probe
 	// reports through: readiness for the ready latch and the probe listener,
 	// oidc for the per-issuer records. Both are derived from the root logger
 	// passed to NewServer, because a single component logger cannot carry two
@@ -165,19 +168,7 @@ type healthCheck struct {
 	// an unchanged set would flood the log for as long as an issuer stays
 	// unreachable.
 	lastPending string
-}
 
-// setServing records that the proxy has started serving. Until it is called,
-// check reports not-ready regardless of issuer state.
-func (h *healthCheck) setServing() {
-	h.serving.Store(true)
-}
-
-// Server owns the readiness HTTP listener and gives it an explicit lifecycle:
-// a caller Starts it (binding synchronously), the server serves until the
-// supplied context is cancelled, and Wait reports the terminal serve error.
-type Server struct {
-	hc  *healthCheck
 	srv *http.Server
 
 	// shutdownTimeout bounds the graceful shutdown of this server. It is a
@@ -185,8 +176,8 @@ type Server struct {
 	// shutdown failure path without waiting out the production budget.
 	shutdownTimeout time.Duration
 
-	// serving is the bound server once Start has succeeded.
-	serving *httpserve.Serving
+	// listener is the bound server once Start has succeeded.
+	listener *httpserve.Serving
 }
 
 // Config is what the readiness probe needs from the command.
@@ -220,9 +211,14 @@ type Config struct {
 // root must be the process root logger, not a component-bound one: unlike its
 // sibling constructors, the probe reports under two components (readiness for
 // the latch, oidc for the per-issuer records) and derives both itself. It is
-// required; a test passes a discarding logger.
-func NewServer(cfg Config, root *slog.Logger) *Server {
-	h := &healthCheck{
+// required, as it is for the proxy's other constructors; a test passes a
+// discarding logger.
+func NewServer(cfg Config, root *slog.Logger) (*Server, error) {
+	if root == nil {
+		return nil, errors.New("probe: logger is required")
+	}
+
+	s := &Server{
 		readinessLogger:   logging.ForComponent(root, logging.ComponentReadiness),
 		oidcLogger:        logging.ForComponent(root, logging.ComponentOIDC),
 		oidcAuthenticator: cfg.Authenticator,
@@ -230,34 +226,22 @@ func NewServer(cfg Config, root *slog.Logger) *Server {
 		requireAll:        cfg.RequireAllIssuers,
 		initialized:       make(map[string]bool),
 		metrics:           cfg.Metrics,
+		shutdownTimeout:   shutdownTimeout,
 	}
+	s.srv = httpserve.NewServer(cfg.Addr, s.handler())
 
 	cfg.Metrics.SetReady(false)
 	for _, issuer := range cfg.Issuers {
 		cfg.Metrics.SetIssuerInitialized(authn.IssuerName(issuer.IssuerURL), false)
 	}
-
-	return &Server{
-		hc:              h,
-		shutdownTimeout: shutdownTimeout,
-		srv: &http.Server{
-			Addr:    cfg.Addr,
-			Handler: h.handler(),
-
-			// Bound how long a client may take to send its headers. The
-			// readiness endpoint is reachable by anything that can dial the
-			// probe port, so an unbounded header read lets idle connections
-			// accumulate (gosec G112, Slowloris).
-			ReadHeaderTimeout: readHeaderTimeout,
-		},
-	}
+	return s, nil
 }
 
-// SetServing records that the proxy has started serving, so readiness may now
-// depend solely on issuer initialization. It is a pass-through to the
-// underlying healthCheck, which keeps that type out of the caller's surface.
+// SetServing records that the proxy has started serving. Until it is called,
+// readiness reports not-ready regardless of issuer state; after it, readiness
+// depends solely on issuer initialization.
 func (s *Server) SetServing() {
-	s.hc.setServing()
+	s.serving.Store(true)
 }
 
 // handler builds the readiness listener's HTTP handler. It exposes a liveness
@@ -267,13 +251,13 @@ func (s *Server) SetServing() {
 // readiness endpoint driven by check. Both endpoints only answer GET (returning 405
 // otherwise, matching the previous healthcheck handler); unknown paths yield
 // 404 via the ServeMux default.
-func (h *healthCheck) handler() http.Handler {
+func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/live", getOnly(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	mux.HandleFunc("/ready", getOnly(func(w http.ResponseWriter, _ *http.Request) {
-		if err := h.check(); err != nil {
+		if err := s.check(); err != nil {
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
@@ -299,17 +283,32 @@ func getOnly(next http.HandlerFunc) http.HandlerFunc {
 // a goroutine. On success it serves in the background and gracefully shuts the
 // server down (bounded by shutdownTimeout) once ctx is cancelled. Start returns
 // once the listener is bound; use Wait to block on the terminal serve error.
+//
+// Start reports readiness.server.started itself, with the bound address: each
+// listener's Start owns its own started record, as metrics.Server.Start does,
+// because only it knows the bind succeeded and where.
 func (s *Server) Start(ctx context.Context) error {
-	serving, err := httpserve.Start(ctx, s.srv, s.shutdownTimeout, func(err error) {
-		// ctx may already be cancelled here, which the record does not care
-		// about: it carries no deadline and no request scope.
-		logging.Emit(ctx, s.hc.readinessLogger, logging.EventReadinessServerFailed, logging.ErrAttr(err))
+	listener, err := httpserve.Start(ctx, s.srv, s.shutdownTimeout, func(err error) {
+		// Called once ctx is already cancelled, so the record gets a context
+		// of its own; it carries no deadline and no request scope anyway.
+		logging.Emit(context.Background(), s.readinessLogger, logging.EventReadinessServerFailed, logging.ErrAttr(err))
 	})
 	if err != nil {
-		return fmt.Errorf("readiness probe failed to listen on %s: %w", s.srv.Addr, err)
+		return fmt.Errorf("probe: listening on %s: %w", s.srv.Addr, err)
 	}
-	s.serving = serving
+	s.listener = listener
+
+	logging.Emit(ctx, s.readinessLogger, logging.EventReadinessServerStarted, slog.String("address", s.Addr()))
 	return nil
+}
+
+// Addr returns the address the listener is bound to, which differs from the
+// configured one when the port was 0. Empty before Start.
+func (s *Server) Addr() string {
+	if s.listener == nil {
+		return ""
+	}
+	return s.listener.Addr()
 }
 
 // Wait blocks until serving and the graceful shutdown have both finished and
@@ -317,10 +316,10 @@ func (s *Server) Start(ctx context.Context) error {
 // budget, or nil after a clean stop. http.ErrServerClosed is normalized to
 // nil. It may be called by multiple goroutines.
 func (s *Server) Wait() error {
-	if s.serving == nil {
+	if s.listener == nil {
 		return nil
 	}
-	return s.serving.Wait()
+	return s.listener.Wait()
 }
 
 // isNotInitialized reports whether err indicates the issuer's authenticator has
@@ -367,15 +366,15 @@ func classifyPending(err error) (reason pendingReason, pending bool) {
 // check reports readiness. It first requires the proxy to be serving, then
 // probes every issuer that has not yet been observed as initialized, logging
 // per-issuer transitions and any still-pending issuers. Once readiness latches
-// (h.ready is set true under h.mu) it always returns nil, but probing and
+// (s.ready is set true under s.mu) it always returns nil, but probing and
 // pending-issuer logging continue on every call so operators keep seeing
 // progress for issuers that initialize late.
-func (h *healthCheck) check() error {
+func (s *Server) check() error {
 	// Checked first: it is cheap, and it is the more fundamental condition. An
 	// initialized issuer on a process that is not yet answering requests is not
 	// readiness — advertising it would put the pod into its Service while
 	// requests could only queue.
-	if !h.serving.Load() {
+	if !s.serving.Load() {
 		return errors.New("proxy is not yet serving")
 	}
 
@@ -384,15 +383,15 @@ func (h *healthCheck) check() error {
 
 	// Snapshot the issuers still needing a probe under the lock, then release it
 	// so the potentially slow AuthenticateToken calls run lock-free. No blocking
-	// authenticator call may run while h.mu is held (#53).
-	h.mu.Lock()
-	toProbe := make([]IssuerReadiness, 0, len(h.issuers))
-	for _, issuer := range h.issuers {
-		if !h.initialized[issuer.IssuerURL] {
+	// authenticator call may run while s.mu is held (#53).
+	s.mu.Lock()
+	toProbe := make([]IssuerReadiness, 0, len(s.issuers))
+	for _, issuer := range s.issuers {
+		if !s.initialized[issuer.IssuerURL] {
 			toProbe = append(toProbe, issuer)
 		}
 	}
-	h.mu.Unlock()
+	s.mu.Unlock()
 
 	// Probe each not-yet-initialized issuer without holding the lock.
 	var newlyInitialized []string
@@ -400,7 +399,7 @@ func (h *healthCheck) check() error {
 	for _, issuer := range toProbe {
 		// The issuer counts as initialized only once its authenticator reaches
 		// token verification, which the fake token always fails.
-		if _, _, err := h.oidcAuthenticator.AuthenticateToken(ctx, issuer.FakeJWT); err != nil {
+		if _, _, err := s.oidcAuthenticator.AuthenticateToken(ctx, issuer.FakeJWT); err != nil {
 			if reason, isPending := classifyPending(err); isPending {
 				pending = append(pending, pendingIssuer{issuerURL: issuer.IssuerURL, reason: reason})
 				continue
@@ -410,28 +409,28 @@ func (h *healthCheck) check() error {
 	}
 
 	// Re-acquire the lock to record results and evaluate readiness.
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	pending = h.recordProbeResults(ctx, newlyInitialized, pending)
+	pending = s.recordProbeResults(ctx, newlyInitialized, pending)
 
-	if h.ready {
+	if s.ready {
 		return nil
 	}
 
-	if h.requireAll && len(pending) > 0 {
+	if s.requireAll && len(pending) > 0 {
 		return errors.New("OIDC providers not yet initialized")
 	}
-	if !h.requireAll && len(h.initialized) == 0 {
+	if !s.requireAll && len(s.initialized) == 0 {
 		return errors.New("no OIDC provider initialized yet")
 	}
 
-	h.ready = true
-	h.metrics.SetReady(true)
-	logging.Emit(ctx, h.readinessLogger, logging.EventReadinessProxyReady,
-		slog.Int("ready_issuers", len(h.initialized)),
-		slog.Int("total_issuers", len(h.issuers)),
-		slog.String("readiness_mode", string(ReadinessModeFor(h.requireAll))))
+	s.ready = true
+	s.metrics.SetReady(true)
+	logging.Emit(ctx, s.readinessLogger, logging.EventReadinessProxyReady,
+		slog.Int("ready_issuers", len(s.initialized)),
+		slog.Int("total_issuers", len(s.issuers)),
+		slog.String("readiness_mode", string(ReadinessModeFor(s.requireAll))))
 	return nil
 }
 
@@ -442,41 +441,41 @@ func (h *healthCheck) check() error {
 // initialized in the meantime is stale (both checks snapshotted it as
 // uninitialized, the other answered first) and is dropped, so the newest record
 // for that issuer stays the initialized one and readiness is not held back by
-// it. The caller holds h.mu.
-func (h *healthCheck) recordProbeResults(ctx context.Context, newlyInitialized []string, pending []pendingIssuer) []pendingIssuer {
+// it. The caller holds s.mu.
+func (s *Server) recordProbeResults(ctx context.Context, newlyInitialized []string, pending []pendingIssuer) []pendingIssuer {
 	for _, issuerURL := range newlyInitialized {
-		if h.initialized[issuerURL] {
+		if s.initialized[issuerURL] {
 			continue
 		}
-		h.initialized[issuerURL] = true
-		h.metrics.SetIssuerInitialized(authn.IssuerName(issuerURL), true)
-		logging.Emit(ctx, h.oidcLogger, logging.EventOIDCIssuerInitialized,
+		s.initialized[issuerURL] = true
+		s.metrics.SetIssuerInitialized(authn.IssuerName(issuerURL), true)
+		logging.Emit(ctx, s.oidcLogger, logging.EventOIDCIssuerInitialized,
 			slog.String("issuer_name", authn.IssuerName(issuerURL)),
 			slog.String("issuer_state", string(issuerInitialized)),
-			slog.Int("ready_issuers", len(h.initialized)),
-			slog.Int("total_issuers", len(h.issuers)))
+			slog.Int("ready_issuers", len(s.initialized)),
+			slog.Int("total_issuers", len(s.issuers)))
 	}
 
 	// Drop results made stale by a concurrent check that initialized the
 	// issuer between this check's snapshot and now.
 	pending = slices.DeleteFunc(pending, func(p pendingIssuer) bool {
-		return h.initialized[p.issuerURL]
+		return s.initialized[p.issuerURL]
 	})
 
 	// Report only on change, and record the new state either way so that a
 	// pending set which clears and later recurs is reported again. The reason
 	// is part of the state: an issuer moving from unreachable to still
 	// initializing is a change worth a record.
-	if key := pendingKey(pending); key != h.lastPending {
+	if key := pendingKey(pending); key != s.lastPending {
 		for _, p := range pending {
-			logging.Emit(ctx, h.oidcLogger, logging.EventOIDCIssuerPending,
+			logging.Emit(ctx, s.oidcLogger, logging.EventOIDCIssuerPending,
 				slog.String("issuer_name", authn.IssuerName(p.issuerURL)),
 				slog.String("issuer_state", string(issuerPending)),
 				slog.String("pending_reason", string(p.reason)),
-				slog.Int("ready_issuers", len(h.initialized)),
-				slog.Int("total_issuers", len(h.issuers)))
+				slog.Int("ready_issuers", len(s.initialized)),
+				slog.Int("total_issuers", len(s.issuers)))
 		}
-		h.lastPending = key
+		s.lastPending = key
 	}
 
 	return pending

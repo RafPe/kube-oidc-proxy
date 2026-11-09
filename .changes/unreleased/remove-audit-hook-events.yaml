@@ -1,3 +1,3 @@
 kind: Removed
 body: |-
-  The `audit.backend.failed` and `audit.flush.failed` log events are removed. An audit backend that fails to start is reported once as `proxy.startup.failed`; a failed flush at shutdown as `proxy.hook.failed` with `hook=AuditBackend`.
+  The `audit.backend.failed`, `audit.flush.failed` and `proxy.hook.failed` log events are removed, and `kube_oidc_proxy_audit_backend_failures_total` loses its `operation="shutdown"` value. An audit backend that fails to start is reported once as `proxy.startup.failed`. None of the bundled audit backends can report a failed flush, so these never fired for one; a lost flush shows up only as the backend's own error, bridged as a `component=k8s` record.

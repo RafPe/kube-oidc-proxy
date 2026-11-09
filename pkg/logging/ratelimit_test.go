@@ -11,12 +11,15 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 )
 
+// reservedIdentityKey is a bucket for a warning that carries a reason.
+var reservedIdentityKey = logging.WarningKey{Event: logging.EventRequestAnomalyDetected, Reason: "reserved_identity"}
+
 func TestLimiterAllowsBurstThenSummarises(t *testing.T) {
 	now := time.Unix(0, 0)
 	l := logging.NewLimiter(1, 3, time.Minute, func() time.Time { return now })
 	allowed := 0
 	for i := 0; i < 10; i++ {
-		if l.Allow("reserved_identity") {
+		if l.Allow(reservedIdentityKey) {
 			allowed++
 		}
 	}
@@ -26,7 +29,8 @@ func TestLimiterAllowsBurstThenSummarises(t *testing.T) {
 	root, cap := logtest.New(t, 0)
 	l.Flush(context.Background(), root)
 	rec := cap.Only(t, logging.EventLogWarningSuppressed)
-	if n, _ := rec.Int("suppressed_count"); n != 7 || rec.String("warning_reason") != "reserved_identity" {
+	if n, _ := rec.Int("suppressed_count"); n != 7 || rec.String("warning_reason") != "reserved_identity" ||
+		rec.String("suppressed_event_type") != string(logging.EventRequestAnomalyDetected) {
 		t.Fatalf("%v", rec)
 	}
 	// The summary names the window it covers, so a count is readable without
@@ -48,15 +52,41 @@ func TestLimiterRefillsAtTheConfiguredRatePerSecond(t *testing.T) {
 	now := time.Unix(0, 0)
 	l := logging.NewLimiter(ratePerSecond, 1, time.Minute, func() time.Time { return now })
 
-	if !l.Allow("reserved_identity") {
+	if !l.Allow(reservedIdentityKey) {
 		t.Fatal("the first record was refused with a burst of 1")
 	}
-	if l.Allow("reserved_identity") {
+	if l.Allow(reservedIdentityKey) {
 		t.Fatal("a second record was allowed before the bucket refilled")
 	}
 
 	now = now.Add(500 * time.Millisecond)
-	if !l.Allow("reserved_identity") {
+	if !l.Allow(reservedIdentityKey) {
 		t.Fatal("no token half a second after a two-per-second bucket was spent")
+	}
+}
+
+// TestLimiterKeepsKeysApartAndOmitsAbsentReason pins two properties of the
+// key: a record without a reason is summarised without warning_reason rather
+// than with a made-up bucket name, and two keys never share a bucket.
+func TestLimiterKeepsKeysApartAndOmitsAbsentReason(t *testing.T) {
+	now := time.Unix(0, 0)
+	l := logging.NewLimiter(1, 1, time.Minute, func() time.Time { return now })
+	dropped := logging.WarningKey{Event: logging.EventRequestHeadersDropped}
+
+	for _, key := range []logging.WarningKey{dropped, reservedIdentityKey} {
+		if !l.Allow(key) {
+			t.Fatalf("first record for %+v refused: buckets are shared", key)
+		}
+	}
+	l.Allow(dropped)
+
+	root, cap := logtest.New(t, 0)
+	l.Flush(context.Background(), root)
+	rec := cap.Only(t, logging.EventLogWarningSuppressed)
+	if rec.String("suppressed_event_type") != string(logging.EventRequestHeadersDropped) {
+		t.Fatalf("suppressed_event_type = %q", rec.String("suppressed_event_type"))
+	}
+	if _, ok := rec["warning_reason"]; ok {
+		t.Fatalf("warning_reason present on a record whose suppressed event has no reason: %v", rec)
 	}
 }

@@ -4,12 +4,10 @@ package passthrough
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -23,7 +21,6 @@ import (
 	"k8s.io/client-go/tools/remotecommand"
 
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
-	"github.com/rafpe/kube-oidc-proxy/test/util/idtoken"
 )
 
 const (
@@ -43,10 +40,10 @@ const (
 var _ = framework.CasesDescribe("Audit", Label("shard-b"), func() {
 	f := framework.NewDefaultFramework("audit")
 
-	It("should be able to write audit logs to file", func() {
-		deployProxyWithAuditLogFile(f)
+	It("should be able to write audit logs to file", func(ctx SpecContext) {
+		deployProxyWithAuditLogFile(ctx, f)
 
-		testAuditLogs(f, "app=kube-oidc-proxy-e2e", auditReaderName, auditLogPath)
+		testAuditLogs(ctx, f, "app=kube-oidc-proxy-e2e", auditReaderName, auditLogPath)
 	})
 
 	// A streaming request has to be recorded when the stream starts, not only
@@ -54,18 +51,18 @@ var _ = framework.CasesDescribe("Audit", Label("shard-b"), func() {
 	// subresources as long running, so an exec is audited as soon as the
 	// connection is upgraded. Without that, an hour long exec leaves nothing in
 	// the audit log for that hour, and nothing at all if the proxy dies first.
-	It("should write a ResponseStarted audit event when a long running request starts", func() {
-		deployProxyWithAuditLogFile(f)
+	It("should write a ResponseStarted audit event when a long running request starts", func(ctx SpecContext) {
+		deployProxyWithAuditLogFile(ctx, f)
 
 		// The exec target is the audit reader sidecar of the proxy pod itself.
 		// It is a shell bearing image that the suite builds for the host
 		// architecture and it is already running, so this needs no further pod
 		// and no image pulled from a registry. The exec still leaves the proxy
 		// as a streaming request to the apiserver, which is what is under test.
-		pod := proxyPod(f)
+		pod := proxyPod(ctx, f)
 
 		By("Creating Role")
-		_, err := f.Helper().KubeClient.RbacV1().Roles(f.Namespace.Name).Create(context.TODO(), &rbacv1.Role{
+		_, err := f.Helper().KubeClient.RbacV1().Roles(f.Namespace.Name).Create(ctx, &rbacv1.Role{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "e2e-test-audit-exec",
 			},
@@ -84,7 +81,7 @@ var _ = framework.CasesDescribe("Audit", Label("shard-b"), func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		By("Creating RoleBinding")
-		_, err = f.Helper().KubeClient.RbacV1().RoleBindings(f.Namespace.Name).Create(context.TODO(),
+		_, err = f.Helper().KubeClient.RbacV1().RoleBindings(f.Namespace.Name).Create(ctx,
 			&rbacv1.RoleBinding{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "e2e-test-audit-exec",
@@ -126,7 +123,7 @@ var _ = framework.CasesDescribe("Audit", Label("shard-b"), func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		execOut, execErr := new(bytes.Buffer), new(bytes.Buffer)
-		err = executor.StreamWithContext(context.TODO(), remotecommand.StreamOptions{
+		err = executor.StreamWithContext(ctx, remotecommand.StreamOptions{
 			Stdout: execOut,
 			Stderr: execErr,
 		})
@@ -142,7 +139,7 @@ var _ = framework.CasesDescribe("Audit", Label("shard-b"), func() {
 		execURI := fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/exec", pod.Namespace, pod.Name)
 
 		By("Waiting for the exec request's ResponseComplete audit event to be written")
-		logs := waitForAuditLog(f, "app=kube-oidc-proxy-e2e", auditReaderName, auditLogPath,
+		logs := waitForAuditLog(ctx, f, "app=kube-oidc-proxy-e2e", auditReaderName, auditLogPath,
 			hasStage(execURI, auditv1.StageResponseComplete))
 
 		By("Testing for the expected audit stages of the exec request")
@@ -192,11 +189,11 @@ var _ = framework.CasesDescribe("Audit", Label("shard-b"), func() {
 	// recognised as a watch — rather than a plain GET — once the audit config
 	// names the legacy API prefix. Until then no core group watch was ever
 	// audited as long running, whatever the set contained.
-	It("should write a ResponseStarted audit event when a watch starts", func() {
-		deployProxyWithAuditLogFile(f)
+	It("should write a ResponseStarted audit event when a watch starts", func(ctx SpecContext) {
+		deployProxyWithAuditLogFile(ctx, f)
 
 		By("Creating Role")
-		_, err := f.Helper().KubeClient.RbacV1().Roles(f.Namespace.Name).Create(context.TODO(), &rbacv1.Role{
+		_, err := f.Helper().KubeClient.RbacV1().Roles(f.Namespace.Name).Create(ctx, &rbacv1.Role{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "e2e-test-audit-watch",
 			},
@@ -211,7 +208,7 @@ var _ = framework.CasesDescribe("Audit", Label("shard-b"), func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		By("Creating RoleBinding")
-		_, err = f.Helper().KubeClient.RbacV1().RoleBindings(f.Namespace.Name).Create(context.TODO(),
+		_, err = f.Helper().KubeClient.RbacV1().RoleBindings(f.Namespace.Name).Create(ctx,
 			&rbacv1.RoleBinding{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "e2e-test-audit-watch",
@@ -230,12 +227,8 @@ var _ = framework.CasesDescribe("Audit", Label("shard-b"), func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		By("Watching pods through the proxy")
-		token := idtoken.NewPayload(f.IssuerURL(), f.ClientID(), time.Now().Add(time.Minute*10))
-		signedToken, err := idtoken.Sign(f.IssuerKeyBundle(), token)
-		Expect(err).NotTo(HaveOccurred())
-
 		proxyConfig := f.NewProxyRestConfig()
-		requester := f.Helper().NewRequester(proxyConfig.Transport, signedToken)
+		requester := f.Helper().NewRequester(proxyConfig.Transport, proxyConfig.BearerToken)
 
 		// The watch is held open by the apiserver until timeoutSeconds elapses,
 		// so the request really does stream, and the read of the body below
@@ -249,7 +242,7 @@ var _ = framework.CasesDescribe("Audit", Label("shard-b"), func() {
 			"watch through the proxy was not served, so no stream was ever started")
 
 		By("Waiting for the watch request's ResponseComplete audit event to be written")
-		logs := waitForAuditLog(f, "app=kube-oidc-proxy-e2e", auditReaderName, auditLogPath,
+		logs := waitForAuditLog(ctx, f, "app=kube-oidc-proxy-e2e", auditReaderName, auditLogPath,
 			hasStage(watchURI, auditv1.StageResponseComplete))
 
 		By("Testing for the expected audit stages of the watch request")
@@ -287,9 +280,9 @@ var _ = framework.CasesDescribe("Audit", Label("shard-b"), func() {
 		}), "unexpected audit stages for %s\naudit log:\n%s", watchURI, logs)
 	})
 
-	It("should be able to write audit logs to webhook", func() {
+	It("should be able to write audit logs to webhook", func(ctx SpecContext) {
 		By("Creating policy file ConfigMap")
-		cmPolicy, err := f.Helper().KubeClient.CoreV1().ConfigMaps(f.Namespace.Name).Create(context.TODO(), &corev1.ConfigMap{
+		cmPolicy, err := f.Helper().KubeClient.CoreV1().ConfigMaps(f.Namespace.Name).Create(ctx, &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "kube-oidc-proxy-policy-",
 			},
@@ -302,10 +295,10 @@ rules:
 		}, metav1.CreateOptions{})
 		Expect(err).NotTo(HaveOccurred())
 
-		extraWebhookVol, webhookURL, err := f.Helper().DeployAuditWebhook(f.Namespace.Name, webhookAuditPath)
+		extraWebhookVol, webhookURL, err := f.Helper().DeployAuditWebhook(ctx, f.Namespace.Name, webhookAuditPath)
 		Expect(err).NotTo(HaveOccurred())
 
-		cmWebhook, err := f.Helper().KubeClient.CoreV1().ConfigMaps(f.Namespace.Name).Create(context.TODO(), &corev1.ConfigMap{
+		cmWebhook, err := f.Helper().KubeClient.CoreV1().ConfigMaps(f.Namespace.Name).Create(ctx, &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "kube-oidc-proxy-webhook-config-",
 			},
@@ -354,9 +347,9 @@ users: []`,
 		}
 
 		By("Deploying proxy with audit policy enabled")
-		f.DeployProxyWith(vols, "--audit-webhook-config-file=/audit-webhook/kubeconfig.yaml",
+		f.DeployProxyWith(ctx, vols, "--audit-webhook-config-file=/audit-webhook/kubeconfig.yaml",
 			"--audit-policy-file=/audit/audit.yaml", "--audit-webhook-initial-backoff=1s", "--audit-webhook-batch-max-wait=1s")
 
-		testAuditLogs(f, "app=audit-webhook-e2e", "", webhookAuditPath)
+		testAuditLogs(ctx, f, "app=audit-webhook-e2e", "", webhookAuditPath)
 	})
 })

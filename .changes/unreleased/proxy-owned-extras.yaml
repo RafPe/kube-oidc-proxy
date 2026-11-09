@@ -1,0 +1,3 @@
+kind: Security
+body: |-
+  The proxy now owns every impersonation extra it writes on the forwarded request: the `originaluser.jetstack.io-*` keys, `Remote-Client-IP` when `--extra-user-header-client-ip` is set, and every `--extra-user-headers` key. A client-supplied `Impersonate-Extra-` value for one of those keys is dropped (keys compared case-insensitively), so the API server sees only the proxy's value. Previously a client allowed by RBAC to impersonate such an extra could forward its own original-user groups, uid or extras when the authenticated user had none, or add its own value beside the proxy's client IP or operator extra. Authorization of what the client asked for is unchanged.

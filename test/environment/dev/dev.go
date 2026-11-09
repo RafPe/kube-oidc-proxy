@@ -60,6 +60,8 @@ func create() {
 }
 
 func deploy() {
+	ctx := context.Background()
+
 	env, err := environment.New(1, 1)
 	errExit(err)
 
@@ -92,30 +94,30 @@ func deploy() {
 			GenerateName: "kube-oidc-proxy-e2e-",
 		},
 	}
-	ns, err = kubeClient.CoreV1().Namespaces().Create(context.TODO(), ns, metav1.CreateOptions{})
+	ns, err = kubeClient.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{})
 	errExit(err)
 
 	fmt.Printf("> created new namespace %s\n", ns.Name)
 
-	issuerKeyBundle, issuerURL, err := helper.DeployIssuer(ns.Name)
+	issuerKeyBundle, issuerURL, err := helper.DeployIssuer(ctx, ns.Name)
 	errExit(err)
 
 	fmt.Printf("> deployed issuer at url %s\n", issuerURL)
 
 	var proxyURL *url.URL
 	if e := os.Getenv(EnvFakeAPIServer); strings.ToLower(e) == "true" {
-		extraOIDCVolume, fURL, err := helper.DeployFakeAPIServer(ns.Name)
+		extraOIDCVolume, fURL, err := helper.DeployFakeAPIServer(ctx, ns.Name)
 		errExit(err)
 
 		fmt.Printf("> deployed fake API server at url %s\n", fURL)
 
-		_, proxyURL, err = helper.DeployProxy(ns, issuerURL,
+		_, proxyURL, err = helper.DeployProxy(ctx, ns, issuerURL,
 			"kube-oidc-proxy-e2e-client-id", issuerKeyBundle, extraOIDCVolume,
 			fmt.Sprintf("--server=%s", fURL), "--certificate-authority=/fake-apiserver/ca.pem")
 		errExit(err)
 
 	} else {
-		_, proxyURL, err = helper.DeployProxy(ns, issuerURL,
+		_, proxyURL, err = helper.DeployProxy(ctx, ns, issuerURL,
 			"kube-oidc-proxy-e2e-client-id", issuerKeyBundle, nil)
 		errExit(err)
 	}

@@ -2,7 +2,6 @@
 package passthrough
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 
@@ -25,9 +24,9 @@ var _ = framework.CasesDescribe("Passthrough", Ordered, ContinueOnFailure, Label
 
 	var saToken string
 
-	JustBeforeEach(func() {
+	JustBeforeEach(func(ctx SpecContext) {
 		By("Creating List Pods Role")
-		_, err := f.Helper().KubeClient.RbacV1().Roles(f.Namespace.Name).Create(context.TODO(),
+		_, err := f.Helper().KubeClient.RbacV1().Roles(f.Namespace.Name).Create(ctx,
 			&rbacv1.Role{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "e2e-impersonation-pods-list",
@@ -44,7 +43,7 @@ var _ = framework.CasesDescribe("Passthrough", Ordered, ContinueOnFailure, Label
 
 		// Create bindings for both the OIDC user and default ServiceAccount
 		By("Creating List Pods RoleBinding")
-		_, err = f.Helper().KubeClient.RbacV1().RoleBindings(f.Namespace.Name).Create(context.TODO(),
+		_, err = f.Helper().KubeClient.RbacV1().RoleBindings(f.Namespace.Name).Create(ctx,
 			&rbacv1.RoleBinding{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "e2e-impersonation-pods-list",
@@ -59,26 +58,26 @@ var _ = framework.CasesDescribe("Passthrough", Ordered, ContinueOnFailure, Label
 		Expect(err).NotTo(HaveOccurred())
 
 		By("Getting the token for the default ServiceAccount")
-		saToken, err = f.Helper().GetServiceAccountToken(f.Namespace.Name, "default")
+		saToken, err = f.Helper().GetServiceAccountToken(ctx, f.Namespace.Name, "default")
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	JustAfterEach(func() {
+	JustAfterEach(func(ctx SpecContext) {
 		By("Deleting List Pods Role")
-		err := f.Helper().KubeClient.RbacV1().Roles(f.Namespace.Name).Delete(context.TODO(),
+		err := f.Helper().KubeClient.RbacV1().Roles(f.Namespace.Name).Delete(ctx,
 			"e2e-impersonation-pods-list", metav1.DeleteOptions{})
 		Expect(err).NotTo(HaveOccurred())
 
 		By("Creating List Pods RoleBinding")
-		err = f.Helper().KubeClient.RbacV1().RoleBindings(f.Namespace.Name).Delete(context.TODO(),
+		err = f.Helper().KubeClient.RbacV1().RoleBindings(f.Namespace.Name).Delete(ctx,
 			"e2e-impersonation-pods-list", metav1.DeleteOptions{})
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("error when a valid OIDC token is used but return correct when passthrough is disabled", func() {
+	It("error when a valid OIDC token is used but return correct when passthrough is disabled", func(ctx SpecContext) {
 		By("A valid OIDC token should respond without error")
 		proxyClient := f.NewProxyClient()
-		_, err := proxyClient.CoreV1().Pods(f.Namespace.Name).List(context.TODO(), metav1.ListOptions{})
+		_, err := proxyClient.CoreV1().Pods(f.Namespace.Name).List(ctx, metav1.ListOptions{})
 		Expect(err).NotTo(HaveOccurred())
 
 		By("Using a ServiceAccount token should error by the proxy")
@@ -90,7 +89,7 @@ var _ = framework.CasesDescribe("Passthrough", Ordered, ContinueOnFailure, Label
 		client, err := kubernetes.NewForConfig(config)
 		Expect(err).NotTo(HaveOccurred())
 
-		_, err = client.CoreV1().Pods(f.Namespace.Name).List(context.TODO(), metav1.ListOptions{})
+		_, err = client.CoreV1().Pods(f.Namespace.Name).List(ctx, metav1.ListOptions{})
 		kErr, ok := err.(*k8sErrors.StatusError)
 		if !ok {
 			Expect(err).NotTo(HaveOccurred())
@@ -107,13 +106,13 @@ var _ = framework.CasesDescribe("Passthrough", Ordered, ContinueOnFailure, Label
 		}
 	})
 
-	It("should not error on a valid OIDC token nor a valid ServiceAccount token with passthrough enabled", func() {
+	It("should not error on a valid OIDC token nor a valid ServiceAccount token with passthrough enabled", func(ctx SpecContext) {
 		By("Enabling passthrough with Audience of the API Server")
-		f.DeployProxyWith(nil, "--token-passthrough")
+		f.DeployProxyWith(ctx, nil, "--token-passthrough")
 
 		By("A valid OIDC token should respond without error")
 		proxyClient := f.NewProxyClient()
-		_, err := proxyClient.CoreV1().Pods(f.Namespace.Name).List(context.TODO(), metav1.ListOptions{})
+		_, err := proxyClient.CoreV1().Pods(f.Namespace.Name).List(ctx, metav1.ListOptions{})
 		Expect(err).NotTo(HaveOccurred())
 
 		By("Using a ServiceAccount token should not error")
@@ -124,7 +123,7 @@ var _ = framework.CasesDescribe("Passthrough", Ordered, ContinueOnFailure, Label
 		kubeProxyClient, err := kubernetes.NewForConfig(proxyConfig)
 		Expect(err).NotTo(HaveOccurred())
 
-		_, err = kubeProxyClient.CoreV1().Pods(f.Namespace.Name).List(context.TODO(), metav1.ListOptions{})
+		_, err = kubeProxyClient.CoreV1().Pods(f.Namespace.Name).List(ctx, metav1.ListOptions{})
 		Expect(err).NotTo(HaveOccurred())
 	})
 })

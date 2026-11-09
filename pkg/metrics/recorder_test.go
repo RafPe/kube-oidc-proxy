@@ -59,14 +59,14 @@ func TestEveryCatalogueEntryHasAStabilityPrefixAndTheNamespace(t *testing.T) {
 		if !strings.HasPrefix(s.Name, Namespace+"_") {
 			t.Errorf("%s: not under the %s namespace", s.Name, Namespace)
 		}
-		if s.Stability != "STABLE" && s.Stability != "ALPHA" {
+		if s.Stability != StabilityStable && s.Stability != StabilityAlpha {
 			t.Errorf("%s: stability %q, want STABLE or ALPHA", s.Name, s.Stability)
 		}
 		if s.Help == "" || strings.HasPrefix(s.Help, "[") {
 			t.Errorf("%s: help %q must be non-empty and must not repeat the stability prefix", s.Name, s.Help)
 		}
 		switch s.Type {
-		case "counter", "gauge", "histogram":
+		case TypeCounter, TypeGauge, TypeHistogram:
 		default:
 			t.Errorf("%s: type %q", s.Name, s.Type)
 		}
@@ -91,7 +91,7 @@ func TestGatherAndLintIsClean(t *testing.T) {
 
 func TestHandlerServesOnlyGetMetrics(t *testing.T) {
 	r := newTestRecorder(t)
-	h := r.Handler(slog.New(slog.DiscardHandler))
+	h := r.handler(slog.New(slog.DiscardHandler))
 
 	rw := httptest.NewRecorder()
 	h.ServeHTTP(rw, httptest.NewRequest(http.MethodGet, "/metrics", nil))
@@ -121,7 +121,7 @@ func TestHandlerServesOnlyGetMetrics(t *testing.T) {
 
 	var nilr *Recorder
 	rw = httptest.NewRecorder()
-	nilr.Handler(nil).ServeHTTP(rw, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	nilr.handler(nil).ServeHTTP(rw, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if rw.Code != http.StatusNotFound {
 		t.Fatalf("nil recorder handler = %d, want 404", rw.Code)
 	}
@@ -217,7 +217,7 @@ func TestHandlerBoundsConcurrentScrapes(t *testing.T) {
 	if err := r.reg.Register(bc); err != nil {
 		t.Fatal(err)
 	}
-	h := r.Handler(slog.New(slog.DiscardHandler))
+	h := r.handler(slog.New(slog.DiscardHandler))
 
 	codes := make(chan int, maxScrapesInFlight)
 	for i := 0; i < maxScrapesInFlight; i++ {

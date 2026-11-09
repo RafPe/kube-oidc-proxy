@@ -1,0 +1,3 @@
+kind: Fixed
+body: |-
+  The `--oidc-username-prefix` and `--oidc-groups-prefix` help and docs no longer promise an issuer-URL default or a `-` opt-out: the value has always been prepended exactly as given, and an empty value means no prefix.

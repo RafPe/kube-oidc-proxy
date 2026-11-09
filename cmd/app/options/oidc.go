@@ -88,18 +88,23 @@ func (o *OIDCAuthenticationOptions) AddFlags(fs *pflag.FlagSet) *OIDCAuthenticat
 		"The OpenID claim to use as the username. Note that claims other than the default ('sub') "+
 		"is not guaranteed to be unique and immutable")
 
+	// The value is prepended verbatim. kube-apiserver's flag of the same name
+	// defaults to prefixing with the issuer URL and treats '-' as "none"; this
+	// proxy never has, and adopting that now would rename every user, and
+	// so break every RBAC binding, on existing deployments.
 	fs.StringVar(&o.UsernamePrefix, "oidc-username-prefix", "", ""+
-		"If provided, all usernames will be prefixed with this value. If not provided, "+
-		"username claims other than 'email' are prefixed by the issuer URL to avoid "+
-		"clashes. To skip any prefixing, provide the value '-'.")
+		"Prefix prepended verbatim to every username, to keep them from clashing with "+
+		"other authentication strategies. Empty (the default) means no prefix. Unlike "+
+		"kube-apiserver's flag, the issuer URL is never used as a default and '-' is not "+
+		"special: it would be prepended like any other value.")
 
 	fs.StringVar(&o.GroupsClaim, "oidc-groups-claim", "", ""+
 		"If provided, the name of a custom OpenID Connect claim for specifying user groups. "+
 		"The claim value is expected to be a string or array of strings.")
 
 	fs.StringVar(&o.GroupsPrefix, "oidc-groups-prefix", "", ""+
-		"If provided, all groups will be prefixed with this value to prevent conflicts with "+
-		"other authentication strategies.")
+		"Prefix prepended verbatim to every group name, to keep them from clashing with "+
+		"other authentication strategies. Empty (the default) means no prefix.")
 
 	fs.StringSliceVar(&o.SigningAlgs, "oidc-signing-algs", []string{"RS256"}, ""+
 		"Comma-separated list of allowed JOSE asymmetric signing algorithms. JWTs with a "+

@@ -37,26 +37,13 @@ func TestAuditRunFailureIsCounted(t *testing.T) {
 	}
 }
 
-func TestAuditShutdownFailureIsCounted(t *testing.T) {
-	rec, _ := metrics.New(metrics.BuildInfo{Version: "test"})
-	a := newAuditWithBackend(t, &fakeBackend{shutdownErr: errors.New("dropped events")}, rec)
-	if err := a.Shutdown(); err == nil {
-		t.Fatal("Shutdown should fail")
-	}
-	if v, _ := metricstest.Value(t, rec.Gatherer(), metricAuditFailures, map[string]string{"operation": "shutdown"}); v != 1 {
-		t.Fatalf("shutdown failures = %v, want 1", v)
-	}
-}
-
 func TestAuditCleanShutdownCountsNothing(t *testing.T) {
 	rec, _ := metrics.New(metrics.BuildInfo{Version: "test"})
 	a := newAuditWithBackend(t, &fakeBackend{}, rec)
 	if err := a.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.Shutdown(); err != nil {
-		t.Fatal(err)
-	}
+	a.Shutdown()
 	if n := metricstest.SeriesCount(t, rec.Gatherer(), metricAuditFailures); n != 0 {
 		t.Fatalf("failure series after a clean run = %d, want 0", n)
 	}

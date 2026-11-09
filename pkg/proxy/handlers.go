@@ -15,20 +15,13 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/authn"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/clientip"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 )
 
-// warnReasonHeadersDropped is the limiter bucket the dropped-header warning
-// draws from. It is a bucket key rather than a record field, so it is not part
-// of the closed reason value set.
-const warnReasonHeadersDropped = "headers_dropped"
-
-// Why impersonation was not applied to a request, as reported by
-// request.impersonation.skipped.
-const (
-	skipReasonDisabled    = "disabled"
-	skipReasonPassthrough = "passthrough"
-)
+// headersDroppedKey is the limiter bucket request.headers.dropped draws from.
+// The record carries no reason, so neither does its key.
+var headersDroppedKey = logging.WarningKey{Event: logging.EventRequestHeadersDropped}
 
 // userFromContext returns the identity the request presented, or nil when it
 // was refused before one was established.
@@ -48,8 +41,9 @@ func (p *Proxy) withHandlers(handler http.Handler) http.Handler {
 	handler = p.withAuthenticateRequest(handler)
 	handler = p.withSanitizedForwardHeaders(handler)
 	handler = p.withRequestLifecycle(handler)
-	// Resolved before the lifecycle filter and the error handler, both of which
-	// run outside the audit chain and need the request's verb and resource.
+	// Resolved once, ahead of everything that needs the request's verb and
+	// resource: the lifecycle filter, the refusal path and both audit chains,
+	// none of which resolve it themselves.
 	handler = p.auditor.WithRequestInfo(handler)
 	handler = p.withRequestID(handler)
 
@@ -65,8 +59,8 @@ func (p *Proxy) withHandlers(handler http.Handler) http.Handler {
 // sees sanitized headers.
 func (p *Proxy) withSanitizedForwardHeaders(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-		inboundXFF := req.Header.Get(reqctx.HeaderForwardedFor)
-		inboundRealIP := req.Header.Get(reqctx.HeaderRealIP)
+		inboundXFF := req.Header.Get(clientip.HeaderForwardedFor)
+		inboundRealIP := req.Header.Get(clientip.HeaderRealIP)
 
 		req = reqctx.WithResolvedClient(req, p.trustedProxies)
 
@@ -91,7 +85,7 @@ func (p *Proxy) logForwardHeaders(req *http.Request, inboundXFF, inboundRealIP s
 	srcIP := reqctx.ClientIP(req)
 	forwardedFor := slog.String("forwarded_for_untrusted", logging.Sanitize(inboundXFF))
 
-	if outboundXFF := req.Header.Get(reqctx.HeaderForwardedFor); outboundXFF != "" && outboundXFF != inboundXFF {
+	if outboundXFF := req.Header.Get(clientip.HeaderForwardedFor); outboundXFF != "" && outboundXFF != inboundXFF {
 		logging.Emit(req.Context(), p.requestLogger, logging.EventRequestHeadersRewritten,
 			slog.String("src_ip", srcIP), forwardedFor)
 	}
@@ -99,13 +93,13 @@ func (p *Proxy) logForwardHeaders(req *http.Request, inboundXFF, inboundRealIP s
 	// Sorted, and lower-cased as the wire format writes them, so the field is
 	// queryable by exact match rather than by however the client spelled it.
 	var dropped []string
-	if inboundXFF != "" && req.Header.Get(reqctx.HeaderForwardedFor) == "" {
-		dropped = append(dropped, strings.ToLower(reqctx.HeaderForwardedFor))
+	if inboundXFF != "" && req.Header.Get(clientip.HeaderForwardedFor) == "" {
+		dropped = append(dropped, strings.ToLower(clientip.HeaderForwardedFor))
 	}
 	if inboundRealIP != "" {
-		dropped = append(dropped, strings.ToLower(reqctx.HeaderRealIP))
+		dropped = append(dropped, strings.ToLower(clientip.HeaderRealIP))
 	}
-	if len(dropped) == 0 || !p.warnLimiter.Allow(warnReasonHeadersDropped) {
+	if len(dropped) == 0 || !p.warnLimiter.Allow(headersDroppedKey) {
 		return
 	}
 	slices.Sort(dropped)
@@ -152,7 +146,7 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 
 		if !ok {
 			p.metrics.AuthenticationAttempt(metrics.AuthMethodNone, metrics.AuthRejected)
-			p.handleError(rw, req, errUnauthorized)
+			p.refuse(rw, req, errUnauthorized)
 			return
 		}
 
@@ -175,7 +169,7 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 		req = req.WithContext(genericapirequest.WithUser(req.Context(), info.User))
 
 		if err := checkReservedIdentity(info.User, p.allowedReservedGroups); err != nil {
-			p.handleError(rw, req, err)
+			p.refuse(rw, req, err)
 			return
 		}
 
@@ -224,17 +218,17 @@ func checkReservedIdentity(info authuser.Info, allowedGroups sets.Set[string]) e
 	return nil
 }
 
-// withTokenReview will attempt a token review on the incoming request, if
-// enabled.
+// withTokenReview serves a request whose token OIDC rejected: with token
+// passthrough enabled the API server's TokenReview gets a second look at it,
+// and without it the request is refused.
 func (p *Proxy) withTokenReview(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-		if !p.config.TokenPassthrough {
-			p.handleError(rw, req, errUnauthorized)
-			return
+		err := errUnauthorized
+		if p.config.TokenPassthrough {
+			err = p.reviewToken(req)
 		}
-
-		if !p.reviewToken(req) {
-			p.handleError(rw, req, errUnauthorized)
+		if err != nil {
+			p.refuse(rw, req, err)
 			return
 		}
 
@@ -244,7 +238,7 @@ func (p *Proxy) withTokenReview(handler http.Handler) http.Handler {
 		// impersonation filter and RoundTrip both see it settled: no outbound
 		// identity, and no proxy-authenticated inbound one either.
 		req = reqctx.WithAuthMethod(req, metrics.AuthMethodTokenReview)
-		req = reqctx.WithImpersonation(req, &reqctx.Impersonation{})
+		req = reqctx.WithImpersonation(req, &reqctx.ImpersonationRecord{Mode: reqctx.ForwardPassthrough})
 
 		handler.ServeHTTP(rw, req)
 	})

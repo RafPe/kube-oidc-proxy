@@ -1,0 +1,3 @@
+kind: Fixed
+body: |-
+  `config_hash` is now deterministic: map-valued flags such as `--extra-user-headers` were hashed in random key order. The hash changes once for deployments with two or more such keys.

@@ -19,10 +19,7 @@ func TestSignRoundTrip(t *testing.T) {
 	}
 	issuer := &url.URL{Scheme: "https", Host: "issuer.example"}
 
-	payload, err := NewPayloadForIdentity(issuer, "client", `we"ird\user`, []string{"g1"}, time.Unix(1700000000, 0))
-	if err != nil {
-		t.Fatalf("NewPayloadForIdentity() error = %v", err)
-	}
+	payload := NewPayloadForIdentity(issuer, "client", `we"ird\user`, []string{"g1"}, time.Unix(1700000000, 0))
 
 	signed, err := Sign(bundle, payload)
 	if err != nil {

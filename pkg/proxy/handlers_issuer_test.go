@@ -74,7 +74,7 @@ func TestIssuerNameNeverReachesImpersonationHeaders(t *testing.T) {
 	chain := p.withAuthenticateRequest(p.withImpersonateRequest(http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
 		served = true
 
-		conf := reqctx.ImpersonationOf(req)
+		conf := reqctx.Impersonation(req)
 		if conf == nil {
 			t.Fatal("no impersonation config on an authenticated request")
 		}

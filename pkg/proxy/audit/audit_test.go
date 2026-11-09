@@ -3,15 +3,19 @@ package audit
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	auditinternal "k8s.io/apiserver/pkg/apis/audit"
 	"k8s.io/apiserver/pkg/audit"
+	authuser "k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/server"
 	apiserveroptions "k8s.io/apiserver/pkg/server/options"
@@ -308,21 +312,17 @@ func TestRequestInfoLongRunning(t *testing.T) {
 	}
 }
 
-// fakeBackend is an audit.Backend that records whether it was shut down. It
-// implements errorReporter so a test can drive both Shutdown outcomes: the
-// upstream audit.Backend interface has a Shutdown that returns nothing, so a
-// backend that knows its flush failed can only say so through this extension.
+// fakeBackend is an audit.Backend that records whether it was shut down and
+// can be told to fail Run.
 type fakeBackend struct {
-	runErr      error
-	shutdownErr error
-	shutdown    bool
+	runErr   error
+	shutdown bool
 }
 
 func (f *fakeBackend) ProcessEvents(_ ...*auditinternal.Event) bool { return true }
 func (f *fakeBackend) Run(_ <-chan struct{}) error                  { return f.runErr }
 func (f *fakeBackend) Shutdown()                                    { f.shutdown = true }
 func (f *fakeBackend) String() string                               { return "fake" }
-func (f *fakeBackend) ShutdownErr() error                           { return f.shutdownErr }
 
 // newTestAuditWithBackend builds an Audit reporting through root whose backend
 // is the supplied fake, so Shutdown can be exercised without a real audit sink.
@@ -338,34 +338,21 @@ func newTestAuditWithBackend(t testing.TB, root *slog.Logger, backend audit.Back
 	return a
 }
 
-// TestShutdownReportsFlushResult covers the success case: the backend's
-// Shutdown returns without reporting an error, so the flush is recorded as
-// completed and Shutdown reports no failure to the caller.
-func TestShutdownReportsFlushResult(t *testing.T) {
+// TestShutdownFlushesAndRecordsCompletion pins what Shutdown can actually
+// observe: it flushes the backend and records the flush as completed. The
+// upstream backend interface gives it no failure to report.
+func TestShutdownFlushesAndRecordsCompletion(t *testing.T) {
 	root, cap := logtest.New(t, 0)
 	defer logtest.AssertRegistered(t, cap)
-	a := newTestAuditWithBackend(t, root, &fakeBackend{shutdownErr: nil})
-	if err := a.Shutdown(); err != nil {
-		t.Fatal(err)
+	backend := &fakeBackend{}
+	a := newTestAuditWithBackend(t, root, backend)
+
+	a.Shutdown()
+
+	if !backend.shutdown {
+		t.Fatal("Shutdown did not flush the backend")
 	}
 	cap.Only(t, logging.EventAuditFlushCompleted)
-}
-
-// TestShutdownReturnsFlushFailure covers the failure case: a backend that
-// reports a shutdown error through errorReporter hands the error to the
-// caller, so a lost audit flush is not silent. The auditor does not log it
-// itself: the caller reports it once, as the failed shutdown step.
-func TestShutdownReturnsFlushFailure(t *testing.T) {
-	root, cap := logtest.New(t, 0)
-	defer logtest.AssertRegistered(t, cap)
-	a := newTestAuditWithBackend(t, root, &fakeBackend{shutdownErr: errors.New("flush timed out")})
-	err := a.Shutdown()
-	if err == nil || !strings.Contains(err.Error(), "flush timed out") {
-		t.Fatalf("Shutdown() = %v, want the backend's flush error", err)
-	}
-	if len(cap.Records()) != 0 {
-		t.Fatalf("a failed flush was logged by the auditor as well as returned: %s", cap.Raw())
-	}
 }
 
 // TestRunReportsBackendStarted covers the success case: a backend that starts
@@ -418,9 +405,7 @@ func TestRunWithoutBackendIsSilent(t *testing.T) {
 	if err := a.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.Shutdown(); err != nil {
-		t.Fatal(err)
-	}
+	a.Shutdown()
 	if raw := cap.Raw(); raw != "" {
 		t.Fatalf("records emitted with no audit backend configured: %s", raw)
 	}
@@ -485,5 +470,210 @@ func TestWithRequestInfoResolvesCoreGroupAsResourceRequest(t *testing.T) {
 func TestNewRequiresLogger(t *testing.T) {
 	if _, err := New(Config{ExternalAddress: "0.0.0.0:1234", SecureServing: new(server.SecureServingInfo)}, nil); err == nil {
 		t.Fatal("New(nil logger) error = nil, want an error")
+	}
+}
+
+// forbiddenAuditEvent is the subset of an audit.k8s.io/v1 Event this test
+// asserts on. Decoding into a local struct keeps the assertions independent of
+// the apiserver's internal/external event conversions.
+type forbiddenAuditEvent struct {
+	Stage string `json:"stage"`
+	User  struct {
+		Username string   `json:"username"`
+		Groups   []string `json:"groups"`
+	} `json:"user"`
+	ResponseStatus *struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	} `json:"responseStatus"`
+}
+
+// forbiddenAuditPolicy is a Metadata-level policy for every request.
+// RequestReceived is omitted so the backend emits exactly one event per
+// request, keeping the assertions unambiguous.
+const forbiddenAuditPolicy = `apiVersion: audit.k8s.io/v1
+kind: Policy
+omitStages:
+  - RequestReceived
+rules:
+  - level: Metadata
+`
+
+// newForbiddenTestAudit builds a real Audit backed by a file log backend and a
+// Metadata policy, returning it alongside the path the events are written to.
+func newForbiddenTestAudit(t *testing.T) (*Audit, string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	policyPath := filepath.Join(dir, "policy.yaml")
+	if err := os.WriteFile(policyPath, []byte(forbiddenAuditPolicy), 0600); err != nil {
+		t.Fatalf("writing audit policy: %s", err)
+	}
+	logPath := filepath.Join(dir, "audit.log")
+
+	opts := apiserveroptions.NewAuditOptions()
+	opts.PolicyFile = policyPath
+	opts.LogOptions.Path = logPath
+
+	a, err := New(Config{Options: opts, ExternalAddress: "0.0.0.0:1234", SecureServing: new(server.SecureServingInfo)}, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("creating auditor: %s", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if err := a.Start(ctx); err != nil {
+		t.Fatalf("running audit backend: %s", err)
+	}
+
+	return a, logPath
+}
+
+// readForbiddenAuditEvents flushes the backend and returns every event written
+// to path.
+func readForbiddenAuditEvents(t *testing.T, a *Audit, path string) []forbiddenAuditEvent {
+	t.Helper()
+
+	a.Shutdown()
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading audit log %q: %s", path, err)
+	}
+
+	var events []forbiddenAuditEvent
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if line == "" {
+			continue
+		}
+		var event forbiddenAuditEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("decoding audit event %q: %s", line, err)
+		}
+		events = append(events, event)
+	}
+
+	return events
+}
+
+// TestWithRequestAuditsAuthenticatedIdentity is the regression guard against
+// auditing a refusal of an authenticated request through the
+// failed-authentication chain. The request authenticated
+// successfully and was then refused by the proxy, so the audit record must name
+// the identity that was presented and must not read as an authentication
+// failure.
+//
+// The assertions are deliberately confined to what this handler decides: the
+// stage, the identity, the status code, and the absence of an
+// authentication-failure message. The event's verb and objectRef are not
+// asserted because they are decided by the RequestInfo resolver, so they move
+// with its configuration — a core-group path like the one below is classified
+// as a non-resource request (verb "get", no objectRef) unless the resolver is
+// given the legacy API group prefixes, which turns it into a resource request
+// (verb "list", objectRef present). Assert on those only against the resolver
+// this package actually builds.
+func TestWithRequestAuditsAuthenticatedIdentity(t *testing.T) {
+	a, logPath := newForbiddenTestAudit(t)
+
+	handler := a.WithRequestInfo(a.WithRequest(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		http.Error(rw, "forbidden", http.StatusForbidden)
+	})))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/default/pods", nil)
+	// A bearer token is present so that, were the refusal audited through
+	// WithFailedAuthentication, the event would carry its
+	// "Authentication failed, attempted: bearer" message.
+	req.Header.Set("Authorization", "bearer fake-token")
+	req = req.WithContext(request.WithUser(req.Context(), &authuser.DefaultInfo{
+		Name:   "alice",
+		Groups: []string{"system:masters"},
+	}))
+
+	rw := httptest.NewRecorder()
+	handler.ServeHTTP(rw, req)
+
+	if got, want := rw.Result().StatusCode, http.StatusForbidden; got != want {
+		t.Errorf("unexpected response code, exp=%d got=%d", want, got)
+	}
+
+	events := readForbiddenAuditEvents(t, a, logPath)
+	if len(events) != 1 {
+		t.Fatalf("expected exactly one audit event, got %d: %+v", len(events), events)
+	}
+	event := events[0]
+
+	if event.Stage != "ResponseComplete" {
+		t.Errorf("expected a ResponseComplete audit event, got stage %q", event.Stage)
+	}
+
+	// The regression guard: the authenticated identity, not an empty user.
+	if event.User.Username != "alice" {
+		t.Errorf("audit event does not carry the authenticated user, exp=alice got=%q", event.User.Username)
+	}
+	if len(event.User.Groups) != 1 || event.User.Groups[0] != "system:masters" {
+		t.Errorf("audit event does not carry the authenticated groups, exp=[system:masters] got=%v", event.User.Groups)
+	}
+
+	if event.ResponseStatus == nil {
+		t.Fatal("audit event has no responseStatus")
+	}
+	if got, want := event.ResponseStatus.Code, http.StatusForbidden; got != want {
+		t.Errorf("unexpected audited response code, exp=%d got=%d", want, got)
+	}
+
+	// Not an authentication-failure record.
+	if strings.Contains(event.ResponseStatus.Message, "Authentication failed") {
+		t.Errorf("audit event reads as an authentication failure: %q", event.ResponseStatus.Message)
+	}
+}
+
+// TestWithFailedAuthenticationAuditsFailedAuthentication is the regression
+// guard for the missing WithAuditInit in the failed-authentication chain
+// (TremoloSecurity/kube-oidc-proxy#92). Without an initialised audit context
+// the failed-authentication filter finds auditing disabled and a rejected
+// request leaves no trace in the audit log at all — the exact case an audit
+// log exists for.
+//
+// Assertions are confined to what this chain decides: that exactly one event
+// is written, at ResponseStarted (the stage the failed-auth filter's decorated
+// response writer records on WriteHeader), carrying the 401 and the
+// authentication-failure message, with no authenticated identity. Verb and
+// objectRef are the RequestInfo resolver's decision and are covered elsewhere.
+func TestWithFailedAuthenticationAuditsFailedAuthentication(t *testing.T) {
+	a, logPath := newForbiddenTestAudit(t)
+
+	handler := a.WithRequestInfo(a.WithFailedAuthentication(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		rw.WriteHeader(http.StatusUnauthorized)
+	})))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/kube-system/pods", nil)
+	req.Header.Set("Authorization", "bearer some-invalid-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d", http.StatusUnauthorized, rec.Code)
+	}
+
+	events := readForbiddenAuditEvents(t, a, logPath)
+	if len(events) != 1 {
+		t.Fatalf("expected exactly one audit event for a failed authentication, got %d: %+v", len(events), events)
+	}
+
+	event := events[0]
+	if event.Stage != "ResponseStarted" {
+		t.Errorf("expected stage ResponseStarted, got %q", event.Stage)
+	}
+	if event.User.Username != "" {
+		t.Errorf("failed authentication must not record an identity, got %q", event.User.Username)
+	}
+	if event.ResponseStatus == nil {
+		t.Fatalf("expected a responseStatus on the event, got none")
+	}
+	if event.ResponseStatus.Code != http.StatusUnauthorized {
+		t.Errorf("expected responseStatus code 401, got %d", event.ResponseStatus.Code)
+	}
+	if !strings.Contains(event.ResponseStatus.Message, "Authentication failed, attempted: bearer") {
+		t.Errorf("expected the authentication-failure message naming the attempted method, got %q", event.ResponseStatus.Message)
 	}
 }

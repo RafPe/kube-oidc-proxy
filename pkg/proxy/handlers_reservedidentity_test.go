@@ -184,7 +184,7 @@ func TestWithAuthenticateRequestAllowsAllowlistedReservedGroup(t *testing.T) {
 }
 
 // TestReservedIdentityRejectedBeforeSubjectAccessReview is the ordering
-// property that makes the guard meaningful. CheckAuthorizedForImpersonation
+// property that makes the guard meaningful. ResolveImpersonation
 // builds its SubjectAccessReview with the requester's own groups, so a forged
 // system: group would otherwise feed the authorization decision — not merely
 // the impersonation headers. No review may be submitted at all.
@@ -272,7 +272,7 @@ func TestAnomalyIsRateLimitedButAccessRecordIsNot(t *testing.T) {
 func TestFlushWarnLimiterSummarisesOnShutdown(t *testing.T) {
 	p := newTestProxy(t)
 	for i := 0; i < 10; i++ {
-		p.warnLimiter.Allow(string(metrics.ReasonReservedIdentity))
+		p.warnLimiter.Allow(logging.WarningKey{Event: logging.EventRequestAnomalyDetected, Reason: string(metrics.ReasonReservedIdentity)})
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

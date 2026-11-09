@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
 
 	authuser "k8s.io/apiserver/pkg/authentication/user"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
@@ -15,6 +16,42 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 )
+
+// Extra keys the proxy itself puts on an outbound impersonated request. They
+// are a runtime API contract with the Helm chart's RBAC: the API server
+// authorizes each one as `impersonate` on `userextras/<key>` (lowercased), so
+// the chart's ClusterRole must grant every key listed here, and a test holds
+// the two together.
+const (
+	// ExtraKeyClientIP carries the resolved client IP when
+	// --extra-user-header-client-ip is set.
+	ExtraKeyClientIP = "Remote-Client-IP"
+
+	// The originaluser.jetstack.io-* keys carry the authenticated identity on a
+	// request that impersonates someone else (kubectl --as), so the API
+	// server's audit log records who really acted. Unchanged from upstream.
+	ExtraKeyOriginalUser   = "originaluser.jetstack.io-user"
+	ExtraKeyOriginalGroups = "originaluser.jetstack.io-groups"
+	ExtraKeyOriginalUID    = "originaluser.jetstack.io-uid"
+	ExtraKeyOriginalExtra  = "originaluser.jetstack.io-extra"
+)
+
+// originalUserExtraPrefix is the namespace of the originaluser.jetstack.io-*
+// keys. The proxy owns all of it, whether or not it writes a given key.
+const originalUserExtraPrefix = "originaluser.jetstack.io-"
+
+// FixedImpersonationExtraKeys lists every extra key the proxy can set on its
+// own, independent of claim mappings and operator-configured headers. The
+// chart grants exactly these, plus whatever the configuration declares.
+func FixedImpersonationExtraKeys() []string {
+	return []string{
+		ExtraKeyClientIP,
+		ExtraKeyOriginalUser,
+		ExtraKeyOriginalGroups,
+		ExtraKeyOriginalUID,
+		ExtraKeyOriginalExtra,
+	}
+}
 
 // withImpersonateRequest decides how an authenticated request is forwarded:
 // as the identity the client asked to impersonate, once the
@@ -27,25 +64,28 @@ import (
 // identity it authenticates: the client's own token, or anonymous.
 func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-		// Token passthrough already decided this request: it is forwarded with
-		// the client's own token.
-		if reqctx.ImpersonationOf(req) != nil {
+		// An earlier filter already decided this request: token passthrough
+		// forwards it with the client's own token.
+		if imp := reqctx.Impersonation(req); imp != nil {
 			logging.Emit(req.Context(), p.requestLogger, logging.EventRequestImpersonationSkipped,
-				slog.String("skip_reason", skipReasonPassthrough))
+				slog.String("skip_reason", string(imp.Mode)))
 			handler.ServeHTTP(rw, req)
 			return
 		}
 
 		if p.config.DisableImpersonation {
 			logging.Emit(req.Context(), p.requestLogger, logging.EventRequestImpersonationSkipped,
-				slog.String("skip_reason", skipReasonDisabled))
-			handler.ServeHTTP(rw, reqctx.WithImpersonation(req, &reqctx.Impersonation{InboundUser: userFromContext(req)}))
+				slog.String("skip_reason", string(reqctx.ForwardDisabled)))
+			handler.ServeHTTP(rw, reqctx.WithImpersonation(req, &reqctx.ImpersonationRecord{
+				Mode:        reqctx.ForwardDisabled,
+				InboundUser: userFromContext(req),
+			}))
 			return
 		}
 
 		inbound, ok := genericapirequest.UserFrom(req.Context())
 		if !ok || len(inbound.GetName()) == 0 {
-			p.handleError(rw, req, errNoName)
+			p.refuse(rw, req, errNoName)
 			return
 		}
 
@@ -55,9 +95,9 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 		var target authuser.Info
 		if subjectaccessreview.HasImpersonationHeaders(req.Header) {
 			var err error
-			target, err = p.subjectAccessReviewer.CheckAuthorizedForImpersonation(req, asAuthenticated(inbound))
+			target, err = p.subjectAccessReviewer.ResolveImpersonation(req, asAuthenticated(inbound))
 			if err != nil {
-				p.handleError(rw, req, err)
+				p.refuse(rw, req, err)
 				return
 			}
 
@@ -71,11 +111,12 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 
 		outbound, err := p.outboundIdentity(req, inbound, target)
 		if err != nil {
-			p.handleError(rw, req, err)
+			p.refuse(rw, req, err)
 			return
 		}
 
-		imp := &reqctx.Impersonation{
+		imp := &reqctx.ImpersonationRecord{
+			Mode:             reqctx.ForwardImpersonating,
 			Outbound:         outbound,
 			InboundUser:      inbound,
 			ImpersonatedUser: target,
@@ -134,8 +175,21 @@ func (p *Proxy) outboundIdentity(req *http.Request, inbound, target authuser.Inf
 	groups := authenticatedGroups(forwarded.GetGroups())
 	extra := cloneExtra(forwarded.GetExtra())
 
+	// The impersonated identity's extras are whatever the client asked for in
+	// Impersonate-Extra-* headers. A key the proxy writes itself below must
+	// carry only the proxy's value: left in place, a client allowed to
+	// impersonate originaluser.jetstack.io-uid could name someone else as the
+	// original user, or one allowed Remote-Client-IP could add an address of
+	// its choosing beside the real one. Every other extra stays the client's,
+	// as the SubjectAccessReviews authorized it.
+	for k := range extra {
+		if p.writesExtraKey(k) {
+			delete(extra, k)
+		}
+	}
+
 	if p.config.ExtraUserHeadersClientIPEnabled {
-		extra[reqctx.UserHeaderClientIPKey] = append(extra[reqctx.UserHeaderClientIPKey], reqctx.ClientIP(req))
+		extra[ExtraKeyClientIP] = append(extra[ExtraKeyClientIP], reqctx.ClientIP(req))
 	}
 
 	// append copies into the freshly cloned value slice, so the configured
@@ -145,14 +199,14 @@ func (p *Proxy) outboundIdentity(req *http.Request, inbound, target authuser.Inf
 	}
 
 	if target != nil {
-		extra[reqctx.ExtraKeyOriginalUser] = []string{inbound.GetName()}
+		extra[ExtraKeyOriginalUser] = []string{inbound.GetName()}
 
 		if origGroups := inbound.GetGroups(); len(origGroups) > 0 {
-			extra[reqctx.ExtraKeyOriginalGroups] = slices.Clone(origGroups)
+			extra[ExtraKeyOriginalGroups] = slices.Clone(origGroups)
 		}
 
 		if inbound.GetUID() != "" {
-			extra[reqctx.ExtraKeyOriginalUID] = []string{inbound.GetUID()}
+			extra[ExtraKeyOriginalUID] = []string{inbound.GetUID()}
 		}
 
 		if len(inbound.GetExtra()) > 0 {
@@ -160,7 +214,7 @@ func (p *Proxy) outboundIdentity(req *http.Request, inbound, target authuser.Inf
 			if err != nil {
 				return nil, err
 			}
-			extra[reqctx.ExtraKeyOriginalExtra] = []string{string(jsonExtras)}
+			extra[ExtraKeyOriginalExtra] = []string{string(jsonExtras)}
 		}
 	}
 
@@ -170,6 +224,26 @@ func (p *Proxy) outboundIdentity(req *http.Request, inbound, target authuser.Inf
 		Groups:   groups,
 		Extra:    extra,
 	}, nil
+}
+
+// writesExtraKey reports whether outboundIdentity writes key itself: every
+// originaluser.jetstack.io-* key, the client-IP key when it is enabled, and
+// the operator's configured extras. The comparison ignores case, because the
+// API server receives every key as a canonicalised Impersonate-Extra- header,
+// where keys differing only in case are the same header.
+func (p *Proxy) writesExtraKey(key string) bool {
+	if strings.HasPrefix(strings.ToLower(key), originalUserExtraPrefix) {
+		return true
+	}
+	if p.config.ExtraUserHeadersClientIPEnabled && strings.EqualFold(key, ExtraKeyClientIP) {
+		return true
+	}
+	for configured := range p.config.ExtraUserHeaders {
+		if strings.EqualFold(key, configured) {
+			return true
+		}
+	}
+	return false
 }
 
 // impersonatedHeaderNames returns the sorted names of the impersonation headers

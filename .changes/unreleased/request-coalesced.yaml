@@ -1,0 +1,3 @@
+kind: Fixed
+body: |-
+  `request_coalesced=true` now marks only a request that joined another request's in-flight SubjectAccessReview; the request that ran it reports `false`. A request whose own review hits its timeout now fails instead of retrying with a second review.

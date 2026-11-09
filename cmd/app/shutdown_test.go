@@ -18,37 +18,43 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/audit"
 )
 
-// TestDrainStopsTheMetricsListenerAfterTheHooks pins the shutdown order. The
-// proxy's pre-shutdown step reports its own failures through the recorder -- the
-// audit backend increments the operation="shutdown" counter from inside one --
-// so stopping the metrics listener before they run makes those series
-// unscrapeable for the whole life of the process.
-func TestDrainStopsTheMetricsListenerAfterTheHooks(t *testing.T) {
+// discard is the root logger for a shutdown test that does not assert on
+// records.
+var discard = slog.New(slog.DiscardHandler)
+
+// TestShutdownStopsTheMetricsListenerAfterTheHooks pins the shutdown order:
+// the metrics listener stops last, so a scrape landing anywhere in the drain
+// window still reaches it.
+func TestShutdownStopsTheMetricsListenerAfterTheHooks(t *testing.T) {
 	var order []string
 	note := func(step string) func() error {
 		return func() error { order = append(order, step); return nil }
 	}
 
-	err := drain(note("wait probe"), note("flush audit"), note("stop metrics"))
+	err := shutdown(discard, note("wait probe"), note("flush audit"), note("stop metrics"))
 	if err != nil {
-		t.Fatalf("drain: %v", err)
+		t.Fatalf("shutdown: %v", err)
 	}
 
 	want := []string{"wait probe", "flush audit", "stop metrics"}
 	if !slices.Equal(order, want) {
-		t.Fatalf("drain order = %v, want %v", order, want)
+		t.Fatalf("shutdown order = %v, want %v", order, want)
 	}
 }
 
-// TestDrainJoinsEveryFailure pins that no step is skipped because an earlier
-// one failed and that every failure reaches the exit status.
-func TestDrainJoinsEveryFailure(t *testing.T) {
+// TestShutdownJoinsEveryFailure pins that no step is skipped because an
+// earlier one failed, that every failure reaches the exit status, and that
+// the teardown still reports it finished.
+func TestShutdownJoinsEveryFailure(t *testing.T) {
+	root, logs := logtest.New(t, 0)
+	defer logtest.AssertRegistered(t, logs)
+
 	probeErr := errors.New("probe drain overran")
 	hooksErr := errors.New("audit flush failed")
 	metricsErr := errors.New("metrics drain overran")
 
 	ran := 0
-	err := drain(
+	err := shutdown(root,
 		func() error { ran++; return probeErr },
 		func() error { ran++; return hooksErr },
 		func() error { ran++; return metricsErr },
@@ -58,32 +64,34 @@ func TestDrainJoinsEveryFailure(t *testing.T) {
 	}
 	for _, want := range []error{probeErr, hooksErr, metricsErr} {
 		if !errors.Is(err, want) {
-			t.Fatalf("drain error = %v, want it to carry %v", err, want)
+			t.Fatalf("shutdown error = %v, want it to carry %v", err, want)
 		}
 	}
+	logs.Only(t, logging.EventProxyShutdownCompleted)
 }
 
-// TestDrainKeepsTheMetricsEndpointUpForTheHooks is the property the order
+// TestShutdownKeepsTheMetricsEndpointUpForTheHooks is the property the order
 // exists for: a scrape that lands while the hooks are running still reaches
-// the listener and sees what a hook just recorded.
-func TestDrainKeepsTheMetricsEndpointUpForTheHooks(t *testing.T) {
+// the listener and reads the state recorded before shutdown began.
+func TestShutdownKeepsTheMetricsEndpointUpForTheHooks(t *testing.T) {
 	rec, err := metrics.New(metrics.BuildInfo{Version: "test"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := metrics.NewServer(metrics.ServerConfig{Addr: "127.0.0.1:0", Recorder: rec}, slog.New(slog.DiscardHandler))
+	srv, err := metrics.NewServer(metrics.ServerConfig{Addr: "127.0.0.1:0", Recorder: rec}, discard)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancelMetrics := context.WithCancel(context.Background())
 	defer cancelMetrics()
 	if err := srv.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
 	addr := srv.Addr()
+	rec.SetReady(true)
 
 	var body string
 	hooks := func() error {
-		// What the audit backend's pre-shutdown hook does.
-		rec.AuditBackendFailure(metrics.AuditShutdown)
-
 		resp, err := http.Get("http://" + addr + "/metrics")
 		if err != nil {
 			return fmt.Errorf("scraping during the drain window: %w", err)
@@ -97,23 +105,23 @@ func TestDrainKeepsTheMetricsEndpointUpForTheHooks(t *testing.T) {
 		return nil
 	}
 
-	if err := drain(func() error { return nil }, hooks,
+	if err := shutdown(discard, func() error { return nil }, hooks,
 		func() error { cancelMetrics(); return srv.Wait() }); err != nil {
-		t.Fatalf("drain: %v", err)
+		t.Fatalf("shutdown: %v", err)
 	}
 
-	if !strings.Contains(body, `kube_oidc_proxy_audit_backend_failures_total{operation="shutdown"} 1`) {
-		t.Fatalf("the shutdown series was not scrapeable during the drain window:\n%s", body)
+	if !strings.Contains(body, "kube_oidc_proxy_ready 1") {
+		t.Fatalf("the metrics endpoint was not scrapeable during the drain window:\n%s", body)
 	}
 }
 
-// TestDrainWithoutMetricsListener pins the disabled-metrics path: there is no
+// TestShutdownWithoutMetricsListener pins the disabled-metrics path: there is no
 // listener to stop, and the other steps still run.
-func TestDrainWithoutMetricsListener(t *testing.T) {
+func TestShutdownWithoutMetricsListener(t *testing.T) {
 	ran := 0
 	step := func() error { ran++; return nil }
-	if err := drain(step, step, noStep); err != nil {
-		t.Fatalf("drain: %v", err)
+	if err := shutdown(discard, step, step, noStep); err != nil {
+		t.Fatalf("shutdown: %v", err)
 	}
 	if ran != 2 {
 		t.Fatalf("ran %d steps, want 2", ran)

@@ -12,11 +12,11 @@
 // supplies its own Secret through the chart's tls.secretName and keeps the
 // issuing certificate in .state/proxy-ca.pem.
 //
-// Reusing helper.DeployIssuer and keybundle.NewSelfSigned means the demo
-// authenticates against exactly the issuer, and trusts exactly the kind of
-// certificate, that the e2e suite does. This is the one demo binary that
-// depends on the e2e framework, and only for that deployment primitive: the
-// load generator takes everything it needs from the test/util packages.
+// Deploying through appdeploy.Issuer and minting with keybundle.NewSelfSigned
+// means the demo authenticates against exactly the issuer, and trusts exactly
+// the kind of certificate, that the e2e suite does. Both are test/util leaf
+// packages, as is everything the load generator uses, so no demo binary
+// depends on the e2e framework or its kind tooling.
 package main
 
 import (
@@ -35,8 +35,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/config"
-	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/helper"
+	"github.com/rafpe/kube-oidc-proxy/test/util/appdeploy"
 	"github.com/rafpe/kube-oidc-proxy/test/util/keybundle"
 )
 
@@ -47,17 +46,18 @@ func main() {
 	proxyService := flag.String("proxy-service", "kop-kube-oidc-proxy", "name of the proxy Service the serving certificate is issued for")
 	flag.Parse()
 
-	if err := run(*state, *namespace, *tlsSecret, *proxyService); err != nil {
+	if err := run(context.Background(), *state, *namespace, *tlsSecret, *proxyService); err != nil {
 		slog.Error("prepare demo TLS material", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 }
 
-// issuerName is the Deployment the e2e helper creates for the mock issuer.
+// issuerName names both the issuer image up.sh loads into the cluster and the
+// Deployment it runs as, matching what the e2e suite deploys.
 const issuerName = "oidc-issuer-e2e"
 
-func issuerDeployed(client kubernetes.Interface, namespace string) (bool, error) {
-	_, err := client.AppsV1().Deployments(namespace).Get(context.Background(), issuerName, metav1.GetOptions{})
+func issuerDeployed(ctx context.Context, client kubernetes.Interface, namespace string) (bool, error) {
+	_, err := client.AppsV1().Deployments(namespace).Get(ctx, issuerName, metav1.GetOptions{})
 	switch {
 	case err == nil:
 		return true, nil
@@ -68,7 +68,7 @@ func issuerDeployed(client kubernetes.Interface, namespace string) (bool, error)
 	}
 }
 
-func run(state, namespace, tlsSecret, proxyService string) error {
+func run(ctx context.Context, state, namespace, tlsSecret, proxyService string) error {
 	kubeconfig := filepath.Join(state, "kubeconfig")
 
 	restConfig, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
@@ -81,18 +81,10 @@ func run(state, namespace, tlsSecret, proxyService string) error {
 		return fmt.Errorf("failed to build kubernetes client: %w", err)
 	}
 
-	repoRoot, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-
-	h := helper.NewHelper(&config.Config{KubeConfigPath: kubeconfig, RepoRoot: repoRoot})
-	h.KubeClient = client
-
 	// Idempotent, so up.sh can be re-run: the issuer keeps the Deployment and
 	// the key material already in .state, and only the serving certificate
 	// below is (re-)checked.
-	deployed, err := issuerDeployed(client, namespace)
+	deployed, err := issuerDeployed(ctx, client, namespace)
 	if err != nil {
 		return err
 	}
@@ -108,7 +100,7 @@ func run(state, namespace, tlsSecret, proxyService string) error {
 		}
 		slog.Info("issuer already deployed", slog.String("namespace", namespace), slog.String("url", strings.TrimSpace(string(url))))
 	default:
-		bundle, issuerURL, err := h.DeployIssuer(namespace)
+		bundle, issuerURL, err := appdeploy.Deploy(ctx, client, appdeploy.Issuer(namespace, issuerName, issuerName))
 		if err != nil {
 			return fmt.Errorf("failed to deploy issuer into %q: %w", namespace, err)
 		}
@@ -130,7 +122,7 @@ func run(state, namespace, tlsSecret, proxyService string) error {
 		slog.Info("issuer deployed", slog.String("namespace", namespace), slog.String("url", issuerURL.String()))
 	}
 
-	return mintProxyCertificate(client, state, namespace, tlsSecret, proxyService)
+	return mintProxyCertificate(ctx, client, state, namespace, tlsSecret, proxyService)
 }
 
 // mintProxyCertificate issues the proxy's serving certificate for its
@@ -139,9 +131,7 @@ func run(state, namespace, tlsSecret, proxyService string) error {
 // Secret the chart is pointed at with tls.secretName. Idempotent: an existing
 // Secret is left alone, because replacing it would invalidate the
 // proxy-ca.pem the demo already trusts.
-func mintProxyCertificate(client kubernetes.Interface, state, namespace, name, service string) error {
-	ctx := context.Background()
-
+func mintProxyCertificate(ctx context.Context, client kubernetes.Interface, state, namespace, name, service string) error {
 	existing, err := client.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err == nil {
 		// Only the certificate is written out; the key never leaves the

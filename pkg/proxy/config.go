@@ -2,6 +2,7 @@
 package proxy
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -51,12 +52,12 @@ func parseAllowedReservedGroups(groups []string) (sets.Set[string], error) {
 	for _, group := range groups {
 		switch {
 		case strings.TrimSpace(group) == "":
-			return nil, fmt.Errorf("allowed reserved group must not be empty")
+			return nil, errors.New("proxy: allowed reserved group must not be empty")
 		case !strings.HasPrefix(group, ReservedIdentityPrefix):
-			return nil, fmt.Errorf("allowed reserved group %q does not carry the reserved %q prefix, so listing it has no effect",
+			return nil, fmt.Errorf("proxy: allowed reserved group %q does not carry the reserved %q prefix, so listing it has no effect",
 				group, ReservedIdentityPrefix)
 		case group == authuser.AllAuthenticated:
-			return nil, fmt.Errorf("allowed reserved group %q is always permitted, so listing it has no effect", group)
+			return nil, fmt.Errorf("proxy: allowed reserved group %q is always permitted, so listing it has no effect", group)
 		}
 		allowed.Insert(group)
 	}
@@ -76,7 +77,7 @@ func parseTrustedProxies(cidrs []string) ([]*net.IPNet, error) {
 	for _, c := range cidrs {
 		c = strings.TrimSpace(c)
 		if c == "" {
-			return nil, fmt.Errorf("proxy: empty trusted-proxy CIDR")
+			return nil, errors.New("proxy: empty trusted-proxy CIDR")
 		}
 		_, network, err := net.ParseCIDR(c)
 		if err != nil {

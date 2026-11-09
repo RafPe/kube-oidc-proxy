@@ -1,0 +1,3 @@
+kind: Changed
+body: |-
+  The readiness listener gains the metrics listener's read, write and idle timeouts and header size limit, and reports `readiness.server.started` with its bound address.

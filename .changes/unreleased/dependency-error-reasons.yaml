@@ -1,0 +1,3 @@
+kind: Changed
+body: |-
+  When the API server cannot answer a TokenReview or SubjectAccessReview, the access record and `kube_oidc_proxy_access_decisions_total` report `authentication_dependency_error` or `authorization_dependency_error` (was `unauthorized` or `internal_error`); the response status is unchanged (401 and 500). A failed SubjectAccessReview is now audited and no longer logs a second ERROR record. A client that disconnects during either review is recorded as `client_canceled` at DEBUG and no response is written.

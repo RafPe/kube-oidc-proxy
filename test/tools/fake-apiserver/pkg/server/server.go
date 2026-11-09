@@ -9,7 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -136,7 +136,7 @@ func headerNames(h http.Header) []string {
 	for k := range h {
 		names = append(names, k)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 
 	return names
 }

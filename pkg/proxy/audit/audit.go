@@ -59,7 +59,7 @@ type Audit struct {
 	// lifecycle through.
 	logger *slog.Logger
 
-	// metrics receives the observable backend failures; nil records nothing.
+	// metrics receives backend start failures; nil records nothing.
 	metrics *metrics.Recorder
 
 	serverConfig *server.CompletedConfig
@@ -77,8 +77,7 @@ type Config struct {
 	ExternalAddress string
 	SecureServing   *server.SecureServingInfo
 
-	// Metrics receives start and shutdown failures. Optional: nil records
-	// nothing.
+	// Metrics receives backend start failures. Optional: nil records nothing.
 	Metrics *metrics.Recorder
 }
 
@@ -112,7 +111,7 @@ func New(cfg Config, logger *slog.Logger) (*Audit, error) {
 	}
 
 	if err := cfg.Options.ApplyTo(serverConfig); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("audit: applying audit options: %w", err)
 	}
 
 	serverConfig.EffectiveVersion = compatibility.NewEffectiveVersionFromString(version.Get().String(), version.Get().String(), version.Get().String())
@@ -124,16 +123,6 @@ func New(cfg Config, logger *slog.Logger) (*Audit, error) {
 		metrics:      cfg.Metrics,
 		serverConfig: &completed,
 	}, nil
-}
-
-// errorReporter is implemented by an audit backend that can say whether its
-// Shutdown flushed successfully. The upstream audit.Backend interface declares
-// Shutdown with no return value, so a backend that knows it dropped events has
-// no way to report that through the interface; one that implements this is
-// asked, and the answer decides between recording audit.flush.completed and
-// returning the error from Shutdown.
-type errorReporter interface {
-	ShutdownErr() error
 }
 
 // Start starts the audit backend, if one is configured, and stops it when ctx
@@ -155,85 +144,76 @@ func (a *Audit) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to run the audit backend: %w", err)
 	}
 
+	// The upstream backends describe themselves by type ("log",
+	// "buffered<...>"), which is what an operator needs to correlate the
+	// record with the audit flags.
 	logging.Emit(ctx, a.logger, logging.EventAuditBackendStarted,
-		slog.String("backend_kind", a.backendKind()))
+		slog.String("backend_kind", logging.Bound(a.serverConfig.AuditBackend.String(), logging.MaxIdentity)))
 	return nil
 }
 
-// backendKind names the configured backend for the lifecycle records. The
-// upstream backends describe themselves as their type ("log", "buffered<...>"),
-// which is what an operator needs to correlate the record with the flags.
-func (a *Audit) backendKind() string {
-	if a.serverConfig.AuditBackend == nil {
-		return "none"
-	}
-	return logging.Bound(a.serverConfig.AuditBackend.String(), logging.MaxIdentity)
-}
-
-// Shutdown flushes the audit backend if configured. A failed flush means audit
-// events for requests this process already served were dropped, so it must not
-// be swallowed: it is counted here and returned to the caller, which reports
-// it once as the failed shutdown step. A successful flush is recorded as
-// audit.flush.completed.
+// Shutdown flushes the audit backend, if one is configured, and records how
+// long the flush took as audit.flush.completed.
 //
-// Only a backend implementing errorReporter can say that it failed: the
-// upstream audit.Backend interface returns nothing from Shutdown, and the
-// bundled log and buffered webhook backends log a delivery failure through the
-// Kubernetes error handler instead of returning it. For those the flush is
-// recorded as completed and the failure, if any, is a bridged component=k8s
-// record.
-func (a *Audit) Shutdown() error {
+// It cannot report a failed flush, and does not pretend to: the upstream
+// audit.Backend interface returns nothing from Shutdown, and none of the
+// bundled backends (log, buffered webhook, truncate, union) has another way to
+// say it dropped events. The buffered backend reports a delivery failure
+// through the Kubernetes error handler, which surfaces as a bridged
+// component=k8s ERROR record ahead of this one.
+func (a *Audit) Shutdown() {
 	backend := a.serverConfig.AuditBackend
 	if backend == nil {
-		return nil
+		return
 	}
 
-	ctx := context.Background()
 	start := time.Now()
 	backend.Shutdown()
-	elapsed := time.Since(start)
 
-	if reporter, ok := backend.(errorReporter); ok {
-		if err := reporter.ShutdownErr(); err != nil {
-			a.metrics.AuditBackendFailure(metrics.AuditShutdown)
-			return fmt.Errorf("audit backend failed to flush: %w", err)
-		}
-	}
-
-	logging.Emit(ctx, a.logger, logging.EventAuditFlushCompleted,
-		slog.Int64("duration_ms", elapsed.Milliseconds()))
-	return nil
+	logging.Emit(context.Background(), a.logger, logging.EventAuditFlushCompleted,
+		slog.Int64("duration_ms", time.Since(start).Milliseconds()))
 }
 
 // WithRequestInfo resolves the request into the verb, resource and namespace
 // the rest of the proxy reasons about, and puts it on the request context.
 //
-// The audit filters do this for themselves, but they are the innermost wrap:
-// everything ahead of them -- the lifecycle filter deciding whether a request
-// is long running, and the error handler recording a denial -- would otherwise
-// see a request that has not been resolved at all. Applied high in the chain it
-// resolves once for all of them; the inner filters re-resolve the same value,
-// which is wasted work rather than a disagreement.
+// It runs high in the chain, ahead of everything that needs the answer: the
+// lifecycle filter deciding whether a request is long running, the refusal
+// path recording a denial, and both audit chains. The request is resolved once
+// for all of them; WithRequest and WithFailedAuthentication do not resolve it
+// again.
 func (a *Audit) WithRequestInfo(handler http.Handler) http.Handler {
 	return genericapifilters.WithRequestInfo(handler, a.serverConfig.RequestInfoResolver)
 }
 
-// WithRequest will wrap the given handler to inject the request information
-// into the context which is then used by the wrapped audit handler.
+// WithRequest wraps handler in the ordinary request audit chain. It audits
+// every request that authenticated: the admitted ones on their way to the
+// reverse proxy, and the ones the proxy then refuses itself, whatever status
+// the refusal carries. The event names the identity the caller placed on the
+// request context with genericapirequest.WithUser.
+//
+// The request's RequestInfo must already be on the context: WithRequestInfo
+// resolves it once, high in the chain, for every filter that needs it. With a
+// backend configured and no RequestInfo, the apiserver filter cannot build the
+// event and answers 500 in place of handler.
 func (a *Audit) WithRequest(handler http.Handler) http.Handler {
 	handler = genericapifilters.WithAudit(handler, a.serverConfig.AuditBackend, a.serverConfig.AuditPolicyRuleEvaluator, a.serverConfig.LongRunningFunc)
-	handler = genericapifilters.WithAuditInit(handler)
-	return genericapifilters.WithRequestInfo(handler, a.serverConfig.RequestInfoResolver)
+	return genericapifilters.WithAuditInit(handler)
 }
 
-// WithUnauthorized will wrap the given handler to inject the request
-// information into the context which is then used by the wrapped audit
-// handler. WithAuditInit mirrors WithRequest above: without it there is no
-// AuditContext on the request, the failed-authentication filter finds
-// auditing disabled, and a 401 leaves no audit event at all
-// (TremoloSecurity/kube-oidc-proxy#92).
-func (a *Audit) WithUnauthorized(handler http.Handler) http.Handler {
+// WithFailedAuthentication wraps handler in the failed-authentication audit
+// chain, for a request that did not authenticate: the event is recorded as an
+// authentication failure against the anonymous user. A request that
+// authenticated and was then refused goes through WithRequest instead, which
+// keeps its identity; this chain would evaluate the audit policy against an
+// empty user.
+//
+// WithAuditInit mirrors WithRequest: without it there is no AuditContext on
+// the request, the failed-authentication filter finds auditing disabled, and a
+// 401 leaves no audit event at all (TremoloSecurity/kube-oidc-proxy#92). Like
+// WithRequest it requires WithRequestInfo to have run, and answers 500 in
+// place of handler when it has not.
+func (a *Audit) WithFailedAuthentication(handler http.Handler) http.Handler {
 	handler = genericapifilters.WithFailedAuthenticationAudit(handler, a.serverConfig.AuditBackend, a.serverConfig.AuditPolicyRuleEvaluator)
-	handler = genericapifilters.WithAuditInit(handler)
-	return genericapifilters.WithRequestInfo(handler, a.serverConfig.RequestInfoResolver)
+	return genericapifilters.WithAuditInit(handler)
 }

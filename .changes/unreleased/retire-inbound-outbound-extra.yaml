@@ -1,0 +1,3 @@
+kind: Removed
+body: |-
+  The access record's `inbound_extra` and `outbound_extra` fields are retired, without a `schema_version` change: `inbound_extra` could never be populated, and `outbound_extra` only ever carried client-asserted values for proxy-owned keys. `inbound_extra_omitted` and `outbound_extra_omitted` count the identity's extras, which are never logged.

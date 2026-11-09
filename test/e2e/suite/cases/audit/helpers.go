@@ -27,14 +27,13 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/helper"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/suite/cases/sharedtests"
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
-	"github.com/rafpe/kube-oidc-proxy/test/util/idtoken"
 )
 
 // deployProxyWithAuditLogFile redeploys the proxy auditing at level
 // RequestResponse to a file, which is read back with readAuditLog.
-func deployProxyWithAuditLogFile(f *framework.Framework) {
+func deployProxyWithAuditLogFile(ctx context.Context, f *framework.Framework) {
 	By("Creating policy file ConfigMap")
-	cm, err := f.Helper().KubeClient.CoreV1().ConfigMaps(f.Namespace.Name).Create(context.TODO(), &corev1.ConfigMap{
+	cm, err := f.Helper().KubeClient.CoreV1().ConfigMaps(f.Namespace.Name).Create(ctx, &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "kube-oidc-proxy-policy-",
 		},
@@ -97,7 +96,7 @@ rules:
 	}
 
 	By("Deploying proxy with audit policy enabled")
-	f.DeployProxyWithExtras(vols, extras,
+	f.DeployProxyWithExtras(ctx, vols, extras,
 		"--audit-log-path="+auditLogPath, "--audit-policy-file=/audit/audit.yaml")
 }
 
@@ -105,13 +104,9 @@ rules:
 // proxy. SPDY builds its own transport from TLSClientConfig, so unlike
 // Framework.NewProxyRestConfig this cannot hand over a prebuilt transport.
 func newExecRestConfig(f *framework.Framework) *rest.Config {
-	payload := idtoken.NewPayload(f.IssuerURL(), f.ClientID(), time.Now().Add(time.Minute*10))
-	signedToken, err := idtoken.Sign(f.IssuerKeyBundle(), payload)
-	Expect(err).NotTo(HaveOccurred())
-
 	return &rest.Config{
 		Host:        f.ProxyURL().String(),
-		BearerToken: signedToken,
+		BearerToken: f.SignedToken(),
 		TLSClientConfig: rest.TLSClientConfig{
 			CAData: f.ProxyKeyBundle().CertBytes,
 		},
@@ -125,14 +120,14 @@ func newExecRestConfig(f *framework.Framework) *rest.Config {
 }
 
 // proxyPod returns the single running proxy pod.
-func proxyPod(f *framework.Framework) *corev1.Pod {
-	return singlePod(f, "app=kube-oidc-proxy-e2e")
+func proxyPod(ctx context.Context, f *framework.Framework) *corev1.Pod {
+	return singlePod(ctx, f, "app=kube-oidc-proxy-e2e")
 }
 
 // singlePod returns the only pod matching podLabelSelector, failing the spec
 // if there is not exactly one.
-func singlePod(f *framework.Framework, podLabelSelector string) *corev1.Pod {
-	pods, err := f.Helper().KubeClient.CoreV1().Pods(f.Namespace.Name).List(context.TODO(), metav1.ListOptions{
+func singlePod(ctx context.Context, f *framework.Framework, podLabelSelector string) *corev1.Pod {
+	pods, err := f.Helper().KubeClient.CoreV1().Pods(f.Namespace.Name).List(ctx, metav1.ListOptions{
 		LabelSelector: podLabelSelector,
 	})
 	Expect(err).NotTo(HaveOccurred())
@@ -146,8 +141,8 @@ func singlePod(f *framework.Framework, podLabelSelector string) *corev1.Pod {
 // readAuditLog returns the contents of the audit log at logPath in the pod
 // selected by podLabelSelector, read from containerName (the pod's default
 // container when empty).
-func readAuditLog(f *framework.Framework, podLabelSelector, containerName, logPath string) ([]byte, error) {
-	pod := singlePod(f, podLabelSelector)
+func readAuditLog(ctx context.Context, f *framework.Framework, podLabelSelector, containerName, logPath string) ([]byte, error) {
+	pod := singlePod(ctx, f, podLabelSelector)
 
 	execArgs := []string{"exec", pod.Name}
 	if containerName != "" {
@@ -168,13 +163,13 @@ func readAuditLog(f *framework.Framework, podLabelSelector, containerName, logPa
 // backends batch events and write them on an interval, and the log file does
 // not exist before the first write, so a read straight after the request can
 // fail or see only some of the events.
-func waitForAuditLog(f *framework.Framework, podLabelSelector, containerName, logPath string,
+func waitForAuditLog(ctx context.Context, f *framework.Framework, podLabelSelector, containerName, logPath string,
 	flushed func([]auditv1.Event) bool) []byte {
 
 	var logs []byte
 	Eventually(func(g Gomega) {
 		var err error
-		logs, err = readAuditLog(f, podLabelSelector, containerName, logPath)
+		logs, err = readAuditLog(ctx, f, podLabelSelector, containerName, logPath)
 		g.Expect(err).NotTo(HaveOccurred())
 
 		events, err := decodeAuditEvents(logs)
@@ -210,19 +205,15 @@ func hasStage(uriPrefix string, stage auditv1.Stage) func([]auditv1.Event) bool 
 	}
 }
 
-func testAuditLogs(f *framework.Framework, podLabelSelector, containerName, logPath string) {
+func testAuditLogs(ctx context.Context, f *framework.Framework, podLabelSelector, containerName, logPath string) {
 	By("Making calls to proxy to ensure audit get created")
-	token := idtoken.NewPayload(f.IssuerURL(), f.ClientID(), time.Now().Add(time.Second*5))
-	signedToken, err := idtoken.Sign(f.IssuerKeyBundle(), token)
-	Expect(err).NotTo(HaveOccurred())
-
 	proxyConfig := f.NewProxyRestConfig()
-	requester := f.Helper().NewRequester(proxyConfig.Transport, signedToken)
+	requester := f.Helper().NewRequester(proxyConfig.Transport, proxyConfig.BearerToken)
 
 	target := fmt.Sprintf("%s/api/v1/namespaces/kube-system/pods", proxyConfig.Host)
 
 	// Make request that should succeed
-	_, _, err = requester.Get(target)
+	_, _, err := requester.Get(target)
 	Expect(err).NotTo(HaveOccurred())
 
 	// Make request that should be unauthenticated
@@ -295,7 +286,7 @@ func testAuditLogs(f *framework.Framework, podLabelSelector, containerName, logP
 	}
 
 	By("Waiting for the audit log to hold every expected event")
-	logs := waitForAuditLog(f, podLabelSelector, containerName, logPath, func(events []auditv1.Event) bool {
+	logs := waitForAuditLog(ctx, f, podLabelSelector, containerName, logPath, func(events []auditv1.Event) bool {
 		return len(events) >= len(expAuditEvents)
 	})
 	scanner := bufio.NewScanner(bytes.NewReader(logs))
@@ -370,7 +361,7 @@ func testAuditLogs(f *framework.Framework, podLabelSelector, containerName, logP
 	// catching up with the proxy's stdout, which is a different sink from the
 	// audit log read above.
 	Eventually(func() []string {
-		recs, _, err := f.Helper().ProxyLogRecords(f.Namespace.Name, "app="+kind.ProxyImageName)
+		recs, _, err := f.Helper().ProxyLogRecords(ctx, f.Namespace.Name, "app="+kind.ProxyImageName)
 		Expect(err).NotTo(HaveOccurred())
 
 		return auditIDsWithoutAccessRecord(recs, events)

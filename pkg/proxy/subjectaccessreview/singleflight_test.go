@@ -4,11 +4,17 @@ package subjectaccessreview
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	v1 "k8s.io/api/authorization/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apiserver/pkg/authentication/user"
+
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 )
 
 // The coalescing tests run in a synctest bubble. synctest.Wait returns only
@@ -34,7 +40,7 @@ func TestSingleflightDedup(t *testing.T) {
 		results := make(chan error, concurrent)
 		for i := 0; i < concurrent; i++ {
 			go func() {
-				target, err := sar.CheckAuthorizedForImpersonation(impersonateUserRequest("bob"), cacheTestRequester())
+				target, err := sar.ResolveImpersonation(impersonateUserRequest("bob"), cacheTestRequester())
 				if err == nil && (target == nil || target.GetName() != "bob") {
 					err = errors.New("allowed check returned wrong target")
 				}
@@ -81,14 +87,14 @@ func TestSingleflightWinnerCancellationDoesNotPoisonWaiters(t *testing.T) {
 		winnerDone := make(chan outcome, 1)
 		go func() {
 			req := impersonateUserRequest("bob").WithContext(winnerCtx)
-			target, err := sar.CheckAuthorizedForImpersonation(req, cacheTestRequester())
+			target, err := sar.ResolveImpersonation(req, cacheTestRequester())
 			winnerDone <- outcome{target, err}
 		}()
 		synctest.Wait()
 
 		waiterDone := make(chan outcome, 1)
 		go func() {
-			target, err := sar.CheckAuthorizedForImpersonation(impersonateUserRequest("bob"), cacheTestRequester())
+			target, err := sar.ResolveImpersonation(impersonateUserRequest("bob"), cacheTestRequester())
 			waiterDone <- outcome{target, err}
 		}()
 
@@ -109,4 +115,68 @@ func TestSingleflightWinnerCancellationDoesNotPoisonWaiters(t *testing.T) {
 			t.Errorf("waiter target = %+v, want user bob", res.target)
 		}
 	})
+}
+
+// TestSingleflightLeaderContextErrorIsItsOwn verifies that the caller leading
+// a flight reports a context-shaped failure of its own review as is, while its
+// own request is still alive, instead of mistaking it for another request's
+// cancellation: it sends no second review and emits exactly one failure
+// record. The joiner, whose flight failed for a reason not its own, still
+// retries with a check of its own.
+func TestSingleflightLeaderContextErrorIsItsOwn(t *testing.T) {
+	root, cap := logtest.New(t, 2)
+	defer logtest.AssertRegistered(t, cap)
+
+	synctest.Test(t, func(t *testing.T) {
+		reviewer := &deadlineOnceReviewer{release: make(chan struct{})}
+		s := newLoggingSAR(t, root, reviewer, DefaultTimeout, DefaultAllowCacheTTL, DefaultDenyCacheTTL)
+
+		check := func(requestID string) <-chan error {
+			done := make(chan error, 1)
+			go func() {
+				ctx := logging.WithRequestID(context.Background(), requestID)
+				_, err := s.cachedCheck(directCall(ctx, loggingTestRequester()), userImpersonation("bob"))
+				done <- err
+			}()
+			return done
+		}
+
+		leader := check("leader")
+		synctest.Wait()
+		joiner := check("joiner")
+		synctest.Wait()
+		close(reviewer.release)
+
+		if err := <-leader; !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("leader error = %v, want its own review's errors.Is(context.DeadlineExceeded)", err)
+		}
+		if err := <-joiner; err != nil {
+			t.Errorf("joiner error = %v, want success via its own retry", err)
+		}
+		if got := reviewer.calls.Load(); got != 2 {
+			t.Errorf("SAR Create ran %d times, want 2 (the shared review and the joiner's retry only)", got)
+		}
+	})
+
+	failed := cap.ByEvent(logging.EventAuthzSARFailed)
+	if len(failed) != 1 || failed[0].String("request_id") != "leader" {
+		t.Fatalf("want exactly one failure record, the leader's, got %v", failed)
+	}
+}
+
+// deadlineOnceReviewer fails its first Create, once released, with a
+// deadline error of the review client's own (the caller's context is still
+// alive); later Creates allow immediately.
+type deadlineOnceReviewer struct {
+	calls   atomic.Int64
+	release chan struct{}
+}
+
+func (r *deadlineOnceReviewer) Create(_ context.Context, req *v1.SubjectAccessReview, _ metav1.CreateOptions) (*v1.SubjectAccessReview, error) {
+	if r.calls.Add(1) == 1 {
+		<-r.release
+		return nil, context.DeadlineExceeded
+	}
+	req.Status = v1.SubjectAccessReviewStatus{Allowed: true}
+	return req, nil
 }

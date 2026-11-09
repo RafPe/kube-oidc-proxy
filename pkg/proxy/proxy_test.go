@@ -10,7 +10,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -108,7 +107,7 @@ func (f *fakeRT) RoundTrip(h *http.Request) (*http.Response, error) {
 			f.expUID, h.Header.Get("Impersonate-Uid"))
 	}
 
-	if exp, act := sort.StringSlice(f.expGroup), sort.StringSlice(h.Header["Impersonate-Group"]); !reflect.DeepEqual(exp, act) {
+	if exp, act := f.expGroup, h.Header["Impersonate-Group"]; !reflect.DeepEqual(exp, act) {
 		f.t.Errorf(
 			"client transport got unexpected group impersonation header, exp=%#v got=%#v",
 			exp,

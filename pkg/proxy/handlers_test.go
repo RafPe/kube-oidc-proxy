@@ -95,8 +95,8 @@ func TestTokenReviewDependencyFailureIsError(t *testing.T) {
 
 	req := reservedIdentityRequest(t, nil)
 
-	if ok := p.reviewToken(req); ok {
-		t.Fatal("a reviewer error passed the request through; the path must fail closed")
+	if err := p.reviewToken(req); !errors.Is(err, errTokenReviewUnavailable) {
+		t.Fatalf("reviewToken = %v, want errTokenReviewUnavailable: the path must fail closed", err)
 	}
 
 	rec := p.logs.Only(t, logging.EventAuthnTokenReviewFailed)
@@ -115,6 +115,51 @@ func TestTokenReviewDependencyFailureIsError(t *testing.T) {
 	}
 
 	p.ctrl.Finish()
+}
+
+// TestTokenReviewClientDisconnectIsNotAnError pins the other side of that
+// split: a review that failed because the client itself hung up is not the
+// API server's fault, so it is recorded at DEBUG as client_canceled, and the
+// request is refused without a response and without any ERROR record a
+// client could drive by disconnecting.
+func TestTokenReviewClientDisconnectIsNotAnError(t *testing.T) {
+	p := newTestProxy(t)
+	p.config = &Config{TokenPassthrough: true}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := reservedIdentityRequest(t, nil)
+	req = req.WithContext(ctx)
+	req = withTestRequestID(req)
+
+	p.fakeReviewer.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(
+		func(context.Context, string) (*authenticator.Response, bool, error) {
+			cancel()
+			return nil, false, fmt.Errorf("review: %w", context.Canceled)
+		})
+
+	rw := httptest.NewRecorder()
+	p.withTokenReview(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("a request whose review failed reached the next handler")
+	})).ServeHTTP(rw, req)
+
+	rec := p.logs.Only(t, logging.EventAuthnTokenReviewFailed)
+	if got := rec.String("level"); got != "DEBUG" {
+		t.Errorf("level = %q, want DEBUG", got)
+	}
+	if got := rec.String("reason"); got != string(metrics.ReasonClientCanceled) {
+		t.Errorf("reason = %q, want %q", got, metrics.ReasonClientCanceled)
+	}
+	for _, r := range p.logs.Records() {
+		if r.String("level") == "ERROR" {
+			t.Errorf("a client disconnect produced an ERROR record: %v", r)
+		}
+	}
+	if got := p.logs.Only(t, logging.EventRequestAccessDecided).String("reason"); got != string(metrics.ReasonClientCanceled) {
+		t.Errorf("access reason = %q, want %q", got, metrics.ReasonClientCanceled)
+	}
+	if rw.Code != http.StatusOK || rw.Body.Len() != 0 {
+		t.Errorf("a response was written for a client that went away: %d %q", rw.Code, rw.Body.String())
+	}
 }
 
 // TestClientCancellationEmitsUpstreamRequestCanceled pins the upstream cancel:
@@ -195,8 +240,8 @@ func TestRejectedTokenReviewIsNotAFailure(t *testing.T) {
 	p := newTestProxy(t)
 	p.fakeReviewer.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(nil, false, nil)
 	req := reservedIdentityRequest(t, nil)
-	if p.reviewToken(req) {
-		t.Fatal("a rejected token passed review")
+	if err := p.reviewToken(req); !errors.Is(err, errUnauthorized) {
+		t.Fatalf("reviewToken = %v, want errUnauthorized for a rejected token", err)
 	}
 	if got := p.logs.ByEvent(logging.EventAuthnTokenReviewFailed); len(got) != 0 {
 		t.Errorf("a rejected token was recorded as a failure: %s", p.logs.Raw())

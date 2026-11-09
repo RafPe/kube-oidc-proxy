@@ -12,18 +12,13 @@ import (
 	cliflag "k8s.io/component-base/cli/flag"
 )
 
-// VersionOptions carries the build information stamped into the binary and
-// owns the --version flag that prints it.
-type VersionOptions struct {
-	gitMajor     string // major version, always numeric
-	gitMinor     string // minor version, numeric possibly followed by "+"
-	gitVersion   string
-	gitCommit    string // sha1 from git, output of $(git rev-parse HEAD)
-	gitTreeState string // state of git tree, either "clean" or "dirty"
+// VersionOptions owns the --version flag and reports the build information
+// stamped into the binary. It holds no copy of that information: the package
+// variables below are the single source, read directly.
+type VersionOptions struct{}
 
-	buildDate string // build date in ISO8601 format, output of $(date -u +'%Y-%m-%dT%H:%M:%SZ')
-}
-
+// Build information, stamped at link time by hack/lib/version.sh through
+// -X cmd/app/options.<name>; renaming one silently drops its stamp.
 var (
 	gitMajor     string // major version, always numeric
 	gitMinor     string // minor version, numeric possibly followed by "+"
@@ -35,17 +30,9 @@ var (
 )
 
 // NewVersionOptions registers the Version flag set on nfs and returns the
-// options carrying the build information stamped into the binary.
+// options that report the build information stamped into the binary.
 func NewVersionOptions(nfs *cliflag.NamedFlagSets) *VersionOptions {
-	m := &VersionOptions{
-		gitMajor:     gitMajor,
-		gitMinor:     gitMinor,
-		gitVersion:   gitVersion,
-		gitCommit:    gitCommit,
-		gitTreeState: gitTreeState,
-		buildDate:    buildDate,
-	}
-
+	m := &VersionOptions{}
 	return m.AddFlags(nfs.FlagSet("Version"))
 }
 
@@ -63,13 +50,13 @@ func (m *VersionOptions) Requested(cmd *cobra.Command) bool {
 // Version returns the build version this binary reports, for the startup
 // record that fixes what an operator is actually running.
 func (m *VersionOptions) Version() string {
-	return m.gitVersion
+	return gitVersion
 }
 
 // Commit returns the git commit this binary was built from, for the build
 // information the metrics endpoint reports.
 func (m *VersionOptions) Commit() string {
-	return m.gitCommit
+	return gitCommit
 }
 
 // PrintVersionAndExit prints the build information and ends the process. It
@@ -78,12 +65,12 @@ func (m *VersionOptions) Commit() string {
 func (m *VersionOptions) PrintVersionAndExit() {
 	fmt.Printf("%s version: %#v\n", AppName,
 		apimachineryversion.Info{
-			Major:        m.gitMajor,
-			Minor:        m.gitMinor,
-			GitVersion:   m.gitVersion,
-			GitCommit:    m.gitCommit,
-			GitTreeState: m.gitTreeState,
-			BuildDate:    m.buildDate,
+			Major:        gitMajor,
+			Minor:        gitMinor,
+			GitVersion:   gitVersion,
+			GitCommit:    gitCommit,
+			GitTreeState: gitTreeState,
+			BuildDate:    buildDate,
 			GoVersion:    runtime.Version(),
 			Compiler:     runtime.Compiler,
 			Platform:     fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH),

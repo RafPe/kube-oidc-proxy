@@ -131,7 +131,8 @@ The proxy embeds the API server's audit stack rather than reimplementing it.
    that records the failed attempt against the anonymous user. Both chains use
    the same policy. A request that authenticated and was then refused by the
    proxy itself — a reserved identity, an impersonation the
-   `SubjectAccessReview` denied, a malformed impersonation request — never
+   `SubjectAccessReview` denied or could not answer, a malformed impersonation
+   request — never
    reaches the reverse proxy either, so its error path runs through the main
    chain with the authenticated identity as the event's `user`.
 5. **Long-running requests.** `exec`, `attach`, `portforward`, `log`, `proxy`
@@ -139,10 +140,14 @@ The proxy embeds the API server's audit stack rather than reimplementing it.
    `ResponseComplete`, using kube-apiserver's own definition of long-running.
    An hour-long `exec` therefore leaves a trace at its start, and still leaves
    one if the proxy is stopped before the session ends.
-6. **Shutdown.** The backend is flushed as a pre-shutdown hook, and the result
-   is logged as `audit.flush.completed`, or as `proxy.hook.failed` with
-   `hook=AuditBackend` when it fails. A failed flush means events for requests
-   the process already served were dropped, so it is never silent.
+6. **Shutdown.** The backend is flushed as a pre-shutdown hook, and
+   `audit.flush.completed` records that the flush finished. The bundled
+   backends cannot report a flush that dropped events through it: the upstream
+   backend interface returns nothing from `Shutdown()`, and the buffered
+   webhook backend reports a delivery failure through the Kubernetes error
+   handler instead. Such a failure therefore surfaces as a bridged
+   `component=k8s` ERROR record in the log stream, not as a failed hook or a
+   non-zero exit; alert on that record.
 
 ## Writing a policy
 

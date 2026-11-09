@@ -16,6 +16,39 @@ import (
 	"time"
 )
 
+// WriteTimeout bounds how long a listener may take to write a response. A
+// handler with a deadline of its own (the metrics scrape, the readiness
+// check) must finish well inside it, or the error it writes on timing out
+// never reaches the client.
+const WriteTimeout = 30 * time.Second
+
+// The remaining limits of the shared listener hardening. ReadHeaderTimeout is
+// the Slowloris guard (gosec G112): both endpoints are reachable by anything
+// that can dial the pod, so an unbounded header read lets idle connections
+// accumulate. MaxHeaderBytes leaves room for a bearer token and little else;
+// neither endpoint reads a request body.
+const (
+	readHeaderTimeout = 5 * time.Second
+	readTimeout       = 10 * time.Second
+	idleTimeout       = 60 * time.Second
+	maxHeaderBytes    = 16 << 10
+)
+
+// NewServer returns an http.Server for addr and h carrying the listener limits
+// the auxiliary listeners share, so the readiness and metrics ports cannot be
+// hardened differently.
+func NewServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      WriteTimeout,
+		IdleTimeout:       idleTimeout,
+		MaxHeaderBytes:    maxHeaderBytes,
+	}
+}
+
 // Serving is a bound http.Server that is serving or has finished. It is
 // created by Start and read through Addr and Wait.
 type Serving struct {
