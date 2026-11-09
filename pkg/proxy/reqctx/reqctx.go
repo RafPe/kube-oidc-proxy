@@ -58,8 +58,8 @@ const (
 	// client supplied that was NOT adopted as the authoritative id.
 	clientRequestIDKey
 
-	// issuerNameKey is the context key for the configured name of the OIDC
-	// issuer that authenticated the request.
+	// issuerNameKey is the context key for the name of the OIDC issuer that
+	// authenticated the request: the host of its URL (see authn.IssuerName).
 	issuerNameKey
 
 	// decisionKey is the context key for the holder that records whether the
@@ -189,14 +189,14 @@ func ClientRequestID(req *http.Request) string {
 	return id
 }
 
-// WithIssuerName returns a copy of the request carrying the configured name of
-// the OIDC issuer that authenticated it.
+// WithIssuerName returns a copy of the request carrying the name of the OIDC
+// issuer that authenticated it.
 func WithIssuerName(req *http.Request, name string) *http.Request {
 	return req.WithContext(request.WithValue(req.Context(), issuerNameKey, name))
 }
 
-// IssuerName returns the configured name of the OIDC issuer that authenticated
-// the request, or "" when it is not known.
+// IssuerName returns the name of the OIDC issuer that authenticated the
+// request -- the host of its URL -- or "" when it is not known.
 func IssuerName(req *http.Request) string {
 	name, _ := req.Context().Value(issuerNameKey).(string)
 	return name

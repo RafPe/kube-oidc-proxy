@@ -547,7 +547,7 @@ This table is for whoever writes the ingest pipeline that copies them.
   `outbound_groups_omitted` reporting the drop.
 - Prefer a classified `reason` over raw error text at INFO and WARN. A truncated
   `error_message` appears only on internal failures and at DEBUG.
-- `issuer_name` is the configured name. Full issuer URLs are never logged.
+- `issuer_name` is the host of the issuer URL. Full issuer URLs are never logged.
 
 ## See also
 
