@@ -8,6 +8,7 @@ import (
 	"time"
 
 	authv1 "k8s.io/api/authentication/v1"
+	"k8s.io/utils/clock"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/authn/tokenreview/fake"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
@@ -45,7 +46,7 @@ func TestLiveReviewOutcomesAreCounted(t *testing.T) {
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			rec := newMetricsRecorder(t)
-			tr := newReviewer(&fake.FakeReviewer{CreateFn: tc.create}, Config{Metrics: rec}, nil)
+			tr := newReviewer(&fake.FakeReviewer{CreateFn: tc.create}, Config{Metrics: rec}, discardLogger)
 			_, _, _ = tr.AuthenticateToken(testRequestContext(), "tok")
 			if v, _ := metricstest.Value(t, rec.Gatherer(), metricReviewRequests, map[string]string{"review": "tokenreview", "outcome": tc.outcome}); v != 1 {
 				t.Fatalf("review_requests{tokenreview,%s} = %v, want 1", tc.outcome, v)
@@ -61,8 +62,8 @@ func TestCachedReviewCountsHitsAndMissesButOneAPICall(t *testing.T) {
 	rec := newMetricsRecorder(t)
 	tr := newReviewer(&fake.FakeReviewer{CreateFn: func(*authv1.TokenReview) (*authv1.TokenReview, error) {
 		return authenticatedReview(), nil
-	}}, Config{Metrics: rec}, nil)
-	c := newCachedTokenReview(tr, 10*time.Second, 10*time.Second, 16, realClock{})
+	}}, Config{Metrics: rec}, discardLogger)
+	c := newCachedTokenReview(tr, 10*time.Second, 10*time.Second, 16, clock.RealClock{})
 	for i := 0; i < 3; i++ {
 		if _, ok, err := c.AuthenticateToken(testRequestContext(), "tok"); !ok || err != nil {
 			t.Fatalf("call %d: ok=%v err=%v", i, ok, err)

@@ -49,14 +49,6 @@ func TestDebugHiddenAtVerbosityZero(t *testing.T) {
 	}
 }
 
-func TestFromContextReturnsDiscardWhenAbsent(t *testing.T) {
-	l := logging.LoggerFrom(context.Background())
-	if l == nil {
-		t.Fatal("nil logger")
-	}
-	l.Info("must not panic")
-}
-
 func TestTextFormatIsValid(t *testing.T) {
 	if err := (logging.Options{Format: "yaml"}).Validate(); err == nil {
 		t.Fatal("yaml accepted")

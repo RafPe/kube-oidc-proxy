@@ -18,7 +18,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/rafpe/kube-oidc-proxy/test/util"
+	"github.com/rafpe/kube-oidc-proxy/test/util/idtoken"
+	"github.com/rafpe/kube-oidc-proxy/test/util/promtext"
 )
 
 type generator struct {
@@ -98,7 +99,7 @@ func (g *generator) pin(ctx context.Context, logger *slog.Logger) (*pinnedPod, e
 }
 
 // scrape reads the pinned replica's exposition.
-func (g *generator) scrape(ctx context.Context) ([]util.Sample, error) {
+func (g *generator) scrape(ctx context.Context) ([]promtext.Sample, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.pinned.metrics.URL()+"/metrics", nil)
 	if err != nil {
 		return nil, err
@@ -116,7 +117,7 @@ func (g *generator) scrape(ctx context.Context) ([]util.Sample, error) {
 		return nil, fmt.Errorf("scraping %s answered %d", g.pinned.name, resp.StatusCode)
 	}
 
-	return util.ParseMetrics(string(body))
+	return promtext.Parse(string(body))
 }
 
 // sarMissLabels selects the SAR decision cache's misses. A fresh literal on
@@ -124,10 +125,10 @@ func (g *generator) scrape(ctx context.Context) ([]util.Sample, error) {
 func sarMissLabels() map[string]string { return map[string]string{"cache": "sar", "result": "miss"} }
 
 // seriesSum totals every series of name whose labels include the given pairs,
-// which is what a delta assertion needs: util.SampleValue answers with the
+// which is what a delta assertion needs: promtext.SampleValue answers with the
 // first matching series only, and a denial reason or a review outcome is
 // spread over several.
-func seriesSum(samples []util.Sample, name string, labels map[string]string) float64 {
+func seriesSum(samples []promtext.Sample, name string, labels map[string]string) float64 {
 	var total float64
 	for _, s := range samples {
 		if s.Name != name {
@@ -176,12 +177,12 @@ func newGenerator(logger *slog.Logger, st *state, namespace string, tun *tunnel)
 
 // token mints an OIDC token for an identity the demo issuer will vouch for.
 func (g *generator) token(username string, groups []string, exp time.Time) (string, error) {
-	payload, err := util.NewTokenPayloadForIdentity(g.st.issuerURL, demoClientID, username, groups, exp)
+	payload, err := idtoken.NewPayloadForIdentity(g.st.issuerURL, demoClientID, username, groups, exp)
 	if err != nil {
 		return "", err
 	}
 
-	return util.SignToken(g.st.issuerBundle, payload)
+	return idtoken.Sign(g.st.issuerBundle, payload)
 }
 
 func (g *generator) validToken() (string, error) {
@@ -189,7 +190,7 @@ func (g *generator) validToken() (string, error) {
 }
 
 // tokenWithoutUsername mints a token the demo issuer signs and the proxy
-// accepts, whose username claim is empty. util.NewTokenPayloadForIdentity
+// accepts, whose username claim is empty. idtoken.NewPayloadForIdentity
 // always writes an "email", so the payload is built here instead.
 func (g *generator) tokenWithoutUsername(exp time.Time) (string, error) {
 	payload, err := json.Marshal(map[string]interface{}{
@@ -203,7 +204,7 @@ func (g *generator) tokenWithoutUsername(exp time.Time) (string, error) {
 		return "", fmt.Errorf("failed to marshal the token payload: %w", err)
 	}
 
-	return util.SignToken(g.st.issuerBundle, payload)
+	return idtoken.Sign(g.st.issuerBundle, payload)
 }
 
 // restConfig points client-go at the proxy with a bearer token, verifying the

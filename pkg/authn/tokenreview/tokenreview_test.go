@@ -4,6 +4,7 @@ package tokenreview
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"reflect"
 	"testing"
 	"time"
@@ -14,6 +15,10 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/authn/tokenreview/fake"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 )
+
+// discardLogger stands in for the component logger New requires, for the
+// tests that assert on behaviour rather than on records.
+var discardLogger = slog.New(slog.DiscardHandler)
 
 // testRequestContext returns a context carrying a request id, exactly as the
 // proxy's request filter installs one in production. Every record this package
@@ -81,7 +86,7 @@ func TestAuthenticateToken(t *testing.T) {
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			tReviewer := newReviewer(fake.New().WithCreate(test.reviewResp, test.errResp), Config{}, nil)
+			tReviewer := newReviewer(fake.New().WithCreate(test.reviewResp, test.errResp), Config{}, discardLogger)
 
 			resp, ok, err := tReviewer.AuthenticateToken(testRequestContext(), "test-token")
 
@@ -120,13 +125,13 @@ func TestNewReviewerSettlesTheTimeout(t *testing.T) {
 		exp     time.Duration
 	}{
 		"configured timeout is used":     {timeout: 3 * time.Second, exp: 3 * time.Second},
-		"zero falls back to default":     {timeout: 0, exp: defaultTimeout},
-		"negative falls back to default": {timeout: -time.Second, exp: defaultTimeout},
+		"zero falls back to default":     {timeout: 0, exp: DefaultTimeout},
+		"negative falls back to default": {timeout: -time.Second, exp: DefaultTimeout},
 	}
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			if got := newReviewer(fake.New(), Config{Timeout: test.timeout}, nil).timeout; got != test.exp {
+			if got := newReviewer(fake.New(), Config{Timeout: test.timeout}, discardLogger).timeout; got != test.exp {
 				t.Errorf("unexpected review timeout, exp=%s got=%s", test.exp, got)
 			}
 		})

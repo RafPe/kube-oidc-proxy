@@ -32,7 +32,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Generate mocks
-        run: go run go.uber.org/mock/mockgen -package=mocks -destination pkg/proxy/mocks/authenticator.go k8s.io/apiserver/pkg/authentication/authenticator Token
+        run: make mocks
 
       - name: gofmt
         run: |
@@ -95,7 +95,7 @@ jobs:
       # -tags logcheck compiles the required-attribute assertions into Emit, so
       # a record missing a mandatory field fails a test instead of shipping.
       - name: go test
-        run: go test -race -tags logcheck ./cmd/... ./pkg/... ./hack/... ./test/tools/... ./test/e2e/framework/... ./test/e2e/versions/...
+        run: go test -race -tags logcheck ./cmd/... ./pkg/... ./hack/... ./test/tools/... ./test/util/... ./test/e2e/framework/... ./test/e2e/versions/...
 
       # e2e.yaml runs the suite as three label-filtered shards; an unlabelled
       # case would run in none of them. Cheap text check, no cluster needed.
@@ -121,7 +121,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Generate mocks
-        run: go run go.uber.org/mock/mockgen -package=mocks -destination pkg/proxy/mocks/authenticator.go k8s.io/apiserver/pkg/authentication/authenticator Token
+        run: make mocks
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0

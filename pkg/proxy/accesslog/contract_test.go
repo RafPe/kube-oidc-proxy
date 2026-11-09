@@ -79,7 +79,7 @@ func TestUpdateFixtures(t *testing.T) {
 	}
 }
 
-// emitFixture emits one access record through a real AccessLogger and returns
+// emitFixture emits one access record through a real Logger and returns
 // it decoded. The allow case is alice impersonating bob, each carrying one
 // allowlisted extra and one that must be counted rather than logged; the deny
 // case is the impersonation refusal. Both cases are deterministic so the
@@ -88,7 +88,7 @@ func emitFixture(t *testing.T, name string) map[string]any {
 	t.Helper()
 
 	root, cap := logtest.New(t, 0)
-	a := NewAccessLogger(logging.ForComponent(root, logging.ComponentRequest))
+	a := New(logging.ForComponent(root, logging.ComponentRequest))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/team-a/pods", nil)
 	req.RemoteAddr = "1.2.3.4:5555"
@@ -116,7 +116,7 @@ func emitFixture(t *testing.T, name string) map[string]any {
 	switch name {
 	case "allow":
 		d.Allowed = true
-		d.Outbound = &user.DefaultInfo{
+		d.Impersonated = &user.DefaultInfo{
 			Name:   "bob",
 			UID:    "bob-uid",
 			Groups: []string{"dev"},

@@ -24,7 +24,7 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/helper"
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
-	"github.com/rafpe/kube-oidc-proxy/test/util"
+	"github.com/rafpe/kube-oidc-proxy/test/util/promtext"
 )
 
 const (
@@ -93,19 +93,19 @@ var _ = framework.CasesDescribe("Metrics", Label("shard-a"), func() {
 
 	It("serves build information and the runtime collectors", func() {
 		samples := mustSamples(f, surface)
-		v, ok := util.SampleValue(samples, metricBuildInfo, nil)
+		v, ok := promtext.SampleValue(samples, metricBuildInfo, nil)
 		Expect(ok).To(BeTrue(), "build_info missing")
 		Expect(v).To(Equal(1.0))
-		_, ok = util.SampleValue(samples, "go_goroutines", nil)
+		_, ok = promtext.SampleValue(samples, "go_goroutines", nil)
 		Expect(ok).To(BeTrue(), "go collector missing")
 	})
 
 	It("reports the configured issuer as initialized and the proxy as ready", func() {
 		samples := mustSamples(f, surface)
-		v, ok := util.SampleValue(samples, metricIssuerInit, map[string]string{"issuer_name": f.IssuerURL().Host})
+		v, ok := promtext.SampleValue(samples, metricIssuerInit, map[string]string{"issuer_name": f.IssuerURL().Host})
 		Expect(ok).To(BeTrue(), "issuer gauge missing for %s", f.IssuerURL().Host)
 		Expect(v).To(Equal(1.0))
-		v, _ = util.SampleValue(samples, metricReady, nil)
+		v, _ = promtext.SampleValue(samples, metricReady, nil)
 		Expect(v).To(Equal(1.0))
 	})
 
@@ -131,11 +131,11 @@ var _ = framework.CasesDescribe("Metrics", Label("shard-a"), func() {
 		}, 20*time.Second, time.Second).Should(BeNumerically(">=", 1))
 
 		samples := mustSamples(f, surface)
-		v, _ := util.SampleValue(samples, metricAuthnAttempts, map[string]string{"auth_method": "oidc", "outcome": "rejected"})
+		v, _ := promtext.SampleValue(samples, metricAuthnAttempts, map[string]string{"auth_method": "oidc", "outcome": "rejected"})
 		Expect(v).To(BeNumerically(">=", 1))
-		v, _ = util.SampleValue(samples, metricDecisions, map[string]string{"auth_method": "none", "decision": "deny", "reason": "unauthorized"})
+		v, _ = promtext.SampleValue(samples, metricDecisions, map[string]string{"auth_method": "none", "decision": "deny", "reason": "unauthorized"})
 		Expect(v).To(BeNumerically(">=", 1))
-		v, _ = util.SampleValue(samples, metricDecisions, map[string]string{"auth_method": "oidc", "decision": "allow"})
+		v, _ = promtext.SampleValue(samples, metricDecisions, map[string]string{"auth_method": "oidc", "decision": "allow"})
 		Expect(v).To(BeNumerically(">=", 1))
 	})
 
@@ -161,7 +161,7 @@ var _ = framework.CasesDescribe("Metrics", Label("shard-a"), func() {
 			return sampleValue(f, surface, metricLongRunning, map[string]string{"k8s_verb": "watch", "scope": "namespace"})
 		}, 30*time.Second, time.Second).Should(Equal(0.0))
 
-		_, timed := util.SampleValue(mustSamples(f, surface), metricDurationCount, map[string]string{"k8s_verb": "watch"})
+		_, timed := promtext.SampleValue(mustSamples(f, surface), metricDurationCount, map[string]string{"k8s_verb": "watch"})
 		Expect(timed).To(BeFalse(), "a watch must never enter the latency histogram")
 	})
 
@@ -181,7 +181,7 @@ var _ = framework.CasesDescribe("Metrics", Label("shard-a"), func() {
 			if err != nil {
 				return 0, err
 			}
-			return len(util.LabelValuesOf(ss, metricRequestsTotal, "k8s_verb")), nil
+			return len(promtext.LabelValuesOf(ss, metricRequestsTotal, "k8s_verb")), nil
 		}, 20*time.Second, time.Second).Should(BeNumerically(">=", 1))
 
 		samples := mustSamples(f, surface)
@@ -211,7 +211,7 @@ var _ = framework.CasesDescribe("Metrics", Label("shard-a"), func() {
 
 		// issuer_name is the only first-party label with no closed set. It is
 		// a host, so it never carries a scheme, a path or an identity.
-		for _, v := range util.LabelValuesOf(samples, metricIssuerInit, "issuer_name") {
+		for _, v := range promtext.LabelValuesOf(samples, metricIssuerInit, "issuer_name") {
 			Expect(v).NotTo(BeEmpty(), "issuer_name is empty")
 			Expect(v).To(MatchRegexp(`^([a-z0-9.:\[\]-]+|unknown)$`), "issuer_name is not a host: %q", v)
 		}
@@ -229,8 +229,8 @@ var _ = framework.CasesDescribe("Metrics", Label("shard-a"), func() {
 
 // samplesOf returns every scraped sample belonging to spec's family,
 // including the _bucket, _count and _sum series a histogram contributes.
-func samplesOf(samples []util.Sample, spec metrics.Spec) []util.Sample {
-	var out []util.Sample
+func samplesOf(samples []promtext.Sample, spec metrics.Spec) []promtext.Sample {
+	var out []promtext.Sample
 	for _, s := range samples {
 		switch s.Name {
 		case spec.Name, spec.Name + "_bucket", spec.Name + "_count", spec.Name + "_sum":
@@ -241,7 +241,7 @@ func samplesOf(samples []util.Sample, spec metrics.Spec) []util.Sample {
 }
 
 // labelNames returns the label names a sample carries.
-func labelNames(s util.Sample) []string {
+func labelNames(s promtext.Sample) []string {
 	out := make([]string, 0, len(s.Labels))
 	for name := range s.Labels {
 		out = append(out, name)
@@ -251,7 +251,7 @@ func labelNames(s util.Sample) []string {
 
 // documentedNames is the label set a sample of this family must carry: the
 // catalogue's names, plus the le a histogram bucket adds.
-func documentedNames(spec metrics.Spec, s util.Sample) []string {
+func documentedNames(spec metrics.Spec, s promtext.Sample) []string {
 	out := append([]string{}, spec.Labels...)
 	if s.Name == spec.Name+"_bucket" {
 		out = append(out, "le")
@@ -278,18 +278,18 @@ func scrapeRaw(ctx context.Context, f *framework.Framework, s helper.ChartMetric
 }
 
 // samples scrapes and parses; errors are returned for Eventually to retry on.
-func samples(f *framework.Framework, s helper.ChartMetricsSurface) ([]util.Sample, error) {
+func samples(f *framework.Framework, s helper.ChartMetricsSurface) ([]promtext.Sample, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	raw, err := scrapeRaw(ctx, f, s)
 	if err != nil {
 		return nil, err
 	}
-	return util.ParseMetrics(string(raw))
+	return promtext.Parse(string(raw))
 }
 
 // mustSamples is samples for a direct assertion outside Eventually.
-func mustSamples(f *framework.Framework, s helper.ChartMetricsSurface) []util.Sample {
+func mustSamples(f *framework.Framework, s helper.ChartMetricsSurface) []promtext.Sample {
 	ss, err := samples(f, s)
 	Expect(err).NotTo(HaveOccurred(), "scraping through the Service proxy")
 	return ss
@@ -302,7 +302,7 @@ func sampleValue(f *framework.Framework, s helper.ChartMetricsSurface, name stri
 	if err != nil {
 		return 0, err
 	}
-	v, _ := util.SampleValue(ss, name, labels)
+	v, _ := promtext.SampleValue(ss, name, labels)
 	return v, nil
 }
 

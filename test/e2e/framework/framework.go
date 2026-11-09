@@ -17,10 +17,36 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/config"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/helper"
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
-	"github.com/rafpe/kube-oidc-proxy/test/util"
+	"github.com/rafpe/kube-oidc-proxy/test/util/idtoken"
+	"github.com/rafpe/kube-oidc-proxy/test/util/keybundle"
 )
 
-var DefaultConfig = &config.Config{}
+// defaultConfig is the configuration the default frameworks run against. It is
+// nil until SetDefaultConfig is called, which happens during
+// SynchronizedBeforeSuite, after every framework has already been constructed
+// at tree-construction time. Frameworks therefore resolve it lazily, in their
+// setup node, rather than capturing it when they are built.
+var defaultConfig *config.Config
+
+// SetDefaultConfig validates c and makes it the configuration every default
+// framework runs against. The suite calls it once per Ginkgo process, from the
+// second function of SynchronizedBeforeSuite; it must not be called from a spec.
+func SetDefaultConfig(c config.Config) error {
+	if err := c.Validate(); err != nil {
+		return fmt.Errorf("validating e2e config: %w", err)
+	}
+	defaultConfig = &c
+	return nil
+}
+
+// requireDefaultConfig returns the configuration set by SetDefaultConfig,
+// failing the current node if the suite never set it.
+func requireDefaultConfig() *config.Config {
+	if defaultConfig == nil {
+		Fail("framework.SetDefaultConfig was not called; it must run in SynchronizedBeforeSuite before any framework setup")
+	}
+	return defaultConfig
+}
 
 type Framework struct {
 	BaseName string
@@ -42,15 +68,19 @@ type Framework struct {
 	// the proxy pod the framework deploys.
 	ExtraProxyExtras *helper.ProxyExtras
 
+	// config is nil for default frameworks until their setup node resolves it
+	// through requireDefaultConfig.
 	config *config.Config
 	helper *helper.Helper
 
-	issuerKeyBundle, proxyKeyBundle *util.KeyBundle
+	issuerKeyBundle, proxyKeyBundle *keybundle.Bundle
 	issuerURL, proxyURL             *url.URL
 }
 
+// NewDefaultFramework is NewFramework using the configuration set by
+// SetDefaultConfig, read when the first spec's setup runs.
 func NewDefaultFramework(baseName string) *Framework {
-	return NewFramework(baseName, DefaultConfig)
+	return NewFramework(baseName, nil)
 }
 
 func NewFramework(baseName string, config *config.Config) *Framework {
@@ -62,9 +92,10 @@ func NewFramework(baseName string, config *config.Config) *Framework {
 	return f
 }
 
-// NewOrderedDefaultFramework is NewOrderedFramework using DefaultConfig.
+// NewOrderedDefaultFramework is NewOrderedFramework using the configuration set
+// by SetDefaultConfig, read when the container's setup runs.
 func NewOrderedDefaultFramework(baseName string) *Framework {
-	return NewOrderedFramework(baseName, DefaultConfig)
+	return NewOrderedFramework(baseName, nil)
 }
 
 // NewOrderedFramework deploys the namespace, issuer and proxy once for the
@@ -94,6 +125,9 @@ func newFramework(baseName string, config *config.Config) *Framework {
 }
 
 func (f *Framework) BeforeEach() {
+	if f.config == nil {
+		f.config = requireDefaultConfig()
+	}
 	f.helper = helper.NewHelper(f.config)
 
 	By("Creating a kubernetes client")
@@ -189,11 +223,11 @@ func (f *Framework) Helper() *helper.Helper {
 	return f.helper
 }
 
-func (f *Framework) IssuerKeyBundle() *util.KeyBundle {
+func (f *Framework) IssuerKeyBundle() *keybundle.Bundle {
 	return f.issuerKeyBundle
 }
 
-func (f *Framework) ProxyKeyBundle() *util.KeyBundle {
+func (f *Framework) ProxyKeyBundle() *keybundle.Bundle {
 	return f.proxyKeyBundle
 }
 
@@ -213,11 +247,11 @@ func (f *Framework) ClientID() string {
 // mock issuer and valid for ten minutes, so the proxy's OIDC authenticator
 // accepts it.
 func (f *Framework) SignedTokenFor(username string, groups []string) string {
-	payload, err := util.NewTokenPayloadForIdentity(f.issuerURL, clientID,
+	payload, err := idtoken.NewPayloadForIdentity(f.issuerURL, clientID,
 		username, groups, time.Now().Add(10*time.Minute))
 	Expect(err).NotTo(HaveOccurred())
 
-	signed, err := util.SignToken(f.issuerKeyBundle, payload)
+	signed, err := idtoken.Sign(f.issuerKeyBundle, payload)
 	Expect(err).NotTo(HaveOccurred())
 	return signed
 }

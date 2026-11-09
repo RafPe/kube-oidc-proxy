@@ -33,15 +33,14 @@ func (c reviewCall) requesterGone() bool {
 	return c.request.Err() != nil
 }
 
-// checkRbacImpersonationAuthorization validates that the caller may
-// impersonate target and reports whether the check allowed the request. The
+// cachedCheck answers whether the caller may impersonate target. The
 // decision comes from the cache when a definitive, unexpired one is present;
 // otherwise a live SubjectAccessReview is submitted to the API server. A cache
 // hit returns the same (allowed, nil) pair the live check produced, so callers
 // build byte-identical *ImpersonationAuthError denials either way. Errors are
 // never cached: a transient API-server failure fails only the requests that
 // observed it.
-func (s *SubjectAccessReview) checkRbacImpersonationAuthorization(call reviewCall, target impersonationTarget) (bool, error) {
+func (s *SubjectAccessReview) cachedCheck(call reviewCall, target impersonationTarget) (bool, error) {
 	spec := impersonationReviewSpec(target, call.requester)
 
 	key, cacheable := s.cache.key(&spec)
@@ -119,9 +118,6 @@ func (s *SubjectAccessReview) sharedLiveCheck(call reviewCall, target impersonat
 	ctx := call.ctx
 	start := time.Now()
 
-	if s.beforeFlight != nil {
-		s.beforeFlight()
-	}
 	ch := s.flight.DoChan(key, func() (interface{}, error) {
 		allowed, err := s.liveCheck(ctx, spec)
 		if err != nil {

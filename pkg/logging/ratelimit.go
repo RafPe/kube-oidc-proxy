@@ -23,8 +23,7 @@ import (
 // dropped records since the previous flush.
 //
 // The clock is injected so a test can reason about the bucket without
-// sleeping. A nil Limiter allows everything: a partially wired caller must
-// never silence a warning, because WARN and ERROR are never hidden.
+// sleeping.
 type Limiter struct {
 	limit        rate.Limit
 	burst        int
@@ -64,10 +63,6 @@ func NewLimiter(ratePerSecond float64, burst int, summaryEvery time.Duration, cl
 // Allow reports whether a warning carrying the given reason may be emitted
 // now, counting the record when it may not.
 func (l *Limiter) Allow(reason string) bool {
-	if l == nil {
-		return true
-	}
-
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -90,10 +85,6 @@ func (l *Limiter) Allow(reason string) bool {
 // warnings since the previous flush and resets those counts. A reason that
 // dropped nothing produces no record, so a quiet proxy stays quiet.
 func (l *Limiter) Flush(ctx context.Context, logger *slog.Logger) {
-	if l == nil || logger == nil {
-		return
-	}
-
 	for _, s := range l.drain() {
 		Emit(ctx, logger, EventLogWarningSuppressed,
 			slog.String("warning_reason", Sanitize(s.reason)),

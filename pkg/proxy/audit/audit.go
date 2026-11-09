@@ -6,6 +6,7 @@ package audit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -55,7 +56,7 @@ func IsLongRunning(req *http.Request) bool {
 
 type Audit struct {
 	// logger is the audit-component logger this backend reports its own
-	// lifecycle through. Never nil: New substitutes a discarding logger.
+	// lifecycle through.
 	logger *slog.Logger
 
 	// metrics receives the observable backend failures; nil records nothing.
@@ -84,10 +85,11 @@ type Config struct {
 // New creates the auditor for proxied requests: mostly a wrapper that combines
 // the apiserver's audit handlers with the proxy.
 //
-// logger is the audit-component logger; a nil logger yields one that discards
-// every record, so a partially wired caller cannot panic on the request path.
+// logger is the audit-component logger and is required.
 func New(cfg Config, logger *slog.Logger) (*Audit, error) {
-	logger = logging.OrDiscard(logger)
+	if logger == nil {
+		return nil, errors.New("audit: logger is required")
+	}
 
 	serverConfig := &server.Config{
 		ExternalAddress: cfg.ExternalAddress,
@@ -109,7 +111,6 @@ func New(cfg Config, logger *slog.Logger) (*Audit, error) {
 		LegacyAPIGroupPrefixes: sets.NewString(server.DefaultLegacyAPIPrefix),
 	}
 
-	// We do not support dynamic auditing, so leave nil
 	if err := cfg.Options.ApplyTo(serverConfig); err != nil {
 		return nil, err
 	}
@@ -129,15 +130,19 @@ func New(cfg Config, logger *slog.Logger) (*Audit, error) {
 // Shutdown flushed successfully. The upstream audit.Backend interface declares
 // Shutdown with no return value, so a backend that knows it dropped events has
 // no way to report that through the interface; one that implements this is
-// asked, and the answer decides between audit.flush.completed and
-// audit.flush.failed.
+// asked, and the answer decides between recording audit.flush.completed and
+// returning the error from Shutdown.
 type errorReporter interface {
 	ShutdownErr() error
 }
 
 // Start starts the audit backend, if one is configured, and stops it when ctx
-// is cancelled. It returns once the backend is running. A backend that fails to start is an error the process cannot
-// serve correctly through: without it, proxied requests leave no audit trail.
+// is cancelled. It returns once the backend is running. A backend that fails
+// to start is an error the process cannot serve correctly through: without it,
+// proxied requests leave no audit trail.
+//
+// A failure is counted here and returned, not logged: the caller that decides
+// what the failure means reports it once, as the startup failure it is.
 func (a *Audit) Start(ctx context.Context) error {
 	if a.serverConfig.AuditBackend == nil {
 		return nil
@@ -146,7 +151,6 @@ func (a *Audit) Start(ctx context.Context) error {
 	// The upstream backend stops on a closed channel, which is what the
 	// context's Done channel is.
 	if err := a.serverConfig.AuditBackend.Run(ctx.Done()); err != nil {
-		logging.Emit(ctx, a.logger, logging.EventAuditBackendFailed, logging.ErrAttr(err))
 		a.metrics.AuditBackendFailure(metrics.AuditRun)
 		return fmt.Errorf("failed to run the audit backend: %w", err)
 	}
@@ -166,10 +170,11 @@ func (a *Audit) backendKind() string {
 	return logging.Bound(a.serverConfig.AuditBackend.String(), logging.MaxIdentity)
 }
 
-// Shutdown flushes the audit backend if configured and reports the outcome,
-// both as a record and to the caller. A failed flush means audit events for
-// requests this process already served were dropped, so it must not be
-// swallowed.
+// Shutdown flushes the audit backend if configured. A failed flush means audit
+// events for requests this process already served were dropped, so it must not
+// be swallowed: it is counted here and returned to the caller, which reports
+// it once as the failed shutdown step. A successful flush is recorded as
+// audit.flush.completed.
 //
 // Only a backend implementing errorReporter can say that it failed: the
 // upstream audit.Backend interface returns nothing from Shutdown, and the
@@ -190,7 +195,6 @@ func (a *Audit) Shutdown() error {
 
 	if reporter, ok := backend.(errorReporter); ok {
 		if err := reporter.ShutdownErr(); err != nil {
-			logging.Emit(ctx, a.logger, logging.EventAuditFlushFailed, logging.ErrAttr(err))
 			a.metrics.AuditBackendFailure(metrics.AuditShutdown)
 			return fmt.Errorf("audit backend failed to flush: %w", err)
 		}

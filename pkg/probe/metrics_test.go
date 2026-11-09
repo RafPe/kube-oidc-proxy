@@ -46,7 +46,7 @@ func TestProbePublishesIssuerAndReadyGauges(t *testing.T) {
 	}
 
 	s.SetServing()
-	if err := s.hc.Check(); err != nil {
+	if err := s.hc.check(); err != nil {
 		t.Fatalf("Check: %v", err)
 	}
 	if v, _ := metricstest.Value(t, g, metricIssuerInitialized, map[string]string{"issuer_name": "a.example.com"}); v != 1 {

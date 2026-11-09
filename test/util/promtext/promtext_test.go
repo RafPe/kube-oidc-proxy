@@ -1,9 +1,9 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
-package util
+package promtext
 
 import "testing"
 
-func TestParseMetrics(t *testing.T) {
+func TestParse(t *testing.T) {
 	text := `# HELP kube_oidc_proxy_ready [STABLE] 1 once ready.
 # TYPE kube_oidc_proxy_ready gauge
 kube_oidc_proxy_ready 1
@@ -12,7 +12,7 @@ kube_oidc_proxy_requests_total{k8s_verb="list",scope="namespace",code="200",term
 kube_oidc_proxy_request_duration_seconds_bucket{k8s_verb="get",scope="resource",le="+Inf"} 2
 go_goroutines 12
 `
-	samples, err := ParseMetrics(text)
+	samples, err := Parse(text)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,24 +37,24 @@ go_goroutines 12
 	}
 }
 
-func TestParseMetricsRejectsMalformedInput(t *testing.T) {
+func TestParseRejectsMalformedInput(t *testing.T) {
 	for name, text := range map[string]string{
 		"non-numeric value":  "kube_oidc_proxy_ready not-a-number\n",
 		"unterminated label": "kube_oidc_proxy_requests_total{k8s_verb=\"list\" 1\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := ParseMetrics(text); err == nil {
-				t.Fatalf("ParseMetrics(%q) = nil error, want a parse error", text)
+			if _, err := Parse(text); err == nil {
+				t.Fatalf("Parse(%q) = nil error, want a parse error", text)
 			}
 		})
 	}
 }
 
-// TestParseMetricsReadsSummaries pins that summary families survive the
+// TestParseReadsSummaries pins that summary families survive the
 // parse. The Go collector exposes go_gc_duration_seconds as a summary, so a
 // parser that drops the type silently loses every sample of it -- and with
 // it any assertion sweeping over "every label the endpoint serves".
-func TestParseMetricsReadsSummaries(t *testing.T) {
+func TestParseReadsSummaries(t *testing.T) {
 	text := `# HELP go_gc_duration_seconds A summary of the wall-time pause.
 # TYPE go_gc_duration_seconds summary
 go_gc_duration_seconds{quantile="0"} 1e-05
@@ -63,7 +63,7 @@ go_gc_duration_seconds{quantile="1"} 3e-05
 go_gc_duration_seconds_sum 0.0001
 go_gc_duration_seconds_count 4
 `
-	samples, err := ParseMetrics(text)
+	samples, err := Parse(text)
 	if err != nil {
 		t.Fatal(err)
 	}

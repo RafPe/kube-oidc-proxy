@@ -1,22 +1,17 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
-package token
+package proxy
 
 import (
 	"net/http"
 	"testing"
 )
 
-func TestParseFromRequest(t *testing.T) {
+func TestBearerToken(t *testing.T) {
 	tests := map[string]struct {
 		req   *http.Request
 		token string
 		ok    bool
 	}{
-		"should return !ok if request is nil": {
-			req:   nil,
-			token: "",
-			ok:    false,
-		},
 		"should return !ok if request.Header is nil": {
 			req: &http.Request{
 				Header: nil,
@@ -128,7 +123,7 @@ func TestParseFromRequest(t *testing.T) {
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			gToken, gok := ParseFromRequest(test.req)
+			gToken, gok := bearerToken(test.req)
 
 			if test.ok != gok {
 				t.Errorf("unexpected ok, exp=%t got=%t",

@@ -43,16 +43,24 @@ type Server struct {
 	serving *httpserve.Serving
 }
 
-// NewServer builds a Server exposing rec on addr. It does not bind until
-// Start. A nil logger discards every record.
-func NewServer(addr string, rec *Recorder, logger *slog.Logger) *Server {
-	logger = logging.OrDiscard(logger)
+// ServerConfig is what the metrics listener needs from the command.
+type ServerConfig struct {
+	// Addr is the host:port the listener binds.
+	Addr string
+
+	// Recorder is the registry the listener exposes.
+	Recorder *Recorder
+}
+
+// NewServer builds a Server exposing cfg.Recorder on cfg.Addr. It does not
+// bind until Start. logger is required; a test passes a discarding logger.
+func NewServer(cfg ServerConfig, logger *slog.Logger) *Server {
 	return &Server{
 		logger:          logger,
 		shutdownTimeout: shutdownTimeout,
 		srv: &http.Server{
-			Addr:              addr,
-			Handler:           rec.Handler(logger),
+			Addr:              cfg.Addr,
+			Handler:           cfg.Recorder.Handler(logger),
 			ReadHeaderTimeout: readHeaderTimeout,
 			ReadTimeout:       readTimeout,
 			WriteTimeout:      writeTimeout,

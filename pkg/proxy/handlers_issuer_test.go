@@ -10,7 +10,6 @@ import (
 
 	"go.uber.org/mock/gomock"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
-	"k8s.io/apiserver/pkg/authentication/request/bearertoken"
 	authuser "k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/client-go/transport"
 
@@ -50,13 +49,14 @@ func (c *capturingRT) RoundTrip(req *http.Request) (*http.Response, error) {
 // under test is the production one — a wrapper that put the name into
 // Response.User.Extra would fail both halves.
 func TestIssuerNameNeverReachesImpersonationHeaders(t *testing.T) {
-	p := newTestProxy(t)
-	p.oidcRequestAuthenticator = bearertoken.New(authn.AttributeToIssuer(leakProbeIssuerName, p.fakeToken))
-
 	// An identity extra and the client-IP extra guarantee the round tripper
 	// really builds Impersonate-Extra- headers, so the scan below has
 	// something to scan and cannot pass vacuously.
-	p.config.ExtraUserHeadersClientIPEnabled = true
+	p := newTestProxy(t, withConfig(Config{ExtraUserHeadersClientIPEnabled: true}),
+		func(d *Dependencies) {
+			d.OIDCTokenAuthenticator = authn.AttributeToIssuer(leakProbeIssuerName, d.OIDCTokenAuthenticator)
+		})
+
 	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(
 		&authenticator.Response{
 			User: &authuser.DefaultInfo{

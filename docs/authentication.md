@@ -100,17 +100,28 @@ request is authorized twice, and both checks deny by default.
 1. **The proxy asks whether the caller may impersonate.** For every inbound
    `Impersonate-*` header value it sends a `SubjectAccessReview` to the API
    server asking whether the **authenticated** identity, the one the token
-   mapped to, holds the `impersonate` verb on that value. A single refused
+   mapped to, holds the `impersonate` verb on that value. The identity is
+   asked about as the API server itself would see it, with
+   `system:authenticated` among its groups, so a grant bound to that group
+   works through the proxy exactly as it does directly. A single refused
    value fails the whole request with `403` and
    `reason=impersonation_denied`; nothing is forwarded. These are the
    decisions the [SubjectAccessReview cache](./caching.md#subjectaccessreview-decision-cache)
    remembers. A request whose headers are malformed is refused before any
-   review is sent, with `reason=malformed_impersonation`: an `Impersonate-`
-   header of a kind the proxy does not know gets `400`, and groups, a uid or
-   extras without an `Impersonate-User` get `500`.
+   review is sent, with `reason=malformed_impersonation` and `400`: an
+   `Impersonate-` header of a kind the proxy does not know, or groups, a uid
+   or extras without an `Impersonate-User`.
 2. **The API server authorizes the target.** The request is forwarded
    impersonating the target identity, so RBAC applies to the target, not to
    the caller. A target with no bindings can do nothing.
+
+This is the path where the proxy forwards with its own credentials, so it is
+the only one where the proxy checks and consumes `Impersonate-*` headers: they
+never reach the API server as the client sent them. On the two paths that
+forward without the proxy's credentials, [token passthrough](#token-passthrough)
+and [no impersonation](#no-impersonation), the proxy does not look at the
+headers at all. They travel on, and the API server authorizes them itself,
+against the identity it authenticates: the client's own token, or anonymous.
 
 Each header value is a separate authorization against a separate resource,
 which is what a grant has to name:
@@ -309,6 +320,9 @@ Enable passthrough for tokens that fail OIDC authentication. The proxy then
 performs a [TokenReview](https://kubernetes.io/docs/reference/access-authn-authz/authentication/#webhook-token-authentication)
 against the target backend via the Kubernetes API; if it succeeds, the request
 is forwarded as-is with the token intact and no other authentication applied.
+Any `Impersonate-*` headers the client sent are forwarded too, unchecked by the
+proxy: the API server authorizes them against the token's own identity, as it
+would for a request sent to it directly.
 
 ```text
 --token-passthrough

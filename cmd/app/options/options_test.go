@@ -186,6 +186,38 @@ func TestValidate_TokenPassthroughCacheTTLs(t *testing.T) {
 	}
 }
 
+// TestValidate_TokenPassthroughRequestTimeout pins that a non-positive
+// --token-passthrough-request-timeout is rejected whether or not
+// --token-passthrough is enabled, like the cache TTLs beside it.
+func TestValidate_TokenPassthroughRequestTimeout(t *testing.T) {
+	const wantErrSubstr = "--token-passthrough-request-timeout must be greater than zero"
+
+	for name, tc := range map[string]struct {
+		timeout            time.Duration
+		passthroughEnabled bool
+		wantErr            bool
+	}{
+		"default is valid":                          {timeout: 10 * time.Second},
+		"zero is rejected":                          {timeout: 0, passthroughEnabled: true, wantErr: true},
+		"zero is rejected with passthrough off":     {timeout: 0, wantErr: true},
+		"negative is rejected with passthrough off": {timeout: -time.Second, wantErr: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			o := New()
+			cmd := &cobra.Command{}
+			o.AddFlags(cmd)
+
+			o.App.TokenPassthrough.Enabled = tc.passthroughEnabled
+			o.App.TokenPassthrough.RequestTimeout = tc.timeout
+
+			err := o.Validate(cmd)
+			if got := err != nil && strings.Contains(err.Error(), wantErrSubstr); got != tc.wantErr {
+				t.Errorf("Validate() error = %v, want request timeout error: %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidate_SubjectAccessReviewTimeout(t *testing.T) {
 	const wantErrSubstr = "--subject-access-review-timeout must be greater than 0"
 

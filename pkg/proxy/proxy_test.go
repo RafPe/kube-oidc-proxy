@@ -19,7 +19,6 @@ import (
 
 	"go.uber.org/mock/gomock"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
-	"k8s.io/apiserver/pkg/authentication/request/bearertoken"
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/server"
 	"k8s.io/client-go/rest"
@@ -29,7 +28,6 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/accesslog"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/audit"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
@@ -46,14 +44,6 @@ type fakeProxy struct {
 	// logs is the capture every component of this proxy writes into.
 	logs *logtest.Capture
 	*Proxy
-}
-
-// newAccessLogger builds an access logger writing into a capture, so a test can
-// assert on the records a request produced.
-func newAccessLogger(t *testing.T) (*accesslog.AccessLogger, *logtest.Capture) {
-	t.Helper()
-	root, records := logtest.New(t, 0)
-	return accesslog.NewAccessLogger(logging.ForComponent(root, logging.ComponentRequest)), records
 }
 
 // testIssuerName is the issuer the fake OIDC authenticator attributes an
@@ -159,21 +149,44 @@ func (f *fakeRT) RoundTrip(h *http.Request) (*http.Response, error) {
 // against, so a burst never refills mid-test.
 var frozenClock = time.Unix(0, 0)
 
-func newTestProxy(t *testing.T) *fakeProxy {
+// newTestAuditor builds an auditor with no backend, as the binary does when
+// no audit flag is set, so every audit filter is still in the chain. audit.New
+// needs an external address when there is no listener to derive one from.
+func newTestAuditor(t *testing.T, root *slog.Logger) *audit.Audit {
+	t.Helper()
+	auditor, err := audit.New(audit.Config{ExternalAddress: "0.0.0.0:1234"},
+		logging.ForComponent(root, logging.ComponentAudit))
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+	return auditor
+}
+
+// newTestProxy builds a Proxy through New, from fakes: a mock OIDC
+// authenticator and token reviewer, a SubjectAccessReview over the fake
+// review client, a real metrics recorder and one log capture. opts adjust the
+// Dependencies before New sees them, so a test that needs a different
+// configuration or reviewer gets it wired the way the binary wires it.
+func newTestProxy(t *testing.T, opts ...func(*Dependencies)) *fakeProxy {
+	t.Helper()
+
 	ctrl := gomock.NewController(t)
 	fakeToken := authntest.NewMockToken(ctrl)
 	fakeReviewer := authntest.NewMockToken(ctrl)
 	fakeRT := &fakeRT{t: t}
 
-	// One root, one capture: every component the fake proxy owns writes into
-	// the same stream, so a test can assert on any record the request produced
+	// One root, one capture: every component the proxy owns writes into the
+	// same stream, so a test can assert on any record the request produced
 	// through fakeProxy.logs.
 	root, logs := logtest.New(t, 2)
 	trackCapture(logs)
-	requestLogger := logging.ForComponent(root, logging.ComponentRequest)
 
-	fakeSubjectAccessReviewer := fakesubjectaccessreview.New(nil)
-	subjectAccessReview, _ := subjectaccessreview.New(fakeSubjectAccessReviewer, subjectaccessreview.Config{Timeout: subjectaccessreview.DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, logging.ForComponent(root, logging.ComponentSAR))
+	sar, err := subjectaccessreview.New(fakesubjectaccessreview.New(nil),
+		subjectaccessreview.Config{MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues},
+		logging.ForComponent(root, logging.ComponentSAR))
+	if err != nil {
+		t.Fatalf("building SubjectAccessReview: %v", err)
+	}
 
 	// A real recorder, not a fake: the tests assert on the exposition the
 	// binary would serve, including help strings and label names.
@@ -182,48 +195,76 @@ func newTestProxy(t *testing.T) *fakeProxy {
 		t.Fatalf("metrics.New: %v", err)
 	}
 
-	p := &fakeProxy{
+	deps := Dependencies{
+		Logger:                 root,
+		RestConfig:             &rest.Config{Host: "https://kube.example.com"},
+		OIDCTokenAuthenticator: fakeToken,
+		TokenReviewer:          fakeReviewer,
+		SubjectAccessReviewer:  sar,
+		SecureServingInfo:      new(server.SecureServingInfo),
+		Config:                 &Config{},
+		Auditor:                newTestAuditor(t, root),
+		Metrics:                recorder,
+	}
+	for _, opt := range opts {
+		opt(&deps)
+	}
+
+	p, err := New(deps)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// The only fields set after New, because New cannot produce them. It
+	// builds real transports from RestConfig, and these tests assert on what
+	// would reach the API server instead of sending it. Its limiter runs on
+	// the wall clock; a frozen clock and a small burst let a test count
+	// exactly how many warnings survive sampling without sleeping for a refill.
+	p.clientTransport = fakeRT
+	p.noAuthClientTransport = fakeRT
+	p.warnLimiter = logging.NewLimiter(1, 3, time.Minute, func() time.Time { return frozenClock })
+
+	return &fakeProxy{
 		ctrl:         ctrl,
 		fakeToken:    fakeToken,
 		fakeReviewer: fakeReviewer,
 		fakeRT:       fakeRT,
 		logs:         logs,
-		Proxy: &Proxy{
-			metrics:                  recorder,
-			requestLogger:            requestLogger,
-			oidcLogger:               logging.ForComponent(root, logging.ComponentOIDC),
-			tokenReviewLogger:        logging.ForComponent(root, logging.ComponentTokenReview),
-			upstreamLogger:           logging.ForComponent(root, logging.ComponentUpstream),
-			access:                   accesslog.NewAccessLogger(requestLogger),
-			oidcRequestAuthenticator: bearertoken.New(fakeToken),
-			tokenReviewer:            fakeReviewer,
-			subjectAccessReviewer:    subjectAccessReview,
-			clientTransport:          fakeRT,
-			noAuthClientTransport:    fakeRT,
-			config:                   new(Config),
-			shutdownLogger:           logging.ForComponent(root, logging.ComponentShutdown),
-			// A frozen clock and a small burst make the warning limiter
-			// deterministic: a test asserts on exactly how many warnings
-			// survive sampling, without sleeping for a refill.
-			warnLimiter: logging.NewLimiter(1, 3, time.Minute, func() time.Time { return frozenClock }),
-		},
+		Proxy:        p,
 	}
+}
 
-	auditor, err := audit.New(audit.Config{ExternalAddress: "0.0.0.0:1234", SecureServing: new(server.SecureServingInfo)}, logging.ForComponent(root, logging.ComponentAudit))
-	if err != nil {
-		t.Fatalf("failed to create auditor: %s", err)
+// withConfig has newTestProxy build the proxy from cfg, so New derives what
+// it derives from a Config (the parsed trusted proxies and reserved-group
+// allowlist, the transport for unimpersonated requests) exactly as it does in
+// production.
+func withConfig(cfg Config) func(*Dependencies) {
+	return func(d *Dependencies) {
+		d.Config = &cfg
 	}
-	p.auditor = auditor
+}
 
-	return p
+// withLogger has newTestProxy build the proxy on root instead of its own
+// capture, for a test that needs a different verbosity.
+func withLogger(root *slog.Logger) func(*Dependencies) {
+	return func(d *Dependencies) {
+		d.Logger = root
+	}
+}
+
+// withSubjectAccessReviewer has newTestProxy wire sar in place of its default
+// reviewer.
+func withSubjectAccessReviewer(sar *subjectaccessreview.SubjectAccessReview) func(*Dependencies) {
+	return func(d *Dependencies) {
+		d.SubjectAccessReviewer = sar
+	}
 }
 
 // TestRoundTripLogsTokenReviewPassthrough pins the access record on the
 // TokenReview passthrough path: the request never reaches impersonation, and
 // before this change it produced no record at all.
 func TestRoundTripLogsTokenReviewPassthrough(t *testing.T) {
-	p := newTestProxy(t)
-	p.config = &Config{TokenReview: true}
+	p := newTestProxy(t, withConfig(Config{TokenPassthrough: true}))
 
 	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(nil, false, errors.New("not an oidc token"))
 	p.fakeReviewer.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(
@@ -247,36 +288,6 @@ func TestRoundTripLogsTokenReviewPassthrough(t *testing.T) {
 	}
 
 	p.ctrl.Finish()
-}
-
-// withDiscardLoggers gives a Proxy a test built by hand the loggers New would
-// have derived, discarding every record, so the never-nil contract on those
-// fields holds in tests too. Loggers the test already set are kept.
-func withDiscardLoggers(p *Proxy) *Proxy {
-	for _, l := range []**slog.Logger{&p.requestLogger, &p.oidcLogger, &p.tokenReviewLogger, &p.upstreamLogger} {
-		if *l == nil {
-			*l = slog.New(slog.DiscardHandler)
-		}
-	}
-	return p
-}
-
-// TestShutdownReportsTheAuditFlushAsAHook pins the pre-shutdown record: one
-// proxy.hook.completed naming the audit backend step, with its duration.
-func TestShutdownReportsTheAuditFlushAsAHook(t *testing.T) {
-	p := newTestProxy(t)
-
-	if err := p.Shutdown(); err != nil {
-		t.Fatalf("Shutdown() = %v", err)
-	}
-
-	rec := p.logs.Only(t, logging.EventProxyHookCompleted)
-	if got := rec.String("hook"); got != "AuditBackend" {
-		t.Errorf("hook = %q, want AuditBackend", got)
-	}
-	if got := rec.String("component"); got != string(logging.ComponentShutdown) {
-		t.Errorf("component = %q, want shutdown", got)
-	}
 }
 
 // TestWaitBeforeStartReturns pins that a Proxy that never served has nothing to
@@ -356,7 +367,7 @@ func validDeps(t *testing.T) Dependencies {
 	ctrl := gomock.NewController(t)
 	root, _ := logtest.New(t, 0)
 
-	sar, err := subjectaccessreview.New(fakesubjectaccessreview.New(nil), subjectaccessreview.Config{Timeout: subjectaccessreview.DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, logging.ForComponent(root, logging.ComponentSAR))
+	sar, err := subjectaccessreview.New(fakesubjectaccessreview.New(nil), subjectaccessreview.Config{MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, logging.ForComponent(root, logging.ComponentSAR))
 	if err != nil {
 		t.Fatalf("building SubjectAccessReview: %v", err)
 	}
@@ -365,12 +376,10 @@ func validDeps(t *testing.T) Dependencies {
 		Logger:                 root,
 		RestConfig:             &rest.Config{Host: "https://kube.example.com"},
 		OIDCTokenAuthenticator: authntest.NewMockToken(ctrl),
-		AuditOptions:           nil,
 		SubjectAccessReviewer:  sar,
 		SecureServingInfo:      new(server.SecureServingInfo),
-		// ExternalAddress must be set: audit.New derives the audit server's
-		// external address from it and fatals when it is empty with no listener.
-		Config: &Config{ExternalAddress: "0.0.0.0:1234"},
+		Config:                 &Config{},
+		Auditor:                newTestAuditor(t, root),
 	}
 }
 
@@ -416,7 +425,7 @@ func TestNewValidatesDependencies(t *testing.T) {
 		},
 		"TokenReview enabled without reviewer fails": {
 			mutate: func(d *Dependencies) {
-				d.Config = &Config{TokenReview: true, ExternalAddress: "0.0.0.0:1234"}
+				d.Config = &Config{TokenPassthrough: true}
 				d.TokenReviewer = nil
 			},
 			wantErr: true,
@@ -451,7 +460,7 @@ func TestNewValidatesDependencies(t *testing.T) {
 func TestNewCopiesExtraUserHeaders(t *testing.T) {
 	deps := validDeps(t)
 	src := map[string][]string{"team": {"platform"}}
-	deps.Config = &Config{ExtraUserHeaders: src, ExternalAddress: "0.0.0.0:1234"}
+	deps.Config = &Config{ExtraUserHeaders: src}
 
 	p, err := New(deps)
 	if err != nil {

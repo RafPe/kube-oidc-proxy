@@ -1,5 +1,5 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
-package token
+package proxy
 
 import (
 	"net/http"
@@ -7,11 +7,11 @@ import (
 	"testing"
 )
 
-// FuzzParseFromRequest drives bearer-token extraction with arbitrary
+// FuzzBearerToken drives bearer-token extraction with arbitrary
 // Authorization headers. The header is fully attacker-controlled on every
 // request the proxy serves, so extraction must never panic and must only hand
 // back a token when the header really is a "bearer <token>" pair.
-func FuzzParseFromRequest(f *testing.F) {
+func FuzzBearerToken(f *testing.F) {
 	for _, seed := range []string{
 		"",
 		"bearer abc",
@@ -36,7 +36,7 @@ func FuzzParseFromRequest(f *testing.F) {
 		// Assign directly: Header.Set would reject values the wire can carry.
 		req.Header["Authorization"] = []string{auth}
 
-		token, ok := ParseFromRequest(req)
+		token, ok := bearerToken(req)
 
 		if !ok {
 			if token != "" {

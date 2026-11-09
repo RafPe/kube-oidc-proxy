@@ -1,8 +1,5 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
-
-// Package flags provides custom pflag.Value implementations used by the
-// command-line interface.
-package flags
+package options
 
 import (
 	"bytes"
@@ -13,17 +10,16 @@ import (
 	"github.com/spf13/pflag"
 )
 
-// This is a struct to implement the pflag.Value interface to introduce a
-// map[string][]string flag type.
+// stringToStringSliceValue is a pflag.Value for a map[string][]string flag,
+// which pflag has no type for: --extra-user-headers lets one key repeat.
 type stringToStringSliceValue struct {
 	values *map[string][]string
 }
 
 var _ pflag.Value = &stringToStringSliceValue{}
 
-// NewStringToStringSliceValue returns a pflag.Value interface that implements
-// a flag that takes values into the map[string][]slice data structure.
-func NewStringToStringSliceValue(p *map[string][]string) pflag.Value {
+// newStringToStringSliceValue returns a pflag.Value that parses into p.
+func newStringToStringSliceValue(p *map[string][]string) pflag.Value {
 	return &stringToStringSliceValue{
 		values: p,
 	}

@@ -198,8 +198,9 @@ a 10s default timeout.
   incremented from a pre-shutdown hook. The metrics listener is stopped only
   after those hooks return, so the series is observable — but only to a scrape
   that lands inside the drain window, which is shorter than any ordinary scrape
-  interval. Treat the `audit.flush.failed` log record as the operational signal
-  for that case and the counter as best-effort corroboration.
+  interval. Treat the `proxy.hook.failed` log record with `hook=AuditBackend`
+  as the operational signal for that case and the counter as best-effort
+  corroboration.
 - Not covered by this catalogue and deliberately so: request and response
   sizes, TLS handshake failures on the proxy listener (they end before HTTP
   handling), and transport failures inside an upgraded stream after the

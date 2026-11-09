@@ -1,0 +1,3 @@
+kind: Fixed
+body: |-
+  The proxy's SubjectAccessReview for an impersonating request now includes `system:authenticated` in the requester's groups, as kube-apiserver does for every authenticated user. An `impersonate` grant bound to `system:authenticated` is now honoured through the proxy as it is directly against the API server.

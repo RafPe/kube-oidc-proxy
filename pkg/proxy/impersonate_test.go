@@ -2,15 +2,20 @@
 package proxy
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"go.uber.org/mock/gomock"
+	azv1 "k8s.io/api/authorization/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	authuser "k8s.io/apiserver/pkg/authentication/user"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
@@ -43,12 +48,10 @@ func TestWithImpersonateRequestDoesNotMutateAuthenticatorUser(t *testing.T) {
 	wantGroupsBacking := append([]string(nil), groups[:cap(groups)]...) // ["group1" "" "" ""]
 	wantExtra := map[string][]string{"foo": {"x"}}
 
-	p := withDiscardLoggers(&Proxy{
-		config: &Config{
-			ExtraUserHeadersClientIPEnabled: true,
-			ExtraUserHeaders:                map[string][]string{"foo": {"bar"}},
-		},
-	})
+	p := newTestProxy(t, withConfig(Config{
+		ExtraUserHeadersClientIPEnabled: true,
+		ExtraUserHeaders:                map[string][]string{"foo": {"bar"}},
+	}))
 
 	handler := p.withImpersonateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
@@ -74,12 +77,11 @@ func TestWithImpersonateRequestDoesNotMutateAuthenticatorUser(t *testing.T) {
 // --disable-impersonation path: the request is forwarded with the caller's own
 // token and no impersonation headers, which an operator has to be able to see.
 func TestImpersonationSkippedWhenDisabled(t *testing.T) {
-	p := newTestProxy(t)
-	p.config.DisableImpersonation = true
+	p := newTestProxy(t, withConfig(Config{DisableImpersonation: true}))
 
 	handler := p.withImpersonateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req = req.WithContext(logging.WithLogger(logging.WithRequestID(req.Context(), "rid-disabled"), p.requestLogger))
+	req = req.WithContext(logging.WithRequestID(req.Context(), "rid-disabled"))
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
 	rec := p.logs.Only(t, logging.EventRequestImpersonationSkipped)
@@ -103,8 +105,9 @@ func TestImpersonationSkippedOnTokenReviewPassthrough(t *testing.T) {
 
 	handler := p.withImpersonateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req = req.WithContext(logging.WithLogger(logging.WithRequestID(req.Context(), "rid-passthrough"), p.requestLogger))
-	req = reqctx.WithNoImpersonation(req)
+	req = req.WithContext(logging.WithRequestID(req.Context(), "rid-passthrough"))
+	// What withTokenReview leaves on a request it admitted.
+	req = reqctx.WithImpersonation(req, &reqctx.Impersonation{})
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
 	rec := p.logs.Only(t, logging.EventRequestImpersonationSkipped)
@@ -121,11 +124,10 @@ func TestImpersonationSkippedOnTokenReviewPassthrough(t *testing.T) {
 // record names the configured extra user headers it applied and never carries
 // their values, which are operator-supplied secrets.
 func TestImpersonationAppliedLogsHeaderNamesOnly(t *testing.T) {
-	p := newTestProxy(t)
-	p.config.ExtraUserHeaders = map[string][]string{"tenant": {"acme-secret"}}
+	p := newTestProxy(t, withConfig(Config{ExtraUserHeaders: map[string][]string{"tenant": {"acme-secret"}}}))
 	handler := p.withImpersonateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	ctx := logging.WithLogger(logging.WithRequestID(req.Context(), "rid-3"), p.requestLogger)
+	ctx := logging.WithRequestID(req.Context(), "rid-3")
 	req = req.WithContext(genericapirequest.WithUser(ctx, &authuser.DefaultInfo{Name: "alice"}))
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 	rec := p.logs.Only(t, logging.EventRequestImpersonationApplied)
@@ -149,14 +151,12 @@ func TestImpersonationAppliedLogsHeaderNamesOnly(t *testing.T) {
 // than the configured cap is answered with 431 before any SubjectAccessReview
 // is submitted, and never reaches the inner handler.
 func TestOverCapImpersonationRejectedBeforeSubjectAccessReview(t *testing.T) {
-	p := newTestProxy(t)
-
 	reviewer := &countingReviewer{FakeReviewer: fakesubjectaccessreview.New(nil)}
-	sar, err := subjectaccessreview.New(reviewer, subjectaccessreview.Config{Timeout: subjectaccessreview.DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: 2}, slog.New(slog.DiscardHandler))
+	sar, err := subjectaccessreview.New(reviewer, subjectaccessreview.Config{MaxHeaderValues: 2}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("creating subject access reviewer: %s", err)
 	}
-	p.subjectAccessReviewer = sar
+	p := newTestProxy(t, withSubjectAccessReviewer(sar))
 
 	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(
 		oidcAnswer(&authenticator.Response{
@@ -192,4 +192,70 @@ func TestOverCapImpersonationRejectedBeforeSubjectAccessReview(t *testing.T) {
 	}
 
 	p.ctrl.Finish()
+}
+
+// specRecordingReviewer records the requester groups of every review it is
+// asked, and allows them all.
+type specRecordingReviewer struct {
+	*fakesubjectaccessreview.FakeReviewer
+
+	mu     sync.Mutex
+	groups [][]string
+}
+
+func (r *specRecordingReviewer) Create(_ context.Context, req *azv1.SubjectAccessReview, _ metav1.CreateOptions) (*azv1.SubjectAccessReview, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.groups = append(r.groups, slices.Clone(req.Spec.Groups))
+	req.Status = azv1.SubjectAccessReviewStatus{Allowed: true}
+	return req, nil
+}
+
+// TestSubjectAccessReviewRequesterIsAuthenticated pins that the proxy asks
+// about the requester the way kube-apiserver authorizes it: with
+// system:authenticated among its groups, exactly once, whether or not the
+// token's own groups carried it. An impersonate grant bound to that group
+// works against the API server directly, so it must work through the proxy.
+// The identity the authenticator returned is not touched.
+func TestSubjectAccessReviewRequesterIsAuthenticated(t *testing.T) {
+	for name, groups := range map[string][]string{
+		"token groups without it": {"devs"},
+		"token groups with it":    {"devs", authuser.AllAuthenticated},
+		"no token groups":         nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			reviewer := &specRecordingReviewer{FakeReviewer: fakesubjectaccessreview.New(nil)}
+			sar, err := subjectaccessreview.New(reviewer, subjectaccessreview.Config{MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
+			if err != nil {
+				t.Fatalf("creating subject access reviewer: %s", err)
+			}
+			p := newTestProxy(t, withSubjectAccessReviewer(sar))
+
+			inbound := &authuser.DefaultInfo{Name: "alice", Groups: slices.Clone(groups)}
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("Impersonate-User", "bob")
+			req = req.WithContext(genericapirequest.WithUser(logging.WithRequestID(req.Context(), "test-request-id"), inbound))
+
+			var served bool
+			p.withImpersonateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { served = true })).
+				ServeHTTP(httptest.NewRecorder(), req)
+			if !served {
+				t.Fatalf("an allowed impersonation was not served: %s", p.logs.Raw())
+			}
+
+			if len(reviewer.groups) != 1 {
+				t.Fatalf("reviews = %d, want 1", len(reviewer.groups))
+			}
+			got := reviewer.groups[0]
+			if n := slices.Index(got, authuser.AllAuthenticated); n < 0 || slices.Contains(got[n+1:], authuser.AllAuthenticated) {
+				t.Errorf("requester groups = %q, want %s exactly once", got, authuser.AllAuthenticated)
+			}
+			if !slices.Contains(got, "devs") && len(groups) > 0 {
+				t.Errorf("requester groups = %q, lost the token's own groups", got)
+			}
+			if !reflect.DeepEqual(inbound.Groups, groups) {
+				t.Errorf("the authenticator's identity was mutated: groups = %q, want %q", inbound.Groups, groups)
+			}
+		})
+	}
 }

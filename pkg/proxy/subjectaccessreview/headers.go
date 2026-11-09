@@ -11,7 +11,13 @@ import (
 // IsImpersonationHeader reports whether key names an impersonation header.
 // The match is on the Impersonate- prefix, case-insensitively: a header a
 // client spells unusually, or one of a kind this proxy does not know, is still
-// an impersonation attempt and must be authorized or refused, never forwarded.
+// an impersonation attempt. On a request the proxy forwards under its own
+// credentials, every such header is authorized or refused by
+// CheckAuthorizedForImpersonation and then stripped, never forwarded, because
+// the API server would honour it with the proxy's rights.
+// On a request forwarded without them -- token passthrough, or impersonation
+// disabled -- the proxy does not inspect the headers at all: they travel on,
+// and the API server authorizes them against the identity it authenticates.
 func IsImpersonationHeader(key string) bool {
 	return hasPrefixFold(key, "Impersonate-")
 }

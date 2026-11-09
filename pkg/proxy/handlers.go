@@ -92,7 +92,7 @@ func (p *Proxy) logForwardHeaders(req *http.Request, inboundXFF, inboundRealIP s
 	forwardedFor := slog.String("forwarded_for_untrusted", logging.Sanitize(inboundXFF))
 
 	if outboundXFF := req.Header.Get(reqctx.HeaderForwardedFor); outboundXFF != "" && outboundXFF != inboundXFF {
-		logging.Emit(req.Context(), logging.LoggerFrom(req.Context()), logging.EventRequestHeadersRewritten,
+		logging.Emit(req.Context(), p.requestLogger, logging.EventRequestHeadersRewritten,
 			slog.String("src_ip", srcIP), forwardedFor)
 	}
 
@@ -116,7 +116,7 @@ func (p *Proxy) logForwardHeaders(req *http.Request, inboundXFF, inboundRealIP s
 	if inboundXFF != "" {
 		attrs = append(attrs, forwardedFor)
 	}
-	logging.Emit(req.Context(), logging.LoggerFrom(req.Context()), logging.EventRequestHeadersDropped, attrs...)
+	logging.Emit(req.Context(), p.requestLogger, logging.EventRequestHeadersDropped, attrs...)
 }
 
 // withAuthenticateRequest adds the proxy authentication handler to a chain.
@@ -228,7 +228,7 @@ func checkReservedIdentity(info authuser.Info, allowedGroups sets.Set[string]) e
 // enabled.
 func (p *Proxy) withTokenReview(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-		if !p.config.TokenReview {
+		if !p.config.TokenPassthrough {
 			p.handleError(rw, req, errUnauthorized)
 			return
 		}
@@ -240,9 +240,11 @@ func (p *Proxy) withTokenReview(handler http.Handler) http.Handler {
 
 		// OIDC did not accept the token, so the bearer authenticator left the
 		// Authorization header in place; the request is forwarded with the
-		// client's own token and RoundTrip skips impersonation for it.
+		// client's own token. That decides how it is forwarded, so the
+		// impersonation filter and RoundTrip both see it settled: no outbound
+		// identity, and no proxy-authenticated inbound one either.
 		req = reqctx.WithAuthMethod(req, metrics.AuthMethodTokenReview)
-		req = reqctx.WithNoImpersonation(req)
+		req = reqctx.WithImpersonation(req, &reqctx.Impersonation{})
 
 		handler.ServeHTTP(rw, req)
 	})

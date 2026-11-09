@@ -55,7 +55,11 @@ type authResponse struct {
 func runHandlersCases(t *testing.T, tests map[string]handlersCase) {
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			p := newTestProxy(t)
+			var opts []func(*Dependencies)
+			if test.config != nil {
+				opts = append(opts, withConfig(*test.config))
+			}
+			p := newTestProxy(t, opts...)
 
 			w := httptest.NewRecorder()
 
@@ -68,10 +72,6 @@ func runHandlersCases(t *testing.T, tests map[string]handlersCase) {
 			p.fakeRT.expGroup = test.expGroup
 			p.fakeRT.expExtra = test.expExtra
 			p.fakeRT.expUID = test.expUID
-
-			if test.config != nil {
-				p.config = test.config
-			}
 
 			var handler http.Handler
 			handler = http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {

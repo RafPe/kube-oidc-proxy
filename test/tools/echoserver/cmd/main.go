@@ -19,7 +19,7 @@ func main() {
 	addr := flag.String("listen", ":8080", "Address to serve HTTP on.")
 	flag.Parse()
 
-	stopCh := signals.Handler(slog.Default())
+	stopCh := signals.NotifyStop(slog.Default())
 
 	srv := &http.Server{
 		Addr:              *addr,

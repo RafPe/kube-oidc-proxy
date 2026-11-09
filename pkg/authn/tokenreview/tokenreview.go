@@ -22,32 +22,37 @@ import (
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/user"
 	clientauthv1 "k8s.io/client-go/kubernetes/typed/authentication/v1"
+	"k8s.io/utils/clock"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 )
 
-// defaultTimeout bounds a TokenReview call when no explicit timeout is
-// configured. It also backstops zero-valued construction.
-const defaultTimeout = 10 * time.Second
+// The defaults the --token-passthrough-* flags start from. DefaultTimeout is
+// also what a zero Config.Timeout means; the cache TTLs have no such fallback,
+// because a zero TTL is how that class of caching is switched off.
+const (
+	DefaultTimeout         = 10 * time.Second
+	DefaultCacheSuccessTTL = 10 * time.Second
+	DefaultCacheFailureTTL = 10 * time.Second
+)
 
 // tokenCacheSize bounds the number of cached review results. Cache keys are
 // derived from attacker-supplied bearer tokens, so the cache must evict (LRU)
 // rather than grow without bound: without a cap, a flood of unique invalid
-// tokens would each pin an entry for the full failure TTL. The size mirrors
-// the SubjectAccessReview decision cache and the response cache of the
-// upstream webhook authorizer.
+// tokens would each pin an entry for the full failure TTL. 8192 entries hold
+// the live tokens of a large cluster for one TTL while keeping the worst case
+// to a few megabytes. It is sized for this cache alone; nothing ties it to the
+// SubjectAccessReview decision cache.
 const tokenCacheSize = 8192
 
-// TokenReview submits a live TokenReview to the API server for every call. It
-// implements authenticator.Token; wrap it with NewCached to avoid repeating
-// the round trip for tokens seen recently.
-type TokenReview struct {
+// liveReviewer submits a TokenReview to the API server for every call. New
+// fronts it with the result cache Config asks for; see withCache.
+type liveReviewer struct {
 	// logger is the tokenreview-component logger every record this reviewer
 	// emits goes through, so each carries component=tokenreview. The
 	// per-request correlation id travels on the call's context instead, never
-	// bound onto a logger, and Emit reads it from there. Never nil:
-	// newReviewer substitutes a discarding logger.
+	// bound onto a logger, and Emit reads it from there.
 	logger *slog.Logger
 
 	reviewRequester clientauthv1.TokenReviewInterface
@@ -58,7 +63,7 @@ type TokenReview struct {
 	metrics *metrics.Recorder
 }
 
-var _ authenticator.Token = (*TokenReview)(nil)
+var _ authenticator.Token = (*liveReviewer)(nil)
 
 // Config is the operator-facing configuration of the token reviewer.
 type Config struct {
@@ -66,7 +71,7 @@ type Config struct {
 	Audiences []string
 
 	// Timeout bounds one TokenReview call; zero or negative means
-	// defaultTimeout.
+	// DefaultTimeout.
 	Timeout time.Duration
 
 	// CacheSuccessTTL and CacheFailureTTL bound how long an authenticated or
@@ -83,22 +88,21 @@ type Config struct {
 // New returns the authenticator that passes a bearer token through to the API
 // server's TokenReview, with the result cache cfg asks for in front of it.
 //
-// logger is the tokenreview-component logger; a nil logger yields one that
-// discards every record, so a partially wired caller cannot panic on the
-// request path.
+// logger is the tokenreview-component logger. It is required: a nil logger is
+// a wiring mistake, not a request for silence.
 func New(requester clientauthv1.TokenReviewInterface, cfg Config, logger *slog.Logger) authenticator.Token {
 	return withCache(newReviewer(requester, cfg, logger), cfg.CacheSuccessTTL, cfg.CacheFailureTTL)
 }
 
 // newReviewer builds the uncached reviewer, settling every default at
 // construction so the reviewer needs no zero-value accommodation.
-func newReviewer(requester clientauthv1.TokenReviewInterface, cfg Config, logger *slog.Logger) *TokenReview {
+func newReviewer(requester clientauthv1.TokenReviewInterface, cfg Config, logger *slog.Logger) *liveReviewer {
 	timeout := cfg.Timeout
 	if timeout <= 0 {
-		timeout = defaultTimeout
+		timeout = DefaultTimeout
 	}
-	return &TokenReview{
-		logger:          logging.OrDiscard(logger),
+	return &liveReviewer{
+		logger:          logger,
 		reviewRequester: requester,
 		audiences:       cfg.Audiences,
 		timeout:         timeout,
@@ -135,17 +139,17 @@ func newReviewer(requester clientauthv1.TokenReviewInterface, cfg Config, logger
 // cache's keyFunc): tokens are never stored in memory as map keys, keys
 // cannot be precomputed or length-extended, and two audience sets can never
 // collide — each withCache call also owns a private cache.
-func withCache(reviewer *TokenReview, successTTL, failureTTL time.Duration) authenticator.Token {
+func withCache(reviewer *liveReviewer, successTTL, failureTTL time.Duration) authenticator.Token {
 	if successTTL <= 0 && failureTTL <= 0 {
 		return reviewer
 	}
-	return newCachedTokenReview(reviewer, successTTL, failureTTL, tokenCacheSize, realClock{})
+	return newCachedTokenReview(reviewer, successTTL, failureTTL, tokenCacheSize, clock.RealClock{})
 }
 
 // newCachedTokenReview builds the cache layer with an explicit entry cap and
 // clock; both are parameters only so tests can exercise eviction and expiry
 // cheaply and deterministically.
-func newCachedTokenReview(reviewer *TokenReview, successTTL, failureTTL time.Duration, size int, clock utilcache.Clock) *cachedTokenReview {
+func newCachedTokenReview(reviewer *liveReviewer, successTTL, failureTTL time.Duration, size int, clk utilcache.Clock) *cachedTokenReview {
 	randomKey := make([]byte, 32)
 	if _, err := rand.Read(randomKey); err != nil {
 		panic(err) // rand.Read never fails
@@ -155,7 +159,7 @@ func newCachedTokenReview(reviewer *TokenReview, successTTL, failureTTL time.Dur
 		reviewer:   reviewer,
 		successTTL: successTTL,
 		failureTTL: failureTTL,
-		cache:      utilcache.NewLRUExpireCacheWithClock(size, clock),
+		cache:      utilcache.NewLRUExpireCacheWithClock(size, clk),
 		hashPool: &sync.Pool{
 			New: func() any {
 				return hmac.New(sha256.New, randomKey)
@@ -170,7 +174,7 @@ func newCachedTokenReview(reviewer *TokenReview, successTTL, failureTTL time.Dur
 // least recently used one, so a flood of unique (attacker-controlled) tokens
 // recycles the same fixed slots instead of growing memory.
 type cachedTokenReview struct {
-	reviewer   *TokenReview
+	reviewer   *liveReviewer
 	successTTL time.Duration
 	failureTTL time.Duration
 
@@ -179,11 +183,6 @@ type cachedTokenReview struct {
 }
 
 var _ authenticator.Token = (*cachedTokenReview)(nil)
-
-// realClock is the wall clock the production cache expires entries by.
-type realClock struct{}
-
-func (realClock) Now() time.Time { return time.Now() }
 
 // cachedReview is the cacheable subset of an AuthenticateToken result. Errors
 // are deliberately unrepresentable: only definitive answers are cached.
@@ -197,15 +196,10 @@ func (c *cachedTokenReview) AuthenticateToken(ctx context.Context, token string)
 
 	if v, hit := c.cache.Get(key); hit {
 		record := v.(cachedReview)
-		logging.Emit(ctx, c.reviewer.logger, logging.EventCacheTokenReviewLookup,
-			slog.String("cache_result", string(metrics.CacheHit)),
-			slog.Bool("authenticated", record.ok))
-		c.reviewer.metrics.CacheLookup(metrics.ReviewTokenReview, metrics.CacheHit)
+		c.recordCacheLookup(ctx, metrics.CacheHit, slog.Bool("authenticated", record.ok))
 		return record.resp, record.ok, nil
 	}
-	logging.Emit(ctx, c.reviewer.logger, logging.EventCacheTokenReviewLookup,
-		slog.String("cache_result", string(metrics.CacheMiss)))
-	c.reviewer.metrics.CacheLookup(metrics.ReviewTokenReview, metrics.CacheMiss)
+	c.recordCacheLookup(ctx, metrics.CacheMiss)
 
 	resp, ok, err := c.reviewer.AuthenticateToken(ctx, token)
 	if err != nil {
@@ -220,6 +214,14 @@ func (c *cachedTokenReview) AuthenticateToken(ctx context.Context, token string)
 	}
 
 	return resp, ok, nil
+}
+
+// recordCacheLookup reports one cache consultation, as a record and as a
+// metric, so the two can never disagree about what the cache did.
+func (c *cachedTokenReview) recordCacheLookup(ctx context.Context, result metrics.CacheResult, attrs ...slog.Attr) {
+	attrs = append([]slog.Attr{slog.String("cache_result", string(result))}, attrs...)
+	logging.Emit(ctx, c.reviewer.logger, logging.EventCacheTokenReviewLookup, attrs...)
+	c.reviewer.metrics.CacheLookup(metrics.ReviewTokenReview, result)
 }
 
 // cacheKey hashes the token and audiences into a cache key. Every component
@@ -255,7 +257,7 @@ func writeLengthPrefixed(h hash.Hash, b []byte, s string) {
 // the API server answers but does not authenticate the token, and a non-nil
 // error when the review itself failed; callers must treat both as
 // unauthenticated (fail closed).
-func (t *TokenReview) AuthenticateToken(ctx context.Context, token string) (*authenticator.Response, bool, error) {
+func (t *liveReviewer) AuthenticateToken(ctx context.Context, token string) (*authenticator.Response, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, t.timeout)
 	defer cancel()
 
@@ -305,7 +307,7 @@ func userInfoFrom(ui authv1.UserInfo) user.Info {
 	return info
 }
 
-func (t *TokenReview) buildReview(token string) *authv1.TokenReview {
+func (t *liveReviewer) buildReview(token string) *authv1.TokenReview {
 	return &authv1.TokenReview{
 		Spec: authv1.TokenReviewSpec{
 			Token:     token,

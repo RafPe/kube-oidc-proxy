@@ -108,8 +108,30 @@ Two independent triggers, in the order they usually happen:
    - Bump the `k8s.io/*` modules in `go.mod` to the matching `v0.<minor>`.
      `go test ./test/e2e/versions/` fails until manifest and go.mod agree —
      that is the point: compatibility is verified, not assumed, before either
-     lands alone.
+     lands alone. The same test fails if the `k8s.io` staging modules (every
+     `k8s.io/*` module versioned `v0.<minor>.<patch>`, direct or indirect) are
+     not all at one version; Dependabot's `kubernetes` group in
+     `.github/dependabot.yml` proposes them as a single PR for that reason.
    - Run the full matrix before merging: `gh workflow run e2e.yaml --ref <branch>`.
+
+## Test doubles
+
+Two package suffixes, two meanings, each following the library it mirrors:
+
+- **`fake`** (e.g. `pkg/authn/tokenreview/fake`,
+  `pkg/proxy/subjectaccessreview/fake`) holds an in-memory implementation of a
+  client-go interface the parent package depends on, as client-go's own
+  `kubernetes/fake` does. Use it where production code would take a real
+  client.
+- **`<pkg>test`** (e.g. `pkg/logging/logtest`, `pkg/metrics/metricstest`,
+  `pkg/authn/authntest`) holds helpers for testing code that *uses* `<pkg>`:
+  capture sinks, assertions and generated mocks, as `net/http/httptest` does
+  for `net/http`.
+
+A new double goes in whichever of the two matches what it stands in for; do
+not add a third naming scheme. Helpers shared only by the e2e suite and the
+metrics demo live under `test/util/`, one purpose-named package each
+(`keybundle`, `idtoken`, `promtext`, `port`), never a catch-all `util`.
 
 ## Dependencies worth knowing about
 

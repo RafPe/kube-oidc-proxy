@@ -225,7 +225,7 @@ func TestStripImpersonationHeaders(t *testing.T) {
 func TestUnknownImpersonationHeaderIsRefusedBeforeAnyReview(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		reviewer := &countingFakeReviewer{FakeReviewer: fake.New(nil)}
-		sar, err := New(reviewer, Config{Timeout: DefaultTimeout, MaxHeaderValues: DefaultMaxHeaderValues}, nil)
+		sar, err := New(reviewer, Config{Timeout: DefaultTimeout, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 		if err != nil {
 			t.Fatal(err)
 		}

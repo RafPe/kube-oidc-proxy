@@ -2,7 +2,7 @@
 
 // Package app assembles the kube-oidc-proxy command: it wires the OIDC
 // authenticator, token/subject-access reviewers, readiness probe and proxy
-// together and runs them until the supplied stop channel is closed.
+// together and runs them until SIGINT or SIGTERM starts a graceful shutdown.
 package app
 
 import (
@@ -35,6 +35,7 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/probe"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/audit"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 	"github.com/rafpe/kube-oidc-proxy/pkg/util/signals"
 )
@@ -104,7 +105,7 @@ type configSummary struct {
 	version       string
 	configHash    string
 	issuerCount   int
-	readinessMode string
+	readinessMode probe.ReadinessMode
 }
 
 // logConfigLoaded reports the effective configuration once it is fixed:
@@ -115,15 +116,21 @@ func logConfigLoaded(l *slog.Logger, summary configSummary) {
 		slog.String("version", summary.version),
 		slog.String("config_hash", summary.configHash),
 		slog.Int("issuer_count", summary.issuerCount),
-		slog.String("readiness_mode", summary.readinessMode))
+		slog.String("readiness_mode", string(summary.readinessMode)))
 }
 
 // startMetrics builds the recorder and starts the metrics listener when
-// metrics are enabled. Both are nil when they are not; every collaborator
-// treats a nil recorder as a no-op.
-func startMetrics(ctx context.Context, opts *options.Options, root *slog.Logger) (*metrics.Recorder, *metrics.Server, error) {
+// metrics are enabled, returning the recorder and the drain step that stops
+// the listener. With metrics disabled the recorder is nil, which every
+// collaborator treats as a no-op, and the step is noStep.
+//
+// The listener has a context of its own rather than the one the stop signal
+// cancels: it must outlive the readiness listener and the pre-shutdown hooks,
+// which report their own failures through the recorder, so a scrape landing
+// in the drain window can still see them. Only the returned step stops it.
+func startMetrics(opts *options.Options, root *slog.Logger) (*metrics.Recorder, func() error, error) {
 	if !opts.Metrics.Enabled() {
-		return nil, nil, nil
+		return nil, noStep, nil
 	}
 	recorder, err := metrics.New(metrics.BuildInfo{
 		Version:   opts.Version.Version(),
@@ -133,12 +140,17 @@ func startMetrics(ctx context.Context, opts *options.Options, root *slog.Logger)
 	if err != nil {
 		return nil, nil, fmt.Errorf("building the metrics recorder: %w", err)
 	}
-	server := metrics.NewServer(opts.Metrics.BindAddress, recorder,
-		logging.ForComponent(root, logging.ComponentMetrics))
+	server := metrics.NewServer(metrics.ServerConfig{
+		Addr:     opts.Metrics.BindAddress,
+		Recorder: recorder,
+	}, logging.ForComponent(root, logging.ComponentMetrics))
+
+	ctx, cancel := context.WithCancel(context.Background())
 	if err := server.Start(ctx); err != nil {
+		cancel()
 		return nil, nil, err
 	}
-	return recorder, server, nil
+	return recorder, func() error { cancel(); return server.Wait() }, nil
 }
 
 // buildRESTConfig selects the API server client configuration: the explicit
@@ -185,11 +197,10 @@ func buildTokenReviewer(opts *options.Options, kubeclient kubernetes.Interface, 
 // proxyConfig maps the parsed flags onto the proxy's configuration.
 func proxyConfig(opts *options.Options) *proxy.Config {
 	return &proxy.Config{
-		TokenReview:          opts.App.TokenPassthrough.Enabled,
+		TokenPassthrough:     opts.App.TokenPassthrough.Enabled,
 		DisableImpersonation: opts.App.DisableImpersonation,
 
-		FlushInterval:   opts.App.FlushInterval,
-		ExternalAddress: opts.SecureServing.BindAddress.String(),
+		FlushInterval: opts.App.FlushInterval,
 
 		ExtraUserHeaders:                opts.App.ExtraHeaderOptions.ExtraUserHeaders,
 		ExtraUserHeadersClientIPEnabled: opts.App.ExtraHeaderOptions.EnableClientIPExtraUserHeader,
@@ -250,12 +261,43 @@ func authenticatorConfig(opts *options.Options) authn.Config {
 //
 // stopMetrics stops the metrics listener and waits for it; with the listener
 // disabled it is noStep, so every step is always called.
-func drain(waitProbe, shutdownProxy, stopMetrics func() error) error {
+func drain(waitProbe, flushAudit, stopMetrics func() error) error {
 	probeErr := waitProbe()
-	shutdownErr := shutdownProxy()
+	flushErr := flushAudit()
 	metricsErr := stopMetrics()
 
-	return errors.Join(probeErr, shutdownErr, metricsErr)
+	return errors.Join(probeErr, flushErr, metricsErr)
+}
+
+// auditHook names the audit flush in the pre-shutdown hook records.
+const auditHook = "AuditBackend"
+
+// flushAuditStep returns the drain step that flushes the audit backend. It
+// reports the flush as a hook record, so a shutdown that takes too long names
+// the step responsible, and a failed flush -- events for requests already
+// served were dropped -- is never silent.
+func flushAuditStep(auditor *audit.Audit, root *slog.Logger) func() error {
+	return func() error {
+		logger := logging.ForComponent(root, logging.ComponentShutdown)
+		ctx := context.Background()
+
+		start := time.Now()
+		err := auditor.Shutdown()
+		elapsed := time.Since(start)
+
+		if err != nil {
+			logging.Emit(ctx, logger, logging.EventProxyHookFailed,
+				slog.String("hook", auditHook),
+				slog.Int64("duration_ms", elapsed.Milliseconds()),
+				logging.ErrAttr(err))
+			return fmt.Errorf("pre-shutdown hook %q failed: %w", auditHook, err)
+		}
+
+		logging.Emit(ctx, logger, logging.EventProxyHookCompleted,
+			slog.String("hook", auditHook),
+			slog.Int64("duration_ms", elapsed.Milliseconds()))
+		return nil
+	}
 }
 
 // noStep is the drain step for a listener that was never started.
@@ -272,15 +314,17 @@ var ErrReported = errors.New("error already reported on the log stream")
 // command line has been parsed.
 func NewRunCommand() *cobra.Command {
 	opts := options.New()
-	cmd := buildRunCommand(opts, os.Stdout)
+	cmd := buildRunCommand(opts, os.Stdout, signals.NotifyStop)
 	opts.AddFlags(cmd)
 
 	return cmd
 }
 
 // buildRunCommand builds the proxy command writing its log stream to out, which
-// is stdout in production and a buffer under test.
-func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
+// is stdout in production and a buffer under test. notifyStop installs the
+// stop trigger: signals.NotifyStop in production, a channel the test closes
+// under test, so a test never signals its own process.
+func buildRunCommand(opts *options.Options, out io.Writer, notifyStop func(*slog.Logger) <-chan struct{}) *cobra.Command {
 	return &cobra.Command{
 		Use:  options.AppName,
 		Long: "kube-oidc-proxy is a reverse proxy to authenticate users to Kubernetes API servers with Open ID Connect Authentication.",
@@ -289,207 +333,224 @@ func buildRunCommand(opts *options.Options, out io.Writer) *cobra.Command {
 		// would be a second, unstructured copy.
 		SilenceErrors: true,
 		SilenceUsage:  true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if opts.Version.Requested(cmd) {
-				opts.Version.PrintVersionAndExit()
-			}
-			if err := opts.Validate(cmd); err != nil {
-				return err
-			}
-
-			// One root logger for the whole process, built from the flags and
-			// injected into every collaborator below; no package holds its own.
-			root, err := logging.New(opts.Logging.ToLoggerOptions(out))
-			if err != nil {
-				return err
-			}
-			slog.SetDefault(root)
-
-			// From here on every failure is a record on the configured stream,
-			// and the returned error only carries the exit status.
-			startupLogger := logging.ForComponent(root, logging.ComponentStartup)
-			fail := func(err error) error {
-				logging.Emit(context.Background(), startupLogger, logging.EventProxyStartupFailed, logging.ErrAttr(err))
-				return fmt.Errorf("%w: %w", ErrReported, err)
-			}
-
-			// Kubernetes libraries log through klog; route them into the same
-			// stream under component=k8s rather than leaving a second format
-			// on stderr.
-			logging.InstallKlogBridge(root, opts.Logging.Verbosity())
-
-			// Trap SIGINT/SIGTERM only once the root logger exists, so shutdown
-			// reports through the configured stream. Nothing is serving before
-			// this point, so a signal that arrives earlier ends the process
-			// with Go's default behaviour.
-			stopCh := signals.NotifyStop(logging.ForComponent(root, logging.ComponentShutdown))
-
-			// Derive a context cancelled when the app stop signal fires, giving the
-			// metrics and readiness servers an explicit shutdown path.
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			go func() {
-				select {
-				case <-stopCh:
-					cancel()
-				case <-ctx.Done():
-				}
-			}()
-
-			// The metrics listener has no dependencies, so it starts first: a
-			// port-in-use failure is then the first thing reported, and a scrape
-			// that arrives before readiness sees build_info and the runtime
-			// collectors, as it does on any Kubernetes component. recorder stays
-			// nil when metrics are disabled; every collaborator treats a nil
-			// recorder as a no-op.
-			// The metrics listener has a context of its own rather than the
-			// shared one: it must outlive the readiness listener and the
-			// pre-shutdown hooks, which report their own failures through the
-			// recorder, so a scrape landing in the drain window can still see
-			// them. drain below cancels it once the hooks have returned.
-			metricsCtx, cancelMetrics := context.WithCancel(context.Background())
-			defer cancelMetrics()
-
-			recorder, metricsServer, err := startMetrics(metricsCtx, opts, root)
-			if err != nil {
-				return fail(err)
-			}
-			if metricsServer != nil {
-				defer func() {
-					cancelMetrics()
-					// Reported as metrics.server.failed by the server itself;
-					// on a startup failure the exit status already says so.
-					_ = metricsServer.Wait()
-				}()
-			}
-
-			if err := checkReservedIdentityPrefixes(opts); err != nil {
-				return fail(err)
-			}
-
-			restConfig, err := buildRESTConfig(opts, cmd)
-			if err != nil {
-				return fail(err)
-			}
-
-			// One client serves both reviewers' API calls.
-			kubeclient, err := kubernetes.NewForConfig(restConfig)
-			if err != nil {
-				return fail(fmt.Errorf("building the API server client: %w", err))
-			}
-
-			secureServingInfo := new(server.SecureServingInfo)
-			if err := opts.SecureServing.ApplyTo(&secureServingInfo); err != nil {
-				return fail(err)
-			}
-
-			subjectAccessReviewer, err := subjectaccessreview.New(
-				kubeclient.AuthorizationV1().SubjectAccessReviews(),
-				subjectaccessreview.Config{
-					Timeout:         opts.App.SubjectAccessReviewTimeout,
-					AllowCacheTTL:   opts.App.SubjectAccessReviewAllowCacheTTL,
-					DenyCacheTTL:    opts.App.SubjectAccessReviewDenyCacheTTL,
-					MaxHeaderValues: opts.App.MaxImpersonationHeaderValues,
-					Metrics:         recorder,
-				},
-				logging.ForComponent(root, logging.ComponentSAR),
-			)
-			if err != nil {
-				return fail(err)
-			}
-
-			tokenAuthenticator, issuerURLs, err := authn.Build(authenticatorConfig(opts),
-				logging.ForComponent(root, logging.ComponentOIDC), startupLogger)
-			if err != nil {
-				return fail(err)
-			}
-
-			p, err := proxy.New(proxy.Dependencies{
-				Logger:                 root,
-				RestConfig:             restConfig,
-				OIDCTokenAuthenticator: tokenAuthenticator,
-				AuditOptions:           opts.Audit,
-				TokenReviewer:          buildTokenReviewer(opts, kubeclient, recorder, root),
-				SubjectAccessReviewer:  subjectAccessReviewer,
-				SecureServingInfo:      secureServingInfo,
-				Config:                 proxyConfig(opts),
-				Metrics:                recorder,
-			})
-			if err != nil {
-				return fail(err)
-			}
-
-			logConfigLoaded(startupLogger, configSummary{
-				version:       opts.Version.Version(),
-				configHash:    configHash(cmd.Flags()),
-				issuerCount:   len(issuerURLs),
-				readinessMode: probe.ReadinessMode(opts.App.ReadinessRequireAllIssuers),
-			})
-
-			probes, err := issuerProbes(issuerURLs)
-			if err != nil {
-				return fail(err)
-			}
-
-			// Start binds synchronously so a port-in-use failure surfaces here
-			// at startup.
-			probeServer := probe.NewServer(probe.Config{
-				// The kubelet probes the pod IP, so the listener binds every
-				// interface.
-				Addr:              net.JoinHostPort("0.0.0.0", strconv.Itoa(opts.App.ReadinessProbePort)),
-				Issuers:           probes,
-				RequireAllIssuers: opts.App.ReadinessRequireAllIssuers,
-				Authenticator:     tokenAuthenticator,
-				Metrics:           recorder,
-			}, root)
-			if err := probeServer.Start(ctx); err != nil {
-				return fail(err)
-			}
-
-			if err := p.Start(ctx); err != nil {
-				return fail(err)
-			}
-			servingSince := time.Now()
-
-			serverLogger := logging.ForComponent(root, logging.ComponentServer)
-			logging.Emit(context.Background(), serverLogger, logging.EventProxyServerStarted,
-				slog.String("address", net.JoinHostPort(opts.SecureServing.BindAddress.String(),
-					strconv.Itoa(opts.SecureServing.BindPort))))
-
-			// The handler chain is built and the secure server is serving its
-			// listener. Only now may the pod be advertised as ready: the port
-			// has been bound since SecureServing.ApplyTo above, so before this
-			// point a client connect succeeds and then sits in the backlog
-			// unanswered, and a failure in Start would leave it that way.
-			probeServer.SetServing()
-
-			p.Wait()
-
-			logging.Emit(context.Background(), serverLogger, logging.EventProxyServerStopped,
-				slog.Int64("duration_ms", time.Since(servingSince).Milliseconds()))
-
-			// Wait for the listeners to release their ports and run the
-			// pre-shutdown step. Errors are collected, not returned: every step
-			// runs whatever the previous one reported. Each failure was already
-			// named on the log stream by its owner.
-			shutdownSince := time.Now()
-			stopMetrics := noStep
-			if metricsServer != nil {
-				stopMetrics = func() error { cancelMetrics(); return metricsServer.Wait() }
-			}
-			drainErr := drain(probeServer.Wait, p.Shutdown, stopMetrics)
-
-			// Reported whether or not a hook failed: the milestone is that the
-			// teardown finished, and the failing hook has already named itself.
-			logging.Emit(context.Background(), logging.ForComponent(root, logging.ComponentShutdown),
-				logging.EventProxyShutdownCompleted,
-				slog.Int64("duration_ms", time.Since(shutdownSince).Milliseconds()))
-
-			if err := drainErr; err != nil {
-				// Each failure was reported on the stream by its owner.
-				return fmt.Errorf("%w: %w", ErrReported, err)
-			}
-			return nil
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return run(cmd, opts, out, notifyStop)
 		},
 	}
+}
+
+// run is the command body. It builds the root logger and the stop trigger,
+// then runs the proxy through its three phases: startup, serve and shutdown.
+func run(cmd *cobra.Command, opts *options.Options, out io.Writer, notifyStop func(*slog.Logger) <-chan struct{}) error {
+	if opts.Version.Requested(cmd) {
+		opts.Version.PrintVersionAndExit()
+	}
+	if err := opts.Validate(cmd); err != nil {
+		return err
+	}
+
+	// One root logger for the whole process, built from the flags and
+	// injected into every collaborator; no package holds its own.
+	root, err := logging.New(opts.Logging.ToLoggerOptions(out))
+	if err != nil {
+		return err
+	}
+	slog.SetDefault(root)
+
+	// From here on every failure is a record on the configured stream, and the
+	// returned error only carries the exit status.
+	fail := func(err error) error {
+		logging.Emit(context.Background(), logging.ForComponent(root, logging.ComponentStartup),
+			logging.EventProxyStartupFailed, logging.ErrAttr(err))
+		return fmt.Errorf("%w: %w", ErrReported, err)
+	}
+
+	// Kubernetes libraries log through klog; route them into the same stream
+	// under component=k8s rather than leaving a second format on stderr.
+	logging.InstallKlogBridge(root, opts.Logging.Verbosity())
+
+	// Trap SIGINT/SIGTERM only once the root logger exists, so shutdown
+	// reports through the configured stream. Nothing is serving before this
+	// point, so a signal that arrives earlier ends the process with Go's
+	// default behaviour. The readiness and proxy listeners stop when ctx does.
+	stopCh := notifyStop(logging.ForComponent(root, logging.ComponentShutdown))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-stopCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	// The metrics listener has no dependencies, so it starts first: a
+	// port-in-use failure is then the first thing reported, and a scrape that
+	// arrives before readiness sees build_info and the runtime collectors, as
+	// it does on any Kubernetes component.
+	recorder, stopMetrics, err := startMetrics(opts, root)
+	if err != nil {
+		return fail(err)
+	}
+
+	p, probeServer, auditor, err := startup(ctx, cmd, opts, root, recorder)
+	if err != nil {
+		// A listener that overran its drain is reported as
+		// metrics.server.failed by the server itself, and the exit status
+		// already says startup failed.
+		_ = stopMetrics()
+		return fail(err)
+	}
+
+	serve(root, opts, p, probeServer)
+
+	// Each failure was already reported on the stream by its owner.
+	if err := shutdown(root, probeServer.Wait, flushAuditStep(auditor, root), stopMetrics); err != nil {
+		return fmt.Errorf("%w: %w", ErrReported, err)
+	}
+	return nil
+}
+
+// startup builds the proxy and its collaborators from the flags, reports the
+// effective configuration, and starts the audit backend and the readiness and
+// proxy listeners, all of which stop when ctx is cancelled. Neither listener
+// reports ready yet: serve does that. The auditor is returned so shutdown can
+// flush it once the proxy has stopped serving.
+func startup(ctx context.Context, cmd *cobra.Command, opts *options.Options, root *slog.Logger, recorder *metrics.Recorder) (*proxy.Proxy, *probe.Server, *audit.Audit, error) {
+	startupLogger := logging.ForComponent(root, logging.ComponentStartup)
+
+	if err := checkReservedIdentityPrefixes(opts); err != nil {
+		return nil, nil, nil, err
+	}
+
+	restConfig, err := buildRESTConfig(opts, cmd)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	// One client serves both reviewers' API calls.
+	kubeclient, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("building the API server client: %w", err)
+	}
+
+	secureServingInfo := new(server.SecureServingInfo)
+	if err := opts.SecureServing.ApplyTo(&secureServingInfo); err != nil {
+		return nil, nil, nil, err
+	}
+
+	subjectAccessReviewer, err := subjectaccessreview.New(
+		kubeclient.AuthorizationV1().SubjectAccessReviews(),
+		subjectaccessreview.Config{
+			Timeout:         opts.App.SubjectAccessReviewTimeout,
+			AllowCacheTTL:   opts.App.SubjectAccessReviewAllowCacheTTL,
+			DenyCacheTTL:    opts.App.SubjectAccessReviewDenyCacheTTL,
+			MaxHeaderValues: opts.App.MaxImpersonationHeaderValues,
+			Metrics:         recorder,
+		},
+		logging.ForComponent(root, logging.ComponentSAR),
+	)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	tokenAuthenticator, issuerURLs, err := authn.Build(authenticatorConfig(opts),
+		logging.ForComponent(root, logging.ComponentOIDC), startupLogger)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	auditor, err := audit.New(audit.Config{
+		Options:         opts.Audit,
+		ExternalAddress: opts.SecureServing.BindAddress.String(),
+		SecureServing:   secureServingInfo,
+		Metrics:         recorder,
+	}, logging.ForComponent(root, logging.ComponentAudit))
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	p, err := proxy.New(proxy.Dependencies{
+		Logger:                 root,
+		RestConfig:             restConfig,
+		OIDCTokenAuthenticator: tokenAuthenticator,
+		Auditor:                auditor,
+		TokenReviewer:          buildTokenReviewer(opts, kubeclient, recorder, root),
+		SubjectAccessReviewer:  subjectAccessReviewer,
+		SecureServingInfo:      secureServingInfo,
+		Config:                 proxyConfig(opts),
+		Metrics:                recorder,
+	})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	logConfigLoaded(startupLogger, configSummary{
+		version:       opts.Version.Version(),
+		configHash:    configHash(cmd.Flags()),
+		issuerCount:   len(issuerURLs),
+		readinessMode: probe.ReadinessModeFor(opts.App.ReadinessRequireAllIssuers),
+	})
+
+	probes, err := issuerProbes(issuerURLs)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	probeServer := probe.NewServer(probe.Config{
+		// The kubelet probes the pod IP, so the listener binds every
+		// interface.
+		Addr:              net.JoinHostPort("0.0.0.0", strconv.Itoa(opts.App.ReadinessProbePort)),
+		Issuers:           probes,
+		RequireAllIssuers: opts.App.ReadinessRequireAllIssuers,
+		Authenticator:     tokenAuthenticator,
+		Metrics:           recorder,
+	}, root)
+	if err := probeServer.Start(ctx); err != nil {
+		return nil, nil, nil, err
+	}
+
+	if err := auditor.Start(ctx); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := p.Start(ctx); err != nil {
+		return nil, nil, nil, err
+	}
+	return p, probeServer, auditor, nil
+}
+
+// serve reports the proxy as serving, lets readiness pass, and blocks until
+// the proxy has stopped serving.
+func serve(root *slog.Logger, opts *options.Options, p *proxy.Proxy, probeServer *probe.Server) {
+	servingSince := time.Now()
+	serverLogger := logging.ForComponent(root, logging.ComponentServer)
+	logging.Emit(context.Background(), serverLogger, logging.EventProxyServerStarted,
+		slog.String("address", net.JoinHostPort(opts.SecureServing.BindAddress.String(),
+			strconv.Itoa(opts.SecureServing.BindPort))))
+
+	// The handler chain is built and the secure server is serving its
+	// listener. Only now may the pod be advertised as ready: the port has been
+	// bound since SecureServing.ApplyTo, so before this point a client connect
+	// succeeds and then sits in the backlog unanswered, and a failure in Start
+	// would leave it that way.
+	probeServer.SetServing()
+
+	p.Wait()
+
+	logging.Emit(context.Background(), serverLogger, logging.EventProxyServerStopped,
+		slog.Int64("duration_ms", time.Since(servingSince).Milliseconds()))
+}
+
+// shutdown drains the listeners and flushes the audit backend, then reports
+// that the teardown finished. The record is emitted whether or not a step
+// failed: the milestone is that the teardown finished, and the failing step
+// has already named itself.
+func shutdown(root *slog.Logger, waitProbe, flushAudit, stopMetrics func() error) error {
+	shutdownSince := time.Now()
+	err := drain(waitProbe, flushAudit, stopMetrics)
+
+	logging.Emit(context.Background(), logging.ForComponent(root, logging.ComponentShutdown),
+		logging.EventProxyShutdownCompleted,
+		slog.Int64("duration_ms", time.Since(shutdownSince).Milliseconds()))
+	return err
 }

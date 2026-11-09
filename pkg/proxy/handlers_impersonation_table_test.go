@@ -317,7 +317,7 @@ func TestHandlersImpersonation(t *testing.T) {
 				pass: true,
 				err:  nil,
 			},
-			expCode: http.StatusInternalServerError,
+			expCode: http.StatusBadRequest,
 			expBody: "no Impersonation-User header found for request",
 		},
 		"an authed request with impersonation extra missing user should fail": {
@@ -341,7 +341,7 @@ func TestHandlersImpersonation(t *testing.T) {
 				pass: true,
 				err:  nil,
 			},
-			expCode: http.StatusInternalServerError,
+			expCode: http.StatusBadRequest,
 			expBody: "no Impersonation-User header found for request",
 		},
 		"an authed request with impersonation uid missing user should fail": {
@@ -365,7 +365,7 @@ func TestHandlersImpersonation(t *testing.T) {
 				pass: true,
 				err:  nil,
 			},
-			expCode: http.StatusInternalServerError,
+			expCode: http.StatusBadRequest,
 			expBody: "no Impersonation-User header found for request",
 		},
 		"an authed request with an invalid impersonation header should fail": {

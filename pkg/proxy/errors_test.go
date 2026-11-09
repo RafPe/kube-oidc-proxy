@@ -15,7 +15,6 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/accesslog"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 )
 
@@ -35,14 +34,19 @@ func newFakeRW() *fakeRW {
 }
 
 func tryError(t *testing.T, expCode int, err error) (*fakeRW, *logtest.Capture) {
-	p := withDiscardLoggers(new(Proxy))
-	access, records := newAccessLogger(t)
-	p.access = access
+	return tryHandler(t, expCode, err, (*Proxy).handleError)
+}
+
+// tryHandler serves err through one of the proxy's two error handlers and
+// checks the status it answered with.
+func tryHandler(t *testing.T, expCode int, err error, handle func(*Proxy, http.ResponseWriter, *http.Request, error)) (*fakeRW, *logtest.Capture) {
+	t.Helper()
+	p := newTestProxy(t)
 
 	frw := newFakeRW()
 	fr := newFakeR()
 
-	p.handleError(frw, fr, err)
+	handle(p.Proxy, frw, fr, err)
 
 	code, err := strconv.Atoi(frw.header.Get("StatusCode"))
 	if err != nil {
@@ -56,7 +60,7 @@ func tryError(t *testing.T, expCode int, err error) (*fakeRW, *logtest.Capture) 
 			expCode, code)
 	}
 
-	return frw, records
+	return frw, p.logs
 }
 
 func TestError(t *testing.T) {
@@ -115,16 +119,11 @@ func TestErrorHandlerInternalFailureEmitsHandlerFailed(t *testing.T) {
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			root, records := logtest.New(t, 0)
-			requestLogger := logging.ForComponent(root, logging.ComponentRequest)
-			p := withDiscardLoggers(&Proxy{
-				requestLogger: requestLogger,
-				access:        accesslog.NewAccessLogger(requestLogger),
-			})
+			p := newTestProxy(t)
 
 			p.handleError(newFakeRW(), newFakeR(), test.err)
 
-			rec := records.Only(t, logging.EventRequestHandlerFailed)
+			rec := p.logs.Only(t, logging.EventRequestHandlerFailed)
 			if got := rec.String("level"); got != "ERROR" {
 				t.Errorf("level = %q, want ERROR", got)
 			}
@@ -180,12 +179,13 @@ func TestErrorClassifiesEveryReason(t *testing.T) {
 			http.StatusForbidden, metrics.ReasonImpersonationDenied},
 		"no impersonation config": {errNoImpersonationConfig, http.StatusInternalServerError, metrics.ReasonInternalError},
 		// A SubjectAccessReview that could not be submitted wraps a client-go
-		// transport error, so it satisfies net.Error too. It is the proxy's own
-		// dependency failing, not the upstream hop, so it stays a 500.
+		// transport error. It is the proxy's own dependency failing, not the
+		// upstream hop, so it is a 500 and never a 502.
 		"subjectaccessreview unavailable": {fmt.Errorf("%w: %w", subjectaccessreview.ErrCreateSubjectAccessReview,
 			&net.OpError{Op: "dial", Err: errors.New("connection refused")}),
 			http.StatusInternalServerError, metrics.ReasonInternalError},
-		"no impersonation user": {subjectaccessreview.ErrNoImpersonationUser, http.StatusInternalServerError, metrics.ReasonMalformedImpersonation},
+		// Refused by shape, like its unknown-header sibling, so the same 400.
+		"no impersonation user": {subjectaccessreview.ErrNoImpersonationUser, http.StatusBadRequest, metrics.ReasonMalformedImpersonation},
 		"unknown impersonation header": {fmt.Errorf("%w: %q", subjectaccessreview.ErrUnknownImpersonationHeader, "Impersonate-Foo"),
 			http.StatusBadRequest, metrics.ReasonMalformedImpersonation},
 		"unknown": {errors.New("boom"), http.StatusInternalServerError, metrics.ReasonInternalError},
@@ -199,37 +199,56 @@ func TestErrorClassifiesEveryReason(t *testing.T) {
 	}
 }
 
-// TestErrorUpstreamTransportFailureIsNotAnAccessDecision pins the one-record
-// rule: the access decision is written exactly once per request, by RoundTrip,
-// at the moment the request is admitted. A transport failure afterwards is not
-// a second decision -- the request was already allowed -- so the error handler
-// records nothing here and answers 502. Task 14 adds the upstream event that
-// carries the failure itself.
-func TestErrorUpstreamTransportFailureIsNotAnAccessDecision(t *testing.T) {
-	_, records := tryError(t, http.StatusBadGateway,
-		&net.OpError{Op: "dial", Err: errors.New("connection refused")})
+// TestUpstreamTransportFailureIsNotAnAccessDecision pins the one-record rule:
+// the access decision is written exactly once per request, by RoundTrip, at
+// the moment the request is admitted. A transport failure afterwards is not a
+// second decision -- the request was already allowed -- so the upstream error
+// handler answers 502 and reports the failure on its own upstream record.
+func TestUpstreamTransportFailureIsNotAnAccessDecision(t *testing.T) {
+	_, records := tryHandler(t, http.StatusBadGateway,
+		&net.OpError{Op: "dial", Err: errors.New("connection refused")}, (*Proxy).handleUpstreamError)
 
 	if got := records.ByEvent(logging.EventRequestAccessDecided); len(got) != 0 {
-		t.Fatalf("the error handler wrote %d access records for a transport failure: %s",
+		t.Fatalf("the upstream error handler wrote %d access records for a transport failure: %s",
 			len(got), records.Raw())
+	}
+	if got := records.Only(t, logging.EventUpstreamRequestFailed).String("reason"); got != string(metrics.ReasonUpstreamError) {
+		t.Errorf("reason = %q, want %q", got, metrics.ReasonUpstreamError)
 	}
 }
 
-// TestErrorCanceledIsRecordedWithoutAResponse pins the one branch that writes
-// no response: the connection is already going away, but the request still
-// produced a decision that has to be recorded.
+// TestUpstreamNonTransportFailureIsInternal pins the upstream handler's other
+// branch: an error that is not the transport's -- RoundTrip finding no
+// forwarding decision on the request -- is the proxy's own failure, a 500
+// with request.handler.failed, and never a 502.
+func TestUpstreamNonTransportFailureIsInternal(t *testing.T) {
+	_, records := tryHandler(t, http.StatusInternalServerError, errNoImpersonationConfig, (*Proxy).handleUpstreamError)
+
+	records.Only(t, logging.EventRequestHandlerFailed)
+	assertDeniedReason(t, records, metrics.ReasonInternalError)
+	if got := records.ByEvent(logging.EventUpstreamRequestFailed); len(got) != 0 {
+		t.Fatalf("a non-transport error was reported as an upstream failure: %s", records.Raw())
+	}
+}
+
+// TestErrorCanceledIsRecordedWithoutAResponse pins the filter-phase cancel: the
+// client went away while its impersonation was being authorized. Nothing is
+// written back, the request still produced a decision that has to be
+// recorded, and no upstream record is emitted, because no upstream call was
+// ever made.
 func TestErrorCanceledIsRecordedWithoutAResponse(t *testing.T) {
-	p := withDiscardLoggers(new(Proxy))
-	access, records := newAccessLogger(t)
-	p.access = access
+	p := newTestProxy(t)
 
 	frw := newFakeRW()
-	p.handleError(frw, newFakeR(), stdcontext.Canceled)
+	p.handleError(frw, newFakeR(), fmt.Errorf("%w: %w", subjectaccessreview.ErrCreateSubjectAccessReview, stdcontext.Canceled))
 
 	if got := frw.header.Get("StatusCode"); got != "" {
 		t.Errorf("a status code was written for a canceled request: %q", got)
 	}
-	assertDeniedReason(t, records, metrics.ReasonClientCanceled)
+	assertDeniedReason(t, p.logs, metrics.ReasonClientCanceled)
+	if got := p.logs.ByEvent(logging.EventUpstreamRequestCanceled); len(got) != 0 {
+		t.Fatalf("a cancel before any upstream call was reported as an upstream cancel: %s", p.logs.Raw())
+	}
 }
 
 // TestErrorImpersonationDenialNamesTheTarget pins that the refused target is

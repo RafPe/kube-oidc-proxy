@@ -149,8 +149,7 @@ func TestWithAuthenticateRequestRejectsReservedIdentity(t *testing.T) {
 }
 
 func TestWithAuthenticateRequestAllowsAllowlistedReservedGroup(t *testing.T) {
-	p := newTestProxy(t)
-	p.allowedReservedGroups = sets.New("system:masters")
+	p := newTestProxy(t, withConfig(Config{AllowedReservedGroups: []string{"system:masters"}}))
 
 	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(
 		oidcAnswer(&authenticator.Response{
@@ -190,14 +189,12 @@ func TestWithAuthenticateRequestAllowsAllowlistedReservedGroup(t *testing.T) {
 // system: group would otherwise feed the authorization decision — not merely
 // the impersonation headers. No review may be submitted at all.
 func TestReservedIdentityRejectedBeforeSubjectAccessReview(t *testing.T) {
-	p := newTestProxy(t)
-
 	reviewer := &countingReviewer{FakeReviewer: fakesubjectaccessreview.New(nil)}
-	sar, err := subjectaccessreview.New(reviewer, subjectaccessreview.Config{Timeout: subjectaccessreview.DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
+	sar, err := subjectaccessreview.New(reviewer, subjectaccessreview.Config{MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("creating subject access reviewer: %s", err)
 	}
-	p.subjectAccessReviewer = sar
+	p := newTestProxy(t, withSubjectAccessReviewer(sar))
 
 	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(
 		oidcAnswer(&authenticator.Response{
@@ -245,7 +242,6 @@ func TestReservedIdentityEmitsAnomalyAndDeniedAccess(t *testing.T) {
 	reservedIdentityUser(p, []string{"system:masters"}, 1)
 	rw := httptest.NewRecorder()
 	req := reservedIdentityRequest(t, nil)
-	req = req.WithContext(logging.WithLogger(req.Context(), p.requestLogger))
 	p.withAuthenticateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(rw, req)
 	if p.logs.Only(t, logging.EventRequestAnomalyDetected).String("reason") != "reserved_identity" {
 		t.Fatal("anomaly not recorded")
@@ -260,7 +256,6 @@ func TestAnomalyIsRateLimitedButAccessRecordIsNot(t *testing.T) {
 	reservedIdentityUser(p, []string{"system:masters"}, 10)
 	for i := 0; i < 10; i++ {
 		req := reservedIdentityRequest(t, nil)
-		req = req.WithContext(logging.WithLogger(req.Context(), p.requestLogger))
 		p.withAuthenticateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(httptest.NewRecorder(), req)
 	}
 	if n := len(p.logs.ByEvent(logging.EventRequestAccessDecided)); n != 10 {

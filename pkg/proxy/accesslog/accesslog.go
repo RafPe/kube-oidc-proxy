@@ -23,6 +23,14 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
+)
+
+// The two values of the record's event field, the one the request.access.decided
+// registry entry documents. Decision.Allowed picks between them.
+const (
+	eventSuccess = "AuSuccess"
+	eventFail    = "AuFail"
 )
 
 // loggableExtraKeys is the allowlist of impersonation-extra keys that the proxy
@@ -37,19 +45,17 @@ var loggableExtraKeys = map[string]struct{}{
 	reqctx.ExtraKeyOriginalUID:    {},
 }
 
-// AccessLogger writes the access record. It is an injected collaborator rather
-// than a package global so that the destination and the component are decided
-// once at construction and a test can hold its own.
-type AccessLogger struct {
+// Logger writes the access record. It is an injected collaborator rather than
+// a package global so that the destination and the component are decided once
+// at construction and a test can hold its own.
+type Logger struct {
 	logger *slog.Logger
 }
 
-// NewAccessLogger returns an AccessLogger emitting through logger, which the
-// caller has already bound to the request component. A nil logger yields one
-// that discards every record, so a partially wired caller cannot panic the
-// request path.
-func NewAccessLogger(logger *slog.Logger) *AccessLogger {
-	return &AccessLogger{logger: logging.OrDiscard(logger)}
+// New returns a Logger emitting through logger, which the caller has already
+// bound to the request component. logger is required.
+func New(logger *slog.Logger) *Logger {
+	return &Logger{logger: logger}
 }
 
 // Decision is the outcome the access record reports. Reason, TargetKind and
@@ -66,25 +72,29 @@ type Decision struct {
 	// AuthMethod is how the request authenticated.
 	AuthMethod metrics.AuthMethod
 
-	// Inbound is the authenticated identity that made the request; Outbound is
-	// the identity forwarded upstream when impersonation resolved a different
-	// one. Either may be nil.
-	Inbound  user.Info
-	Outbound user.Info
+	// Inbound is the authenticated identity that made the request;
+	// Impersonated is the identity the client impersonated, when it asked to
+	// act as someone else and was allowed to. Either may be nil. The record
+	// reports Impersonated under the outbound_* fields, which is what the API
+	// server is asked to act as.
+	Inbound      user.Info
+	Impersonated user.Info
 
 	// TargetKind and TargetName name the impersonation target that was refused,
 	// so a denial does not have to be recovered by parsing the error text.
-	TargetKind string
+	TargetKind subjectaccessreview.TargetKind
 	TargetName string
 }
 
-// LogDecision emits the single request.access.decided record for a request. It
-// is called as soon as authentication, authorization and proxy admission are
+// LogDecision emits the request.access.decided record for a request. It is
+// called as soon as authentication, authorization and proxy admission are
 // decided, so a watch or exec that runs for hours is recorded immediately.
-func (a *AccessLogger) LogDecision(req *http.Request, d Decision) {
-	event := "AuFail"
+// Keeping it to one record per request is the caller's job: this writes
+// whatever it is handed.
+func (a *Logger) LogDecision(req *http.Request, d Decision) {
+	event := eventFail
 	if d.Allowed {
-		event = "AuSuccess"
+		event = eventSuccess
 	}
 
 	attrs := []slog.Attr{
@@ -97,7 +107,7 @@ func (a *AccessLogger) LogDecision(req *http.Request, d Decision) {
 	attrs = append(attrs,
 		slog.String("event", event),
 		slog.String("src_ip", reqctx.ClientIP(req)),
-		slog.String("path", sanitizePath(req)),
+		slog.String("path", logging.Sanitize(req.URL.Path)),
 	)
 	if fwd := untrustedForwardedFor(req); fwd != "" {
 		attrs = append(attrs, slog.String("forwarded_for_untrusted", fwd))
@@ -119,7 +129,7 @@ func (a *AccessLogger) LogDecision(req *http.Request, d Decision) {
 			attrs = append(attrs, slog.String("reason", string(d.Reason)))
 		}
 		if d.TargetKind != "" {
-			attrs = append(attrs, slog.String("target_kind", d.TargetKind))
+			attrs = append(attrs, slog.String("target_kind", string(d.TargetKind)))
 		}
 		if d.TargetName != "" {
 			attrs = append(attrs, slog.String("target_name", logging.Bound(d.TargetName, logging.MaxIdentity)))
@@ -129,16 +139,11 @@ func (a *AccessLogger) LogDecision(req *http.Request, d Decision) {
 	if d.Inbound != nil {
 		attrs = append(attrs, userAttrs("inbound", d.Inbound)...)
 	}
-	if d.Outbound != nil {
-		attrs = append(attrs, userAttrs("outbound", d.Outbound)...)
+	if d.Impersonated != nil {
+		attrs = append(attrs, userAttrs("outbound", d.Impersonated)...)
 	}
 
 	logging.Emit(req.Context(), a.logger, logging.EventRequestAccessDecided, attrs...)
-
-	// Marked after the record is out, so a handler further down the chain that
-	// would otherwise write a second decision for the same request -- a client
-	// that cancelled after admission, say -- can see that one already exists.
-	reqctx.MarkDecisionRecorded(req)
 }
 
 // untrustedForwardedFor returns the raw forwarded chain the client actually
@@ -227,14 +232,4 @@ func loggableExtras(extra map[string][]string) (map[string][]string, int) {
 		omitted++
 	}
 	return safe, omitted
-}
-
-// sanitizePath returns the request path with query string and control
-// characters stripped, guarding against a nil URL (requests are constructed
-// without one in some call sites).
-func sanitizePath(req *http.Request) string {
-	if req.URL == nil {
-		return ""
-	}
-	return logging.Sanitize(req.URL.Path)
 }

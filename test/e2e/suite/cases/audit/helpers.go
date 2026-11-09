@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"slices"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -25,7 +27,7 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/helper"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/suite/cases/sharedtests"
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
-	"github.com/rafpe/kube-oidc-proxy/test/util"
+	"github.com/rafpe/kube-oidc-proxy/test/util/idtoken"
 )
 
 // deployProxyWithAuditLogFile redeploys the proxy auditing at level
@@ -103,8 +105,8 @@ rules:
 // proxy. SPDY builds its own transport from TLSClientConfig, so unlike
 // Framework.NewProxyRestConfig this cannot hand over a prebuilt transport.
 func newExecRestConfig(f *framework.Framework) *rest.Config {
-	payload := util.NewTokenPayload(f.IssuerURL(), f.ClientID(), time.Now().Add(time.Minute*10))
-	signedToken, err := util.SignToken(f.IssuerKeyBundle(), payload)
+	payload := idtoken.NewPayload(f.IssuerURL(), f.ClientID(), time.Now().Add(time.Minute*10))
+	signedToken, err := idtoken.Sign(f.IssuerKeyBundle(), payload)
 	Expect(err).NotTo(HaveOccurred())
 
 	return &rest.Config{
@@ -142,9 +144,9 @@ func singlePod(f *framework.Framework, podLabelSelector string) *corev1.Pod {
 }
 
 // readAuditLog returns the contents of the audit log at logPath in the pod
-// matching podLabelSelector. If containerName is non-empty the log is read
-// from that container, otherwise from the pod's default container.
-func readAuditLog(f *framework.Framework, podLabelSelector, containerName, logPath string) []byte {
+// selected by podLabelSelector, read from containerName (the pod's default
+// container when empty).
+func readAuditLog(f *framework.Framework, podLabelSelector, containerName, logPath string) ([]byte, error) {
 	pod := singlePod(f, podLabelSelector)
 
 	execArgs := []string{"exec", pod.Name}
@@ -154,19 +156,64 @@ func readAuditLog(f *framework.Framework, podLabelSelector, containerName, logPa
 	execArgs = append(execArgs, "--", "cat", logPath)
 
 	var auditLogsBuffer bytes.Buffer
-	err := f.Helper().Kubectl(f.Namespace.Name).RunWithStdout(&auditLogsBuffer, execArgs...)
-	Expect(err).NotTo(HaveOccurred())
+	if err := f.Helper().Kubectl(f.Namespace.Name).RunWithStdout(&auditLogsBuffer, execArgs...); err != nil {
+		return nil, fmt.Errorf("reading audit log %s: %w", logPath, err)
+	}
 
-	return auditLogsBuffer.Bytes()
+	return auditLogsBuffer.Bytes(), nil
 }
 
-// testAuditLogs reads the audit log at logPath from the pod matching
-// podLabelSelector. If containerName is non-empty the log is read from that
-// container, otherwise from the pod's default container.
+// waitForAuditLog polls the audit log until flushed reports that every event
+// the spec asserts on has been written, and returns the log. The audit
+// backends batch events and write them on an interval, and the log file does
+// not exist before the first write, so a read straight after the request can
+// fail or see only some of the events.
+func waitForAuditLog(f *framework.Framework, podLabelSelector, containerName, logPath string,
+	flushed func([]auditv1.Event) bool) []byte {
+
+	var logs []byte
+	Eventually(func(g Gomega) {
+		var err error
+		logs, err = readAuditLog(f, podLabelSelector, containerName, logPath)
+		g.Expect(err).NotTo(HaveOccurred())
+
+		events, err := decodeAuditEvents(logs)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(flushed(events)).To(BeTrue(), "audit log not yet flushed:\n%s", logs)
+	}).WithTimeout(time.Minute).WithPolling(time.Second).Should(Succeed())
+
+	return logs
+}
+
+// decodeAuditEvents decodes a JSON-lines audit log.
+func decodeAuditEvents(logs []byte) ([]auditv1.Event, error) {
+	var events []auditv1.Event
+	scanner := bufio.NewScanner(bytes.NewReader(logs))
+	for scanner.Scan() {
+		var ev auditv1.Event
+		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
+			return nil, fmt.Errorf("decoding audit event %q: %w", scanner.Text(), err)
+		}
+		events = append(events, ev)
+	}
+
+	return events, scanner.Err()
+}
+
+// hasStage returns a flush condition that holds once some event whose request
+// URI starts with uriPrefix has reached stage.
+func hasStage(uriPrefix string, stage auditv1.Stage) func([]auditv1.Event) bool {
+	return func(events []auditv1.Event) bool {
+		return slices.ContainsFunc(events, func(ev auditv1.Event) bool {
+			return strings.HasPrefix(ev.RequestURI, uriPrefix) && ev.Stage == stage
+		})
+	}
+}
+
 func testAuditLogs(f *framework.Framework, podLabelSelector, containerName, logPath string) {
 	By("Making calls to proxy to ensure audit get created")
-	token := util.NewTokenPayload(f.IssuerURL(), f.ClientID(), time.Now().Add(time.Second*5))
-	signedToken, err := util.SignToken(f.IssuerKeyBundle(), token)
+	token := idtoken.NewPayload(f.IssuerURL(), f.ClientID(), time.Now().Add(time.Second*5))
+	signedToken, err := idtoken.Sign(f.IssuerKeyBundle(), token)
 	Expect(err).NotTo(HaveOccurred())
 
 	proxyConfig := f.NewProxyRestConfig()
@@ -186,14 +233,6 @@ func testAuditLogs(f *framework.Framework, podLabelSelector, containerName, logP
 	if resp.StatusCode != http.StatusUnauthorized {
 		Expect(fmt.Errorf("expected to get unauthorized, got=%d", resp.StatusCode)).NotTo(HaveOccurred())
 	}
-
-	By("Waiting for audit logs to be written")
-	// 5 seconds here is longer than the proxy flush interval.
-	time.Sleep(time.Second * 5)
-
-	By("Copying audit log from proxy locally")
-	logs := readAuditLog(f, podLabelSelector, containerName, logPath)
-	scanner := bufio.NewScanner(bytes.NewReader(logs))
 
 	// A GET of a collection is the "list" verb, not "get" — "get" is a GET of a
 	// single named object — and a resource request carries an objectRef naming
@@ -254,6 +293,12 @@ func testAuditLogs(f *framework.Framework, podLabelSelector, containerName, logP
 			},
 		},
 	}
+
+	By("Waiting for the audit log to hold every expected event")
+	logs := waitForAuditLog(f, podLabelSelector, containerName, logPath, func(events []auditv1.Event) bool {
+		return len(events) >= len(expAuditEvents)
+	})
+	scanner := bufio.NewScanner(bytes.NewReader(logs))
 
 	By("Testing for expected audit logs")
 	var i int

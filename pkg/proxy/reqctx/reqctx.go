@@ -1,7 +1,10 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
 
 // Package reqctx stores request-scoped values on the http.Request context and
-// owns the proxy's client-IP resolution.
+// owns the proxy's client-IP resolution. It also defines the fixed extra keys
+// the proxy puts on an impersonated request, a contract with the Helm chart's
+// RBAC (see ExtraKeyOriginalUser): they live here because this is the one
+// package both the impersonation filter and the access log already share.
 //
 // # Client-IP and trusted-proxy semantics (see issue #56)
 //
@@ -41,11 +44,8 @@ import (
 type key int
 
 const (
-	// noImpersonationKey is the context key for whether to use impersonation.
-	noImpersonationKey key = iota
-
-	// impersonationKey is the context key for the impersonation config.
-	impersonationKey
+	// impersonationKey is the context key for the impersonation decision.
+	impersonationKey key = iota
 
 	// clientIPKey is the context key for the resolved client IP.
 	clientIPKey
@@ -141,27 +141,24 @@ func OriginalForwardedFor(req *http.Request) string {
 	return xff
 }
 
-// Impersonation is the outbound identity the impersonation filter
-// resolved for a request, together with the inbound identity it was derived
-// from. ImpersonatedUser is nil when the request impersonates nobody and the
-// inbound identity is forwarded as itself.
+// Impersonation is how a request is forwarded, as decided once by the filter
+// that settled it: the token-review filter for a passthrough request, the
+// impersonation filter for every other one.
 type Impersonation struct {
 	// Outbound is what the impersonating round tripper sends as Impersonate-*
-	// headers.
-	Outbound         *transport.ImpersonationConfig
-	InboundUser      user.Info
+	// headers. Nil means the request is forwarded without impersonation and
+	// without the proxy's own credentials: impersonation is disabled, or the
+	// client's token is passed through.
+	Outbound *transport.ImpersonationConfig
+
+	// InboundUser is the identity the proxy authenticated, or nil on the
+	// passthrough path, where the API server authenticates the token itself.
+	InboundUser user.Info
+
+	// ImpersonatedUser is the identity the client asked to act as and was
+	// allowed to, or nil when the request impersonates nobody and the inbound
+	// identity is forwarded as itself.
 	ImpersonatedUser user.Info
-}
-
-// WithNoImpersonation returns a copy of the request in which the noImpersonation context value is set.
-func WithNoImpersonation(req *http.Request) *http.Request {
-	return req.WithContext(request.WithValue(req.Context(), noImpersonationKey, true))
-}
-
-// NoImpersonation returns whether the noImpersonation context key has been set
-func NoImpersonation(req *http.Request) bool {
-	noImp, _ := req.Context().Value(noImpersonationKey).(bool)
-	return noImp
 }
 
 // WithRequestID returns a copy of the request carrying id as the request's
@@ -220,8 +217,8 @@ func WithDecisionHolder(req *http.Request) *http.Request {
 }
 
 // MarkDecisionRecorded records that the request's access decision has been
-// written. It is a no-op when the request carries no holder, so a decision
-// logged outside the request chain needs no special case.
+// written. It is a no-op when the request carries no holder, which is the case
+// only for a request that never passed through the lifecycle filter.
 func MarkDecisionRecorded(req *http.Request) {
 	if h, ok := req.Context().Value(decisionKey).(*decisionHolder); ok {
 		h.recorded = true
@@ -294,9 +291,9 @@ func AuthMethod(req *http.Request) metrics.AuthMethod {
 	return metrics.AuthMethodNone
 }
 
-// WithImpersonation returns a copy of the request carrying the resolved
-// outbound identity. When the request impersonates someone, that identity also
-// becomes the request's user so the audit chain records who was acted as.
+// WithImpersonation returns a copy of the request carrying how it is to be
+// forwarded. When the request impersonates someone, that identity also becomes
+// the request's user so the audit chain records who was acted as.
 func WithImpersonation(req *http.Request, imp *Impersonation) *http.Request {
 	ctx := request.WithValue(req.Context(), impersonationKey, imp)
 	if imp.ImpersonatedUser != nil {
@@ -305,8 +302,8 @@ func WithImpersonation(req *http.Request, imp *Impersonation) *http.Request {
 	return req.WithContext(ctx)
 }
 
-// ImpersonationOf returns the outbound identity resolved for the request, or
-// nil when the impersonation filter has not run.
+// ImpersonationOf returns how the request is to be forwarded, or nil while no
+// filter has decided it yet.
 func ImpersonationOf(req *http.Request) *Impersonation {
 	imp, _ := req.Context().Value(impersonationKey).(*Impersonation)
 	return imp

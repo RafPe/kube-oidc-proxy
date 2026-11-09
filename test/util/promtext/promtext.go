@@ -1,5 +1,8 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
-package util
+
+// Package promtext parses a Prometheus text exposition into flat samples the
+// suite and the metrics demo assert on.
+package promtext
 
 import (
 	"fmt"
@@ -22,10 +25,10 @@ type Sample struct {
 	Value  float64
 }
 
-// ParseMetrics parses a Prometheus text exposition with the reference
+// Parse parses a Prometheus text exposition with the reference
 // parser. Any malformed line is an error: the suite asserts on what the proxy
 // serves, and a line it cannot read is a finding, not noise.
-func ParseMetrics(text string) ([]Sample, error) {
+func Parse(text string) ([]Sample, error) {
 	parser := expfmt.NewTextParser(model.UTF8Validation)
 	families, err := parser.TextToMetricFamilies(strings.NewReader(text))
 	if err != nil {

@@ -48,9 +48,7 @@ const (
 	EventProxyHookCompleted         EventType = "proxy.hook.completed"
 	EventProxyHookFailed            EventType = "proxy.hook.failed"
 	EventAuditBackendStarted        EventType = "audit.backend.started"
-	EventAuditBackendFailed         EventType = "audit.backend.failed"
 	EventAuditFlushCompleted        EventType = "audit.flush.completed"
-	EventAuditFlushFailed           EventType = "audit.flush.failed"
 	EventUpstreamRequestFailed      EventType = "upstream.request.failed"
 	EventUpstreamRequestCanceled    EventType = "upstream.request.canceled"
 	EventLogWarningSuppressed       EventType = "log.warning.suppressed"
@@ -308,7 +306,7 @@ var registry = map[EventType]EventSpec{
 		Level:      slog.LevelError,
 		Required:   []string{"hook", "error_message"},
 		Message:    "shutdown hook failed",
-		Summary:    "A pre-shutdown hook returned an error.",
+		Summary:    "A pre-shutdown hook returned an error. hook=AuditBackend is a failed audit flush: audit events for requests already served were dropped.",
 	},
 	EventAuditBackendStarted: {
 		Components: []Component{ComponentAudit},
@@ -317,26 +315,12 @@ var registry = map[EventType]EventSpec{
 		Message:    "audit backend started",
 		Summary:    "The audit backend is running.",
 	},
-	EventAuditBackendFailed: {
-		Components: []Component{ComponentAudit},
-		Level:      slog.LevelError,
-		Required:   []string{"error_message"},
-		Message:    "audit backend failed",
-		Summary:    "The audit backend did not start.",
-	},
 	EventAuditFlushCompleted: {
 		Components: []Component{ComponentAudit},
 		Level:      slog.LevelInfo,
 		Required:   []string{"duration_ms"},
 		Message:    "audit flush completed",
 		Summary:    "The pre-shutdown audit flush succeeded.",
-	},
-	EventAuditFlushFailed: {
-		Components: []Component{ComponentAudit},
-		Level:      slog.LevelError,
-		Required:   []string{"error_message"},
-		Message:    "audit flush failed",
-		Summary:    "The pre-shutdown audit flush failed.",
 	},
 	EventUpstreamRequestFailed: {
 		Components: []Component{ComponentUpstream},

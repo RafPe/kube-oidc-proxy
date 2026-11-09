@@ -1,0 +1,3 @@
+kind: Fixed
+body: |-
+  A client that disconnects while the proxy is checking impersonation is no longer logged as `upstream.request.canceled`, since no upstream request was made; `authz.sar.failed` with `reason=client_canceled` and the access record report it.

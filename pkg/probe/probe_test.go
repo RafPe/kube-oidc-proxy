@@ -3,6 +3,10 @@ package probe
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,9 +20,6 @@ import (
 	"testing"
 
 	"k8s.io/apiserver/pkg/authentication/authenticator"
-
-	"github.com/go-jose/go-jose/v4"
-	"github.com/go-jose/go-jose/v4/jwt"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 )
@@ -65,10 +66,10 @@ func (f *fakeAuthenticator) callCount(token string) int {
 	return f.calls[token]
 }
 
-func newTestHealthCheckWithAuthenticator(requireAll bool, authn authenticator.Token, issuers ...IssuerReadiness) *HealthCheck {
+func newTestHealthCheckWithAuthenticator(requireAll bool, authn authenticator.Token, issuers ...IssuerReadiness) *healthCheck {
 	// Discarding loggers by default: NewServer never leaves either nil, and a
 	// test that asserts on records replaces them via newTestHealthCheckWithLogger.
-	return &HealthCheck{
+	return &healthCheck{
 		readinessLogger:   slog.New(slog.DiscardHandler),
 		oidcLogger:        slog.New(slog.DiscardHandler),
 		oidcAuthenticator: authn,
@@ -78,15 +79,15 @@ func newTestHealthCheckWithAuthenticator(requireAll bool, authn authenticator.To
 	}
 }
 
-func newTestHealthCheck(requireAll bool, notInit map[string]bool, issuers ...IssuerReadiness) *HealthCheck {
+func newTestHealthCheck(requireAll bool, notInit map[string]bool, issuers ...IssuerReadiness) *healthCheck {
 	return newTestHealthCheckWithAuthenticator(requireAll, &fakeAuthenticator{notInit: notInit}, issuers...)
 }
 
-// newTestHealthCheckWithLogger builds a HealthCheck reporting through root.
+// newTestHealthCheckWithLogger builds a healthCheck reporting through root.
 // notInit is keyed by issuer URL rather than by fake JWT, which is what a test
 // asserting on records cares about; the translation to the token keying
 // fakeAuthenticator uses happens here.
-func newTestHealthCheckWithLogger(t testing.TB, root *slog.Logger, requireAll bool, notInit map[string]bool, issuers ...IssuerReadiness) *HealthCheck {
+func newTestHealthCheckWithLogger(t testing.TB, root *slog.Logger, requireAll bool, notInit map[string]bool, issuers ...IssuerReadiness) *healthCheck {
 	t.Helper()
 
 	notInitByToken := make(map[string]bool, len(notInit))
@@ -143,8 +144,8 @@ func TestCheckReadiness(t *testing.T) {
 			h := newTestHealthCheck(tc.requireAll, tc.notInit, issuerA, issuerB)
 			// This table covers issuer readiness, so open the serving gate;
 			// TestCheckNotReadyBeforeServing covers the gate itself.
-			h.SetServing()
-			err := h.Check()
+			h.setServing()
+			err := h.check()
 			if tc.wantReady && err != nil {
 				t.Fatalf("expected ready, got error: %v", err)
 			}
@@ -163,7 +164,7 @@ func TestCheckNotReadyBeforeServing(t *testing.T) {
 	issuerA := IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"}
 	h := newTestHealthCheck(true, nil, issuerA)
 
-	err := h.Check()
+	err := h.check()
 	if err == nil {
 		t.Fatal("expected not-ready before the proxy is serving, got nil")
 	}
@@ -182,12 +183,12 @@ func TestCheckReadyAfterServing(t *testing.T) {
 	issuerA := IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"}
 	h := newTestHealthCheck(true, nil, issuerA)
 
-	if err := h.Check(); err == nil {
+	if err := h.check(); err == nil {
 		t.Fatal("expected not-ready before the proxy is serving, got nil")
 	}
 
-	h.SetServing()
-	if err := h.Check(); err != nil {
+	h.setServing()
+	if err := h.check(); err != nil {
 		t.Fatalf("expected ready once serving with the issuer initialized, got: %v", err)
 	}
 }
@@ -218,7 +219,7 @@ func TestReadyEndpointReportsNotServing(t *testing.T) {
 	}
 
 	// Once serving, the same endpoint reports ready.
-	h.SetServing()
+	h.setServing()
 	readyRec := httptest.NewRecorder()
 	handler.ServeHTTP(readyRec, httptest.NewRequest(http.MethodGet, "/ready", nil))
 	if readyRec.Code != http.StatusOK {
@@ -230,15 +231,15 @@ func TestCheckReadinessIsSticky(t *testing.T) {
 	issuerA := IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"}
 	notInit := map[string]bool{}
 	h := newTestHealthCheck(false, notInit, issuerA)
-	h.SetServing()
+	h.setServing()
 
-	if err := h.Check(); err != nil {
+	if err := h.check(); err != nil {
 		t.Fatalf("expected ready, got: %v", err)
 	}
 
 	// Simulate the issuer regressing to uninitialized: readiness must stick.
 	notInit["jwt-a"] = true
-	if err := h.Check(); err != nil {
+	if err := h.check(); err != nil {
 		t.Fatalf("expected readiness to be sticky, got: %v", err)
 	}
 }
@@ -254,10 +255,10 @@ func TestCheckContinuesProbingPendingAfterLatch(t *testing.T) {
 
 	notInit := map[string]bool{"jwt-b": true}
 	h := newTestHealthCheck(false, notInit, issuerA, issuerB)
-	h.SetServing()
+	h.setServing()
 	fake := h.oidcAuthenticator.(*fakeAuthenticator)
 
-	if err := h.Check(); err != nil {
+	if err := h.check(); err != nil {
 		t.Fatalf("expected ready (issuer A initialized), got: %v", err)
 	}
 	if !h.ready {
@@ -274,7 +275,7 @@ func TestCheckContinuesProbingPendingAfterLatch(t *testing.T) {
 	// regardless of issuer B still being pending, but issuer B must still
 	// be probed (call count increases) while issuer A (already
 	// initialized) must not be re-probed.
-	if err := h.Check(); err != nil {
+	if err := h.check(); err != nil {
 		t.Fatalf("expected nil error once latched even with issuer B pending, got: %v", err)
 	}
 
@@ -288,12 +289,12 @@ func TestCheckContinuesProbingPendingAfterLatch(t *testing.T) {
 	// Now let issuer B initialize and confirm the transition is picked up
 	// and it is subsequently no longer re-probed either.
 	delete(notInit, "jwt-b")
-	if err := h.Check(); err != nil {
+	if err := h.check(); err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
 	bCallsAfterInit := fake.callCount("jwt-b")
 
-	if err := h.Check(); err != nil {
+	if err := h.check(); err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
 	if got := fake.callCount("jwt-b"); got != bCallsAfterInit {
@@ -313,9 +314,9 @@ func TestCheckAlternatePhrasingKeepsPending(t *testing.T) {
 		},
 	}
 	h := newTestHealthCheckWithAuthenticator(true, authn, issuerA)
-	h.SetServing()
+	h.setServing()
 
-	if err := h.Check(); err == nil {
+	if err := h.check(); err == nil {
 		t.Fatal("expected not-ready for alternate 'is not initialized' phrasing, got nil")
 	}
 	if h.ready {
@@ -345,9 +346,9 @@ func TestCheckTransientErrorDoesNotLatch(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			authn := &fakeAuthenticator{override: map[string]error{"jwt-a": retErr}}
 			h := newTestHealthCheckWithAuthenticator(true, authn, issuerA)
-			h.SetServing()
+			h.setServing()
 
-			if err := h.Check(); err == nil {
+			if err := h.check(); err == nil {
 				t.Fatal("expected not-ready for transient error, got nil")
 			}
 			if h.ready {
@@ -366,7 +367,7 @@ func TestHandlerRejectsNonGET(t *testing.T) {
 	h := newTestHealthCheck(false, nil,
 		IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"})
 	// Serving, so GET /ready exercises the readiness path rather than the gate.
-	h.SetServing()
+	h.setServing()
 	handler := h.handler()
 
 	for _, path := range []string{"/live", "/ready"} {
@@ -407,15 +408,40 @@ func TestNewIssuerReadinessNamesTheIssuer(t *testing.T) {
 		t.Fatalf("IssuerURL = %q, want %q", r.IssuerURL, issuerURL)
 	}
 
-	parsed, err := jwt.ParseSigned(r.FakeJWT, []jose.SignatureAlgorithm{jose.HS256})
-	if err != nil {
-		t.Fatalf("probe token is not a signed JWT: %v", err)
+	// Decoded by hand, as the probe builds it: a JOSE library here would only
+	// check what the three asserts below already pin.
+	parts := strings.Split(r.FakeJWT, ".")
+	if len(parts) != 3 {
+		t.Fatalf("probe token has %d parts, want 3: %q", len(parts), r.FakeJWT)
 	}
-	var claims jwt.Claims
-	if err := parsed.UnsafeClaimsWithoutVerification(&claims); err != nil {
-		t.Fatalf("reading probe token claims: %v", err)
+	decode := func(part string, into any) {
+		t.Helper()
+		raw, err := base64.RawURLEncoding.DecodeString(part)
+		if err != nil {
+			t.Fatalf("probe token part %q is not base64url: %v", part, err)
+		}
+		if err := json.Unmarshal(raw, into); err != nil {
+			t.Fatalf("probe token part %q is not JSON: %v", raw, err)
+		}
 	}
+
+	var header map[string]string
+	decode(parts[0], &header)
+	if header["alg"] != "HS256" || header["typ"] != "JWT" {
+		t.Fatalf("header = %v, want alg=HS256 typ=JWT", header)
+	}
+
+	var claims struct {
+		Issuer string `json:"iss"`
+	}
+	decode(parts[1], &claims)
 	if claims.Issuer != issuerURL {
 		t.Fatalf("iss = %q, want %q", claims.Issuer, issuerURL)
+	}
+
+	mac := hmac.New(sha256.New, fakeJWTKey)
+	mac.Write([]byte(parts[0] + "." + parts[1]))
+	if want := base64.RawURLEncoding.EncodeToString(mac.Sum(nil)); parts[2] != want {
+		t.Fatalf("signature = %q, want the HS256 MAC %q", parts[2], want)
 	}
 }

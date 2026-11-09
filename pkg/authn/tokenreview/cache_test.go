@@ -19,7 +19,7 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/authn/tokenreview/fake"
 )
 
-// TestNewCached exercises the cached reviewer end to end against a counting
+// TestWithCache exercises the cached reviewer end to end against a counting
 // fake: which results are served from cache, which always go back to the API
 // server, and how the TTLs bound reuse.
 func TestWithCache(t *testing.T) {
@@ -147,7 +147,7 @@ func TestWithCache(t *testing.T) {
 				CreateFn: func(review *authv1.TokenReview) (*authv1.TokenReview, error) {
 					return test.create(calls.Add(1), review)
 				},
-			}, Config{}, nil)
+			}, Config{}, discardLogger)
 
 			clock := &fakeClock{now: time.Unix(1000, 0)}
 			var cached authenticator.Token = reviewer
@@ -174,10 +174,10 @@ func TestWithCache(t *testing.T) {
 	}
 }
 
-// TestNewCachedZeroTTLsReturnsBareReviewer pins that disabling both TTLs keeps
+// TestWithCacheZeroTTLsReturnsBareReviewer pins that disabling both TTLs keeps
 // the exact pre-cache behaviour: no cache layer at all.
-func TestNewCachedZeroTTLsReturnsBareReviewer(t *testing.T) {
-	reviewer := newReviewer(fake.New(), Config{}, nil)
+func TestWithCacheZeroTTLsReturnsBareReviewer(t *testing.T) {
+	reviewer := newReviewer(fake.New(), Config{}, discardLogger)
 	if got := withCache(reviewer, 0, 0); got != reviewer {
 		t.Errorf("expected the bare reviewer back for zero TTLs, got %T", got)
 	}
@@ -202,7 +202,7 @@ func TestCachedReviewHonoursCallerCancellation(t *testing.T) {
 				return authenticatedReview(), nil
 			}
 		},
-	}, Config{}, nil)
+	}, Config{}, discardLogger)
 
 	cached := withCache(reviewer, 10*time.Second, 10*time.Second)
 
@@ -233,7 +233,7 @@ func TestCachedReviewHonoursTimeoutAboveThirtySeconds(t *testing.T) {
 			gotDeadline, hadDeadline = reviewCtx.Deadline()
 			return authenticatedReview(), nil
 		},
-	}, Config{Timeout: configured}, nil)
+	}, Config{Timeout: configured}, discardLogger)
 
 	cached := withCache(reviewer, 10*time.Second, 10*time.Second)
 
@@ -269,9 +269,9 @@ func TestCachedReviewSeparatesAudienceSets(t *testing.T) {
 		},
 	}
 
-	cachedAud1 := withCache(newReviewer(requester, Config{Audiences: []string{"aud-1"}}, nil),
+	cachedAud1 := withCache(newReviewer(requester, Config{Audiences: []string{"aud-1"}}, discardLogger),
 		10*time.Second, 10*time.Second)
-	cachedAud2 := withCache(newReviewer(requester, Config{Audiences: []string{"aud-2"}}, nil),
+	cachedAud2 := withCache(newReviewer(requester, Config{Audiences: []string{"aud-2"}}, discardLogger),
 		10*time.Second, 10*time.Second)
 
 	for i := range 2 {
@@ -332,7 +332,7 @@ func TestCachedReviewBoundsEntryCount(t *testing.T) {
 			calls.Add(1)
 			return unauthenticatedReview(), nil
 		},
-	}, Config{}, nil)
+	}, Config{}, discardLogger)
 
 	cached := withCache(reviewer, time.Hour, time.Hour).(*cachedTokenReview)
 
@@ -391,7 +391,7 @@ func TestCachedReviewConcurrentMissesRunIndependently(t *testing.T) {
 				return nil, errors.New("second review never started: concurrent misses were collapsed")
 			}
 		},
-	}, Config{}, nil)
+	}, Config{}, discardLogger)
 
 	cached := withCache(reviewer, 10*time.Second, 10*time.Second)
 
@@ -427,7 +427,7 @@ func TestCachedReviewSendsConfiguredAudiences(t *testing.T) {
 			gotAudiences = review.Spec.Audiences
 			return authenticatedReview(), nil
 		},
-	}, Config{Audiences: audiences}, nil)
+	}, Config{Audiences: audiences}, discardLogger)
 
 	cached := withCache(reviewer, 10*time.Second, 10*time.Second)
 

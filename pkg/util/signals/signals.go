@@ -37,8 +37,8 @@ func signalName(sig os.Signal) string {
 // NotifyStop installs a SIGINT/SIGTERM handler and returns a stop channel that
 // is closed on the first such signal, requesting a graceful shutdown. The next
 // two signals are absorbed while the teardown runs; the third repeat forces an
-// immediate os.Exit(1). Handler is intended to be called once during process
-// startup.
+// immediate os.Exit(1). NotifyStop is intended to be called once during
+// process startup.
 //
 // logger is the shutdown-component logger the handler reports through.
 func NotifyStop(logger *slog.Logger) <-chan struct{} {

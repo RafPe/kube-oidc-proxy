@@ -16,10 +16,10 @@ import (
 	"time"
 
 	"golang.org/x/sync/singleflight"
-	utilcache "k8s.io/apimachinery/pkg/util/cache"
 	"k8s.io/apiserver/pkg/authentication/user"
 	clientazv1 "k8s.io/client-go/kubernetes/typed/authorization/v1"
 	"k8s.io/client-go/transport"
+	"k8s.io/utils/clock"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
@@ -118,11 +118,12 @@ func (e *ImpersonationAuthError) Is(target error) bool {
 	return target == ErrImpersonationNotAllowed
 }
 
-// DefaultTimeout is the default value for the SAR authorization budget. It
-// bounds the total time spent authorizing a single request's impersonation via
-// SubjectAccessReviews. It covers the whole sequence of checks, not each call,
-// so a stalled API server cannot hold a client connection open indefinitely
-// (the SAR client inherits rest.Config.Timeout, which defaults to zero).
+// DefaultTimeout is the default value for the SAR authorization budget, and
+// what a zero Config.Timeout means. It bounds the total time spent authorizing
+// a single request's impersonation via SubjectAccessReviews. It covers the
+// whole sequence of checks, not each call, so a stalled API server cannot hold
+// a client connection open indefinitely (the SAR client inherits
+// rest.Config.Timeout, which defaults to zero).
 const DefaultTimeout = 5 * time.Second
 
 // DefaultMaxHeaderValues is the default cap on the total number of
@@ -147,7 +148,7 @@ type SubjectAccessReview struct {
 	// logger is the sar-component logger every record this reviewer emits goes
 	// through, so each carries component=sar. The per-request correlation id
 	// travels on the call's context instead, never bound onto a logger, and
-	// Emit reads it from there. Never nil: New substitutes a discarding logger.
+	// Emit reads it from there.
 	logger *slog.Logger
 
 	// metrics receives the API-call and cache observations; nil records nothing.
@@ -173,18 +174,12 @@ type SubjectAccessReview struct {
 	// burst of identical requests results in a single SubjectAccessReview call.
 	// Only used when the cache is enabled.
 	flight singleflight.Group
-
-	// beforeFlight, when set, is called just before a caller joins the flight
-	// for its key. It exists for the tests that pin coalescing: they release
-	// the in-flight review only once every joiner has reached this point,
-	// instead of sleeping and hoping. Nil in production.
-	beforeFlight func()
 }
 
 // Config is the operator-facing configuration of a SubjectAccessReview.
 type Config struct {
 	// Timeout is the single shared budget for the whole sequence of checks
-	// one request needs. See DefaultTimeout.
+	// one request needs; zero or negative means DefaultTimeout.
 	Timeout time.Duration
 
 	// AllowCacheTTL and DenyCacheTTL bound how long a definitive allowed or
@@ -214,27 +209,33 @@ type Config struct {
 // lag for load: an RBAC revoke can take up to AllowCacheTTL to be enforced for
 // a cached allow, and a newly granted permission up to DenyCacheTTL to be
 // honoured. Set both to 0 to disable the cache and re-check on every request.
+//
+// logger is the sar-component logger and is required.
 func New(reviewer clientazv1.SubjectAccessReviewInterface, cfg Config, logger *slog.Logger) (*SubjectAccessReview, error) {
+	if logger == nil {
+		return nil, errors.New("subjectaccessreview: logger is required")
+	}
 	if cfg.MaxHeaderValues <= 0 {
 		return nil, fmt.Errorf("maxHeaderValues must be greater than 0, got %d", cfg.MaxHeaderValues)
 	}
+
+	// A zero budget would hand every review an already expired context and
+	// deny every impersonating request, so it is settled here, at
+	// construction, the way tokenreview.New settles its own.
+	timeout := cfg.Timeout
+	if timeout <= 0 {
+		timeout = DefaultTimeout
+	}
+
 	return &SubjectAccessReview{
-		logger:          logging.OrDiscard(logger),
+		logger:          logger,
 		metrics:         cfg.Metrics,
 		reviewer:        reviewer,
-		sarTimeout:      cfg.Timeout,
+		sarTimeout:      timeout,
 		maxHeaderValues: cfg.MaxHeaderValues,
-		cache:           newDecisionCache(cfg.AllowCacheTTL, cfg.DenyCacheTTL, decisionCacheSize, realClock{}),
+		cache:           newDecisionCache(cfg.AllowCacheTTL, cfg.DenyCacheTTL, decisionCacheSize, clock.RealClock{}),
 	}, nil
 }
-
-// realClock supplies wall-clock time to the decision cache; tests substitute a
-// fake to exercise TTL expiry deterministically.
-type realClock struct{}
-
-func (realClock) Now() time.Time { return time.Now() }
-
-var _ utilcache.Clock = realClock{}
 
 // The resource attributes a SubjectAccessReview asks about for impersonation.
 // Users and groups are core-group resources; uids and user extras live in
@@ -397,7 +398,7 @@ func (s *SubjectAccessReview) CheckAuthorizedForImpersonation(req *http.Request,
 // returns the typed denial when it may not. A dependency failure is returned
 // as is: it is not a verdict on the request.
 func (s *SubjectAccessReview) authorize(call reviewCall, target impersonationTarget) error {
-	allowed, err := s.checkRbacImpersonationAuthorization(call, target)
+	allowed, err := s.cachedCheck(call, target)
 	if err != nil {
 		return err
 	}

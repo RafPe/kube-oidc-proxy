@@ -13,7 +13,11 @@ import (
 
 type Config struct {
 	DisableImpersonation bool
-	TokenReview          bool
+
+	// TokenPassthrough lets a bearer token the OIDC authenticator rejects be
+	// reviewed with the API server's TokenReview, and forwarded unimpersonated
+	// when the API server accepts it (--token-passthrough).
+	TokenPassthrough bool
 
 	// AllowedReservedGroups names "system:"-prefixed groups the operator has
 	// explicitly permitted from a token claim. Empty (the default) refuses every
@@ -21,8 +25,7 @@ type Config struct {
 	// checkReservedIdentity for why the guard exists.
 	AllowedReservedGroups []string
 
-	FlushInterval   time.Duration
-	ExternalAddress string
+	FlushInterval time.Duration
 
 	ExtraUserHeaders                map[string][]string
 	ExtraUserHeadersClientIPEnabled bool

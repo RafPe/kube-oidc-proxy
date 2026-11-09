@@ -65,13 +65,10 @@ func TestReviewToken(t *testing.T) {
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			ctrl := gomock.NewController(t)
-			reviewer := authntest.NewMockToken(ctrl)
+			p := newTestProxy(t)
 			if test.reviewerResult != nil {
-				test.reviewerResult(reviewer)
+				test.reviewerResult(p.fakeReviewer)
 			}
-
-			p := withDiscardLoggers(&Proxy{tokenReviewer: reviewer})
 
 			req := withTestRequestID(httptest.NewRequest("GET", "https://target.example.com/foo", nil))
 			if test.authHeader != "" {
@@ -148,18 +145,10 @@ func TestWithTokenReviewStatusCodes(t *testing.T) {
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			ctrl := gomock.NewController(t)
-			reviewer := authntest.NewMockToken(ctrl)
+			p := newTestProxy(t, withConfig(Config{TokenPassthrough: test.tokenReviewEnabled}))
 			if test.reviewerResult != nil {
-				test.reviewerResult(reviewer)
+				test.reviewerResult(p.fakeReviewer)
 			}
-
-			access, _ := newAccessLogger(t)
-			p := withDiscardLoggers(&Proxy{
-				tokenReviewer: reviewer,
-				config:        &Config{TokenReview: test.tokenReviewEnabled},
-				access:        access,
-			})
 
 			nextCalled := false
 			next := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {

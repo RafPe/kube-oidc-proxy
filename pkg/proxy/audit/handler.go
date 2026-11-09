@@ -7,12 +7,8 @@ import (
 
 // NewUnauthenticatedHandler returns respond wrapped in the
 // failed-authentication audit chain, for a request that failed
-// authentication: the event is recorded against the anonymous user. A nil
-// auditor returns respond unwrapped.
+// authentication: the event is recorded against the anonymous user.
 func NewUnauthenticatedHandler(a *Audit, respond http.HandlerFunc) http.Handler {
-	if a == nil {
-		return respond
-	}
 	return a.WithUnauthorized(respond)
 }
 
@@ -23,11 +19,7 @@ func NewUnauthenticatedHandler(a *Audit, respond http.HandlerFunc) http.Handler 
 // which the caller MUST have placed in the request context
 // (genericapirequest.WithUser) before serving. WithFailedAuthenticationAudit
 // is deliberately not used here: it records the event as an authentication
-// failure and evaluates the audit policy against an empty user. A nil auditor
-// returns respond unwrapped.
+// failure and evaluates the audit policy against an empty user.
 func NewDeniedHandler(a *Audit, respond http.HandlerFunc) http.Handler {
-	if a == nil {
-		return respond
-	}
 	return a.WithRequest(respond)
 }

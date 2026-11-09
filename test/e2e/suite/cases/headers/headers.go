@@ -11,7 +11,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
-	testutil "github.com/rafpe/kube-oidc-proxy/test/util"
+	"github.com/rafpe/kube-oidc-proxy/test/util/idtoken"
 )
 
 var _ = framework.CasesDescribe("Headers", Label("shard-a"), func() {
@@ -59,10 +59,7 @@ var _ = framework.CasesDescribe("Headers", Label("shard-a"), func() {
 			"Impersonate-Extra-Key1": {"foo", "bar"},
 			"Impersonate-Extra-Key2": {"foo"},
 		} {
-			if !testutil.StringSlicesEqual(v, cpyHeader[k]) {
-				Expect(fmt.Errorf("expected key %q to have value %q, but got headers: %v",
-					k, v, cpyHeader)).NotTo(HaveOccurred())
-			}
+			Expect(cpyHeader[k]).To(ConsistOf(v), "header %q, in headers %v", k, cpyHeader)
 
 			cpyHeader.Del(k)
 		}
@@ -87,10 +84,10 @@ var _ = framework.CasesDescribe("Headers", Label("shard-a"), func() {
 
 func sendRequestToProxy(f *framework.Framework) *http.Response {
 	By("Building request to proxy")
-	tokenPayload := testutil.NewTokenPayload(
+	tokenPayload := idtoken.NewPayload(
 		f.IssuerURL(), f.ClientID(), time.Now().Add(time.Minute))
 
-	signedToken, err := testutil.SignToken(f.IssuerKeyBundle(), tokenPayload)
+	signedToken, err := idtoken.Sign(f.IssuerKeyBundle(), tokenPayload)
 	Expect(err).NotTo(HaveOccurred())
 
 	proxyConfig := f.NewProxyRestConfig()

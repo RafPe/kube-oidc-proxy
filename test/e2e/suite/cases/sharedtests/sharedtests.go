@@ -19,7 +19,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
-	"github.com/rafpe/kube-oidc-proxy/test/util"
+	"github.com/rafpe/kube-oidc-proxy/test/util/idtoken"
+	"github.com/rafpe/kube-oidc-proxy/test/util/keybundle"
 )
 
 // RunTokenValidationTests registers Ginkgo It blocks exercising the proxy's
@@ -37,17 +38,17 @@ func RunTokenValidationTests(f *framework.Framework) {
 		badURL, err := url.Parse("incorrect-issuer.io")
 		Expect(err).NotTo(HaveOccurred())
 		expectUnauthorized(f, f.IssuerKeyBundle(),
-			util.NewTokenPayload(badURL, f.ClientID(), time.Now().Add(time.Minute)))
+			idtoken.NewPayload(badURL, f.ClientID(), time.Now().Add(time.Minute)))
 	})
 
 	It("rejects a token with a wrong audience", func() {
 		expectUnauthorized(f, f.IssuerKeyBundle(),
-			util.NewTokenPayload(f.IssuerURL(), "wrong-aud", time.Now().Add(time.Minute)))
+			idtoken.NewPayload(f.IssuerURL(), "wrong-aud", time.Now().Add(time.Minute)))
 	})
 
 	It("rejects an expired token", func() {
 		expectUnauthorized(f, f.IssuerKeyBundle(),
-			util.NewTokenPayload(f.IssuerURL(), f.ClientID(), time.Now()))
+			idtoken.NewPayload(f.IssuerURL(), f.ClientID(), time.Now()))
 	})
 
 	It("accepts a valid token from the primary issuer", func() {
@@ -61,7 +62,7 @@ func RunTokenValidationTests(f *framework.Framework) {
 // ExpectProxyAuthenticated signs payload with keyBundle and asserts the proxy
 // did not reject the token. Downstream Kubernetes authorization is not
 // asserted, so 403 counts as success.
-func ExpectProxyAuthenticated(f *framework.Framework, keyBundle *util.KeyBundle, payload []byte) {
+func ExpectProxyAuthenticated(f *framework.Framework, keyBundle *keybundle.Bundle, payload []byte) {
 	_, resp := proxyGetPods(f, keyBundle, payload)
 	Expect(resp.StatusCode).NotTo(Equal(http.StatusUnauthorized),
 		"token should be authenticated by proxy (got %d)", resp.StatusCode)
@@ -69,11 +70,11 @@ func ExpectProxyAuthenticated(f *framework.Framework, keyBundle *util.KeyBundle,
 
 // ExpectProxyUnauthorized signs payload with keyBundle and asserts the proxy
 // rejected the token with a bare 401.
-func ExpectProxyUnauthorized(f *framework.Framework, keyBundle *util.KeyBundle, payload []byte) {
+func ExpectProxyUnauthorized(f *framework.Framework, keyBundle *keybundle.Bundle, payload []byte) {
 	expectUnauthorized(f, keyBundle, payload)
 }
 
-func expectUnauthorized(f *framework.Framework, keyBundle *util.KeyBundle, payload []byte) {
+func expectUnauthorized(f *framework.Framework, keyBundle *keybundle.Bundle, payload []byte) {
 	body, resp := proxyGetPods(f, keyBundle, payload)
 	body = bytes.TrimSpace(body)
 	if resp.StatusCode != http.StatusUnauthorized || !bytes.Equal(body, []byte("Unauthorized")) {
@@ -82,8 +83,8 @@ func expectUnauthorized(f *framework.Framework, keyBundle *util.KeyBundle, paylo
 	}
 }
 
-func proxyGetPods(f *framework.Framework, keyBundle *util.KeyBundle, payload []byte) ([]byte, *http.Response) {
-	signedToken, err := util.SignToken(keyBundle, payload)
+func proxyGetPods(f *framework.Framework, keyBundle *keybundle.Bundle, payload []byte) ([]byte, *http.Response) {
+	signedToken, err := idtoken.Sign(keyBundle, payload)
 	Expect(err).NotTo(HaveOccurred())
 
 	proxyConfig := f.NewProxyRestConfig()

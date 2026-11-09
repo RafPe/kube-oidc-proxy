@@ -28,7 +28,7 @@ type Options struct {
 	App                  *KubeOIDCProxyOptions
 	OIDCAuthentication   *OIDCAuthenticationOptions
 	AuthenticationConfig *AuthenticationConfigOptions
-	SecureServing        *SecureServingOptions
+	SecureServing        *apiserveroptions.SecureServingOptions
 	Audit                *apiserveroptions.AuditOptions
 	Client               *ClientOptions
 	Logging              *LoggingOptions
@@ -51,7 +51,7 @@ func New() *Options {
 		App:                  NewKubeOIDCProxyOptions(nfs),
 		OIDCAuthentication:   NewOIDCAuthenticationOptions(nfs),
 		AuthenticationConfig: NewAuthenticationConfigOptions(nfs),
-		SecureServing:        NewSecureServingOptions(nfs),
+		SecureServing:        newSecureServingOptions(nfs),
 		Audit:                newAuditOptions(nfs),
 		Client:               NewClientOptions(nfs),
 		Logging:              NewLoggingOptions(nfs),

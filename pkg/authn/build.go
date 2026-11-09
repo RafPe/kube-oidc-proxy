@@ -239,7 +239,6 @@ type caFromFile struct {
 	path string
 
 	// logger is the startup-component logger the unreadable-CA record goes to.
-	// Never nil: caContentProvider substitutes a discarding logger.
 	logger *slog.Logger
 }
 
@@ -260,5 +259,5 @@ func caContentProvider(path string, logger *slog.Logger) oidc.CAContentProvider 
 	if path == "" {
 		return nil
 	}
-	return caFromFile{path: path, logger: logging.OrDiscard(logger)}
+	return caFromFile{path: path, logger: logger}
 }

@@ -66,7 +66,6 @@ func TestOIDCSuccessEmitsAuthnOIDCSucceeded(t *testing.T) {
 	}))
 
 	req := reservedIdentityRequest(t, nil)
-	req = req.WithContext(logging.WithLogger(req.Context(), p.requestLogger))
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
 	if !served {
@@ -95,7 +94,6 @@ func TestTokenReviewDependencyFailureIsError(t *testing.T) {
 		nil, false, errors.New("apiserver unreachable"))
 
 	req := reservedIdentityRequest(t, nil)
-	req = req.WithContext(logging.WithLogger(req.Context(), p.requestLogger))
 
 	if ok := p.reviewToken(req); ok {
 		t.Fatal("a reviewer error passed the request through; the path must fail closed")
@@ -119,15 +117,17 @@ func TestTokenReviewDependencyFailureIsError(t *testing.T) {
 	p.ctrl.Finish()
 }
 
-// TestClientCancellationEmitsUpstreamRequestCanceled pins the one refusal that
-// writes no response at all: the client is already gone. It is routine, so the
-// record is DEBUG, but the access decision is still written.
+// TestClientCancellationEmitsUpstreamRequestCanceled pins the upstream cancel:
+// the client went away while the API server was answering, so nothing is
+// written back. It is routine, so the record is DEBUG. The access decision is
+// RoundTrip's, written before the upstream call; the error handler writes
+// none of its own.
 func TestClientCancellationEmitsUpstreamRequestCanceled(t *testing.T) {
 	p := newTestProxy(t)
 
 	req := reservedIdentityRequest(t, nil)
 	rw := httptest.NewRecorder()
-	p.handleError(rw, req, context.Canceled)
+	p.handleUpstreamError(rw, req, context.Canceled)
 
 	rec := p.logs.Only(t, logging.EventUpstreamRequestCanceled)
 	assertRecord(t, rec, logging.EventUpstreamRequestCanceled, logging.ComponentUpstream, "test-request-id")
@@ -137,7 +137,9 @@ func TestClientCancellationEmitsUpstreamRequestCanceled(t *testing.T) {
 	if got := rec.String("reason"); got != string(metrics.ReasonClientCanceled) {
 		t.Errorf("reason = %q, want %q", got, metrics.ReasonClientCanceled)
 	}
-	assertDeniedReason(t, p.logs, metrics.ReasonClientCanceled)
+	if got := p.logs.ByEvent(logging.EventRequestAccessDecided); len(got) != 0 {
+		t.Errorf("the upstream error handler wrote an access decision: %s", p.logs.Raw())
+	}
 }
 
 // TestOIDCFailureEmitsAuthnOIDCFailed asserts that a token that was present
@@ -152,7 +154,7 @@ func TestOIDCFailureEmitsAuthnOIDCFailed(t *testing.T) {
 	req := reservedIdentityRequest(t, nil)
 	req.RemoteAddr = "8.8.8.8:1234"
 	req = reqctx.WithRequestID(req, "rid-1")
-	req = req.WithContext(logging.WithLogger(logging.WithRequestID(req.Context(), "rid-1"), p.requestLogger))
+	req = req.WithContext(logging.WithRequestID(req.Context(), "rid-1"))
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
 	rec := p.logs.Only(t, logging.EventAuthnOIDCFailed)
@@ -173,7 +175,7 @@ func TestOIDCFailureEmitsAuthnOIDCFailed(t *testing.T) {
 func TestMissingBearerOnTokenReviewIsDebug(t *testing.T) {
 	p := newTestProxy(t)
 	req := httptest.NewRequest(http.MethodGet, "/", nil) // no Authorization
-	req = req.WithContext(logging.WithLogger(logging.WithRequestID(req.Context(), "rid-2"), p.requestLogger))
+	req = req.WithContext(logging.WithRequestID(req.Context(), "rid-2"))
 	p.reviewToken(req)
 	rec := p.logs.Only(t, logging.EventAuthnTokenMissing)
 	if rec.String("level") != "DEBUG" {
@@ -193,7 +195,6 @@ func TestRejectedTokenReviewIsNotAFailure(t *testing.T) {
 	p := newTestProxy(t)
 	p.fakeReviewer.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(nil, false, nil)
 	req := reservedIdentityRequest(t, nil)
-	req = req.WithContext(logging.WithLogger(req.Context(), p.requestLogger))
 	if p.reviewToken(req) {
 		t.Fatal("a rejected token passed review")
 	}
@@ -218,11 +219,11 @@ func (c *countingReviewer) Create(ctx context.Context, req *azv1.SubjectAccessRe
 	return c.FakeReviewer.Create(ctx, req, co)
 }
 
-// TestErrorHandlerClassifiesUpstreamTransportErrors pins the upstream branch:
+// TestUpstreamErrorHandlerClassifiesTransportErrors pins the upstream handler:
 // a transport failure on the hop to the API server is answered 502, carries a
 // classified termination on its own upstream record, and never writes a second
 // access decision -- RoundTrip already recorded the admission.
-func TestErrorHandlerClassifiesUpstreamTransportErrors(t *testing.T) {
+func TestUpstreamErrorHandlerClassifiesTransportErrors(t *testing.T) {
 	cases := map[string]struct {
 		err  error
 		term metrics.Termination
@@ -240,8 +241,7 @@ func TestErrorHandlerClassifiesUpstreamTransportErrors(t *testing.T) {
 			rw := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			req = withTestRequestID(req)
-			req = req.WithContext(logging.WithLogger(req.Context(), p.requestLogger))
-			p.handleError(rw, req, c.err)
+			p.handleUpstreamError(rw, req, c.err)
 			if rw.Code != http.StatusBadGateway {
 				t.Fatalf("status = %d, want 502", rw.Code)
 			}
@@ -296,7 +296,7 @@ func TestClientCancelAfterAdmissionRecordsOneAccessDecision(t *testing.T) {
 	}
 	reverseProxy := httputil.NewSingleHostReverseProxy(target)
 	reverseProxy.Transport = p.Proxy
-	reverseProxy.ErrorHandler = p.handleError
+	reverseProxy.ErrorHandler = p.handleUpstreamError
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/default/pods", nil).WithContext(ctx)
 	req.RemoteAddr = "1.2.3.4:5555"
@@ -327,7 +327,6 @@ func TestUntrustedForwardedHeadersDroppedIsWarn(t *testing.T) {
 	req.Header.Set("X-Forwarded-For", "1.2.3.4")
 	req.Header.Set("X-Real-Ip", "1.2.3.4")
 	req = withTestRequestID(req)
-	req = req.WithContext(logging.WithLogger(req.Context(), p.requestLogger))
 	h.ServeHTTP(httptest.NewRecorder(), req)
 	rec := p.logs.Only(t, logging.EventRequestHeadersDropped)
 	if rec.String("level") != "WARN" || !strings.Contains(fmt.Sprint(rec["dropped_headers"]), "x-forwarded-for") {
@@ -345,7 +344,6 @@ func TestRealIPOnlyDroppedCarriesNoForwardedChain(t *testing.T) {
 	req.RemoteAddr = "203.0.113.9:1"
 	req.Header.Set("X-Real-Ip", "1.2.3.4")
 	req = withTestRequestID(req)
-	req = req.WithContext(logging.WithLogger(req.Context(), p.requestLogger))
 	h.ServeHTTP(httptest.NewRecorder(), req)
 	rec := p.logs.Only(t, logging.EventRequestHeadersDropped)
 	if got := fmt.Sprint(rec["dropped_headers"]); got != "[x-real-ip]" {
@@ -357,14 +355,12 @@ func TestRealIPOnlyDroppedCarriesNoForwardedChain(t *testing.T) {
 }
 
 func TestTrustedForwardedHeadersRewritten(t *testing.T) {
-	p := newTestProxy(t)
-	p.trustedProxies = mustCIDRs(t, "10.0.0.0/8")
+	p := newTestProxy(t, withConfig(Config{TrustedProxies: []string{"10.0.0.0/8"}}))
 	h := p.withSanitizedForwardHeaders(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "10.0.0.7:1"
 	req.Header.Set("X-Forwarded-For", "1.2.3.4, 10.0.0.9")
 	req = withTestRequestID(req)
-	req = req.WithContext(logging.WithLogger(req.Context(), p.requestLogger))
 	h.ServeHTTP(httptest.NewRecorder(), req)
 	rec := p.logs.Only(t, logging.EventRequestHeadersRewritten)
 	if rec.String("src_ip") != "1.2.3.4" {
@@ -380,11 +376,12 @@ func TestTrustedForwardedHeadersRewritten(t *testing.T) {
 	// The same request against a -v=0 logger produces nothing: at the default
 	// verbosity an operator sees only the records that need acting on.
 	quiet, quietLogs := logtest.New(t, 0)
+	q := newTestProxy(t, withConfig(Config{TrustedProxies: []string{"10.0.0.0/8"}}), withLogger(quiet))
+	h = q.withSanitizedForwardHeaders(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	req = httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "10.0.0.7:1"
 	req.Header.Set("X-Forwarded-For", "1.2.3.4, 10.0.0.9")
 	req = withTestRequestID(req)
-	req = req.WithContext(logging.WithLogger(req.Context(), logging.ForComponent(quiet, logging.ComponentRequest)))
 	h.ServeHTTP(httptest.NewRecorder(), req)
 	if n := len(quietLogs.ByEvent(logging.EventRequestHeadersRewritten)); n != 0 {
 		t.Fatalf("rewritten records at -v=0 = %d, want 0: %s", n, quietLogs.Raw())
@@ -426,8 +423,7 @@ func TestMissingTokenCountsANoneAttempt(t *testing.T) {
 }
 
 func TestOIDCFailureThenTokenReviewSuccessIsTwoAttempts(t *testing.T) {
-	p := newTestProxy(t)
-	p.config.TokenReview = true
+	p := newTestProxy(t, withConfig(Config{TokenPassthrough: true}))
 	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "svc").Return(nil, false, errors.New("not an oidc token"))
 	p.fakeReviewer.EXPECT().AuthenticateToken(gomock.Any(), "svc").
 		Return(&authenticator.Response{User: &authuser.DefaultInfo{Name: "system:serviceaccount:a:b"}}, true, nil)
@@ -444,8 +440,7 @@ func TestOIDCFailureThenTokenReviewSuccessIsTwoAttempts(t *testing.T) {
 }
 
 func TestTokenReviewDependencyFailureIsAnErrorAttempt(t *testing.T) {
-	p := newTestProxy(t)
-	p.config.TokenReview = true
+	p := newTestProxy(t, withConfig(Config{TokenPassthrough: true}))
 	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "svc").Return(nil, false, errors.New("not an oidc token"))
 	p.fakeReviewer.EXPECT().AuthenticateToken(gomock.Any(), "svc").Return(nil, false, errors.New("apiserver unreachable"))
 	req := watchRequest()

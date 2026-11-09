@@ -35,9 +35,12 @@ var _ = framework.CasesDescribe("Readiness Probe", Label("shard-a"), func() {
 		By("Deleting the Issuer so no longer becomes reachable")
 		Expect(f.Helper().DeleteIssuer(f.Namespace.Name)).NotTo(HaveOccurred())
 
-		time.Sleep(time.Second * 10)
-
-		err := f.Helper().WaitForDeploymentReady(f.Namespace.Name, kind.ProxyImageName, time.Second*5)
-		Expect(err).NotTo(HaveOccurred())
+		// Checked continuously, not once after a pause: the readiness probe runs
+		// every 3s and fails the pod after three misses, so a proxy that wrongly
+		// ties readiness to the issuer turns unready well within this window.
+		By("Checking the proxy stays ready while the issuer is gone")
+		Consistently(func() (bool, error) {
+			return f.Helper().DeploymentReady(f.Namespace.Name, kind.ProxyImageName)
+		}).WithTimeout(30 * time.Second).WithPolling(time.Second).Should(BeTrue())
 	})
 })

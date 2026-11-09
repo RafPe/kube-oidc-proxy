@@ -19,8 +19,8 @@ var env *environment.Environment
 
 // The first function runs on Ginkgo process 1 only: it provisions the
 // environment and returns the paths locating it. The second runs on every
-// process, including the first, and is the one place framework.DefaultConfig
-// is set, so a parallel run gives every process the same configuration.
+// process, including the first, and is the one place framework.SetDefaultConfig
+// is called, so a parallel run gives every process the same configuration.
 var _ = SynchronizedBeforeSuite(func() []byte {
 	var err error
 	env, err = environment.New(1, 0)
@@ -36,8 +36,9 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	Expect(err).NotTo(HaveOccurred(), "encoding test config")
 	return data
 }, func(data []byte) {
-	Expect(json.Unmarshal(data, framework.DefaultConfig)).To(Succeed(), "decoding test config")
-	Expect(framework.DefaultConfig.Validate()).To(Succeed(), "validating test config")
+	var cfg config.Config
+	Expect(json.Unmarshal(data, &cfg)).To(Succeed(), "decoding test config")
+	Expect(framework.SetDefaultConfig(cfg)).To(Succeed(), "setting test config")
 })
 
 var _ = SynchronizedAfterSuite(func() {},

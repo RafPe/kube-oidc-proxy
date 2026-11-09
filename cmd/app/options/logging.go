@@ -54,7 +54,8 @@ func (o *LoggingOptions) Validate() error {
 // Verbosity returns the -v value the command line carries, or 0 when the flag
 // is absent. -v is owned by globalflag in the Global flag set; it is read here
 // rather than bound to a field of its own so that klog and the root logger are
-// driven by exactly one value.
+// driven by exactly one value. That value is klog's process-global one, so
+// every Options in the process reads the same -v.
 func (o *LoggingOptions) Verbosity() int {
 	if o.nfs == nil {
 		return 0

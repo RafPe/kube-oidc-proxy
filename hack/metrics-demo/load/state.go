@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/rafpe/kube-oidc-proxy/test/util"
+	"github.com/rafpe/kube-oidc-proxy/test/util/keybundle"
 )
 
 // state is what up.sh left in .state: the kubeconfig, the issuer's URL and
@@ -19,7 +19,7 @@ import (
 type state struct {
 	kubeconfig   string
 	issuerURL    *url.URL
-	issuerBundle *util.KeyBundle
+	issuerBundle *keybundle.Bundle
 	proxyCAs     *x509.CertPool
 	proxyCAPEM   []byte
 }
@@ -75,7 +75,7 @@ func loadState(dir string) (*state, error) {
 	return &state{
 		kubeconfig:   filepath.Join(dir, "kubeconfig"),
 		issuerURL:    issuerURL,
-		issuerBundle: &util.KeyBundle{CertBytes: certBytes, KeyBytes: keyBytes, Key: key},
+		issuerBundle: &keybundle.Bundle{CertBytes: certBytes, KeyBytes: keyBytes, Key: key},
 		proxyCAs:     pool,
 		proxyCAPEM:   proxyCA,
 	}, nil

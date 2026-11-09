@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	v1 "k8s.io/api/authorization/v1"
 	"k8s.io/apiserver/pkg/authentication/user"
@@ -416,5 +417,36 @@ func TestImpersonationAuthErrorClassification(t *testing.T) {
 	}
 	if errors.Is(errors.New("boom"), ErrImpersonationNotAllowed) {
 		t.Error("arbitrary error must not classify as ErrImpersonationNotAllowed")
+	}
+}
+
+// TestNewSettlesTheTimeout pins that a zero or negative budget means
+// DefaultTimeout. Passed through as is, it would give every review an already
+// expired context and deny every impersonating request.
+func TestNewSettlesTheTimeout(t *testing.T) {
+	for name, test := range map[string]struct {
+		timeout, exp time.Duration
+	}{
+		"zero means the default":     {0, DefaultTimeout},
+		"negative means the default": {-time.Second, DefaultTimeout},
+		"a positive value is kept":   {2 * time.Second, 2 * time.Second},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, err := New(fake.New(nil), Config{Timeout: test.timeout, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			if s.sarTimeout != test.exp {
+				t.Errorf("sarTimeout = %s, want %s", s.sarTimeout, test.exp)
+			}
+		})
+	}
+}
+
+// TestNewRequiresLogger pins that the logger is a required collaborator, as it
+// is for every constructor in the module: a nil one fails at construction.
+func TestNewRequiresLogger(t *testing.T) {
+	if _, err := New(fake.New(nil), Config{MaxHeaderValues: DefaultMaxHeaderValues}, nil); err == nil {
+		t.Fatal("New(nil logger) error = nil, want an error")
 	}
 }

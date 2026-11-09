@@ -174,26 +174,6 @@ func TestNewDeniedHandlerAuditsAuthenticatedIdentity(t *testing.T) {
 	}
 }
 
-// TestNewDeniedHandlerWithoutAuditor asserts the handler still serves its
-// response when no audit backend is configured, matching the nil-safety of
-// NewUnauthenticatedHandler.
-func TestNewDeniedHandlerWithoutAuditor(t *testing.T) {
-	handler := NewDeniedHandler(nil, func(rw http.ResponseWriter, r *http.Request) {
-		http.Error(rw, "forbidden", http.StatusForbidden)
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/default/pods", nil)
-	rw := httptest.NewRecorder()
-	handler.ServeHTTP(rw, req)
-
-	if got, want := rw.Result().StatusCode, http.StatusForbidden; got != want {
-		t.Errorf("unexpected response code, exp=%d got=%d", want, got)
-	}
-	if got := strings.TrimSpace(rw.Body.String()); got != "forbidden" {
-		t.Errorf("unexpected response body, exp=forbidden got=%q", got)
-	}
-}
-
 // TestNewUnauthenticatedHandlerAuditsFailedAuthentication is the regression
 // guard for the missing WithAuditInit in the WithUnauthorized chain
 // (TremoloSecurity/kube-oidc-proxy#92). Without an initialised audit context

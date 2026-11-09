@@ -64,14 +64,14 @@ func TestCheckDoesNotHoldLockDuringAuth(t *testing.T) {
 	}
 	h := newTestHealthCheckWithAuthenticator(true, authn, issuerA)
 	// Check returns before reaching the authenticator unless it is serving.
-	h.SetServing()
+	h.setServing()
 
 	var wg sync.WaitGroup
 	for i := 0; i < 2; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = h.Check()
+			_ = h.check()
 		}()
 	}
 
@@ -103,9 +103,9 @@ func TestIssuerPendingEmittedOnStateChangeWithReason(t *testing.T) {
 	defer logtest.AssertRegistered(t, cap)
 	hc := newTestHealthCheckWithLogger(t, root, true, map[string]bool{"https://a": true},
 		IssuerReadiness{IssuerURL: "https://a", FakeJWT: "jwt-a"})
-	hc.SetServing()
-	_ = hc.Check()
-	_ = hc.Check()
+	hc.setServing()
+	_ = hc.check()
+	_ = hc.check()
 	recs := cap.ByEvent(logging.EventOIDCIssuerPending)
 	if len(recs) != 1 {
 		t.Fatalf("pending emitted %d times, want 1", len(recs))
@@ -122,8 +122,8 @@ func TestReadyTransitionIsInfo(t *testing.T) {
 	root, cap := logtest.New(t, 0)
 	defer logtest.AssertRegistered(t, cap)
 	hc := newTestHealthCheckWithLogger(t, root, false, nil, IssuerReadiness{IssuerURL: "https://a", FakeJWT: "jwt-a"})
-	hc.SetServing()
-	if err := hc.Check(); err != nil {
+	hc.setServing()
+	if err := hc.check(); err != nil {
 		t.Fatal(err)
 	}
 	rec := cap.Only(t, logging.EventReadinessProxyReady)

@@ -143,7 +143,7 @@ func (k *Kind) loadImage(binPath, mainPath, image, dockerfilePath string, extraB
 
 		err := node.Command("mkdir", "-p", "/tmp/kube-oidc-proxy").Run()
 		if err != nil {
-			return fmt.Errorf("failed to create directory %q: %s",
+			return fmt.Errorf("failed to create directory %q: %w",
 				"/tmp/kube-oidc-proxy", err)
 		}
 	}

@@ -125,12 +125,11 @@ func (r *Recorder) Gatherer() prometheus.Gatherer {
 // Handler serves the exposition on GET (and HEAD) /metrics. Everything else
 // is 404 or 405 with an Allow header: no pprof, no reset, no index page.
 // logger receives the gathering errors promhttp would otherwise print to
-// stderr. A nil recorder serves 404 for everything.
+// stderr, and is required. A nil recorder serves 404 for everything.
 func (r *Recorder) Handler(logger *slog.Logger) http.Handler {
 	if r == nil {
 		return http.NotFoundHandler()
 	}
-	logger = logging.OrDiscard(logger)
 	exposition := promhttp.HandlerFor(r.reg, promhttp.HandlerOpts{
 		ErrorLog:            scrapeErrorLog{logger: logger},
 		ErrorHandling:       promhttp.HTTPErrorOnError,

@@ -8,7 +8,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -59,18 +58,9 @@ var _ = framework.CasesDescribe("Passthrough", Ordered, ContinueOnFailure, Label
 			}, metav1.CreateOptions{})
 		Expect(err).NotTo(HaveOccurred())
 
-		By("Geting the token for the default ServiceAccount")
-		sec, err := f.Helper().GetServiceAccountSecret(f.Namespace.Name, "default")
+		By("Getting the token for the default ServiceAccount")
+		saToken, err = f.Helper().GetServiceAccountToken(f.Namespace.Name, "default")
 		Expect(err).NotTo(HaveOccurred())
-
-		saTokenBytes, ok := sec.Data[corev1.ServiceAccountTokenKey]
-		if !ok {
-			err = fmt.Errorf("expected token to be present in secret %s/%s (%s): %+v",
-				sec.Name, sec.Namespace, corev1.ServiceAccountTokenKey, sec.Data)
-			Expect(err).NotTo(HaveOccurred())
-		}
-
-		saToken = string(saTokenBytes)
 	})
 
 	JustAfterEach(func() {

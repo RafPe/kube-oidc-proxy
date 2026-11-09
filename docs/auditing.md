@@ -140,9 +140,9 @@ The proxy embeds the API server's audit stack rather than reimplementing it.
    An hour-long `exec` therefore leaves a trace at its start, and still leaves
    one if the proxy is stopped before the session ends.
 6. **Shutdown.** The backend is flushed as a pre-shutdown hook, and the result
-   is logged as `audit.flush.completed` or `audit.flush.failed`. A failed flush
-   means events for requests the process already served were dropped, so it is
-   never silent.
+   is logged as `audit.flush.completed`, or as `proxy.hook.failed` with
+   `hook=AuditBackend` when it fails. A failed flush means events for requests
+   the process already served were dropped, so it is never silent.
 
 ## Writing a policy
 

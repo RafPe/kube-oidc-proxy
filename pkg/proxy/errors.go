@@ -20,8 +20,8 @@ import (
 )
 
 // handleError writes the response for a request the proxy refused or failed
-// to serve, and records the decision. It is the reverse proxy's ErrorHandler
-// as well as what the filters call directly.
+// to serve before forwarding it, and records the decision. The filters call
+// it; a failure of the forwarded request itself goes to handleUpstreamError.
 func (p *Proxy) handleError(rw http.ResponseWriter, r *http.Request, err error) {
 	// Every refusal of a request that did authenticate is audited through the
 	// ordinary request chain rather than the failed-authentication one: the
@@ -46,7 +46,6 @@ func (p *Proxy) handleError(rw http.ResponseWriter, r *http.Request, err error) 
 	// The access record carries the classified reason, so every branch below
 	// records why the request was refused before it writes the response.
 	switch {
-
 	// Failed authentication: audited against the anonymous user, because no
 	// identity was established.
 	case errors.Is(err, errUnauthorized):
@@ -54,73 +53,79 @@ func (p *Proxy) handleError(rw http.ResponseWriter, r *http.Request, err error) 
 		audit.NewUnauthenticatedHandler(p.auditor, func(rw http.ResponseWriter, _ *http.Request) {
 			http.Error(rw, "Unauthorized", http.StatusUnauthorized)
 		}).ServeHTTP(rw, r)
-		return
 
-		// Authenticated, but the identity is one a token must never mint.
+	// Authenticated, but the identity is one a token must never mint: an
+	// exploit attempt or a badly broken claim mapping, not an ordinary denial.
 	case errors.Is(err, errReservedIdentity):
-		// A token minting a system: identity is an exploit attempt or a
-		// badly broken claim mapping, not an ordinary denial.
 		p.logAnomaly(r, metrics.ReasonReservedIdentity)
 		p.logDenied(r, metrics.ReasonReservedIdentity, err)
 		// The client body carries no claim values; they are logged and
 		// audited instead.
 		deny(http.StatusForbidden, "identities with the reserved \"system:\" prefix are not accepted from an authentication token")
-		return
 
-		// No name given or available in oidc request
+	// The token carried no username claim.
 	case errors.Is(err, errNoName):
 		p.logDenied(r, metrics.ReasonNoUsernameClaim, err)
 		deny(http.StatusForbidden, "Username claim not available in OIDC Issuer response")
-		return
 
-		// Groups, uid or extras with no user to refine. A malformed request,
-		// not a proxy fault; it keeps the 500 and message clients have
-		// always seen for it.
+	// Groups, uid or extras with no user to refine. Like an unknown
+	// impersonation header below, it is refused by its shape before any
+	// SubjectAccessReview, so it answers with the same 400.
 	case errors.Is(err, subjectaccessreview.ErrNoImpersonationUser):
 		p.logDenied(r, metrics.ReasonMalformedImpersonation, err)
-		deny(http.StatusInternalServerError, subjectaccessreview.ErrNoImpersonationUser.Error())
-		return
+		deny(http.StatusBadRequest, err.Error())
 
-		// An Impersonate- header of a kind the proxy does not know. Refused
-		// before any SubjectAccessReview, and not logged as a failure of the
-		// proxy's own: a client can send it on every request.
+	// An Impersonate- header of a kind the proxy does not know. Not logged as
+	// a failure of the proxy's own: a client can send it on every request.
 	case errors.Is(err, subjectaccessreview.ErrUnknownImpersonationHeader):
 		p.logDenied(r, metrics.ReasonMalformedImpersonation, err)
 		deny(http.StatusBadRequest, err.Error())
-		return
 
-		// Request carries more impersonation header values than the
-		// configured cap. Refused before any SubjectAccessReview was sent;
-		// this is a request-shape rejection, not an authorization denial.
+	// Far more impersonation header values than any client legitimately
+	// sends: a resource-exhaustion attempt against the SubjectAccessReview
+	// path, refused before any review was sent. A request-shape rejection,
+	// not an authorization denial.
 	case errors.Is(err, subjectaccessreview.ErrTooManyImpersonationHeaderValues):
-		// Far more impersonation values than any client legitimately sends:
-		// a resource-exhaustion attempt against the SubjectAccessReview path.
 		p.logAnomaly(r, metrics.ReasonTooManyImpersonationValues)
 		p.logDenied(r, metrics.ReasonTooManyImpersonationValues, err)
 		deny(http.StatusRequestHeaderFieldsTooLarge, err.Error())
-		return
 
-		// Requester is not authorized to impersonate the requested identity.
-		// Classified by typed error (errors.Is), not by message text.
+	// The requester may not impersonate the requested identity. Classified by
+	// typed error (errors.Is), not by message text.
 	case errors.Is(err, subjectaccessreview.ErrImpersonationNotAllowed):
 		p.logDenied(r, metrics.ReasonImpersonationDenied, err)
 		deny(http.StatusForbidden, err.Error())
-		return
 
-		// Client canceled the request (SAR or reverse-proxy). Nothing to
-		// write back; the connection is already going away.
+	// The client went away while its impersonation was being authorized.
+	// Nothing is written back; the connection is already going away. No
+	// upstream call was made, so there is no upstream record either: the
+	// SubjectAccessReview that saw the cancellation reported it as
+	// authz.sar.failed with reason=client_canceled, and the access record
+	// carries the same reason.
+	case errors.Is(err, context.Canceled):
+		p.logDenied(r, metrics.ReasonClientCanceled, err)
+
+	// Server or unknown error, including a SubjectAccessReview the proxy
+	// could not submit.
+	default:
+		p.failInternal(rw, r, err)
+	}
+}
+
+// handleUpstreamError is the reverse proxy's ErrorHandler. RoundTrip wrote the
+// request's access decision before it called the API server, so a failure
+// here is not a second decision: it is reported on the upstream component, and
+// the termination it classifies is handed to the lifecycle filter for the
+// terminal record.
+func (p *Proxy) handleUpstreamError(rw http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	// The client went away before the upstream response completed. Nothing is
+	// written back; the connection is already going away.
 	case errors.Is(err, context.Canceled):
 		logging.Emit(r.Context(), p.upstreamLogger, logging.EventUpstreamRequestCanceled,
 			slog.String("reason", string(metrics.ReasonClientCanceled)))
-		p.logDenied(r, metrics.ReasonClientCanceled, err)
-		return
 
-		// The reverse proxy could not reach or complete the call to the API
-		// server. The request was already admitted, and its access decision
-		// was written by RoundTrip: an upstream failure is not a second
-		// decision, so none is recorded here. The failure is reported on its
-		// own upstream record, and the termination it classifies is handed
-		// to the lifecycle filter for the terminal record.
+	// The call to the API server could not be made or completed.
 	case isUpstreamTransportError(err):
 		term := upstreamTermination(err)
 		reqctx.MarkTermination(r, term, metrics.ReasonUpstreamError)
@@ -128,35 +133,20 @@ func (p *Proxy) handleError(rw http.ResponseWriter, r *http.Request, err error) 
 			slog.String("reason", string(metrics.ReasonUpstreamError)), slog.String("termination", string(term)),
 			logging.ErrAttr(err))
 		http.Error(rw, "", http.StatusBadGateway)
-		return
 
-		// Server or unknown error, including a missing impersonation
-		// configuration and a SubjectAccessReview the proxy could not
-		// submit. Details stay server-side; the client receives an empty
-		// 500 body.
+	// Not the transport: RoundTrip found no forwarding decision on the
+	// request, or the reverse proxy could not complete a protocol upgrade.
+	// Both are the proxy's own failure.
 	default:
-		p.logHandlerFailed(r, err)
-		p.logDenied(r, metrics.ReasonInternalError, err)
-		http.Error(rw, "", http.StatusInternalServerError)
+		p.failInternal(rw, r, err)
 	}
 }
 
 // isUpstreamTransportError reports whether the error came from the transport
-// carrying the request to the API server rather than from a decision the proxy
-// made about it. The error handler is dual-use -- the authentication and
-// impersonation filters call it directly, not only the reverse proxy -- so the
-// test is by error type: an error of an unrecognised type stays a 500.
+// carrying the request to the API server rather than from the proxy itself.
+// Any net.Error counts -- *net.OpError, *url.Error and syscall.Errno all are
+// one -- plus the stream ends and certificate failures that are not.
 func isUpstreamTransportError(err error) bool {
-	// A SubjectAccessReview the proxy could not submit wraps a client-go
-	// transport error that satisfies net.Error, but the call that failed is
-	// the proxy's own authorization dependency, not the hop to the API server:
-	// the request is refused, not proxied, so it is a 500 and never a 502.
-	if errors.Is(err, subjectaccessreview.ErrCreateSubjectAccessReview) {
-		return false
-	}
-
-	// Any net.Error counts -- *net.OpError, *url.Error and syscall.Errno all
-	// are one -- plus the stream ends and certificate failures that are not.
 	var (
 		netErr  net.Error
 		certErr *tls.CertificateVerificationError
@@ -183,12 +173,15 @@ func upstreamTermination(err error) metrics.Termination {
 	return metrics.TerminationProxyError
 }
 
-// logHandlerFailed reports a failure the proxy itself is responsible for. The
-// error text is kept out of the client-facing body and recorded here instead,
-// bounded and sanitized; the access record carries reason=internal_error.
-func (p *Proxy) logHandlerFailed(r *http.Request, err error) {
+// failInternal answers a failure the proxy itself is responsible for. The
+// error text stays server-side, recorded as request.handler.failed bounded and
+// sanitized; the client receives an empty 500 body and the access record
+// carries reason=internal_error.
+func (p *Proxy) failInternal(rw http.ResponseWriter, r *http.Request, err error) {
 	logging.EmitLevel(r.Context(), p.requestLogger, logging.EventRequestHandlerFailed, slog.LevelError,
 		slog.String("reason", string(metrics.ReasonInternalError)), logging.ErrAttr(err))
+	p.logDenied(r, metrics.ReasonInternalError, err)
+	http.Error(rw, "", http.StatusInternalServerError)
 }
 
 // logAnomaly reports a rejection that indicates an exploit attempt or gross
@@ -208,15 +201,6 @@ func (p *Proxy) logAnomaly(r *http.Request, reason metrics.Reason) {
 // target, when the error names one, is taken from the typed error rather than
 // parsed back out of the client-facing message.
 func (p *Proxy) logDenied(r *http.Request, reason metrics.Reason, err error) {
-	// RoundTrip writes the access record for an admitted request before the
-	// upstream call, so a failure arriving after that -- a client that
-	// cancelled, an upstream that broke -- has no decision left to make. Every
-	// refusal below the error handler shares this guard, which keeps the
-	// promise of one request.access.decided per request.
-	if reqctx.DecisionRecorded(r) {
-		return
-	}
-
 	d := accesslog.Decision{
 		Allowed:    false,
 		Reason:     reason,
@@ -226,7 +210,7 @@ func (p *Proxy) logDenied(r *http.Request, reason metrics.Reason, err error) {
 
 	var authErr *subjectaccessreview.ImpersonationAuthError
 	if errors.As(err, &authErr) {
-		d.TargetKind = string(authErr.Kind)
+		d.TargetKind = authErr.Kind
 		d.TargetName = authErr.TargetName()
 	}
 

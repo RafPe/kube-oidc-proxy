@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	v1 "k8s.io/api/authorization/v1"
@@ -54,9 +55,9 @@ func TestCacheHitAndLiveCheckEvents(t *testing.T) {
 	defer logtest.AssertRegistered(t, cap)
 	s := newSARWithFakeReviewer(t, root, allowAll)
 	requester := &user.DefaultInfo{Name: "mmosley", Groups: []string{"group1"}}
-	ctx := logging.WithRequestID(logging.WithLogger(context.Background(), root), "r1")
+	ctx := logging.WithRequestID(context.Background(), "r1")
 
-	if _, err := s.checkRbacImpersonationAuthorization(directCall(ctx, requester), userImpersonation("bob")); err != nil {
+	if _, err := s.cachedCheck(directCall(ctx, requester), userImpersonation("bob")); err != nil {
 		t.Fatal(err)
 	}
 	miss := cap.ByEvent(logging.EventCacheSARLookup)
@@ -71,7 +72,7 @@ func TestCacheHitAndLiveCheckEvents(t *testing.T) {
 		t.Fatal("duration_ms missing")
 	}
 
-	if _, err := s.checkRbacImpersonationAuthorization(directCall(ctx, requester), userImpersonation("bob")); err != nil {
+	if _, err := s.cachedCheck(directCall(ctx, requester), userImpersonation("bob")); err != nil {
 		t.Fatal(err)
 	}
 	hits := cap.ByEvent(logging.EventCacheSARLookup)
@@ -111,7 +112,7 @@ func TestCacheBypassEvents(t *testing.T) {
 			ctx := logging.WithRequestID(context.Background(), "r1")
 
 			for i := range 2 {
-				if _, err := s.checkRbacImpersonationAuthorization(directCall(ctx, loggingTestRequester()), userImpersonation(tc.name)); err != nil {
+				if _, err := s.cachedCheck(directCall(ctx, loggingTestRequester()), userImpersonation(tc.name)); err != nil {
 					t.Fatalf("check %d: %v", i, err)
 				}
 			}
@@ -149,7 +150,7 @@ func TestCachedDenyDecisionEvents(t *testing.T) {
 	ctx := logging.WithRequestID(context.Background(), "r1")
 
 	for i := range 2 {
-		allowed, err := s.checkRbacImpersonationAuthorization(directCall(ctx, loggingTestRequester()), groupImpersonation("group3"))
+		allowed, err := s.cachedCheck(directCall(ctx, loggingTestRequester()), groupImpersonation("group3"))
 		if err != nil {
 			t.Fatalf("check %d: %v", i, err)
 		}
@@ -186,7 +187,7 @@ func TestLiveCheckFailureEvents(t *testing.T) {
 		s := newLoggingSAR(t, root, &fnReviewer{fn: failWith(errReview)}, DefaultTimeout, DefaultAllowCacheTTL, DefaultDenyCacheTTL)
 		ctx := logging.WithRequestID(context.Background(), "r1")
 
-		if _, err := s.checkRbacImpersonationAuthorization(directCall(ctx, loggingTestRequester()), userImpersonation("bob")); !errors.Is(err, ErrCreateSubjectAccessReview) {
+		if _, err := s.cachedCheck(directCall(ctx, loggingTestRequester()), userImpersonation("bob")); !errors.Is(err, ErrCreateSubjectAccessReview) {
 			t.Fatalf("error = %v, want errors.Is(ErrCreateSubjectAccessReview)", err)
 		}
 
@@ -220,7 +221,7 @@ func TestLiveCheckFailureEvents(t *testing.T) {
 
 		done := make(chan error, 1)
 		go func() {
-			_, err := s.checkRbacImpersonationAuthorization(directCall(ctx, loggingTestRequester()), userImpersonation("bob"))
+			_, err := s.cachedCheck(directCall(ctx, loggingTestRequester()), userImpersonation("bob"))
 			done <- err
 		}()
 
@@ -353,57 +354,40 @@ func TestLiveCheckFailureEvents(t *testing.T) {
 // TestCoalescedLiveCheckEvent pins request_coalesced=true: two callers asking
 // the identical authorization question share one SubjectAccessReview, and each
 // reports its own completion record so the sharing is queryable per request.
+// It runs in a synctest bubble for the reason given in singleflight_test.go.
 func TestCoalescedLiveCheckEvent(t *testing.T) {
 	root, cap := logtest.New(t, 2)
 	defer logtest.AssertRegistered(t, cap)
-	reviewer := &gateReviewer{entered: make(chan struct{}, 1), release: make(chan struct{})}
-	s := newLoggingSAR(t, root, reviewer, DefaultTimeout, DefaultAllowCacheTTL, DefaultDenyCacheTTL)
-	ctx := logging.WithRequestID(context.Background(), "r1")
 
-	// Both callers report when they are about to join the flight, so the gate
-	// opens only once the second one is in: no sleep decides the outcome.
-	joined := make(chan struct{}, 2)
-	s.beforeFlight = func() { joined <- struct{}{} }
+	synctest.Test(t, func(t *testing.T) {
+		reviewer := &gateReviewer{entered: make(chan struct{}, 1), release: make(chan struct{})}
+		s := newLoggingSAR(t, root, reviewer, DefaultTimeout, DefaultAllowCacheTTL, DefaultDenyCacheTTL)
+		ctx := logging.WithRequestID(context.Background(), "r1")
 
-	check := func(wg *sync.WaitGroup, err *error) {
-		defer wg.Done()
-		_, e := s.checkRbacImpersonationAuthorization(directCall(ctx, loggingTestRequester()), userImpersonation("bob"))
-		*err = e
-	}
-
-	var wg sync.WaitGroup
-	errs := make([]error, 2)
-
-	wg.Add(1)
-	go check(&wg, &errs[0])
-
-	select {
-	case <-reviewer.entered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("SAR Create was never entered")
-	}
-
-	wg.Add(1)
-	go check(&wg, &errs[1])
-
-	for i := 0; i < 2; i++ {
-		select {
-		case <-joined:
-		case <-time.After(2 * time.Second):
-			t.Fatal("a caller never reached the singleflight boundary")
+		var wg sync.WaitGroup
+		errs := make([]error, 2)
+		for i := range errs {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, errs[i] = s.cachedCheck(directCall(ctx, loggingTestRequester()), userImpersonation("bob"))
+			}()
 		}
-	}
-	close(reviewer.release)
-	wg.Wait()
 
-	for i, err := range errs {
-		if err != nil {
-			t.Fatalf("caller %d: %v", i, err)
+		// One caller is blocked in Create, the other on its flight.
+		synctest.Wait()
+		close(reviewer.release)
+		wg.Wait()
+
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("caller %d: %v", i, err)
+			}
 		}
-	}
-	if got := reviewer.calls.Load(); got != 1 {
-		t.Fatalf("SAR Create ran %d times, want 1 (the two callers must share one review)", got)
-	}
+		if got := reviewer.calls.Load(); got != 1 {
+			t.Fatalf("SAR Create ran %d times, want 1 (the two callers must share one review)", got)
+		}
+	})
 
 	live := cap.ByEvent(logging.EventAuthzSARCompleted)
 	if len(live) != 2 {

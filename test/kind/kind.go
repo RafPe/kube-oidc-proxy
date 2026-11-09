@@ -123,22 +123,22 @@ func (k *Kind) Create() error {
 
 	restConfig, err := clientcmd.BuildConfigFromFlags("", k.KubeConfigPath())
 	if err != nil {
-		return k.errDestroy(fmt.Errorf("failed to build kind rest client: %s", err))
+		return k.errDestroy(fmt.Errorf("failed to build kind rest client: %w", err))
 	}
 	k.restConfig = restConfig
 
 	client, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
-		return k.errDestroy(fmt.Errorf("failed to build kind kubernetes client: %s", err))
+		return k.errDestroy(fmt.Errorf("failed to build kind kubernetes client: %w", err))
 	}
 	k.client = client
 
 	if err := k.waitForNodesReady(); err != nil {
-		return k.errDestroy(fmt.Errorf("failed to wait for nodes to become ready: %s", err))
+		return k.errDestroy(fmt.Errorf("failed to wait for nodes to become ready: %w", err))
 	}
 
 	if err := k.waitForCoreDNSReady(); err != nil {
-		return k.errDestroy(fmt.Errorf("failed to wait for DNS pods to become ready: %s", err))
+		return k.errDestroy(fmt.Errorf("failed to wait for DNS pods to become ready: %w", err))
 	}
 
 	slog.Info("kind: cluster ready", slog.String("cluster", clusterName))
@@ -195,7 +195,7 @@ func (k *Kind) Destroy() error {
 	slog.Info("kind: destroying cluster", slog.String("cluster", clusterName))
 
 	if err := DeleteCluster(clusterName); err != nil {
-		return fmt.Errorf("failed to delete kind cluster: %s", err)
+		return fmt.Errorf("failed to delete kind cluster: %w", err)
 	}
 
 	if err := os.Remove(k.KubeConfigPath()); err != nil && !os.IsNotExist(err) {
@@ -214,15 +214,15 @@ func (k *Kind) collectLogs() error {
 	slog.Info("kind: collecting logs", slog.String("dir", logDir))
 
 	if err := os.RemoveAll(logDir); err != nil {
-		return fmt.Errorf("failed to remove old logs directory: %s", err)
+		return fmt.Errorf("failed to remove old logs directory: %w", err)
 	}
 
 	if err := os.MkdirAll(logDir, 0755); err != nil {
-		return fmt.Errorf("failed to create logs directory: %s", err)
+		return fmt.Errorf("failed to create logs directory: %w", err)
 	}
 
 	if err := provider.CollectLogs(clusterName, logDir); err != nil {
-		return fmt.Errorf("failed to collect logs: %s", err)
+		return fmt.Errorf("failed to collect logs: %w", err)
 	}
 
 	slog.Info("kind: collected logs", slog.String("dir", logDir))
@@ -247,7 +247,7 @@ func (k *Kind) Nodes() ([]nodes.Node, error) {
 
 func (k *Kind) errDestroy(err error) error {
 	if dErr := k.Destroy(); dErr != nil {
-		err = fmt.Errorf("%s\nkind failed to destroy: %s", err, dErr)
+		err = fmt.Errorf("%w\nkind failed to destroy: %w", err, dErr)
 	}
 
 	return err

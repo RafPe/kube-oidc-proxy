@@ -72,7 +72,7 @@ var _ = framework.CasesDescribe("Impersonation", Label("shard-a"), func() {
 					"group-1",
 					"group-2",
 				},
-			}, http.StatusInternalServerError, "no Impersonation-User header found for request")
+			}, http.StatusBadRequest, "no Impersonation-User header found for request")
 
 			By("Impersonating as a extra")
 			tryImpersonationClient(f, rest.ImpersonationConfig{
@@ -84,7 +84,7 @@ var _ = framework.CasesDescribe("Impersonation", Label("shard-a"), func() {
 						"k1", "k2", "k3",
 					},
 				},
-			}, http.StatusInternalServerError, "no Impersonation-User header found for request")
+			}, http.StatusBadRequest, "no Impersonation-User header found for request")
 		})
 
 		It("should return error from proxy when impersonation enabled and impersonation is not authorized by the cluster's RBAC", func() {

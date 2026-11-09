@@ -3,9 +3,9 @@
 // Package logging is the proxy's structured log contract: a closed registry of
 // first-party events, each with a fixed level, component, message and
 // required fields, emitted through Emit so a record can only ever carry a
-// registered shape. It also owns the request-scoped logger and request id that
-// travel on the context, and the sanitizing and bounding every user-influenced
-// value passes through before it reaches the stream.
+// registered shape. It also owns the request id that travels on the context,
+// and the sanitizing and bounding every user-influenced value passes through
+// before it reaches the stream.
 package logging
 
 import (
@@ -88,8 +88,6 @@ func ForComponent(root *slog.Logger, c Component) *slog.Logger {
 // Required key Emit can supply from the context.
 const attrRequestID = "request_id"
 
-type ctxKey struct{}
-
 type requestIDKey struct{}
 
 // WithRequestID returns a context carrying the id minted for the request being
@@ -104,30 +102,6 @@ func WithRequestID(ctx context.Context, id string) context.Context {
 func RequestIDFrom(ctx context.Context) string {
 	id, _ := ctx.Value(requestIDKey{}).(string)
 	return id
-}
-
-// WithLogger returns a context carrying the request-scoped logger.
-func WithLogger(ctx context.Context, l *slog.Logger) context.Context {
-	return context.WithValue(ctx, ctxKey{}, l)
-}
-
-// LoggerFrom returns the logger carried by the context, or a logger that
-// discards every record when there is none. It never returns nil, so call
-// sites need no guard.
-func LoggerFrom(ctx context.Context) *slog.Logger {
-	l, _ := ctx.Value(ctxKey{}).(*slog.Logger)
-	return OrDiscard(l)
-}
-
-// OrDiscard returns l, or a logger that discards every record when l is nil.
-// Every constructor that accepts a logger defaults through it, so a partially
-// wired caller -- a unit test building a struct by hand, a binary run without
-// a destination -- can never panic a code path by logging.
-func OrDiscard(l *slog.Logger) *slog.Logger {
-	if l == nil {
-		return slog.New(slog.DiscardHandler)
-	}
-	return l
 }
 
 // Emit logs one registered event at the level and with the message its

@@ -9,8 +9,8 @@ import (
 	"github.com/spf13/pflag"
 	cliflag "k8s.io/component-base/cli/flag"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/authn/tokenreview"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
-	"github.com/rafpe/kube-oidc-proxy/pkg/util/flags"
 )
 
 // KubeOIDCProxyOptions are the proxy's own flags: impersonation, readiness,
@@ -162,12 +162,12 @@ func (t *TokenPassthroughOptions) AddFlags(fs *pflag.FlagSet) *TokenPassthroughO
 		"provided, the audience will default to the audience of the Kubernetes "+
 		"apiserver. Only used when --token-passthrough is also enabled.")
 
-	fs.DurationVar(&t.RequestTimeout, "token-passthrough-request-timeout", 10*time.Second, ""+
+	fs.DurationVar(&t.RequestTimeout, "token-passthrough-request-timeout", tokenreview.DefaultTimeout, ""+
 		"Timeout for each TokenReview request the proxy sends to the target API server "+
 		"when validating a passthrough token. Only used when --token-passthrough is "+
 		"also enabled.")
 
-	fs.DurationVar(&t.CacheSuccessTTL, "token-passthrough-cache-success-ttl", 10*time.Second, ""+
+	fs.DurationVar(&t.CacheSuccessTTL, "token-passthrough-cache-success-ttl", tokenreview.DefaultCacheSuccessTTL, ""+
 		"How long a successful TokenReview result is cached and reused without a new "+
 		"request to the target API server. A cached success outlives token revocation "+
 		"for up to this duration, so keep it low; the default matches the "+
@@ -175,7 +175,7 @@ func (t *TokenPassthroughOptions) AddFlags(fs *pflag.FlagSet) *TokenPassthroughO
 		"disable caching successful results. Only used when --token-passthrough is "+
 		"also enabled.")
 
-	fs.DurationVar(&t.CacheFailureTTL, "token-passthrough-cache-failure-ttl", 10*time.Second, ""+
+	fs.DurationVar(&t.CacheFailureTTL, "token-passthrough-cache-failure-ttl", tokenreview.DefaultCacheFailureTTL, ""+
 		"How long an unauthenticated TokenReview result is cached, shielding the "+
 		"target API server from repeated reviews of the same invalid token (for "+
 		"example during an OIDC issuer outage with --token-passthrough enabled). "+
@@ -200,7 +200,7 @@ func (e *ExtraHeaderOptions) AddFlags(fs *pflag.FlagSet) *ExtraHeaderOptions {
 			"By default this is the direct peer address; X-Forwarded-For is only "+
 			"honoured when the peer is within a --trusted-proxies network.")
 
-	fs.Var(flags.NewStringToStringSliceValue(&e.ExtraUserHeaders), "extra-user-headers",
+	fs.Var(newStringToStringSliceValue(&e.ExtraUserHeaders), "extra-user-headers",
 		"(Alpha) A list of key value pairs of extra user headers to pass with "+
 			"proxied requests as part of the impersonated request. A single key can "+
 			"hold multiple values.")
@@ -217,14 +217,14 @@ func (k *KubeOIDCProxyOptions) Validate() error {
 		errs = append(errs, errors.New("cannot add extra user headers when impersonation disabled"))
 	}
 
-	if k.TokenPassthrough.Enabled && k.TokenPassthrough.RequestTimeout <= 0 {
+	// The passthrough flags are checked regardless of --token-passthrough —
+	// like --subject-access-review-timeout — so a broken value never lies
+	// dormant until the feature is switched on. Zero is meaningful for the
+	// cache TTLs (it disables that class of caching); only negatives are
+	// configuration mistakes.
+	if k.TokenPassthrough.RequestTimeout <= 0 {
 		errs = append(errs, errors.New("--token-passthrough-request-timeout must be greater than zero"))
 	}
-
-	// Zero is meaningful for the cache TTLs (it disables that class of
-	// caching); only negatives are configuration mistakes. Checked regardless
-	// of --token-passthrough — like --subject-access-review-timeout — so a
-	// broken value never lies dormant until the feature is switched on.
 	if k.TokenPassthrough.CacheSuccessTTL < 0 {
 		errs = append(errs, errors.New("--token-passthrough-cache-success-ttl must not be negative"))
 	}

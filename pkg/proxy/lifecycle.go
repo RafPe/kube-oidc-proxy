@@ -149,7 +149,6 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 		req = reqctx.WithTerminationHolder(req)
 		req = reqctx.WithDecisionHolder(req)
 		ctx := req.Context()
-		l := logging.LoggerFrom(ctx)
 
 		// The verb and scope labels come from the RequestInfo the audit filter
 		// resolved ahead of this one; both projections collapse anything
@@ -171,7 +170,7 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 				}
 			}
 			rec.onStart = func(code int) {
-				logging.Emit(ctx, l, logging.EventRequestResponseStarted,
+				logging.Emit(ctx, p.requestLogger, logging.EventRequestResponseStarted,
 					slog.Int("http_status", code),
 					slog.Int64("time_to_headers_ms", time.Since(start).Milliseconds()))
 				// Only a success status opens a stream: a refused watch (401,
@@ -242,7 +241,7 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 				attrs = append(attrs, slog.String("reason", string(classified.Reason)))
 			}
 
-			logging.Emit(ctx, l, logging.EventRequestResponseCompleted, attrs...)
+			logging.Emit(ctx, p.requestLogger, logging.EventRequestResponseCompleted, attrs...)
 
 			// One request, one record, one observation: the metric carries the
 			// same status and termination the record does, by construction.

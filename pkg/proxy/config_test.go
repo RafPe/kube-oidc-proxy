@@ -68,9 +68,7 @@ func TestHeadersConfig(t *testing.T) {
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			p := newTestProxy(t)
-
-			p.config = test.config
+			p := newTestProxy(t, withConfig(*test.config))
 			w := httptest.NewRecorder()
 
 			req := withTestRequestID(&http.Request{

@@ -12,11 +12,11 @@
 // supplies its own Secret through the chart's tls.secretName and keeps the
 // issuing certificate in .state/proxy-ca.pem.
 //
-// Reusing helper.DeployIssuer and util.NewTLSSelfSignedCertKey means the demo
+// Reusing helper.DeployIssuer and keybundle.NewSelfSigned means the demo
 // authenticates against exactly the issuer, and trusts exactly the kind of
 // certificate, that the e2e suite does. This is the one demo binary that
 // depends on the e2e framework, and only for that deployment primitive: the
-// load generator takes everything it needs from test/util.
+// load generator takes everything it needs from the test/util packages.
 package main
 
 import (
@@ -37,7 +37,7 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/config"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/helper"
-	"github.com/rafpe/kube-oidc-proxy/test/util"
+	"github.com/rafpe/kube-oidc-proxy/test/util/keybundle"
 )
 
 func main() {
@@ -163,7 +163,7 @@ func mintProxyCertificate(client kubernetes.Interface, state, namespace, name, s
 	}
 
 	host := fmt.Sprintf("%s.%s.svc.cluster.local", service, namespace)
-	bundle, err := util.NewTLSSelfSignedCertKey(host, []net.IP{net.ParseIP("127.0.0.1")}, nil)
+	bundle, err := keybundle.NewSelfSigned(host, []net.IP{net.ParseIP("127.0.0.1")}, nil)
 	if err != nil {
 		return fmt.Errorf("failed to generate a serving certificate for %q: %w", host, err)
 	}

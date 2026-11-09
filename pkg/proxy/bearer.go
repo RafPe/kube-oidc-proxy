@@ -1,21 +1,17 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
-
-// Package token extracts bearer tokens from HTTP requests.
-package token
+package proxy
 
 import (
 	"net/http"
 	"strings"
 )
 
-// ParseFromRequest returns the bearer token from the request's Authorization
-// header, stripped of the leading "bearer" scheme. The second return value
+// bearerToken returns the bearer token from the request's Authorization
+// header, stripped of the leading "bearer" scheme, for the token-review path.
+// The OIDC path does not use it: bearertoken.Authenticator parses the header
+// for itself and removes it once a token is accepted. The second return value
 // reports whether a non-empty bearer token was present.
-func ParseFromRequest(req *http.Request) (string, bool) {
-	if req == nil || req.Header == nil {
-		return "", false
-	}
-
+func bearerToken(req *http.Request) (string, bool) {
 	auth := strings.TrimSpace(req.Header.Get("Authorization"))
 	if auth == "" {
 		return "", false

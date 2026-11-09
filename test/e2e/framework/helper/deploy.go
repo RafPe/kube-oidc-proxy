@@ -17,7 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
-	"github.com/rafpe/kube-oidc-proxy/test/util"
+	"github.com/rafpe/kube-oidc-proxy/test/util/keybundle"
 )
 
 // ProxyExtras holds additions to the proxy pod that cannot be expressed with
@@ -34,12 +34,12 @@ type ProxyExtras struct {
 }
 
 func (h *Helper) DeployProxy(ns *corev1.Namespace, issuerURL *url.URL, clientID string,
-	oidcKeyBundle *util.KeyBundle, extraVolumes []corev1.Volume, extraArgs ...string) (*util.KeyBundle, *url.URL, error) {
+	oidcKeyBundle *keybundle.Bundle, extraVolumes []corev1.Volume, extraArgs ...string) (*keybundle.Bundle, *url.URL, error) {
 	return h.DeployProxyWithExtras(ns, issuerURL, clientID, oidcKeyBundle, extraVolumes, nil, extraArgs...)
 }
 
 func (h *Helper) DeployProxyWithExtras(ns *corev1.Namespace, issuerURL *url.URL, clientID string,
-	oidcKeyBundle *util.KeyBundle, extraVolumes []corev1.Volume, extras *ProxyExtras, extraArgs ...string) (*util.KeyBundle, *url.URL, error) {
+	oidcKeyBundle *keybundle.Bundle, extraVolumes []corev1.Volume, extras *ProxyExtras, extraArgs ...string) (*keybundle.Bundle, *url.URL, error) {
 	authConfig := false
 	for _, a := range extraArgs {
 		if strings.HasPrefix(a, "--authentication-config") {
@@ -287,11 +287,11 @@ func (h *Helper) DeployProxyWithExtras(ns *corev1.Namespace, issuerURL *url.URL,
 	return bundle, appURL, nil
 }
 
-func (h *Helper) DeployIssuer(ns string) (*util.KeyBundle, *url.URL, error) {
+func (h *Helper) DeployIssuer(ns string) (*keybundle.Bundle, *url.URL, error) {
 	return h.DeployNamedIssuer(ns, kind.IssuerImageName)
 }
 
-func (h *Helper) DeployNamedIssuer(ns, name string) (*util.KeyBundle, *url.URL, error) {
+func (h *Helper) DeployNamedIssuer(ns, name string) (*keybundle.Bundle, *url.URL, error) {
 	cnt := corev1.Container{
 		Name:            kind.IssuerImageName,
 		Image:           kind.IssuerImageName,
@@ -325,7 +325,7 @@ func (h *Helper) DeployNamedIssuer(ns, name string) (*util.KeyBundle, *url.URL, 
 	return bundle, appURL, nil
 }
 
-func (h *Helper) deployApp(ns, name string, serviceType corev1.ServiceType, containers []corev1.Container, volumes ...corev1.Volume) (*util.KeyBundle, *url.URL, error) {
+func (h *Helper) deployApp(ns, name string, serviceType corev1.ServiceType, containers []corev1.Container, volumes ...corev1.Volume) (*keybundle.Bundle, *url.URL, error) {
 	host, appURL := h.appURL(ns, name, "6443")
 
 	var netIPs []net.IP
@@ -337,7 +337,7 @@ func (h *Helper) deployApp(ns, name string, serviceType corev1.ServiceType, cont
 		netIPs = append(netIPs, net.ParseIP("127.0.0.1"))
 	}
 
-	keyBundle, err := util.NewTLSSelfSignedCertKey(host, netIPs, nil)
+	keyBundle, err := keybundle.NewSelfSigned(host, netIPs, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -456,12 +456,24 @@ func (h *Helper) deployApp(ns, name string, serviceType corev1.ServiceType, cont
 
 	appNetURL, err := url.Parse(appURL)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to parse app url %q: %s",
+		return nil, nil, fmt.Errorf("failed to parse app url %q: %w",
 			appURL, err)
 	}
 
-	// this is a hack.  better to launch a pod that will wait until the URL is available
-	time.Sleep(2 * time.Second)
+	// The callers reach the app through its Service straight away, so wait
+	// for the Service to route to the ready pod rather than only for the pod.
+	// For a ClusterIP app (issuer, fake apiserver, webhook) the ready endpoint
+	// is the last thing observable from here. A NodePort app is reached from
+	// the host, through kube-proxy rules programmed after the endpoint turns
+	// ready, so for it wait until a TLS handshake through that path succeeds.
+	if err := h.WaitForServiceEndpoints(ns, svc.Name, time.Second*30); err != nil {
+		return nil, nil, err
+	}
+	if serviceType == corev1.ServiceTypeNodePort {
+		if err := h.WaitForTLSHandshake(appNetURL, time.Second*30); err != nil {
+			return nil, nil, err
+		}
+	}
 
 	return keyBundle, appNetURL, nil
 }

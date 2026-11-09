@@ -1,5 +1,5 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
-package flags
+package options
 
 import (
 	"encoding/csv"
@@ -29,7 +29,7 @@ func FuzzStringToStringSliceSet(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, val string) {
 		m := map[string][]string{}
-		v := NewStringToStringSliceValue(&m)
+		v := newStringToStringSliceValue(&m)
 
 		if err := v.Set(val); err != nil {
 			if len(m) != 0 {

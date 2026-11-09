@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 
@@ -17,20 +16,24 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 )
 
-// TestSanitizePathNilURL keeps the nil-URL guard covered: some call sites
-// construct a bare http.Request, and the access record must not panic on one.
-func TestSanitizePathNilURL(t *testing.T) {
-	if got := sanitizePath(&http.Request{}); got != "" {
-		t.Errorf("sanitizePath(bare request) = %q, want %q", got, "")
-	}
-	if got := sanitizePath(&http.Request{URL: &url.URL{Path: "/a\nb", RawQuery: "token=secret"}}); got != "/a b" {
-		t.Errorf("sanitizePath = %q, want %q", got, "/a b")
+// TestLogDecisionSanitizesThePath pins that the path field carries neither the
+// query string, which can hold a credential, nor a control character a client
+// could use to forge a second line in a text log.
+func TestLogDecisionSanitizesThePath(t *testing.T) {
+	a, cap := newAccess(t)
+	req := reqctx.WithRequestID(httptest.NewRequest(http.MethodGet, "/a?token=secret", nil), "id")
+	req.URL.Path = "/a\nb"
+
+	a.LogDecision(req, Decision{Allowed: true, AuthMethod: "oidc"})
+
+	if got := cap.Only(t, logging.EventRequestAccessDecided).String("path"); got != "/a b" {
+		t.Errorf("path = %q, want %q", got, "/a b")
 	}
 }
 
-func newAccess(t *testing.T) (*AccessLogger, *logtest.Capture) {
+func newAccess(t *testing.T) (*Logger, *logtest.Capture) {
 	root, cap := logtest.New(t, 0)
-	return NewAccessLogger(logging.ForComponent(root, logging.ComponentRequest)), cap
+	return New(logging.ForComponent(root, logging.ComponentRequest)), cap
 }
 
 func TestLogDecisionDeniedCarriesReasonAndRequestID(t *testing.T) {
@@ -205,7 +208,7 @@ func TestOutboundExtraDoesNotLeakOriginalUserClaims(t *testing.T) {
 	}
 
 	a.LogDecision(req, Decision{Allowed: true, AuthMethod: "oidc",
-		Inbound: &user.DefaultInfo{Name: "alice"}, Outbound: outbound})
+		Inbound: &user.DefaultInfo{Name: "alice"}, Impersonated: outbound})
 
 	if strings.Contains(cap.Raw(), "acme-secret-tenant") {
 		t.Fatalf("original user extras leaked into the access log:\n%s", cap.Raw())
@@ -228,8 +231,8 @@ func TestUIDsAreBounded(t *testing.T) {
 	req = reqctx.WithRequestID(req, "id")
 
 	a.LogDecision(req, Decision{Allowed: true, AuthMethod: "oidc",
-		Inbound:  &user.DefaultInfo{Name: "alice", UID: long},
-		Outbound: &user.DefaultInfo{Name: "alice", UID: long},
+		Inbound:      &user.DefaultInfo{Name: "alice", UID: long},
+		Impersonated: &user.DefaultInfo{Name: "alice", UID: long},
 	})
 
 	rec := cap.Only(t, logging.EventRequestAccessDecided)

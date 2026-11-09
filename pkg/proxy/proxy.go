@@ -19,7 +19,6 @@ import (
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/request/bearertoken"
 	"k8s.io/apiserver/pkg/server"
-	apiserveroptions "k8s.io/apiserver/pkg/server/options"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/transport"
 
@@ -29,7 +28,6 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/audit"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
-	utiltoken "github.com/rafpe/kube-oidc-proxy/pkg/util/token"
 )
 
 // ReservedIdentityPrefix is the username/group prefix Kubernetes reserves for
@@ -81,7 +79,7 @@ type Proxy struct {
 	// not of where it happens to be emitted from.
 	//
 	// None of the four is ever nil: New derives all of them from the required
-	// root logger, and the tests that build a Proxy by hand set them too.
+	// root logger.
 	requestLogger     *slog.Logger
 	oidcLogger        *slog.Logger
 	tokenReviewLogger *slog.Logger
@@ -96,26 +94,21 @@ type Proxy struct {
 	// resolved once at construction so the request path does no allocation.
 	allowedReservedGroups sets.Set[string]
 
-	// access writes the one access record per request. Injected rather than a
-	// package global so the destination is fixed at construction.
-	access *accesslog.AccessLogger
+	// access writes the access record; recordDecision keeps it to one per
+	// request. Injected rather than a package global so the destination is
+	// fixed at construction.
+	access *accesslog.Logger
 
 	// warnLimiter token-buckets the only two records a client can produce
 	// without bound, request.anomaly.detected and request.headers.dropped, and
 	// summarises what it dropped through log.warning.suppressed. The access
-	// record is deliberately not limited: a denial is always written. A nil
-	// limiter allows everything, so a partially wired Proxy never silences a
-	// warning.
+	// record is deliberately not limited: a denial is always written.
 	warnLimiter *logging.Limiter
 
-	// metrics is the process recorder every request observation goes to. A
-	// nil recorder is a no-op, so a Proxy built without one (every unit test
-	// that constructs the struct directly, and a binary run without
-	// --metrics-bind-address) records nothing and never nil-checks.
+	// metrics is the process recorder every request observation goes to. It
+	// is optional: a nil recorder is a no-op, so a binary run without
+	// --metrics-bind-address records nothing and never nil-checks.
 	metrics *metrics.Recorder
-
-	// shutdownLogger reports the pre-shutdown steps Shutdown runs.
-	shutdownLogger *slog.Logger
 
 	// stopped and listenerStopped are closed once serving has fully stopped
 	// and once the listener has stopped accepting; Start sets them and Wait
@@ -130,8 +123,9 @@ type Proxy struct {
 // Ownership: New takes ownership of the Config value (it copies it, including
 // the ExtraUserHeaders map, so later mutation of the caller's Config does not
 // change proxy behavior). The remaining pointers are collaborators the Proxy
-// borrows for its lifetime; it does not close or mutate them. The Proxy creates
-// and owns its auditor and shutdown hooks internally.
+// borrows for its lifetime; it does not close or mutate them. That includes the
+// auditor: the caller starts its backend before Start and flushes it once the
+// proxy has stopped serving.
 type Dependencies struct {
 	// Logger is the process root logger. New derives one component logger per
 	// collaborator from it; there is no package-level fallback, so it is
@@ -144,12 +138,14 @@ type Dependencies struct {
 	// configured OIDC issuers.
 	OIDCTokenAuthenticator authenticator.Token
 
-	// AuditOptions is the apiserver audit configuration the auditor applies.
-	// Optional: nil configures no audit backend.
-	AuditOptions *apiserveroptions.AuditOptions
+	// Auditor records the audit events of every request the proxy handles,
+	// refused ones included. Required; an auditor built from nil options
+	// configures no backend but keeps every audit filter in the chain.
+	Auditor *audit.Audit
 
-	// TokenReviewer authenticates passthrough bearer tokens, typically a
-	// tokenreview.TokenReview optionally wrapped by tokenreview.NewCached.
+	// TokenReviewer authenticates passthrough bearer tokens, typically the
+	// authenticator tokenreview.New returns, which applies the result cache
+	// its Config asks for.
 	TokenReviewer         authenticator.Token
 	SubjectAccessReviewer *subjectaccessreview.SubjectAccessReview
 	SecureServingInfo     *server.SecureServingInfo
@@ -180,10 +176,13 @@ func New(deps Dependencies) (*Proxy, error) {
 	if deps.Config == nil {
 		return nil, errors.New("proxy: Config is required")
 	}
+	if deps.Auditor == nil {
+		return nil, errors.New("proxy: Auditor is required")
+	}
 	// Reject inconsistent combinations: token-review handling has no reviewer to
 	// call, so enabling it without one can never work.
-	if deps.Config.TokenReview && deps.TokenReviewer == nil {
-		return nil, errors.New("proxy: TokenReview enabled but no TokenReviewer provided")
+	if deps.Config.TokenPassthrough && deps.TokenReviewer == nil {
+		return nil, errors.New("proxy: TokenPassthrough enabled but no TokenReviewer provided")
 	}
 
 	// Copy the Config and its mutable map at the construction boundary so that
@@ -208,16 +207,6 @@ func New(deps Dependencies) (*Proxy, error) {
 		return nil, err
 	}
 
-	auditor, err := audit.New(audit.Config{
-		Options:         deps.AuditOptions,
-		ExternalAddress: cfg.ExternalAddress,
-		SecureServing:   deps.SecureServingInfo,
-		Metrics:         deps.Metrics,
-	}, logging.ForComponent(deps.Logger, logging.ComponentAudit))
-	if err != nil {
-		return nil, err
-	}
-
 	clientTransport, err := roundTripperForRestConfig(deps.RestConfig)
 	if err != nil {
 		return nil, err
@@ -225,7 +214,7 @@ func New(deps Dependencies) (*Proxy, error) {
 	// A request forwarded without impersonation carries no credentials of the
 	// proxy's own: it goes out on a transport built without them.
 	var noAuthClientTransport http.RoundTripper
-	if cfg.DisableImpersonation || cfg.TokenReview {
+	if cfg.DisableImpersonation || cfg.TokenPassthrough {
 		noAuthClientTransport, err = roundTripperForRestConfig(&rest.Config{
 			APIPath: deps.RestConfig.APIPath,
 			Host:    deps.RestConfig.Host,
@@ -252,7 +241,6 @@ func New(deps Dependencies) (*Proxy, error) {
 		oidcLogger:               logging.ForComponent(deps.Logger, logging.ComponentOIDC),
 		tokenReviewLogger:        logging.ForComponent(deps.Logger, logging.ComponentTokenReview),
 		upstreamLogger:           logging.ForComponent(deps.Logger, logging.ComponentUpstream),
-		shutdownLogger:           logging.ForComponent(deps.Logger, logging.ComponentShutdown),
 		clientTransport:          clientTransport,
 		noAuthClientTransport:    noAuthClientTransport,
 		tokenReviewer:            deps.TokenReviewer,
@@ -262,8 +250,8 @@ func New(deps Dependencies) (*Proxy, error) {
 		trustedProxies:           trustedProxies,
 		allowedReservedGroups:    allowedReservedGroups,
 		oidcRequestAuthenticator: bearertoken.New(deps.OIDCTokenAuthenticator),
-		auditor:                  auditor,
-		access:                   accesslog.NewAccessLogger(requestLogger),
+		auditor:                  deps.Auditor,
+		access:                   accesslog.New(requestLogger),
 		warnLimiter:              logging.NewLimiter(warnLimiterRate, warnLimiterBurst, warnLimiterInterval, nil),
 	}, nil
 }
@@ -279,12 +267,8 @@ func (p *Proxy) Start(ctx context.Context) error {
 
 	proxyHandler := httputil.NewSingleHostReverseProxy(upstream)
 	proxyHandler.Transport = p
-	proxyHandler.ErrorHandler = p.handleError
+	proxyHandler.ErrorHandler = p.handleUpstreamError
 	proxyHandler.FlushInterval = p.config.FlushInterval
-
-	if err := p.auditor.Start(ctx); err != nil {
-		return err
-	}
 
 	go p.flushWarnLimiter(ctx) //nolint:gosec // G118: the final flush runs after ctx is cancelled and must not be scoped to it.
 
@@ -326,48 +310,41 @@ func (p *Proxy) flushWarnLimiter(ctx context.Context) {
 	}
 }
 
-// RoundTrip is called last and is used to manipulate the forwarded request using context.
+// RoundTrip is the reverse proxy's transport: it forwards an admitted request
+// to the API server the way the filter chain decided.
 func (p *Proxy) RoundTrip(req *http.Request) (*http.Response, error) {
-	// Here we have successfully authenticated so now need to determine whether
-	// we need use impersonation or not.
+	imp := reqctx.ImpersonationOf(req)
+	if imp == nil {
+		return nil, errNoImpersonationConfig
+	}
+
+	// Record the admitted request. Written before the upstream call so a watch
+	// or exec that runs for hours still produces its access record immediately.
+	p.recordDecision(req, accesslog.Decision{
+		Allowed:      true,
+		AuthMethod:   reqctx.AuthMethod(req),
+		Inbound:      imp.InboundUser,
+		Impersonated: imp.ImpersonatedUser,
+	})
 
 	// With impersonation disabled or the token passed through, the request is
 	// forwarded with no credentials of the proxy's own. The passthrough path
 	// left the client's bearer token in place, so the API server
 	// authenticates it; on the disabled path OIDC authentication consumed the
 	// token, so the request arrives anonymous.
-	if reqctx.NoImpersonation(req) {
-		p.recordDecision(req, accesslog.Decision{
-			Allowed:    true,
-			AuthMethod: reqctx.AuthMethod(req),
-			Inbound:    userFromContext(req),
-		})
+	if imp.Outbound == nil {
 		return p.noAuthClientTransport.RoundTrip(req)
 	}
 
-	impersonation := reqctx.ImpersonationOf(req)
-	if impersonation == nil {
-		return nil, errNoImpersonationConfig
-	}
-
-	rt := transport.NewImpersonatingRoundTripper(*impersonation.Outbound, p.clientTransport)
-
-	// Record the admitted request. Written before the upstream call so a watch
-	// or exec that runs for hours still produces its access record immediately.
-	p.recordDecision(req, accesslog.Decision{
-		Allowed:    true,
-		AuthMethod: reqctx.AuthMethod(req),
-		Inbound:    impersonation.InboundUser,
-		Outbound:   impersonation.ImpersonatedUser,
-	})
-
-	return rt.RoundTrip(req)
+	return transport.NewImpersonatingRoundTripper(*imp.Outbound, p.clientTransport).RoundTrip(req)
 }
 
+// reviewToken reports whether the API server's TokenReview accepts the
+// request's bearer token, recording the attempt.
 func (p *Proxy) reviewToken(req *http.Request) bool {
 	ctx := req.Context()
 
-	bearer, found := utiltoken.ParseFromRequest(req)
+	bearer, found := bearerToken(req)
 	if !found {
 		logging.Emit(ctx, p.tokenReviewLogger, logging.EventAuthnTokenMissing)
 		p.metrics.AuthenticationAttempt(metrics.AuthMethodTokenReview, metrics.AuthRejected)
@@ -397,10 +374,17 @@ func (p *Proxy) reviewToken(req *http.Request) bool {
 }
 
 // recordDecision writes the one access record a request produces and counts
-// it. Every decision goes through here, so the metric and the record can
-// never disagree about what was decided.
+// it. Every decision goes through here, so the metric and the record can never
+// disagree about what was decided, and this is where the one-per-request rule
+// is kept: RoundTrip records an admitted request before the upstream call, so
+// a failure arriving after that -- a client that cancelled, an upstream that
+// broke -- has no decision left to make and is dropped here.
 func (p *Proxy) recordDecision(req *http.Request, d accesslog.Decision) {
+	if reqctx.DecisionRecorded(req) {
+		return
+	}
 	p.access.LogDecision(req, d)
+	reqctx.MarkDecisionRecorded(req)
 	p.metrics.AccessDecision(d.AuthMethod, d.Allowed, d.Reason)
 }
 
@@ -416,29 +400,4 @@ func roundTripperForRestConfig(config *rest.Config) (http.RoundTripper, error) {
 	}
 
 	return clientRT, nil
-}
-
-// Shutdown runs the proxy's pre-shutdown step, flushing the audit backend, and
-// reports it as a hook record so a shutdown that takes too long names the step
-// responsible. It is called once, after the listener has stopped.
-func (p *Proxy) Shutdown() error {
-	const hook = "AuditBackend"
-	ctx := context.Background()
-
-	start := time.Now()
-	err := p.auditor.Shutdown()
-	elapsed := time.Since(start)
-
-	if err != nil {
-		logging.Emit(ctx, p.shutdownLogger, logging.EventProxyHookFailed,
-			slog.String("hook", hook),
-			slog.Int64("duration_ms", elapsed.Milliseconds()),
-			logging.ErrAttr(err))
-		return fmt.Errorf("pre-shutdown hook %q failed: %w", hook, err)
-	}
-
-	logging.Emit(ctx, p.shutdownLogger, logging.EventProxyHookCompleted,
-		slog.String("hook", hook),
-		slog.Int64("duration_ms", elapsed.Milliseconds()))
-	return nil
 }
