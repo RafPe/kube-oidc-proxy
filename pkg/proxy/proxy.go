@@ -312,6 +312,10 @@ func (p *Proxy) reverseProxy() (*httputil.ReverseProxy, error) {
 
 // Wait blocks until the listener has stopped accepting and serving has fully
 // stopped. Before a successful Start there is nothing to wait for.
+//
+// Unlike the metrics and readiness listeners, Wait returns no error: the
+// apiserver SecureServingInfo that serves the proxy reports its shutdown only
+// by closing channels, and logs an overrun drain through klog itself.
 func (p *Proxy) Wait() {
 	if p.stopped == nil {
 		return
