@@ -124,9 +124,8 @@ access record and are never rate-limited: a bad token must not be able to buy a
 warning line, and denial *rates* belong in metrics. Only
 `request.anomaly.detected` and `request.headers.dropped` are token-bucketed,
 one bucket per event type and reason; when a bucket drops records,
-`log.warning.suppressed` reports `suppressed_event_type`, `warning_reason`
-(only when the suppressed records carry a `reason`), `suppressed_count` and
-`interval_seconds`.
+`log.warning.suppressed` reports `suppressed_event_type`, `warning_reason`,
+`suppressed_count` and `interval_seconds`.
 
 `--logging-format` selects `json` (the default) or `text` for the whole stream.
 Both flags are documented in the
@@ -153,7 +152,7 @@ that must be present beyond `time`, `level`, `msg`, `schema_version`,
 | `authz.sar.failed` | `sar` | ERROR or DEBUG | `request_id`, `reason`, `error_message` | The SubjectAccessReview call failed. Carries reason=authorization_dependency_error, or reason=client_canceled at DEBUG when the client hung up before the review answered. |
 | `cache.sar.lookup` | `sar` | DEBUG | `request_id`, `cache_result` | One SubjectAccessReview cache consultation. Carries decision on a hit, never the cache key. |
 | `cache.tokenreview.lookup` | `tokenreview` | DEBUG | `request_id`, `cache_result` | One TokenReview cache consultation. Carries authenticated on a hit, never the cache key. |
-| `log.warning.suppressed` | any | WARN | `suppressed_event_type`, `suppressed_count`, `interval_seconds` | Token-bucket summary of dropped warning records of one event type. Carries warning_reason when the suppressed records carry a reason. |
+| `log.warning.suppressed` | any | WARN | `suppressed_event_type`, `warning_reason`, `suppressed_count`, `interval_seconds` | Token-bucket summary of dropped warning records of one event type and reason. |
 | `metrics.scrape.failed` | `metrics` | ERROR | `error_message` | Gathering or encoding the exposition failed; the scrape was answered with 500. |
 | `metrics.server.failed` | `metrics` | ERROR | `error_message` | The metrics HTTP server returned an error. |
 | `metrics.server.started` | `metrics` | INFO | `address` | The metrics listener is serving /metrics. |
@@ -259,7 +258,7 @@ logged. The cache identity is in the event type, not in a field.
 | `readiness_mode` | string | `any`, `all` | `proxy.config.loaded`, `readiness.proxy.ready` |
 | `hook` | string | pre-shutdown hook name | `proxy.hook.completed` |
 | `suppressed_event_type` | string | the `event_type` of the suppressed records | `log.warning.suppressed` |
-| `warning_reason` | string | the suppressed records' `reason` | `log.warning.suppressed`, absent when they carry none |
+| `warning_reason` | string | the suppressed records' `reason`; `headers_dropped` for `request.headers.dropped`, which carries none | `log.warning.suppressed` |
 | `suppressed_count` | int | records dropped in the interval | `log.warning.suppressed` |
 | `interval_seconds` | int | summary interval | `log.warning.suppressed` |
 | `address` | string | bound listen address | `proxy.server.started`, `metrics.server.started`, `readiness.server.started` |

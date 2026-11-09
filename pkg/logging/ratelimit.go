@@ -35,10 +35,11 @@ type Limiter struct {
 	entries map[WarningKey]*limiterEntry
 }
 
-// WarningKey names one bucket: the warning record it limits and, for a record
-// that carries a reason field, the reason. Keyed by the record rather than by
-// a free-form string, so the summary reports exactly what was dropped: a
-// record without a reason is summarised without one.
+// WarningKey names one bucket: the warning record it limits and the reason the
+// summary reports as warning_reason. For a record that carries a reason field
+// it is that reason; a record without one names its bucket instead. Keyed by
+// the record as well as the reason, so the summary also reports which event
+// was dropped.
 type WarningKey struct {
 	Event  EventType
 	Reason string
@@ -96,14 +97,11 @@ func (l *Limiter) Allow(key WarningKey) bool {
 // nothing produces no record, so a quiet proxy stays quiet.
 func (l *Limiter) Flush(ctx context.Context, logger *slog.Logger) {
 	for _, s := range l.drain() {
-		attrs := []slog.Attr{slog.String("suppressed_event_type", string(s.key.Event))}
-		if s.key.Reason != "" {
-			attrs = append(attrs, slog.String("warning_reason", Sanitize(s.key.Reason)))
-		}
-		attrs = append(attrs,
+		Emit(ctx, logger, EventLogWarningSuppressed,
+			slog.String("suppressed_event_type", string(s.key.Event)),
+			slog.String("warning_reason", Sanitize(s.key.Reason)),
 			slog.Int("suppressed_count", s.dropped),
 			slog.Int("interval_seconds", int(l.summaryEvery.Seconds())))
-		Emit(ctx, logger, EventLogWarningSuppressed, attrs...)
 	}
 }
 

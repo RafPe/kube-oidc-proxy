@@ -65,13 +65,12 @@ func TestLimiterRefillsAtTheConfiguredRatePerSecond(t *testing.T) {
 	}
 }
 
-// TestLimiterKeepsKeysApartAndOmitsAbsentReason pins two properties of the
-// key: a record without a reason is summarised without warning_reason rather
-// than with a made-up bucket name, and two keys never share a bucket.
-func TestLimiterKeepsKeysApartAndOmitsAbsentReason(t *testing.T) {
+// TestLimiterKeepsKeysApart pins that two keys never share a bucket and that
+// the summary names both the event and the key's reason.
+func TestLimiterKeepsKeysApart(t *testing.T) {
 	now := time.Unix(0, 0)
 	l := logging.NewLimiter(1, 1, time.Minute, func() time.Time { return now })
-	dropped := logging.WarningKey{Event: logging.EventRequestHeadersDropped}
+	dropped := logging.WarningKey{Event: logging.EventRequestHeadersDropped, Reason: "headers_dropped"}
 
 	for _, key := range []logging.WarningKey{dropped, reservedIdentityKey} {
 		if !l.Allow(key) {
@@ -86,7 +85,7 @@ func TestLimiterKeepsKeysApartAndOmitsAbsentReason(t *testing.T) {
 	if rec.String("suppressed_event_type") != string(logging.EventRequestHeadersDropped) {
 		t.Fatalf("suppressed_event_type = %q", rec.String("suppressed_event_type"))
 	}
-	if _, ok := rec["warning_reason"]; ok {
-		t.Fatalf("warning_reason present on a record whose suppressed event has no reason: %v", rec)
+	if rec.String("warning_reason") != "headers_dropped" {
+		t.Fatalf("warning_reason = %q, want headers_dropped", rec.String("warning_reason"))
 	}
 }

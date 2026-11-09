@@ -340,9 +340,9 @@ var registry = map[EventType]EventSpec{
 	EventLogWarningSuppressed: {
 		Components: nil, // any
 		Level:      slog.LevelWarn,
-		Required:   []string{"suppressed_event_type", "suppressed_count", "interval_seconds"},
+		Required:   []string{"suppressed_event_type", "warning_reason", "suppressed_count", "interval_seconds"},
 		Message:    "warnings suppressed",
-		Summary:    "Token-bucket summary of dropped warning records of one event type. Carries warning_reason when the suppressed records carry a reason.",
+		Summary:    "Token-bucket summary of dropped warning records of one event type and reason.",
 	},
 	EventMetricsServerStarted: {
 		Components: []Component{ComponentMetrics},

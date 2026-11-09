@@ -2,6 +2,7 @@
 package proxy
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +25,27 @@ func TestUntrustedForwardedHeadersDroppedIsWarn(t *testing.T) {
 	rec := p.logs.Only(t, logging.EventRequestHeadersDropped)
 	if rec.String("level") != "WARN" || !strings.Contains(fmt.Sprint(rec["dropped_headers"]), "x-forwarded-for") {
 		t.Fatalf("%v", rec)
+	}
+}
+
+// TestDroppedHeadersSummaryKeepsItsReason pins the suppression summary for
+// request.headers.dropped to the warning_reason it has always carried, so a
+// saved query on warning_reason="headers_dropped" keeps counting.
+func TestDroppedHeadersSummaryKeepsItsReason(t *testing.T) {
+	p := newTestProxy(t)
+	h := p.withSanitizedForwardHeaders(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	for i := 0; i < 20; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = "203.0.113.9:1"
+		req.Header.Set("X-Forwarded-For", "1.2.3.4")
+		h.ServeHTTP(httptest.NewRecorder(), withTestRequestID(req))
+	}
+	p.warnLimiter.Flush(context.Background(), p.requestLogger)
+
+	rec := p.logs.Only(t, logging.EventLogWarningSuppressed)
+	if rec.String("warning_reason") != "headers_dropped" ||
+		rec.String("suppressed_event_type") != string(logging.EventRequestHeadersDropped) {
+		t.Fatalf("summary = %v, want warning_reason=headers_dropped for request.headers.dropped", rec)
 	}
 }
 

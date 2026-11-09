@@ -20,8 +20,10 @@ import (
 )
 
 // headersDroppedKey is the limiter bucket request.headers.dropped draws from.
-// The record carries no reason, so neither does its key.
-var headersDroppedKey = logging.WarningKey{Event: logging.EventRequestHeadersDropped}
+// The record carries no reason field, so its key names the bucket
+// headers_dropped: the warning_reason its suppression summaries have always
+// reported, which saved queries select on.
+var headersDroppedKey = logging.WarningKey{Event: logging.EventRequestHeadersDropped, Reason: "headers_dropped"}
 
 // userFromContext returns the identity the request presented, or nil when it
 // was refused before one was established.
