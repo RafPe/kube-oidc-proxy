@@ -144,7 +144,7 @@ func TestCachedReviewer(t *testing.T) {
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			var calls atomic.Int64
-			reviewer := newLiveReviewer(&fake.FakeReviewer{
+			reviewer := newLiveReviewer(&fake.Reviewer{
 				CreateFn: func(review *authv1.TokenReview) (*authv1.TokenReview, error) {
 					return test.create(calls.Add(1), review)
 				},
@@ -206,7 +206,7 @@ func TestCachedReviewHonoursCallerCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(testRequestContext())
 	defer cancel()
 
-	reviewer := newLiveReviewer(&fake.FakeReviewer{
+	reviewer := newLiveReviewer(&fake.Reviewer{
 		CreateCtxFn: func(reviewCtx context.Context, _ *authv1.TokenReview) (*authv1.TokenReview, error) {
 			// Cancel the inbound request while its review is in flight;
 			// the review's context must observe the cancellation.
@@ -244,7 +244,7 @@ func TestCachedReviewHonoursTimeoutAboveThirtySeconds(t *testing.T) {
 
 	var gotDeadline time.Time
 	var hadDeadline bool
-	reviewer := newLiveReviewer(&fake.FakeReviewer{
+	reviewer := newLiveReviewer(&fake.Reviewer{
 		CreateCtxFn: func(reviewCtx context.Context, _ *authv1.TokenReview) (*authv1.TokenReview, error) {
 			gotDeadline, hadDeadline = reviewCtx.Deadline()
 			return authenticatedReview(), nil
@@ -275,7 +275,7 @@ func TestCachedReviewSeparatesAudienceSets(t *testing.T) {
 	// not. A cross-audience cache collision would surface as a wrong result
 	// or a missing apiserver call.
 	var calls atomic.Int64
-	client := &fake.FakeReviewer{
+	client := &fake.Reviewer{
 		CreateFn: func(review *authv1.TokenReview) (*authv1.TokenReview, error) {
 			calls.Add(1)
 			if reflect.DeepEqual(review.Spec.Audiences, []string{"aud-1"}) {
@@ -341,7 +341,7 @@ func TestCachedReviewBoundsEntryCount(t *testing.T) {
 	const extra = 8
 
 	var calls atomic.Int64
-	reviewer := newLiveReviewer(&fake.FakeReviewer{
+	reviewer := newLiveReviewer(&fake.Reviewer{
 		CreateFn: func(*authv1.TokenReview) (*authv1.TokenReview, error) {
 			calls.Add(1)
 			return unauthenticatedReview(), nil
@@ -393,7 +393,7 @@ func TestCachedReviewConcurrentMissesRunIndependently(t *testing.T) {
 	bothInFlight := make(chan struct{})
 
 	var calls atomic.Int64
-	reviewer := newLiveReviewer(&fake.FakeReviewer{
+	reviewer := newLiveReviewer(&fake.Reviewer{
 		CreateCtxFn: func(context.Context, *authv1.TokenReview) (*authv1.TokenReview, error) {
 			if calls.Add(1) == 2 {
 				close(bothInFlight)
@@ -436,7 +436,7 @@ func TestCachedReviewSendsConfiguredAudiences(t *testing.T) {
 	audiences := []string{"aud-1", "aud-2"}
 
 	var gotAudiences []string
-	reviewer := newLiveReviewer(&fake.FakeReviewer{
+	reviewer := newLiveReviewer(&fake.Reviewer{
 		CreateFn: func(review *authv1.TokenReview) (*authv1.TokenReview, error) {
 			gotAudiences = review.Spec.Audiences
 			return authenticatedReview(), nil

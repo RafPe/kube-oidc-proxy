@@ -22,14 +22,14 @@ import (
 // itself to the shared fake, so the cap tests can prove that a refused request
 // never submits a SubjectAccessReview at all.
 type countingFakeReviewer struct {
-	*fake.FakeReviewer
+	*fake.Reviewer
 
 	calls atomic.Int32
 }
 
 func (c *countingFakeReviewer) Create(ctx context.Context, req *v1.SubjectAccessReview, co metav1.CreateOptions) (*v1.SubjectAccessReview, error) {
 	c.calls.Add(1)
-	return c.FakeReviewer.Create(ctx, req, co)
+	return c.Reviewer.Create(ctx, req, co)
 }
 
 // blockingReviewer is a local test double implementing

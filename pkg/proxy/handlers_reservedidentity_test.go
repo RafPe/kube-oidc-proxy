@@ -187,7 +187,7 @@ func TestWithAuthenticateRequestAllowsAllowlistedReservedGroup(t *testing.T) {
 // system: group would otherwise feed the authorization decision — not merely
 // the impersonation headers. No review may be submitted at all.
 func TestReservedIdentityRejectedBeforeSubjectAccessReview(t *testing.T) {
-	reviewer := &countingReviewer{FakeReviewer: fakesubjectaccessreview.New(nil)}
+	reviewer := &countingReviewer{Reviewer: fakesubjectaccessreview.New(nil)}
 	sar := subjectaccessreview.New(reviewer, subjectaccessreview.Config{MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 	p := newTestProxy(t, withSubjectAccessReviewer(sar))
 

@@ -84,7 +84,7 @@ func TestCheckAuthorizedForImpersonationHeaderValueCap(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			reviewer := &countingFakeReviewer{FakeReviewer: fake.New(nil)}
+			reviewer := &countingFakeReviewer{Reviewer: fake.New(nil)}
 			sar := New(reviewer, Config{Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: tc.max}, slog.New(slog.DiscardHandler))
 
 			target, err := sar.ResolveImpersonation(
@@ -230,7 +230,7 @@ func TestStripImpersonationHeaders(t *testing.T) {
 // order the header map iterates in.
 func TestUnknownImpersonationHeaderIsRefusedBeforeAnyReview(t *testing.T) {
 	for i := 0; i < 20; i++ {
-		reviewer := &countingFakeReviewer{FakeReviewer: fake.New(nil)}
+		reviewer := &countingFakeReviewer{Reviewer: fake.New(nil)}
 		sar := New(reviewer, Config{Timeout: DefaultTimeout, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 		req := (&http.Request{Header: http.Header{
 			"Impersonate-User":  {"bob"},

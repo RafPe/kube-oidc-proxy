@@ -46,7 +46,7 @@ func TestLiveReviewOutcomesAreCounted(t *testing.T) {
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			rec := newMetricsRecorder(t)
-			tr := newLiveReviewer(&fake.FakeReviewer{CreateFn: tc.create}, Config{Metrics: rec}, discardLogger)
+			tr := newLiveReviewer(&fake.Reviewer{CreateFn: tc.create}, Config{Metrics: rec}, discardLogger)
 			_, _, _ = tr.AuthenticateToken(testRequestContext(), "tok")
 			if v, _ := metricstest.Value(t, rec.Gatherer(), metricReviewRequests, map[string]string{"review": "tokenreview", "outcome": tc.outcome}); v != 1 {
 				t.Fatalf("review_requests{tokenreview,%s} = %v, want 1", tc.outcome, v)
@@ -60,7 +60,7 @@ func TestLiveReviewOutcomesAreCounted(t *testing.T) {
 
 func TestCachedReviewCountsHitsAndMissesButOneAPICall(t *testing.T) {
 	rec := newMetricsRecorder(t)
-	tr := newLiveReviewer(&fake.FakeReviewer{CreateFn: func(*authv1.TokenReview) (*authv1.TokenReview, error) {
+	tr := newLiveReviewer(&fake.Reviewer{CreateFn: func(*authv1.TokenReview) (*authv1.TokenReview, error) {
 		return authenticatedReview(), nil
 	}}, Config{Metrics: rec}, discardLogger)
 	c := newCachedReviewer(tr, 10*time.Second, 10*time.Second, 16, clock.RealClock{})

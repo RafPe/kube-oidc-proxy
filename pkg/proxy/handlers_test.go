@@ -253,14 +253,14 @@ func TestRejectedTokenReviewIsNotAFailure(t *testing.T) {
 // countingReviewer records how many SubjectAccessReviews were submitted while
 // delegating the decision itself to the shared fake.
 type countingReviewer struct {
-	*fakesubjectaccessreview.FakeReviewer
+	*fakesubjectaccessreview.Reviewer
 
 	reviews atomic.Int64
 }
 
 func (c *countingReviewer) Create(ctx context.Context, req *azv1.SubjectAccessReview, co metav1.CreateOptions) (*azv1.SubjectAccessReview, error) {
 	c.reviews.Add(1)
-	return c.FakeReviewer.Create(ctx, req, co)
+	return c.Reviewer.Create(ctx, req, co)
 }
 
 // TestUpstreamErrorHandlerClassifiesTransportErrors pins the upstream handler:

@@ -152,7 +152,7 @@ func TestImpersonationAppliedLogsHeaderNamesOnly(t *testing.T) {
 // than the configured cap is answered with 431 before any SubjectAccessReview
 // is submitted, and never reaches the inner handler.
 func TestOverCapImpersonationRejectedBeforeSubjectAccessReview(t *testing.T) {
-	reviewer := &countingReviewer{FakeReviewer: fakesubjectaccessreview.New(nil)}
+	reviewer := &countingReviewer{Reviewer: fakesubjectaccessreview.New(nil)}
 	sar := subjectaccessreview.New(reviewer, subjectaccessreview.Config{MaxHeaderValues: 2}, slog.New(slog.DiscardHandler))
 	p := newTestProxy(t, withSubjectAccessReviewer(sar))
 
@@ -195,7 +195,7 @@ func TestOverCapImpersonationRejectedBeforeSubjectAccessReview(t *testing.T) {
 // specRecordingReviewer records the requester groups of every review it is
 // asked, and allows them all.
 type specRecordingReviewer struct {
-	*fakesubjectaccessreview.FakeReviewer
+	*fakesubjectaccessreview.Reviewer
 
 	mu     sync.Mutex
 	groups [][]string
@@ -222,7 +222,7 @@ func TestSubjectAccessReviewRequesterIsAuthenticated(t *testing.T) {
 		"no token groups":         nil,
 	} {
 		t.Run(name, func(t *testing.T) {
-			reviewer := &specRecordingReviewer{FakeReviewer: fakesubjectaccessreview.New(nil)}
+			reviewer := &specRecordingReviewer{Reviewer: fakesubjectaccessreview.New(nil)}
 			sar := subjectaccessreview.New(reviewer, subjectaccessreview.Config{MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 			p := newTestProxy(t, withSubjectAccessReviewer(sar))
 
@@ -258,7 +258,7 @@ func TestSubjectAccessReviewRequesterIsAuthenticated(t *testing.T) {
 // attributeRecordingReviewer allows every review and records what each one
 // asked about, so a test can check the client's request was still authorized.
 type attributeRecordingReviewer struct {
-	*fakesubjectaccessreview.FakeReviewer
+	*fakesubjectaccessreview.Reviewer
 
 	mu    sync.Mutex
 	asked []azv1.ResourceAttributes
@@ -388,7 +388,7 @@ func TestClientCannotAssertProxyWrittenExtras(t *testing.T) {
 func impersonateBob(t *testing.T, cfg Config, inbound authuser.Info, extras map[string]string) (*reqctx.ImpersonationRecord, *attributeRecordingReviewer) {
 	t.Helper()
 
-	reviewer := &attributeRecordingReviewer{FakeReviewer: fakesubjectaccessreview.New(nil)}
+	reviewer := &attributeRecordingReviewer{Reviewer: fakesubjectaccessreview.New(nil)}
 	sar := subjectaccessreview.New(reviewer, subjectaccessreview.Config{MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 	p := newTestProxy(t, withSubjectAccessReviewer(sar))
 	p.config = &cfg

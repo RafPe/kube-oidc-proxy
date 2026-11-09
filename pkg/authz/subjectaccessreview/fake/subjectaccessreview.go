@@ -11,19 +11,26 @@ import (
 	clientazv1 "k8s.io/client-go/kubernetes/typed/authorization/v1"
 )
 
-var _ clientazv1.SubjectAccessReviewInterface = &FakeReviewer{}
+var _ clientazv1.SubjectAccessReviewInterface = &Reviewer{}
 
-type FakeReviewer struct {
+// Reviewer is a fixed-policy SubjectAccessReviewInterface: it allows a small,
+// hard-coded set of impersonation targets the package tests use (user
+// jjackson, group group3, uid 1-2-3-4, extra remoteaddr=1.2.3.4) and denies
+// everything else, or fails every review with the error it was built with.
+type Reviewer struct {
 	err error
 }
 
-func New(err error) *FakeReviewer {
-	return &FakeReviewer{
+// New returns a Reviewer that fails every review with err, or applies its fixed
+// policy when err is nil.
+func New(err error) *Reviewer {
+	return &Reviewer{
 		err: err,
 	}
 }
 
-func (f *FakeReviewer) Create(ctx context.Context, req *azv1.SubjectAccessReview, co metav1.CreateOptions) (*azv1.SubjectAccessReview, error) {
+// Create implements SubjectAccessReviewInterface.
+func (f *Reviewer) Create(ctx context.Context, req *azv1.SubjectAccessReview, co metav1.CreateOptions) (*azv1.SubjectAccessReview, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -65,7 +72,7 @@ func (f *FakeReviewer) Create(ctx context.Context, req *azv1.SubjectAccessReview
 		return req, nil
 	}
 
-	// not an expcted test, or didn't conform to known allowed, fail
+	// Anything outside the fixed policy is denied.
 	req.Status = azv1.SubjectAccessReviewStatus{
 		Allowed: false,
 	}

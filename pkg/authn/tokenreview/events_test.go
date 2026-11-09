@@ -26,7 +26,7 @@ func authenticatedResponse(*authv1.TokenReview) (*authv1.TokenReview, error) {
 // newLoggingTokenReview builds a live reviewer that logs through root as the
 // tokenreview component, so the records a review emits are observable.
 func newLoggingTokenReview(root *slog.Logger, create func(*authv1.TokenReview) (*authv1.TokenReview, error)) *liveReviewer {
-	return newLiveReviewer(&fake.FakeReviewer{CreateFn: create}, Config{}, logging.ForComponent(root, logging.ComponentTokenReview))
+	return newLiveReviewer(&fake.Reviewer{CreateFn: create}, Config{}, logging.ForComponent(root, logging.ComponentTokenReview))
 }
 
 // newCachedWithFake builds a cached reviewer that logs through root as the

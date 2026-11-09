@@ -181,7 +181,7 @@ func TestNewPanicsOnNilLogger(t *testing.T) {
 // in ErrCreateTokenReview does not hide its cause: a caller deciding whether
 // the client hung up still finds context.Canceled through the cache layer.
 func TestFailedReviewKeepsTheContextErrorMatchable(t *testing.T) {
-	client := &fake.FakeReviewer{
+	client := &fake.Reviewer{
 		CreateCtxFn: func(ctx context.Context, _ *authv1.TokenReview) (*authv1.TokenReview, error) {
 			<-ctx.Done()
 			return nil, ctx.Err()
