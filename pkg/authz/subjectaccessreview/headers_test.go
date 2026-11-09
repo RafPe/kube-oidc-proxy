@@ -10,7 +10,7 @@ import (
 
 	"k8s.io/apiserver/pkg/authentication/user"
 
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview/fake"
+	"github.com/rafpe/kube-oidc-proxy/pkg/authz/subjectaccessreview/fake"
 )
 
 // TestCheckAuthorizedForImpersonationHeaderValueCap pins the SAR fan-out cap:

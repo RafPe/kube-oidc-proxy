@@ -25,11 +25,11 @@ import (
 	authuser "k8s.io/apiserver/pkg/authentication/user"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/authn/tokenreview"
+	fakesubjectaccessreview "github.com/rafpe/kube-oidc-proxy/pkg/authz/subjectaccessreview/fake"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
-	fakesubjectaccessreview "github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview/fake"
 )
 
 // assertRecord checks the three fields every first-party record is queried by:

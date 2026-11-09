@@ -15,9 +15,9 @@ import (
 	authuser "k8s.io/apiserver/pkg/authentication/user"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/authz/subjectaccessreview"
+	fakesubjectaccessreview "github.com/rafpe/kube-oidc-proxy/pkg/authz/subjectaccessreview/fake"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
-	fakesubjectaccessreview "github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview/fake"
 )
 
 // TestCheckReservedIdentity covers the username/group asymmetry. Username has

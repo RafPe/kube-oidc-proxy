@@ -22,12 +22,12 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
 	"github.com/rafpe/kube-oidc-proxy/pkg/authn"
+	"github.com/rafpe/kube-oidc-proxy/pkg/authz/subjectaccessreview"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/probe"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/audit"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 	"github.com/rafpe/kube-oidc-proxy/pkg/util/signals"
 )
 

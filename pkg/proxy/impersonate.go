@@ -12,9 +12,9 @@ import (
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/client-go/transport"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/authz/subjectaccessreview"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 )
 
 // Extra keys the proxy itself puts on an outbound impersonated request. They

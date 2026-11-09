@@ -10,9 +10,9 @@ import (
 
 	"k8s.io/apiserver/pkg/authentication/user"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/authz/subjectaccessreview/fake"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics/metricstest"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview/fake"
 )
 
 const (

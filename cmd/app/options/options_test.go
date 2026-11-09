@@ -9,7 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
+	"github.com/rafpe/kube-oidc-proxy/pkg/authz/subjectaccessreview"
 )
 
 func TestOidcFlagsChanged(t *testing.T) {

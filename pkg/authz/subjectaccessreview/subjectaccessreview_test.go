@@ -15,8 +15,8 @@ import (
 	v1 "k8s.io/api/authorization/v1"
 	"k8s.io/apiserver/pkg/authentication/user"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/authz/subjectaccessreview/fake"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview/fake"
 )
 
 // testRequestContext returns a context carrying a request id, exactly as the

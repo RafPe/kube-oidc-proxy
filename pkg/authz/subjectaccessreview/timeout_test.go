@@ -15,7 +15,7 @@ import (
 	"k8s.io/apiserver/pkg/authentication/user"
 	clientazv1 "k8s.io/client-go/kubernetes/typed/authorization/v1"
 
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview/fake"
+	"github.com/rafpe/kube-oidc-proxy/pkg/authz/subjectaccessreview/fake"
 )
 
 // countingFakeReviewer counts submitted reviews while delegating the decision

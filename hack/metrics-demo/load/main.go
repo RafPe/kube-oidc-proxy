@@ -55,7 +55,7 @@ const (
 	// is bounded and a persistent failure to overlap is still a failure.
 	coalesceAttempts = 3
 
-	// sarCacheTTL is pkg/proxy/subjectaccessreview.DefaultAllowCacheTTL, which
+	// sarCacheTTL is pkg/authz/subjectaccessreview.DefaultAllowCacheTTL, which
 	// the chart does not override in the demo. The coalescing scenario waits
 	// this out so the replica it addresses answers from a genuinely cold
 	// cache; without the wait it would measure the cache, not the flight

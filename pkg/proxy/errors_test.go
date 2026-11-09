@@ -13,11 +13,11 @@ import (
 	"testing"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/authn/tokenreview"
+	"github.com/rafpe/kube-oidc-proxy/pkg/authz/subjectaccessreview"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics/metricstest"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 )
 
 func newFakeR() *http.Request {

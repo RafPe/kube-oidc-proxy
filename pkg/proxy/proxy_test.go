@@ -24,13 +24,13 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/authn"
 	"github.com/rafpe/kube-oidc-proxy/pkg/authn/authntest"
+	"github.com/rafpe/kube-oidc-proxy/pkg/authz/subjectaccessreview"
+	fakesubjectaccessreview "github.com/rafpe/kube-oidc-proxy/pkg/authz/subjectaccessreview/fake"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/audit"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
-	fakesubjectaccessreview "github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview/fake"
 )
 
 type fakeProxy struct {

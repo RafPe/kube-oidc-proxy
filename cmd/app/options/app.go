@@ -10,7 +10,7 @@ import (
 	cliflag "k8s.io/component-base/cli/flag"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/authn/tokenreview"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
+	"github.com/rafpe/kube-oidc-proxy/pkg/authz/subjectaccessreview"
 )
 
 // KubeOIDCProxyOptions are the proxy's own flags: impersonation, readiness,
