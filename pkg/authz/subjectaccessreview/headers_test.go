@@ -123,8 +123,8 @@ func TestCheckAuthorizedForImpersonationHeaderValueCap(t *testing.T) {
 }
 
 // TestNewSettlesTheMaxHeaderValues pins that a zero or negative cap means
-// DefaultMaxHeaderValues, the same rule Timeout follows: the cap cannot be
-// disabled by construction, because every SAR costs a round trip.
+// DefaultMaxHeaderValues, the same rule Timeout follows: there is no way to
+// configure the cap away, because every SAR costs a round trip.
 func TestNewSettlesTheMaxHeaderValues(t *testing.T) {
 	for name, test := range map[string]struct {
 		max, exp int
