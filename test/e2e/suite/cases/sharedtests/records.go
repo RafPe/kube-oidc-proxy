@@ -1,4 +1,7 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
+
+//go:build e2e
+
 package sharedtests
 
 // The proxy's structured log stream is read by more than one case: the logging

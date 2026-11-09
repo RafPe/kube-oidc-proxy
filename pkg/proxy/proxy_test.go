@@ -3,10 +3,13 @@ package proxy
 
 import (
 	stdcontext "context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -17,6 +20,7 @@ import (
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/server"
+	apiserveroptions "k8s.io/apiserver/pkg/server/options"
 	"k8s.io/client-go/rest"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/authn"
@@ -42,23 +46,11 @@ type fakeProxy struct {
 	*Proxy
 }
 
-// testIssuerName is the issuer the fake OIDC authenticator attributes an
-// accepted token to, standing in for the AttributeToIssuer wrapper run.go puts
-// around every configured issuer's authenticator.
-const testIssuerName = "corp"
-
-// oidcAnswer returns a fake AuthenticateToken body that answers with resp and,
-// when it accepted the token, names testIssuerName on the request the way the
-// AttributeToIssuer wrapper does in production. Every success path needs it:
+// testIssuerName is the issuer every accepted token is attributed to:
+// newTestProxy wraps the fake OIDC authenticator in authn.AttributeToIssuer,
+// as authn.Build wraps every configured issuer's authenticator.
 // authn.oidc.succeeded requires a non-empty issuer_name.
-func oidcAnswer(resp *authenticator.Response, ok bool, err error) func(stdcontext.Context, string) (*authenticator.Response, bool, error) {
-	return func(ctx stdcontext.Context, _ string) (*authenticator.Response, bool, error) {
-		if ok && err == nil {
-			authn.RecordIssuer(ctx, testIssuerName)
-		}
-		return resp, ok, err
-	}
-}
+const testIssuerName = "corp"
 
 // withTestRequestID stamps the correlation id the request-id filter mints in
 // production. Every access record is required to carry one.
@@ -199,7 +191,7 @@ func newTestProxy(t *testing.T, opts ...func(*newArgs)) *fakeProxy {
 	args := newArgs{
 		deps: Dependencies{
 			RestConfig:              &rest.Config{Host: "https://kube.example.com"},
-			OIDCTokenAuthenticator:  fakeToken,
+			OIDCTokenAuthenticator:  authn.AttributeToIssuer(testIssuerName, fakeToken),
 			TokenReviewer:           fakeReviewer,
 			ImpersonationAuthorizer: sar,
 			SecureServingInfo:       new(server.SecureServingInfo),
@@ -222,8 +214,8 @@ func newTestProxy(t *testing.T, opts ...func(*newArgs)) *fakeProxy {
 	// would reach the API server instead of sending it. Its limiter runs on
 	// the wall clock; a frozen clock and a small burst let a test count
 	// exactly how many warnings survive sampling without sleeping for a refill.
-	p.clientTransport = fakeRT
-	p.noAuthClientTransport = fakeRT
+	p.proxyCredentialTransport = fakeRT
+	p.noProxyCredentialTransport = fakeRT
 	p.warnLimiter = logging.NewLimiter(1, 3, time.Minute, func() time.Time { return frozenClock })
 
 	return &fakeProxy{
@@ -288,8 +280,157 @@ func TestRoundTripLogsTokenReviewPassthrough(t *testing.T) {
 	if got := rec.String("auth_method"); got != string(metrics.AuthMethodTokenReview) {
 		t.Errorf("auth_method = %q, want %q", got, metrics.AuthMethodTokenReview)
 	}
+	// The identity TokenReview returned is who the record names.
+	if got := rec.String("inbound_user"); got != "system:serviceaccount:default:sa" {
+		t.Errorf("inbound_user = %q, want the TokenReview identity", got)
+	}
 
 	p.ctrl.Finish()
+}
+
+// TestTokenReviewPassthroughAuditsTheReviewedIdentity pins that a passthrough
+// request is audited as the identity TokenReview returned, as an OIDC request
+// is audited as its claims' identity, while what is forwarded is unchanged:
+// the client's own token and no impersonation.
+func TestTokenReviewPassthroughAuditsTheReviewedIdentity(t *testing.T) {
+	auditor, auditLog := newFileAuditor(t)
+	p := newTestProxy(t, withConfig(Config{TokenPassthrough: true}), func(a *newArgs) { a.deps.Auditor = auditor })
+
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(nil, false, errors.New("not an oidc token"))
+	p.fakeReviewer.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(
+		&authenticator.Response{User: &user.DefaultInfo{
+			Name:   "system:serviceaccount:default:sa",
+			Groups: []string{"system:serviceaccounts"},
+		}}, true, nil)
+
+	var forwarded *http.Request
+	p.proxyCredentialTransport = roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		t.Error("a passthrough request went out on the proxy's own credentials")
+		return nil, errors.New("unexpected")
+	})
+	p.noProxyCredentialTransport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		forwarded = req
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Request: req}, nil
+	})
+
+	handler := p.withFilterChain(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		if _, err := p.roundTrip(req); err != nil {
+			t.Errorf("unexpected error: %s", err)
+		}
+		rw.WriteHeader(http.StatusOK)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), withTestRequestID(reservedIdentityRequest(t, nil)))
+
+	if forwarded == nil {
+		t.Fatal("the request was not forwarded")
+	}
+	if got := forwarded.Header.Get("Authorization"); got != "bearer fake-token" {
+		t.Errorf("forwarded Authorization = %q, want the client's own token", got)
+	}
+	for k := range forwarded.Header {
+		if strings.HasPrefix(k, "Impersonate-") {
+			t.Errorf("passthrough request carries %s", k)
+		}
+	}
+
+	events := readAuditEvents(t, auditor, auditLog)
+	if len(events) == 0 {
+		t.Fatal("no audit event was written")
+	}
+	for _, event := range events {
+		if event.User.Username != "system:serviceaccount:default:sa" {
+			t.Errorf("audit event %s user = %q, want the TokenReview identity", event.Stage, event.User.Username)
+		}
+		if !reflect.DeepEqual(event.User.Groups, []string{"system:serviceaccounts"}) {
+			t.Errorf("audit event %s groups = %v, want the TokenReview groups", event.Stage, event.User.Groups)
+		}
+	}
+}
+
+// auditEvent is the subset of an audit.k8s.io/v1 Event the tests assert on.
+type auditEvent struct {
+	Stage string `json:"stage"`
+	User  struct {
+		Username string   `json:"username"`
+		Groups   []string `json:"groups"`
+	} `json:"user"`
+}
+
+// newFileAuditor builds a started auditor that writes every stage but
+// RequestReceived of every request to a log file at Metadata level, and
+// returns it with the file's path.
+func newFileAuditor(t *testing.T) (*audit.Audit, string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	policyPath := filepath.Join(dir, "policy.yaml")
+	policy := "apiVersion: audit.k8s.io/v1\nkind: Policy\nomitStages: [RequestReceived]\nrules:\n  - level: Metadata\n"
+	if err := os.WriteFile(policyPath, []byte(policy), 0o600); err != nil {
+		t.Fatalf("writing audit policy: %v", err)
+	}
+
+	opts := apiserveroptions.NewAuditOptions()
+	opts.PolicyFile = policyPath
+	opts.LogOptions.Path = filepath.Join(dir, "audit.log")
+
+	auditor, err := audit.New(audit.Config{Options: opts, ExternalAddress: "0.0.0.0:1234"}, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+	ctx, cancel := stdcontext.WithCancel(stdcontext.Background())
+	t.Cleanup(cancel)
+	if err := auditor.Start(ctx); err != nil {
+		t.Fatalf("starting audit backend: %v", err)
+	}
+	return auditor, opts.LogOptions.Path
+}
+
+// readAuditEvents flushes the auditor and decodes every event it wrote.
+func readAuditEvents(t *testing.T, auditor *audit.Audit, path string) []auditEvent {
+	t.Helper()
+
+	auditor.Shutdown()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading audit log: %v", err)
+	}
+	var events []auditEvent
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if line == "" {
+			continue
+		}
+		var event auditEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("decoding audit event %q: %v", line, err)
+		}
+		events = append(events, event)
+	}
+	return events
+}
+
+// TestRoundTripRefusesAnUnusableForwardDecision pins that roundTrip checks
+// the decision it is about to act on, rather than dereferencing an outbound
+// identity that is not there, and does so before the access record: a request
+// it cannot forward is not recorded as allowed.
+func TestRoundTripRefusesAnUnusableForwardDecision(t *testing.T) {
+	tests := map[string]*reqctx.ForwardDecisionRecord{
+		"impersonating without an outbound identity": {Mode: reqctx.ForwardImpersonating},
+		"unknown mode": {Mode: "teleport"},
+	}
+
+	for name, fd := range tests {
+		t.Run(name, func(t *testing.T) {
+			p := newTestProxy(t)
+			req := reqctx.WithDecisionHolder(withTestRequestID(httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil)))
+
+			if _, err := p.roundTrip(reqctx.WithForwardDecision(req, fd)); !errors.Is(err, errInvalidForwardDecision) {
+				t.Errorf("roundTrip error = %v, want errInvalidForwardDecision", err)
+			}
+			if reqctx.DecisionRecorded(req) {
+				t.Errorf("an unforwardable request was recorded as allowed: %s", p.logs.Raw())
+			}
+		})
+	}
 }
 
 // TestReverseProxyWiring pins the handler Start serves at the bottom of the
@@ -316,8 +457,8 @@ func TestReverseProxyWiring(t *testing.T) {
 	if rw.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", rw.Code)
 	}
-	if got := logs.Only(t, logging.EventRequestHandlerFailed).String("error_message"); !strings.Contains(got, errNoImpersonationConfig.Error()) {
-		t.Errorf("request.handler.failed error_message = %q, want it to name %q", got, errNoImpersonationConfig)
+	if got := logs.Only(t, logging.EventRequestHandlerFailed).String("error_message"); !strings.Contains(got, errNoForwardDecision.Error()) {
+		t.Errorf("request.handler.failed error_message = %q, want it to name %q", got, errNoForwardDecision)
 	}
 
 	rp.ErrorLog.Print("httputil: ReverseProxy read error during body copy")

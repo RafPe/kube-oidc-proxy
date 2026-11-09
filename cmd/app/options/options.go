@@ -5,11 +5,11 @@
 package options
 
 import (
-	"io"
-	"os"
-
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"slices"
 
 	"golang.org/x/term"
 
@@ -131,7 +131,6 @@ func (o *Options) Validate(cmd *cobra.Command) error {
 		if err := o.OIDCAuthentication.ValidateIssuerFlags(); err != nil {
 			errs = append(errs, err)
 		}
-		errs = append(errs, o.OIDCAuthentication.validateIdentityPrefixes()...)
 	}
 
 	if err := o.SecureServing.Validate(); len(err) > 0 {
@@ -170,13 +169,23 @@ func (o *Options) Validate(cmd *cobra.Command) error {
 	return errors.Join(errs...)
 }
 
-// oidcFlagsChanged reports whether any --oidc-* flag was set on cmd. The flag
-// names are derived from the registered OIDC flag set so the list stays in sync
-// with the flags defined in OIDCAuthenticationOptions.AddFlags automatically.
+// oidcFlagsChanged reports whether any issuer-specific --oidc-* flag was set
+// on cmd. The flag names are derived from the registered OIDC flag set so the
+// list stays in sync with OIDCAuthenticationOptions.AddFlags automatically.
+// The TLS client certificate flags are left out: they apply to the issuers of
+// --authentication-config too.
 func (o *Options) oidcFlagsChanged(cmd *cobra.Command) bool {
+	return flagsChanged(cmd, o.nfs.FlagSet("OIDC"), "oidc-tls-client-cert-file", "oidc-tls-client-key-file")
+}
+
+// flagsChanged reports whether any flag registered in fs, other than those
+// named in except, was set on cmd's command line. It reads Changed from cmd,
+// which parsed the line, not from fs: a named set is only merged into cmd's
+// flags, so its own record of what was set stays empty.
+func flagsChanged(cmd *cobra.Command, fs *pflag.FlagSet, except ...string) bool {
 	changed := false
-	o.nfs.FlagSet("OIDC").VisitAll(func(f *pflag.Flag) {
-		if f.Name == "oidc-tls-client-cert-file" || f.Name == "oidc-tls-client-key-file" {
+	fs.VisitAll(func(f *pflag.Flag) {
+		if slices.Contains(except, f.Name) {
 			return
 		}
 		if cf := cmd.Flag(f.Name); cf != nil && cf.Changed {

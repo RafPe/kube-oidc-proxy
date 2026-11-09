@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/request/bearertoken"
+	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/server"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/transport"
@@ -45,9 +46,18 @@ const (
 )
 
 var (
-	errUnauthorized          = errors.New("unauthorized")
-	errNoName                = errors.New("no name in OIDC info")
-	errNoImpersonationConfig = errors.New("no impersonation configuration in context")
+	errUnauthorized = errors.New("unauthorized")
+	errNoUsername   = errors.New("no username in the authenticated identity")
+
+	// errReviewerNoIdentity is a token reviewer that accepted a token without
+	// saying whose it is: the reviewer's bug, answered 500.
+	errReviewerNoIdentity = errors.New("token reviewer accepted the token without an identity")
+
+	// errNoForwardDecision and errInvalidForwardDecision are roundTrip
+	// finding no forwarding decision on an admitted request, or one it cannot
+	// act on. Either is a bug in the filter chain, answered 500.
+	errNoForwardDecision      = errors.New("no forwarding decision in context")
+	errInvalidForwardDecision = errors.New("invalid forwarding decision")
 
 	// errReservedIdentity classifies an authenticated identity whose username or
 	// groups carry the Kubernetes-reserved "system:" prefix. Such an identity may
@@ -62,9 +72,14 @@ type Proxy struct {
 	secureServingInfo        *server.SecureServingInfo
 	auditor                  *audit.Audit
 
-	restConfig            *rest.Config
-	clientTransport       http.RoundTripper
-	noAuthClientTransport http.RoundTripper
+	restConfig *rest.Config
+
+	// proxyCredentialTransport carries the proxy's own credentials, and is
+	// what an impersonated request goes out on. noProxyCredentialTransport
+	// carries none: a passthrough request goes out with the client's token on
+	// it, a request with impersonation disabled with no credential at all.
+	proxyCredentialTransport   http.RoundTripper
+	noProxyCredentialTransport http.RoundTripper
 
 	config *Config
 
@@ -99,9 +114,6 @@ type Proxy struct {
 	// record is deliberately not limited: a denial is always written.
 	warnLimiter *logging.Limiter
 
-	// metrics is the process recorder every request observation goes to. It
-	// is optional: a nil recorder is a no-op, so a binary run without
-	// --metrics-bind-address records nothing and never nil-checks.
 	metrics *metrics.Recorder
 
 	// stopped and listenerStopped are closed once serving has fully stopped
@@ -122,14 +134,15 @@ type Dependencies struct {
 	RestConfig *rest.Config
 
 	// OIDCTokenAuthenticator verifies the bearer tokens issued by the
-	// configured OIDC issuers. Its errors are not classified: every error it
-	// returns, an issuer whose keys have not been fetched yet included, is
-	// treated as a rejected token -- counted as an OIDC rejection, recorded as
-	// authn.oidc.failed with reason=unauthorized, and handed to the
-	// token-review filter, which refuses it 401 unless token passthrough is
-	// on. A token no issuer claims (ok=false with a nil error) takes the same
-	// path: New wraps the authenticator in bearertoken, which reports that
-	// answer as an invalid-token error. Only a request carrying no bearer
+	// configured OIDC issuers. An error it returns because the client hung up
+	// is recorded as authn.oidc.failed with reason=client_canceled and refused
+	// with nothing written back. Every other error, an issuer whose keys have
+	// not been fetched yet included, is treated as a rejected token -- counted
+	// as an OIDC rejection, recorded with reason=unauthorized, and handed to
+	// the token-review filter, which refuses it 401 unless token passthrough
+	// is on. A token no issuer claims (ok=false with a nil error) takes the
+	// same path: New wraps the authenticator in bearertoken, which reports
+	// that answer as an invalid-token error. Only a request carrying no bearer
 	// token at all is refused 401 without the token-review filter.
 	OIDCTokenAuthenticator authenticator.Token
 
@@ -156,7 +169,7 @@ type Dependencies struct {
 
 	SecureServingInfo *server.SecureServingInfo
 
-	// Metrics is the process recorder. Optional: nil records nothing.
+	// Metrics is the process recorder; see package metrics for a nil one.
 	Metrics *metrics.Recorder
 }
 
@@ -164,17 +177,13 @@ type Dependencies struct {
 // and missing collaborators fail here, at construction, rather than on the
 // first request.
 //
-// root is the process root logger. New derives the request, oidc, tokenreview
-// and upstream component loggers from it, so it takes the root rather than any
-// one of them. A nil root is a wiring bug rather than a configuration error,
-// so it panics.
+// root is the process root logger, from which New derives the request, oidc,
+// tokenreview and upstream component loggers.
 //
 // New takes ownership of cfg: it copies the ExtraUserHeaders map, so later
 // mutation of the caller's map does not change proxy behavior.
 func New(cfg Config, deps Dependencies, root *slog.Logger) (*Proxy, error) {
-	if root == nil {
-		panic("proxy: New called with a nil logger")
-	}
+	logging.RequireLogger(root, "proxy")
 	if deps.RestConfig == nil {
 		return nil, errors.New("proxy: RestConfig is required")
 	}
@@ -216,15 +225,15 @@ func New(cfg Config, deps Dependencies, root *slog.Logger) (*Proxy, error) {
 		return nil, fmt.Errorf("proxy: %w", err)
 	}
 
-	clientTransport, err := roundTripperForRestConfig(deps.RestConfig)
+	proxyCredentialTransport, err := roundTripperForRestConfig(deps.RestConfig)
 	if err != nil {
 		return nil, err
 	}
 	// A request forwarded without impersonation carries no credentials of the
 	// proxy's own: it goes out on a transport built without them.
-	var noAuthClientTransport http.RoundTripper
+	var noProxyCredentialTransport http.RoundTripper
 	if cfg.DisableImpersonation || cfg.TokenPassthrough {
-		noAuthClientTransport, err = roundTripperForRestConfig(&rest.Config{
+		noProxyCredentialTransport, err = roundTripperForRestConfig(&rest.Config{
 			APIPath: deps.RestConfig.APIPath,
 			Host:    deps.RestConfig.Host,
 			Timeout: deps.RestConfig.Timeout,
@@ -239,23 +248,23 @@ func New(cfg Config, deps Dependencies, root *slog.Logger) (*Proxy, error) {
 	}
 
 	return &Proxy{
-		metrics:                  deps.Metrics,
-		restConfig:               deps.RestConfig,
-		requestLogger:            logging.ForComponent(root, logging.ComponentRequest),
-		oidcLogger:               logging.ForComponent(root, logging.ComponentOIDC),
-		tokenReviewLogger:        logging.ForComponent(root, logging.ComponentTokenReview),
-		upstreamLogger:           logging.ForComponent(root, logging.ComponentUpstream),
-		clientTransport:          clientTransport,
-		noAuthClientTransport:    noAuthClientTransport,
-		tokenReviewer:            deps.TokenReviewer,
-		impersonationAuthorizer:  deps.ImpersonationAuthorizer,
-		secureServingInfo:        deps.SecureServingInfo,
-		config:                   &cfg,
-		trustedProxies:           trustedProxies,
-		allowedReservedGroups:    allowedReservedGroups,
-		oidcRequestAuthenticator: bearertoken.New(deps.OIDCTokenAuthenticator),
-		auditor:                  deps.Auditor,
-		warnLimiter:              logging.NewLimiter(warnLimiterRate, warnLimiterBurst, warnLimiterInterval, nil),
+		metrics:                    deps.Metrics,
+		restConfig:                 deps.RestConfig,
+		requestLogger:              logging.ForComponent(root, logging.ComponentRequest),
+		oidcLogger:                 logging.ForComponent(root, logging.ComponentOIDC),
+		tokenReviewLogger:          logging.ForComponent(root, logging.ComponentTokenReview),
+		upstreamLogger:             logging.ForComponent(root, logging.ComponentUpstream),
+		proxyCredentialTransport:   proxyCredentialTransport,
+		noProxyCredentialTransport: noProxyCredentialTransport,
+		tokenReviewer:              deps.TokenReviewer,
+		impersonationAuthorizer:    deps.ImpersonationAuthorizer,
+		secureServingInfo:          deps.SecureServingInfo,
+		config:                     &cfg,
+		trustedProxies:             trustedProxies,
+		allowedReservedGroups:      allowedReservedGroups,
+		oidcRequestAuthenticator:   bearertoken.New(deps.OIDCTokenAuthenticator),
+		auditor:                    deps.Auditor,
+		warnLimiter:                logging.NewLimiter(warnLimiterRate, warnLimiterBurst, warnLimiterInterval, nil),
 	}, nil
 }
 
@@ -320,9 +329,26 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 // roundTrip is the reverse proxy's transport: it forwards an admitted request
 // to the API server the way the filter chain decided.
 func (p *Proxy) roundTrip(req *http.Request) (*http.Response, error) {
-	imp := reqctx.Impersonation(req)
-	if imp == nil {
-		return nil, errNoImpersonationConfig
+	// Settled before the access record is written: a decision this cannot act
+	// on is the proxy's own failure, recorded as that rather than as an allow.
+	fd := reqctx.ForwardDecision(req)
+	var rt http.RoundTripper
+	switch {
+	case fd == nil:
+		return nil, errNoForwardDecision
+	case fd.Mode == reqctx.ForwardImpersonating:
+		if fd.Outbound == nil {
+			return nil, fmt.Errorf("%w: mode %q without an outbound identity", errInvalidForwardDecision, fd.Mode)
+		}
+		rt = transport.NewImpersonatingRoundTripper(*fd.Outbound, p.proxyCredentialTransport)
+	case fd.Mode == reqctx.ForwardPassthrough, fd.Mode == reqctx.ForwardDisabled:
+		// No credentials of the proxy's own. The passthrough path left the
+		// client's bearer token in place, so the API server authenticates it;
+		// on the disabled path OIDC authentication consumed the token, so the
+		// request arrives anonymous.
+		rt = p.noProxyCredentialTransport
+	default:
+		return nil, fmt.Errorf("%w: unknown mode %q", errInvalidForwardDecision, fd.Mode)
 	}
 
 	// Record the admitted request. Written before the upstream call so a watch
@@ -330,41 +356,34 @@ func (p *Proxy) roundTrip(req *http.Request) (*http.Response, error) {
 	p.recordDecision(req, accesslog.Decision{
 		Allowed:      true,
 		AuthMethod:   reqctx.AuthMethod(req),
-		Inbound:      imp.InboundUser,
-		Impersonated: imp.ImpersonatedUser,
+		Inbound:      fd.InboundUser,
+		Impersonated: fd.ImpersonatedUser,
 	})
 
-	if imp.Mode == reqctx.ForwardImpersonating {
-		return transport.NewImpersonatingRoundTripper(*imp.Outbound, p.clientTransport).RoundTrip(req)
-	}
-
-	// The other modes forward with no credentials of the proxy's own. The
-	// passthrough path left the client's bearer token in place, so the API
-	// server authenticates it; on the disabled path OIDC authentication
-	// consumed the token, so the request arrives anonymous.
-	return p.noAuthClientTransport.RoundTrip(req)
+	return rt.RoundTrip(req)
 }
 
 // reviewToken asks the API server's TokenReview whether it accepts the
-// request's bearer token, recording the attempt. It returns nil when the token
-// is accepted, errUnauthorized when it is missing or rejected, and the
-// reviewer's own error, wrapping tokenreview.ErrCreateTokenReview, when the
-// reviewer could not answer. The reviewer records every outcome it reaches,
-// a failure included, so only the metric is counted here.
-func (p *Proxy) reviewToken(req *http.Request) error {
+// request's bearer token, recording the attempt. It returns the identity the
+// review authenticated when the token is accepted, errUnauthorized when it is
+// missing or rejected, and the reviewer's own error, wrapping
+// tokenreview.ErrCreateTokenReview, when the reviewer could not answer. The
+// reviewer records every outcome it reaches, a failure included, so only the
+// metric is counted here.
+func (p *Proxy) reviewToken(req *http.Request) (user.Info, error) {
 	ctx := req.Context()
 
 	bearer, found := bearerToken(req)
 	if !found {
 		logging.Emit(ctx, p.tokenReviewLogger, logging.EventAuthnTokenMissing)
 		p.metrics.AuthenticationAttempt(metrics.AuthMethodTokenReview, metrics.AuthRejected)
-		return errUnauthorized
+		return nil, errUnauthorized
 	}
 
-	_, ok, err := p.tokenReviewer.AuthenticateToken(ctx, bearer)
+	resp, ok, err := p.tokenReviewer.AuthenticateToken(ctx, bearer)
 	if err != nil {
 		p.metrics.AuthenticationAttempt(metrics.AuthMethodTokenReview, metrics.AuthError)
-		return err
+		return nil, err
 	}
 
 	// The reviewer answered, and it has already recorded the outcome: a live
@@ -372,10 +391,16 @@ func (p *Proxy) reviewToken(req *http.Request) error {
 	// hit emits cache.tokenreview.lookup with the cached verdict.
 	if !ok {
 		p.metrics.AuthenticationAttempt(metrics.AuthMethodTokenReview, metrics.AuthRejected)
-		return errUnauthorized
+		return nil, errUnauthorized
+	}
+	// An accepted review always names a user; a reviewer that does not is
+	// broken, and forwarding the token unattributed would hide that.
+	if resp == nil || resp.User == nil {
+		p.metrics.AuthenticationAttempt(metrics.AuthMethodTokenReview, metrics.AuthError)
+		return nil, errReviewerNoIdentity
 	}
 	p.metrics.AuthenticationAttempt(metrics.AuthMethodTokenReview, metrics.AuthAccepted)
-	return nil
+	return resp.User, nil
 }
 
 // recordDecision writes the one access record a request produces and counts

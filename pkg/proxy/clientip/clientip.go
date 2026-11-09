@@ -22,6 +22,7 @@ package clientip
 
 import (
 	"net"
+	"net/http"
 	"strings"
 )
 
@@ -63,6 +64,39 @@ func Resolve(remoteAddr, xff string, trusted []*net.IPNet) string {
 	}
 
 	return peer
+}
+
+// Sanitize applies the contract to a request's forwarding headers. It returns
+// the client IP the request is attributed to and a copy of h reduced to what
+// the contract allows, so audit sourceIPs, the access record, the
+// Remote-Client-IP impersonation extra and the upstream API server all see the
+// same validated client. h itself is left as it arrived.
+//
+// X-Real-Ip is always removed: the proxy never honours it. X-Forwarded-For is
+// removed when Resolve ignored it (untrusted peer, fully trusted chain, or
+// malformed hop) and collapsed to the single resolved client IP when the peer
+// is a trusted proxy.
+func Sanitize(remoteAddr string, h http.Header, trusted []*net.IPNet) (ip string, out http.Header) {
+	xff := h.Get(HeaderForwardedFor)
+	ip = Resolve(remoteAddr, xff, trusted)
+
+	out = h.Clone()
+	if out == nil {
+		out = http.Header{}
+	}
+	out.Del(HeaderRealIP)
+
+	switch {
+	case xff == "":
+	case ip == PeerHost(remoteAddr):
+		// Resolve fell back to the direct peer: nothing in the forwarded
+		// chain is trustworthy.
+		out.Del(HeaderForwardedFor)
+	default:
+		out.Set(HeaderForwardedFor, ip)
+	}
+
+	return ip, out
 }
 
 // PeerTrusted reports whether the immediate peer is itself a trusted proxy,

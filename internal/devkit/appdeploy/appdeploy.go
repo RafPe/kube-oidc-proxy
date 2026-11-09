@@ -26,7 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 
-	"github.com/rafpe/kube-oidc-proxy/test/util/keybundle"
+	"github.com/rafpe/kube-oidc-proxy/internal/devkit/keybundle"
 )
 
 // Port is the port every app serves TLS on, in its container and its Service.

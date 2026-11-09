@@ -65,9 +65,9 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		// An earlier filter already decided this request: token passthrough
 		// forwards it with the client's own token.
-		if imp := reqctx.Impersonation(req); imp != nil {
+		if fd := reqctx.ForwardDecision(req); fd != nil {
 			logging.Emit(req.Context(), p.requestLogger, logging.EventRequestImpersonationSkipped,
-				slog.String("skip_reason", string(imp.Mode)))
+				slog.String("skip_reason", string(fd.Mode)))
 			handler.ServeHTTP(rw, req)
 			return
 		}
@@ -75,7 +75,7 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 		if p.config.DisableImpersonation {
 			logging.Emit(req.Context(), p.requestLogger, logging.EventRequestImpersonationSkipped,
 				slog.String("skip_reason", string(reqctx.ForwardDisabled)))
-			handler.ServeHTTP(rw, reqctx.WithImpersonation(req, &reqctx.ImpersonationRecord{
+			handler.ServeHTTP(rw, reqctx.WithForwardDecision(req, &reqctx.ForwardDecisionRecord{
 				Mode:        reqctx.ForwardDisabled,
 				InboundUser: userFromContext(req),
 			}))
@@ -84,7 +84,7 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 
 		inbound, ok := genericapirequest.UserFrom(req.Context())
 		if !ok || len(inbound.GetName()) == 0 {
-			p.refuse(rw, req, errNoName)
+			p.refuse(rw, req, errNoUsername)
 			return
 		}
 
@@ -106,7 +106,7 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 			return
 		}
 
-		imp := &reqctx.ImpersonationRecord{
+		fd := &reqctx.ForwardDecisionRecord{
 			Mode:             reqctx.ForwardImpersonating,
 			Outbound:         outbound,
 			InboundUser:      inbound,
@@ -117,7 +117,7 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 			slog.String("outbound_user", logging.Bound(outbound.UserName, logging.MaxIdentity)),
 			slog.Any("impersonated_header_names", impersonatedHeaderNames(outbound)))
 
-		handler.ServeHTTP(rw, reqctx.WithImpersonation(req, imp))
+		handler.ServeHTTP(rw, reqctx.WithForwardDecision(req, fd))
 	})
 }
 
@@ -201,13 +201,13 @@ func (p *Proxy) outboundIdentity(req *http.Request, inbound, target authuser.Inf
 	}
 
 	if p.config.ExtraUserHeadersClientIPEnabled {
-		extra[ExtraKeyClientIP] = append(extra[ExtraKeyClientIP], reqctx.ClientIP(req))
+		extra[ExtraKeyClientIP] = []string{reqctx.ClientIP(req)}
 	}
 
-	// append copies into the freshly cloned value slice, so the configured
-	// slice is never aliased into the outbound request.
+	// Cloned, so the configured slice is never aliased into the outbound
+	// request.
 	for k, vs := range p.config.ExtraUserHeaders {
-		extra[k] = append(extra[k], vs...)
+		extra[k] = slices.Clone(vs)
 	}
 
 	if target != nil {
@@ -259,7 +259,10 @@ func (p *Proxy) writesExtraKey(key string) bool {
 }
 
 // impersonatedHeaderNames returns the sorted names of the impersonation headers
-// the round tripper will send for this configuration. Names only: the values
+// the round tripper will send for this configuration, with each extra key in
+// its logical, unescaped form: the key as configured or claimed, which is how
+// an operator searches for it, rather than the percent-encoded form client-go
+// puts on the wire for a key such as example.com/team. Names only: the values
 // carry the impersonated identity, the client address and operator-supplied
 // secrets, none of which belong in a log record. Sorted because map iteration
 // is unordered and a record whose fields shuffle between otherwise identical

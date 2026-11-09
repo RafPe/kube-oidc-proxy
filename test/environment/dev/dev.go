@@ -15,11 +15,11 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/rafpe/kube-oidc-proxy/internal/devkit/idtoken"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/config"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/helper"
 	"github.com/rafpe/kube-oidc-proxy/test/environment"
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
-	"github.com/rafpe/kube-oidc-proxy/test/util/idtoken"
 )
 
 const (

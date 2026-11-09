@@ -52,10 +52,9 @@ func assertRecord(t *testing.T, rec logtest.Record, event logging.EventType, com
 // cannot answer the question the event exists for.
 func TestOIDCSuccessEmitsAuthnOIDCSucceeded(t *testing.T) {
 	p := newTestProxy(t)
-	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(
-		oidcAnswer(&authenticator.Response{
-			User: &authuser.DefaultInfo{Name: "alice", Groups: []string{"devs"}},
-		}, true, nil))
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(&authenticator.Response{
+		User: &authuser.DefaultInfo{Name: "alice", Groups: []string{"devs"}},
+	}, true, nil)
 
 	var served bool
 	handler := p.withAuthenticateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -93,7 +92,7 @@ func TestTokenReviewDependencyFailureIsError(t *testing.T) {
 
 	req := reservedIdentityRequest(t, nil)
 
-	if err := p.reviewToken(req); !errors.Is(err, tokenreview.ErrCreateTokenReview) {
+	if _, err := p.reviewToken(req); !errors.Is(err, tokenreview.ErrCreateTokenReview) {
 		t.Fatalf("reviewToken = %v, want tokenreview.ErrCreateTokenReview: the path must fail closed", err)
 	}
 
@@ -249,7 +248,7 @@ func TestRejectedTokenReviewIsNotAFailure(t *testing.T) {
 	p := newTestProxy(t)
 	p.fakeReviewer.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(nil, false, nil)
 	req := reservedIdentityRequest(t, nil)
-	if err := p.reviewToken(req); !errors.Is(err, errUnauthorized) {
+	if _, err := p.reviewToken(req); !errors.Is(err, errUnauthorized) {
 		t.Fatalf("reviewToken = %v, want errUnauthorized for a rejected token", err)
 	}
 	if got := p.logs.ByEvent(logging.EventAuthnTokenReviewFailed); len(got) != 0 {
@@ -337,12 +336,11 @@ func (c *cancelingRT) RoundTrip(req *http.Request) (*http.Response, error) {
 // manufacture an authorization failure for a user who was allowed through.
 func TestClientCancelAfterAdmissionRecordsOneAccessDecision(t *testing.T) {
 	p := newTestProxy(t)
-	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(
-		oidcAnswer(&authenticator.Response{User: &authuser.DefaultInfo{Name: "alice"}}, true, nil))
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(&authenticator.Response{User: &authuser.DefaultInfo{Name: "alice"}}, true, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	p.clientTransport = &cancelingRT{cancel: cancel}
+	p.proxyCredentialTransport = &cancelingRT{cancel: cancel}
 
 	reverseProxy, err := p.reverseProxy()
 	if err != nil {

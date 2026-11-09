@@ -120,10 +120,9 @@ func reservedIdentityRequest(t *testing.T, extraHeaders map[string]string) *http
 func TestWithAuthenticateRequestRejectsReservedIdentity(t *testing.T) {
 	p := newTestProxy(t)
 
-	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(
-		oidcAnswer(&authenticator.Response{
-			User: &authuser.DefaultInfo{Name: "alice", Groups: []string{"system:masters"}},
-		}, true, nil))
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(&authenticator.Response{
+		User: &authuser.DefaultInfo{Name: "alice", Groups: []string{"system:masters"}},
+	}, true, nil)
 
 	var served bool
 	handler := p.withAuthenticateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -149,10 +148,9 @@ func TestWithAuthenticateRequestRejectsReservedIdentity(t *testing.T) {
 func TestWithAuthenticateRequestAllowsAllowlistedReservedGroup(t *testing.T) {
 	p := newTestProxy(t, withConfig(Config{AllowedReservedGroups: []string{"system:masters"}}))
 
-	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(
-		oidcAnswer(&authenticator.Response{
-			User: &authuser.DefaultInfo{Name: "alice", Groups: []string{"system:masters"}},
-		}, true, nil))
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(&authenticator.Response{
+		User: &authuser.DefaultInfo{Name: "alice", Groups: []string{"system:masters"}},
+	}, true, nil)
 
 	var served bool
 	handler := p.withAuthenticateRequest(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
@@ -191,10 +189,9 @@ func TestReservedIdentityRejectedBeforeSubjectAccessReview(t *testing.T) {
 	sar := subjectaccessreview.New(reviewer, subjectaccessreview.Config{MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 	p := newTestProxy(t, withImpersonationAuthorizer(sar))
 
-	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(
-		oidcAnswer(&authenticator.Response{
-			User: &authuser.DefaultInfo{Name: "alice", Groups: []string{"system:masters"}},
-		}, true, nil))
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(&authenticator.Response{
+		User: &authuser.DefaultInfo{Name: "alice", Groups: []string{"system:masters"}},
+	}, true, nil)
 
 	var served bool
 	handler := p.withFilterChain(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -226,10 +223,9 @@ func TestReservedIdentityRejectedBeforeSubjectAccessReview(t *testing.T) {
 // identity carrying a reserved group, so a request built by
 // reservedIdentityRequest is refused by checkReservedIdentity.
 func reservedIdentityUser(p *fakeProxy, groups []string, times int) {
-	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(
-		oidcAnswer(&authenticator.Response{
-			User: &authuser.DefaultInfo{Name: "alice", Groups: groups},
-		}, true, nil)).Times(times)
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(&authenticator.Response{
+		User: &authuser.DefaultInfo{Name: "alice", Groups: groups},
+	}, true, nil).Times(times)
 }
 
 func TestReservedIdentityEmitsAnomalyAndDeniedAccess(t *testing.T) {

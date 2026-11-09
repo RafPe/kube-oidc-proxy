@@ -108,7 +108,7 @@ func TestImpersonationSkippedOnTokenReviewPassthrough(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req = req.WithContext(logging.WithRequestID(req.Context(), "rid-passthrough"))
 	// What withTokenReview leaves on a request it admitted.
-	req = reqctx.WithImpersonation(req, &reqctx.ImpersonationRecord{Mode: reqctx.ForwardPassthrough})
+	req = reqctx.WithForwardDecision(req, &reqctx.ForwardDecisionRecord{Mode: reqctx.ForwardPassthrough})
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
 	rec := p.logs.Only(t, logging.EventRequestImpersonationSkipped)
@@ -156,10 +156,9 @@ func TestOverCapImpersonationRejectedBeforeSubjectAccessReview(t *testing.T) {
 	sar := subjectaccessreview.New(reviewer, subjectaccessreview.Config{MaxHeaderValues: 2}, slog.New(slog.DiscardHandler))
 	p := newTestProxy(t, withImpersonationAuthorizer(sar))
 
-	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(
-		oidcAnswer(&authenticator.Response{
-			User: &authuser.DefaultInfo{Name: "alice", Groups: []string{"devs"}},
-		}, true, nil))
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(&authenticator.Response{
+		User: &authuser.DefaultInfo{Name: "alice", Groups: []string{"devs"}},
+	}, true, nil)
 
 	var served bool
 	handler := p.withFilterChain(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -385,7 +384,7 @@ func TestClientCannotAssertProxyWrittenExtras(t *testing.T) {
 // impersonateBob serves a request authenticated as inbound that impersonates
 // bob with the given Impersonate-Extra- headers, every review allowed, and
 // returns how it is forwarded and what the reviews asked.
-func impersonateBob(t *testing.T, cfg Config, inbound authuser.Info, extras map[string]string) (*reqctx.ImpersonationRecord, *attributeRecordingReviewer) {
+func impersonateBob(t *testing.T, cfg Config, inbound authuser.Info, extras map[string]string) (*reqctx.ForwardDecisionRecord, *attributeRecordingReviewer) {
 	t.Helper()
 
 	reviewer := &attributeRecordingReviewer{Reviewer: fakesubjectaccessreview.New(nil)}
@@ -400,9 +399,9 @@ func impersonateBob(t *testing.T, cfg Config, inbound authuser.Info, extras map[
 	}
 	req = req.WithContext(genericapirequest.WithUser(logging.WithRequestID(req.Context(), "test-request-id"), inbound))
 
-	var imp *reqctx.ImpersonationRecord
+	var imp *reqctx.ForwardDecisionRecord
 	p.withImpersonateRequest(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		imp = reqctx.Impersonation(r)
+		imp = reqctx.ForwardDecision(r)
 	})).ServeHTTP(httptest.NewRecorder(), req)
 	if imp == nil {
 		t.Fatalf("an allowed impersonation was not served: %s", p.logs.Raw())

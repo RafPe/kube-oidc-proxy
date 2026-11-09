@@ -65,7 +65,7 @@ type Audit struct {
 	// lifecycle through.
 	logger *slog.Logger
 
-	// metrics receives backend start failures; nil records nothing.
+	// metrics receives backend start failures.
 	metrics *metrics.Recorder
 
 	serverConfig *server.CompletedConfig
@@ -83,19 +83,17 @@ type Config struct {
 	ExternalAddress string
 	SecureServing   *server.SecureServingInfo
 
-	// Metrics receives backend start failures. Optional: nil records nothing.
+	// Metrics receives backend start failures. Optional; see package metrics.
 	Metrics *metrics.Recorder
 }
 
 // New creates the auditor for proxied requests: mostly a wrapper that combines
 // the apiserver's audit handlers with the proxy.
 //
-// logger is the audit-component logger; New panics on nil. The error reports
-// audit options that cannot be applied.
+// logger is the audit-component logger. The error reports audit options that
+// cannot be applied.
 func New(cfg Config, logger *slog.Logger) (*Audit, error) {
-	if logger == nil {
-		panic("audit: New called with a nil logger")
-	}
+	logging.RequireLogger(logger, "audit")
 
 	serverConfig := &server.Config{
 		ExternalAddress: cfg.ExternalAddress,

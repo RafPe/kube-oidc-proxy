@@ -1,14 +1,24 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
 package metrics
 
-// Spec is one entry of the metric catalogue: the name, type, label names,
-// stability and help of a family this binary exports. The collectors are
-// built from these entries and docs/metrics.md is generated from them, so
-// the two cannot drift.
+// Spec is one entry of the metric catalogue: the name, type, label names and
+// their vocabularies, stability and help of a family this binary exports. The
+// collectors are built from these entries and docs/metrics.md is generated
+// from them, so the two cannot drift.
 type Spec struct {
-	Name      string
-	Type      Type
-	Labels    []string
+	Name   string
+	Type   Type
+	Labels []string
+
+	// Values gives, for each label with a closed vocabulary, every value the
+	// projections in this package can put on it. A label whose value is
+	// bounded in shape but not enumerable -- issuer_name is a host, the
+	// build_info labels are build strings -- has no entry. The vocabulary is
+	// the family's, not the label name's: outcome means one thing on the
+	// authentication counter and another on the review counters. Read it
+	// through AllowedValues.
+	Values map[string]func() []string
+
 	Stability Stability
 	Help      string // without the stability prefix; help() adds it
 }
@@ -63,33 +73,49 @@ const (
 // the order docs/metrics.md renders them in. Append-only: a shipped name,
 // label set or type is never changed in place.
 func Catalogue() []Spec {
+	verbScope := map[string]func() []string{"k8s_verb": closed(verbs), "scope": closed(scopes)}
+	review := map[string]func() []string{"review": closed(reviews, other), "outcome": closed(reviewOutcomes, other)}
+
 	return []Spec{
 		{Name: nameBuildInfo, Type: TypeGauge, Labels: []string{"version", "revision", "go_version"}, Stability: StabilityStable,
 			Help: "Build information; always 1."},
 		{Name: nameRequestsTotal, Type: TypeCounter, Labels: []string{"k8s_verb", "scope", "code", "termination"}, Stability: StabilityStable,
+			Values: map[string]func() []string{
+				"k8s_verb": closed(verbs), "scope": closed(scopes), "code": allowedCodes, "termination": closed(terminations, other),
+			},
 			Help: "Completed requests by Kubernetes verb, scope, HTTP status code and how the exchange ended."},
 		{Name: nameRequestDuration, Type: TypeHistogram, Labels: []string{"k8s_verb", "scope"}, Stability: StabilityStable,
-			Help: "Latency of completed requests in seconds, excluding long-running (watch, exec, attach, portforward, logs, proxy) and hijacked requests."},
+			Values: verbScope,
+			Help:   "Latency of completed requests in seconds, excluding long-running (watch, exec, attach, portforward, logs, proxy) and hijacked requests."},
 		{Name: nameRequestsInFlight, Type: TypeGauge, Labels: nil, Stability: StabilityStable,
 			Help: "Requests currently inside the handler chain."},
 		{Name: nameLongRunningRequests, Type: TypeGauge, Labels: []string{"k8s_verb", "scope"}, Stability: StabilityStable,
-			Help: "Long-running requests whose response has started (headers written or connection hijacked) and not yet ended."},
+			Values: verbScope,
+			Help:   "Long-running requests whose response has started (headers written or connection hijacked) and not yet ended."},
 		{Name: nameAuthnAttempts, Type: TypeCounter, Labels: []string{"auth_method", "outcome"}, Stability: StabilityStable,
-			Help: "Authentication attempts by method and outcome, before the identity and authorization checks that follow."},
+			Values: map[string]func() []string{"auth_method": closed(authMethods, other), "outcome": closed(authOutcomes, other)},
+			Help:   "Authentication attempts by method and outcome, before the identity and authorization checks that follow."},
 		{Name: nameAccessDecisions, Type: TypeCounter, Labels: []string{"auth_method", "decision", "reason"}, Stability: StabilityStable,
+			Values: map[string]func() []string{
+				"auth_method": closed(authMethods, other), "decision": closed([]Decision{DecisionAllow, DecisionDeny}), "reason": closed(reasons, other),
+			},
 			Help: "Final access decisions; reason is empty on allow."},
 		{Name: nameReviewRequests, Type: TypeCounter, Labels: []string{"review", "outcome"}, Stability: StabilityStable,
-			Help: "TokenReview and SubjectAccessReview API calls actually issued to the API server, by outcome."},
+			Values: review,
+			Help:   "TokenReview and SubjectAccessReview API calls actually issued to the API server, by outcome."},
 		{Name: nameReviewDuration, Type: TypeHistogram, Labels: []string{"review", "outcome"}, Stability: StabilityStable,
-			Help: "Latency of review API calls in seconds."},
+			Values: review,
+			Help:   "Latency of review API calls in seconds."},
 		{Name: nameCacheLookups, Type: TypeCounter, Labels: []string{"cache", "result"}, Stability: StabilityStable,
-			Help: "Review cache lookups by cache and result."},
+			Values: map[string]func() []string{"cache": closed(reviews, other), "result": closed(cacheResults, other)},
+			Help:   "Review cache lookups by cache and result."},
 		{Name: nameIssuerInitialized, Type: TypeGauge, Labels: []string{"issuer_name"}, Stability: StabilityStable,
 			Help: "1 once the issuer's authenticator has fetched its JWKS. Reports initialization, not ongoing issuer availability."},
 		{Name: nameReady, Type: TypeGauge, Labels: nil, Stability: StabilityStable,
 			Help: "1 once the proxy is serving and readiness has latched."},
 		{Name: nameAuditBackendFailures, Type: TypeCounter, Labels: []string{"operation"}, Stability: StabilityAlpha,
-			Help: "Audit backend failures observable at start. Asynchronous delivery failures and lost flushes at shutdown are not included."},
+			Values: map[string]func() []string{"operation": closed(auditOperations, other)},
+			Help:   "Audit backend failures observable at start. Asynchronous delivery failures and lost flushes at shutdown are not included."},
 	}
 }
 
@@ -115,76 +141,32 @@ var (
 )
 
 // AllowedValues returns, for each of this family's labels that has a closed
-// vocabulary, every value the projections in this package can put on it. A
-// label whose value is bounded in shape but not enumerable -- issuer_name is
-// a host, the build_info labels are build strings -- is absent from the map,
-// which is how a caller tells "unbounded" from "empty set".
-//
-// The vocabulary is per family, not per label name: outcome means one thing
-// on the authentication counter and another on the review counters.
-//
-// Each call builds a fresh map and fresh slices the caller owns; nothing here
-// is package-level state.
+// vocabulary, every value the projections in this package can put on it (see
+// Values). A label without one is absent from the map, which is how a caller
+// tells "unbounded" from "empty set". Each call builds a fresh map and fresh
+// slices the caller owns.
 func (s Spec) AllowedValues() map[string][]string {
 	out := map[string][]string{}
 	for _, label := range s.Labels {
-		if values := allowedValuesFor(s.Name, label); values != nil {
-			out[label] = values
+		if values, ok := s.Values[label]; ok {
+			out[label] = values()
 		}
 	}
 	return out
 }
 
-// allowedValuesFor is the closed vocabulary of one label on one family, or
-// nil when the label has none. Written as a switch rather than a table so it
-// stays a constant a reader and a linter can both see through, and kept
-// beside the catalogue so a new family cannot be added without deciding what
-// its labels may carry.
-func allowedValuesFor(family, label string) []string {
-	switch family {
-	case nameBuildInfo:
-		return nil // version, revision and go_version are build strings
-	case nameIssuerInitialized:
-		return nil // issuer_name is a host, checked by shape
-	}
-
-	switch label {
-	case "k8s_verb":
-		return strs(verbs)
-	case "scope":
-		return strs(scopes)
-	case "code":
-		return allowedCodes()
-	case "termination":
-		return append(strs(terminations), other)
-	case "auth_method":
-		return append(strs(authMethods), other)
-	case "decision":
-		return strs([]Decision{DecisionAllow, DecisionDeny})
-	case "reason":
-		return append(strs(reasons), other)
-	case "review", "cache":
-		return append(strs(reviews), other)
-	case "result":
-		return append(strs(cacheResults), other)
-	case "operation":
-		return append(strs(auditOperations), other)
-	case "outcome":
-		if family == nameAuthnAttempts {
-			return append(strs(authOutcomes), other)
+// closed returns the vocabulary of a label whose values are a typed set,
+// rendered as plain strings, plus any catch-all the projection collapses an
+// undocumented input onto. The set is rendered on each call, so the caller
+// owns the slice.
+func closed[T ~string](values []T, catchAll ...string) func() []string {
+	return func() []string {
+		out := make([]string, 0, len(values)+len(catchAll))
+		for _, v := range values {
+			out = append(out, string(v))
 		}
-		return append(strs(reviewOutcomes), other)
+		return append(out, catchAll...)
 	}
-	return nil
-}
-
-// strs renders a typed vocabulary as the plain strings the catalogue lists.
-func strs[T ~string](values []T) []string {
-	out := make([]string, 0, len(values)+1)
-	for _, v := range values {
-		out = append(out, string(v))
-	}
-	return out
 }
 
 // allowedCodes is every value CodeFor can render: the statuses Go's registry

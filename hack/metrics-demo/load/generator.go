@@ -17,8 +17,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/rafpe/kube-oidc-proxy/test/util/idtoken"
-	"github.com/rafpe/kube-oidc-proxy/test/util/promtext"
+	"github.com/rafpe/kube-oidc-proxy/internal/devkit/idtoken"
+	"github.com/rafpe/kube-oidc-proxy/internal/devkit/promtext"
 )
 
 type generator struct {

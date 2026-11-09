@@ -165,7 +165,9 @@ func kubernetesAttrs(req *http.Request) []slog.Attr {
 }
 
 // userAttrs renders a user.Info as sanitized, structured fields under the given
-// prefix. Groups are capped and the drop is reported rather than hidden.
+// prefix. Groups are capped and the drop is reported rather than hidden; an
+// identity with no groups has no _groups field, rather than an empty or null
+// one.
 //
 // Extras are never logged, only counted. An identity's extras are whatever its
 // authenticator put there, which is claim data: arbitrary, and possibly
@@ -176,9 +178,9 @@ func kubernetesAttrs(req *http.Request) []slog.Attr {
 func userAttrs(prefix string, u user.Info) []slog.Attr {
 	groups, groupsOmitted := logging.BoundedList(u.GetGroups(), logging.MaxGroups)
 
-	attrs := []slog.Attr{
-		slog.String(prefix+"_user", logging.Bound(u.GetName(), logging.MaxIdentity)),
-		slog.Any(prefix+"_groups", groups),
+	attrs := []slog.Attr{slog.String(prefix+"_user", logging.Bound(u.GetName(), logging.MaxIdentity))}
+	if len(groups) > 0 {
+		attrs = append(attrs, slog.Any(prefix+"_groups", groups))
 	}
 	if groupsOmitted > 0 {
 		attrs = append(attrs, slog.Int(prefix+"_groups_omitted", groupsOmitted))

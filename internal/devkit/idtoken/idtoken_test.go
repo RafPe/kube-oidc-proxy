@@ -9,7 +9,7 @@ import (
 
 	jose "github.com/go-jose/go-jose/v4"
 
-	"github.com/rafpe/kube-oidc-proxy/test/util/keybundle"
+	"github.com/rafpe/kube-oidc-proxy/internal/devkit/keybundle"
 )
 
 func TestSignRoundTrip(t *testing.T) {

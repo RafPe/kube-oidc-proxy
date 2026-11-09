@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -15,14 +16,15 @@ func main() {
 	opts := new(options)
 	// These test tools have no logging flags of their own; the shutdown
 	// reporting the handler will do goes to the process default logger.
-	stopCh := signals.NotifyStop(slog.Default())
+	ctx, stop := signals.NotifyContext(context.Background(), slog.Default())
+	defer stop()
 
 	cmd := &cobra.Command{
 		Use:   "audit-webhook",
 		Short: "An server that implements a Kubernetes audit webhook sink",
 		RunE: func(cmd *cobra.Command, args []string) error {
 
-			wh, err := newSink(opts.LogPath, opts.KeyFile, opts.CertFile, stopCh)
+			wh, err := newSink(opts.LogPath, opts.KeyFile, opts.CertFile, ctx.Done())
 			if err != nil {
 				return err
 			}

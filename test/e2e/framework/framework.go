@@ -1,4 +1,7 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
+
+//go:build e2e
+
 package framework
 
 import (
@@ -15,11 +18,11 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/rafpe/kube-oidc-proxy/internal/devkit/idtoken"
+	"github.com/rafpe/kube-oidc-proxy/internal/devkit/keybundle"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/config"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/helper"
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
-	"github.com/rafpe/kube-oidc-proxy/test/util/idtoken"
-	"github.com/rafpe/kube-oidc-proxy/test/util/keybundle"
 )
 
 // defaultConfig is the configuration the default frameworks run against. It is

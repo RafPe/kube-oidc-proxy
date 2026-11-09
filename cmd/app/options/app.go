@@ -175,38 +175,38 @@ func (r *SubjectAccessReviewOptions) AddFlags(fs *pflag.FlagSet) *SubjectAccessR
 
 // AddFlags binds the token passthrough flags to fs and returns t for chaining.
 func (t *TokenPassthroughOptions) AddFlags(fs *pflag.FlagSet) *TokenPassthroughOptions {
-	fs.StringSliceVar(&t.Audiences, "token-passthrough-audiences", t.Audiences, ""+
+	fs.StringSliceVar(&t.Audiences, "token-passthrough-audiences", t.Audiences,
 		"(Alpha) List of the identifiers that the resource server presented with the token "+
-		"identifies as. The resource server will verify that non OIDC tokens are intended "+
-		"for at least one of the audiences in this list. If no audiences are "+
-		"provided, the audience will default to the audience of the Kubernetes "+
-		"apiserver. Only used when --token-passthrough is also enabled.")
+			"identifies as. The resource server will verify that non OIDC tokens are intended "+
+			"for at least one of the audiences in this list. If no audiences are "+
+			"provided, the audience will default to the audience of the Kubernetes "+
+			"apiserver. Only used when --token-passthrough is also enabled.")
 
-	fs.DurationVar(&t.Timeout, "token-passthrough-request-timeout", tokenreview.DefaultTimeout, ""+
+	fs.DurationVar(&t.Timeout, "token-passthrough-request-timeout", tokenreview.DefaultTimeout,
 		"Timeout for each TokenReview request the proxy sends to the target API server "+
-		"when validating a passthrough token. Only used when --token-passthrough is "+
-		"also enabled.")
+			"when validating a passthrough token. Only used when --token-passthrough is "+
+			"also enabled.")
 
-	fs.DurationVar(&t.SuccessCacheTTL, "token-passthrough-cache-success-ttl", tokenreview.DefaultSuccessCacheTTL, ""+
+	fs.DurationVar(&t.SuccessCacheTTL, "token-passthrough-cache-success-ttl", tokenreview.DefaultSuccessCacheTTL,
 		"How long a successful TokenReview result is cached and reused without a new "+
-		"request to the target API server. A cached success outlives token revocation "+
-		"for up to this duration, so keep it low; the default matches the "+
-		"kube-apiserver's own delegated-authentication cache (10s). Set to 0 to "+
-		"disable caching successful results. Only used when --token-passthrough is "+
-		"also enabled.")
+			"request to the target API server. A cached success outlives token revocation "+
+			"for up to this duration, so keep it low; the default matches the "+
+			"kube-apiserver's own delegated-authentication cache (10s). Set to 0 to "+
+			"disable caching successful results. Only used when --token-passthrough is "+
+			"also enabled.")
 
-	fs.DurationVar(&t.FailureCacheTTL, "token-passthrough-cache-failure-ttl", tokenreview.DefaultFailureCacheTTL, ""+
+	fs.DurationVar(&t.FailureCacheTTL, "token-passthrough-cache-failure-ttl", tokenreview.DefaultFailureCacheTTL,
 		"How long an unauthenticated TokenReview result is cached, shielding the "+
-		"target API server from repeated reviews of the same invalid token (for "+
-		"example during an OIDC issuer outage with --token-passthrough enabled). "+
-		"Errors reaching the API server are never cached and are retried on the next "+
-		"request. Set to 0 to disable caching unauthenticated results. Only used when "+
-		"--token-passthrough is also enabled.")
+			"target API server from repeated reviews of the same invalid token (for "+
+			"example during an OIDC issuer outage with --token-passthrough enabled). "+
+			"Errors reaching the API server are never cached and are retried on the next "+
+			"request. Set to 0 to disable caching unauthenticated results. Only used when "+
+			"--token-passthrough is also enabled.")
 
-	fs.BoolVar(&t.Enabled, "token-passthrough", t.Enabled, ""+
+	fs.BoolVar(&t.Enabled, "token-passthrough", t.Enabled,
 		"(Alpha) Requests with Bearer tokens that fail OIDC validation are tried against "+
-		"the API server using the Token Review endpoint. If successful, the request "+
-		"is sent on as is, with no impersonation.")
+			"the API server using the Token Review endpoint. If successful, the request "+
+			"is sent on as is, with no impersonation.")
 
 	return t
 }

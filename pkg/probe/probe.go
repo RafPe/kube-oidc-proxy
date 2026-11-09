@@ -134,7 +134,7 @@ type Server struct {
 	readinessLogger *slog.Logger
 	oidcLogger      *slog.Logger
 
-	// metrics receives the per-issuer and readiness gauges; nil records nothing.
+	// metrics receives the per-issuer and readiness gauges.
 	metrics *metrics.Recorder
 
 	oidcAuthenticator authenticator.Token
@@ -184,8 +184,8 @@ type Config struct {
 	// through.
 	Authenticator authenticator.Token
 
-	// Metrics receives the issuer and readiness gauges. Optional: nil records
-	// nothing.
+	// Metrics receives the issuer and readiness gauges. Optional; see package
+	// metrics.
 	Metrics *metrics.Recorder
 }
 
@@ -194,15 +194,11 @@ type Config struct {
 // issuer series per configured issuer at 0, so an issuer that never
 // initializes is visible rather than absent.
 //
-// root is the process root logger: a constructor that reports under one
-// component takes that component's logger, and one that reports under several
-// takes root and derives them. The probe reports under two (readiness for the
-// latch and the listener, oidc for the per-issuer records). A nil root is a
-// wiring mistake and panics; a test passes a discarding logger.
+// root is the process root logger, from which NewServer derives the readiness
+// component logger for the latch and the listener and the oidc one for the
+// per-issuer records.
 func NewServer(cfg Config, root *slog.Logger) *Server {
-	if root == nil {
-		panic("probe: nil logger")
-	}
+	logging.RequireLogger(root, "probe")
 
 	mode := cfg.Mode
 	if mode == "" {
@@ -243,33 +239,22 @@ func (s *Server) SetServing() {
 // endpoint that is always healthy once this probe listener is up — it is
 // deliberately not gated on SetServing, since the process is alive long before
 // the proxy serves and gating it would invite restarts during startup — and a
-// readiness endpoint driven by check. Both endpoints answer only GET; any other
-// method gets 405, and an unknown path 404 from the ServeMux default.
+// readiness endpoint driven by check. Both are GET routes, as /metrics is on
+// the metrics listener: ServeMux admits GET and HEAD, answers any other method
+// with 405 and an Allow header, and an unknown path with 404.
 func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/live", getOnly(func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /live", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-	}))
-	mux.HandleFunc("/ready", getOnly(func(w http.ResponseWriter, _ *http.Request) {
+	})
+	mux.HandleFunc("GET /ready", func(w http.ResponseWriter, _ *http.Request) {
 		if err := s.check(); err != nil {
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-	}))
+	})
 	return mux
-}
-
-// getOnly rejects any non-GET request with 405 before invoking next, preserving
-// the GET-only contract of the readiness/liveness endpoints.
-func getOnly(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		next(w, r)
-	}
 }
 
 // Start binds the readiness listener synchronously so a failure to acquire the

@@ -2,7 +2,6 @@
 package proxy
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -45,9 +44,11 @@ func (c *capturingRT) RoundTrip(req *http.Request) (*http.Response, error) {
 // inbound request headers instead would assert nothing at all, because the
 // Impersonate-* headers do not exist until roundTrip builds them.
 //
-// The authenticator is wrapped exactly as run.go wraps it, so the whole path
-// under test is the production one — a wrapper that put the name into
-// Response.User.Extra would fail both halves.
+// The authenticator is wrapped in authn.AttributeToIssuer, as authn.Build wraps
+// it, so the whole path under test is the production one — a wrapper that put
+// the name into Response.User.Extra would fail both halves. newTestProxy has
+// already wrapped it once; the outer wrapper records last, so its name is the
+// one recorded.
 func TestIssuerNameNeverReachesImpersonationHeaders(t *testing.T) {
 	// An identity extra and the client-IP extra guarantee the round tripper
 	// really builds Impersonate-Extra- headers, so the scan below has
@@ -68,13 +69,13 @@ func TestIssuerNameNeverReachesImpersonationHeaders(t *testing.T) {
 		}, true, nil)
 
 	capture := new(capturingRT)
-	p.clientTransport = capture
+	p.proxyCredentialTransport = capture
 
 	var served bool
 	chain := p.withAuthenticateRequest(p.withImpersonateRequest(http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
 		served = true
 
-		conf := reqctx.Impersonation(req)
+		conf := reqctx.ForwardDecision(req)
 		if conf == nil {
 			t.Fatal("no impersonation config on an authenticated request")
 		}
@@ -146,11 +147,8 @@ func mentionsIssuer(s string) bool {
 // next handler — and with it every access record — runs.
 func TestWithAuthenticateRequestPublishesIssuerName(t *testing.T) {
 	p := newTestProxy(t)
-	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(
-		func(ctx context.Context, _ string) (*authenticator.Response, bool, error) {
-			authn.RecordIssuer(ctx, testIssuerName)
-			return &authenticator.Response{User: &authuser.DefaultInfo{Name: "alice"}}, true, nil
-		})
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(
+		&authenticator.Response{User: &authuser.DefaultInfo{Name: "alice"}}, true, nil)
 
 	var got string
 	p.withAuthenticateRequest(http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {

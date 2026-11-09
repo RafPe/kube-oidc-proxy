@@ -2,6 +2,8 @@
 package signals
 
 import (
+	"context"
+	"log/slog"
 	"os"
 	"syscall"
 	"testing"
@@ -36,14 +38,16 @@ func TestHandlerReportsFirstSignalThenForcedExit(t *testing.T) {
 
 	ch := make(chan os.Signal, 8)
 	exited := make(chan struct{})
-	stopCh := handle(logging.ForComponent(root, logging.ComponentShutdown), ch, func() { close(exited) })
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	handle(logging.ForComponent(root, logging.ComponentShutdown), ch, cancel, func() { close(exited) })
 
 	ch <- syscall.SIGTERM
 
 	select {
-	case <-stopCh:
+	case <-ctx.Done():
 	case <-time.After(5 * time.Second):
-		t.Fatal("stop channel was not closed on the first signal")
+		t.Fatal("the context was not cancelled on the first signal")
 	}
 
 	waitFor(t, "the first shutdown record", func() bool {
@@ -100,5 +104,22 @@ func TestSignalName(t *testing.T) {
 	}
 	if got := signalName(syscall.SIGINT); got != "SIGINT" {
 		t.Errorf("signalName(SIGINT) = %q", got)
+	}
+}
+
+// TestNotifyContextStopReleasesTheContext pins stop: it cancels the returned
+// context without any signal having arrived, and leaves the parent untouched.
+func TestNotifyContextStopReleasesTheContext(t *testing.T) {
+	parent := context.Background()
+	ctx, stop := NotifyContext(parent, slog.New(slog.DiscardHandler))
+	if ctx.Err() != nil {
+		t.Fatal("context cancelled before any signal")
+	}
+	stop()
+	if ctx.Err() == nil {
+		t.Fatal("stop did not release the context")
+	}
+	if parent.Err() != nil {
+		t.Fatal("stop cancelled the parent")
 	}
 }

@@ -58,6 +58,34 @@ func TestTextFormatIsValid(t *testing.T) {
 	}
 }
 
+// TestFormatValidate pins the one definition of the format set: the empty
+// Format names no format, though Options reads it as the JSON default.
+func TestFormatValidate(t *testing.T) {
+	for _, f := range []logging.Format{logging.FormatJSON, logging.FormatText} {
+		if err := f.Validate(); err != nil {
+			t.Errorf("%q.Validate() = %v, want nil", f, err)
+		}
+	}
+	for _, f := range []logging.Format{"", "yaml"} {
+		if err := f.Validate(); err == nil {
+			t.Errorf("%q.Validate() = nil, want an error", f)
+		}
+	}
+	if err := (logging.Options{}).Validate(); err != nil {
+		t.Errorf("Options{}.Validate() = %v, want nil: the empty format is the JSON default", err)
+	}
+}
+
+func TestRequireLogger(t *testing.T) {
+	logging.RequireLogger(slog.New(slog.DiscardHandler), "owner")
+	defer func() {
+		if got := recover(); got != "owner: nil logger" {
+			t.Fatalf("RequireLogger(nil) panic = %v, want %q", got, "owner: nil logger")
+		}
+	}()
+	logging.RequireLogger(nil, "owner")
+}
+
 func TestRequestIDIsEmptyWhenAbsent(t *testing.T) {
 	if got := logging.RequestID(context.Background()); got != "" {
 		t.Fatalf("RequestID on a bare context = %q, want empty", got)

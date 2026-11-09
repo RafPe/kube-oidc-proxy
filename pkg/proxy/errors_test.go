@@ -72,7 +72,7 @@ func TestError(t *testing.T) {
 	}
 	assertDeniedReason(t, records, metrics.ReasonUnauthorized)
 
-	frw, records = tryError(t, http.StatusForbidden, errNoName)
+	frw, records = tryError(t, http.StatusForbidden, errNoUsername)
 	if exp := []byte("Username claim not available in OIDC Issuer response\n"); !bytes.Equal(frw.buffer, exp) {
 		t.Errorf("unexpected response, exp='%s' got='%s'", exp, frw.buffer)
 	}
@@ -95,9 +95,9 @@ func TestErrorHandlerInternalFailureEmitsHandlerFailed(t *testing.T) {
 		err            error
 		wantErrMessage string
 	}{
-		"impersonation configuration missing": {
-			err:            errNoImpersonationConfig,
-			wantErrMessage: errNoImpersonationConfig.Error(),
+		"forwarding decision missing": {
+			err:            errNoForwardDecision,
+			wantErrMessage: errNoForwardDecision.Error(),
 		},
 		"unclassified error": {
 			err:            errors.New("boom"),
@@ -163,13 +163,13 @@ func TestErrorClassifiesEveryReason(t *testing.T) {
 			http.StatusUnauthorized, metrics.ReasonAuthenticationDependencyError},
 		"reserved identity": {fmt.Errorf("%w: username %q", errReservedIdentity, "system:masters"),
 			http.StatusForbidden, metrics.ReasonReservedIdentity},
-		"no username claim": {errNoName, http.StatusForbidden, metrics.ReasonNoUsernameClaim},
+		"no username claim": {errNoUsername, http.StatusForbidden, metrics.ReasonNoUsernameClaim},
 		"too many impersonation values": {fmt.Errorf("%w: 5 > 2", subjectaccessreview.ErrTooManyImpersonationHeaderValues),
 			http.StatusRequestHeaderFieldsTooLarge, metrics.ReasonTooManyImpersonationValues},
 		"impersonation denied": {&subjectaccessreview.ImpersonationAuthError{
 			Requester: "mmosley", Kind: subjectaccessreview.TargetGroup, Target: "system:masters"},
 			http.StatusForbidden, metrics.ReasonImpersonationDenied},
-		"no impersonation config": {errNoImpersonationConfig, http.StatusInternalServerError, metrics.ReasonInternalError},
+		"no forwarding decision": {errNoForwardDecision, http.StatusInternalServerError, metrics.ReasonInternalError},
 		// A SubjectAccessReview that could not be submitted wraps a client-go
 		// transport error. It is the proxy's own dependency failing, not the
 		// upstream hop, so it is a 500 and never a 502.
@@ -216,7 +216,7 @@ func TestUpstreamTransportFailureIsNotAnAccessDecision(t *testing.T) {
 // forwarding decision on the request -- is the proxy's own failure, a 500
 // with request.handler.failed, and never a 502.
 func TestUpstreamNonTransportFailureIsInternal(t *testing.T) {
-	_, records := tryHandler(t, http.StatusInternalServerError, errNoImpersonationConfig, (*Proxy).handleUpstreamError)
+	_, records := tryHandler(t, http.StatusInternalServerError, errNoForwardDecision, (*Proxy).handleUpstreamError)
 
 	records.Only(t, logging.EventRequestHandlerFailed)
 	assertDeniedReason(t, records, metrics.ReasonInternalError)

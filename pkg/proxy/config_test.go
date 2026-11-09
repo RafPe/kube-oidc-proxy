@@ -87,7 +87,7 @@ func TestHeadersConfig(t *testing.T) {
 				},
 			}
 
-			p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(oidcAnswer(authResponse, true, nil))
+			p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(authResponse, true, nil)
 
 			p.fakeRT.expUser = "a-user"
 			p.fakeRT.expGroup = []string{user.AllAuthenticated}

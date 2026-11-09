@@ -57,12 +57,12 @@ type impersonationTarget struct {
 }
 
 // userImpersonation asks about an Impersonate-User value. A name of the form
-// system:serviceaccount:<namespace>:<name>, valid as serviceaccount.SplitUsername
-// judges it, is a service account and is reviewed as serviceaccounts/<name>
-// in <namespace>, the way kube-apiserver reviews it (and parseImpersonation
-// gives it the service-account groups when the request names none); every
-// other name,
-// including a malformed service-account name, is reviewed as users/<name>.
+// system:serviceaccount:<namespace>:<name>, valid as
+// serviceaccount.SplitUsername judges it, is a service account and is reviewed
+// as serviceaccounts/<name> in <namespace>, the way kube-apiserver reviews it
+// (and parseImpersonation gives it the service-account groups when the request
+// names none). Every other name, including a malformed service-account name,
+// is reviewed as users/<name>.
 func userImpersonation(name string) impersonationTarget {
 	if namespace, account, err := serviceaccount.SplitUsername(name); err == nil {
 		return impersonationTarget{kind: TargetUser, resource: resourceServiceAccounts,
@@ -117,12 +117,6 @@ func parseImpersonation(headers http.Header) (*user.DefaultInfo, []impersonation
 	}
 	slices.Sort(keys)
 
-	// Groups, uids and extras refine a user; without one there is nothing to
-	// impersonate.
-	if headers.Get(transport.ImpersonateUserHeader) == "" {
-		return nil, nil, ErrNoImpersonationUser
-	}
-
 	targetUser := &user.DefaultInfo{
 		Groups: make([]string, 0),
 		Extra:  map[string][]string{},
@@ -162,6 +156,12 @@ func parseImpersonation(headers http.Header) (*user.DefaultInfo, []impersonation
 				targetUser.Extra[extraKey] = append(targetUser.Extra[extraKey], value)
 			}
 		}
+	}
+
+	// Groups, uids and extras refine a user; without one there is nothing to
+	// impersonate.
+	if targetUser.Name == "" {
+		return nil, nil, ErrNoImpersonationUser
 	}
 
 	// A service account's groups are a fixed mapping from its namespace, so

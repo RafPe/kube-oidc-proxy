@@ -1,4 +1,7 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
+
+//go:build e2e
+
 package authconfig
 
 import (
@@ -14,10 +17,10 @@ import (
 	apiserverv1 "k8s.io/apiserver/pkg/apis/apiserver/v1"
 	"sigs.k8s.io/yaml"
 
+	"github.com/rafpe/kube-oidc-proxy/internal/devkit/idtoken"
+	"github.com/rafpe/kube-oidc-proxy/internal/devkit/keybundle"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/suite/cases/sharedtests"
-	"github.com/rafpe/kube-oidc-proxy/test/util/idtoken"
-	"github.com/rafpe/kube-oidc-proxy/test/util/keybundle"
 )
 
 const (

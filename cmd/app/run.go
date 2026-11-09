@@ -42,17 +42,23 @@ var ErrReported = errors.New("error already reported on the log stream")
 // command line has been parsed.
 func NewRunCommand() *cobra.Command {
 	opts := options.New()
-	cmd := buildRunCommand(opts, os.Stdout, signals.NotifyStop)
+	cmd := buildRunCommand(opts, os.Stdout, signals.NotifyContext)
 	opts.AddFlags(cmd)
 
 	return cmd
 }
 
+// notifyFunc installs the stop trigger: it returns a context derived from
+// parent that is cancelled once shutdown is requested, and a stop that
+// releases the trigger. logger is the shutdown-component logger it reports
+// through.
+type notifyFunc func(parent context.Context, logger *slog.Logger) (context.Context, context.CancelFunc)
+
 // buildRunCommand builds the proxy command writing its log stream to out, which
-// is stdout in production and a buffer under test. notifyStop installs the
-// stop trigger: signals.NotifyStop in production, a channel the test closes
+// is stdout in production and a buffer under test. notify installs the stop
+// trigger: signals.NotifyContext in production, a context the test cancels
 // under test, so a test never signals its own process.
-func buildRunCommand(opts *options.Options, out io.Writer, notifyStop func(*slog.Logger) <-chan struct{}) *cobra.Command {
+func buildRunCommand(opts *options.Options, out io.Writer, notify notifyFunc) *cobra.Command {
 	return &cobra.Command{
 		Use:  options.AppName,
 		Long: "kube-oidc-proxy is a reverse proxy to authenticate users to Kubernetes API servers with Open ID Connect Authentication.",
@@ -62,16 +68,19 @@ func buildRunCommand(opts *options.Options, out io.Writer, notifyStop func(*slog
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return run(cmd, opts, out, notifyStop)
+			return run(cmd, opts, out, notify)
 		},
 	}
 }
 
 // run is the command body. It builds the root logger and the stop trigger,
 // then runs the proxy through its three phases: startup, serve and shutdown.
-func run(cmd *cobra.Command, opts *options.Options, out io.Writer, notifyStop func(*slog.Logger) <-chan struct{}) error {
+// --version is answered on the command's output before any of that, and run
+// returns without starting anything.
+func run(cmd *cobra.Command, opts *options.Options, out io.Writer, notify notifyFunc) error {
 	if opts.Version.Requested() {
-		opts.Version.PrintVersionAndExit()
+		opts.Version.PrintVersion(cmd.OutOrStdout())
+		return nil
 	}
 	if err := opts.Validate(cmd); err != nil {
 		return err
@@ -108,17 +117,13 @@ func run(cmd *cobra.Command, opts *options.Options, out io.Writer, notifyStop fu
 	// Trap SIGINT/SIGTERM only once the root logger exists, so shutdown
 	// reports through the configured stream. Nothing is serving before this
 	// point, so a signal that arrives earlier ends the process with Go's
-	// default behaviour. The readiness and proxy listeners stop when ctx does.
-	stopCh := notifyStop(logging.ForComponent(root, logging.ComponentShutdown))
-	ctx, cancel := context.WithCancel(context.Background())
+	// default behaviour. The readiness and proxy listeners stop when ctx does,
+	// which is on the stop signal or, through cancel, on a startup failure
+	// after they started.
+	signalCtx, stopSignals := notify(context.Background(), logging.ForComponent(root, logging.ComponentShutdown))
+	defer stopSignals()
+	ctx, cancel := context.WithCancel(signalCtx)
 	defer cancel()
-	go func() {
-		select {
-		case <-stopCh:
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
 
 	// The metrics listener has no dependencies, so it starts first: a
 	// port-in-use failure is then the first thing reported, and a scrape that
@@ -129,25 +134,34 @@ func run(cmd *cobra.Command, opts *options.Options, out io.Writer, notifyStop fu
 		return fail(err)
 	}
 
-	started, err := startup(ctx, cmd, opts, root, recorder)
+	// A listener that overran its drain while being stopped below is
+	// reported by the listener itself (metrics.server.failed,
+	// readiness.server.failed), and the exit status already says startup
+	// failed.
+	r, err := startup(cmd, opts, root, recorder)
 	if err != nil {
-		// A listener that overran its drain is reported as
-		// metrics.server.failed by the server itself, and the exit status
-		// already says startup failed.
+		_ = metricsListener.Stop()
+		return fail(err)
+	}
+	if err := r.start(ctx); err != nil {
+		// What started stops with ctx; the readiness drain is waited for so
+		// its port is released by the time run returns.
+		cancel()
+		_ = r.probe.Wait()
 		_ = metricsListener.Stop()
 		return fail(err)
 	}
 
-	serve(root, opts, started)
+	serve(root, opts, r)
 
 	// Each failure was already reported on the stream by its owner.
-	if err := shutdown(root, started.probe, started.auditor, metricsListener); err != nil {
+	if err := shutdown(root, r.probe, r.auditor, metricsListener); err != nil {
 		return fmt.Errorf("%w: %w", ErrReported, err)
 	}
 	return nil
 }
 
-// running is what startup hands to serve and shutdown: the started proxy and
+// running is what startup hands to start, serve and shutdown: the proxy and
 // readiness listener, and the auditor shutdown flushes once the proxy has
 // stopped serving.
 type running struct {
@@ -156,16 +170,14 @@ type running struct {
 	auditor *audit.Audit
 }
 
-// startup builds the proxy and its collaborators from the flags, reports the
-// effective configuration, and starts the audit backend and the readiness and
-// proxy listeners, all of which stop when ctx is cancelled. Neither listener
-// reports ready yet: serve does that.
+// startup builds the proxy and its collaborators from the flags and reports
+// the effective configuration. Nothing it builds is started: start does that.
 //
 // A function from this repository names its own package in the errors it
 // returns ("audit: ...", "probe: ..."), so those are returned as they are. A
 // third-party failure, such as building the client or binding the secure
 // port, is wrapped here with what was being done.
-func startup(ctx context.Context, cmd *cobra.Command, opts *options.Options, root *slog.Logger, recorder *metrics.Recorder) (*running, error) {
+func startup(cmd *cobra.Command, opts *options.Options, root *slog.Logger, recorder *metrics.Recorder) (*running, error) {
 	startupLogger := logging.ForComponent(root, logging.ComponentStartup)
 
 	restConfig, err := buildRESTConfig(opts, cmd)
@@ -243,17 +255,21 @@ func startup(ctx context.Context, cmd *cobra.Command, opts *options.Options, roo
 		Authenticator: tokenAuthenticator,
 		Metrics:       recorder,
 	}, root)
-	if err := probeServer.Start(ctx); err != nil {
-		return nil, err
-	}
-
-	if err := auditor.Start(ctx); err != nil {
-		return nil, err
-	}
-	if err := p.Start(ctx); err != nil {
-		return nil, err
-	}
 	return &running{proxy: p, probe: probeServer, auditor: auditor}, nil
+}
+
+// start starts the readiness listener, the audit backend and the proxy
+// listener, all of which stop when ctx is cancelled. Neither listener reports
+// ready yet: serve does that. On a failure, whatever already started is still
+// running until ctx is cancelled; the caller does that.
+func (r *running) start(ctx context.Context) error {
+	if err := r.probe.Start(ctx); err != nil {
+		return err
+	}
+	if err := r.auditor.Start(ctx); err != nil {
+		return err
+	}
+	return r.proxy.Start(ctx)
 }
 
 // serve reports the proxy as serving, lets readiness pass, and blocks until

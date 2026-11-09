@@ -47,13 +47,9 @@ func (p *Proxy) refuse(rw http.ResponseWriter, r *http.Request, err error) {
 	// records why the request was refused before it writes the response.
 	switch {
 	// The client went away while its credential or its impersonation was
-	// being reviewed: cancelled, or its own deadline passed. Nothing is
-	// written back; the connection is already going away. No upstream call
-	// was made, so there is no upstream record either: the review that saw it
-	// reported authn.tokenreview.failed or authz.sar.failed with
-	// reason=client_canceled by the same predicate, and the access record
-	// carries the same reason. Checked first, because the review failure
-	// wraps the cancellation.
+	// being checked: cancelled, or its own deadline passed. Nothing is
+	// written back; the connection is already going away. Checked first,
+	// because the dependency's error wraps the cancellation.
 	case ctxerr.ClientGone(r.Context(), err):
 		p.recordDenial(r, metrics.ReasonClientCanceled, err)
 
@@ -77,7 +73,7 @@ func (p *Proxy) refuse(rw http.ResponseWriter, r *http.Request, err error) {
 		// audited instead.
 		deny(http.StatusForbidden, "identities with the reserved \"system:\" prefix are not accepted from an authentication token")
 
-	case errors.Is(err, errNoName):
+	case errors.Is(err, errNoUsername):
 		p.recordDenial(r, metrics.ReasonNoUsernameClaim, err)
 		deny(http.StatusForbidden, "Username claim not available in OIDC Issuer response")
 
@@ -144,8 +140,8 @@ func (p *Proxy) handleUpstreamError(rw http.ResponseWriter, r *http.Request, err
 			logging.ErrAttr(err))
 		http.Error(rw, "", http.StatusBadGateway)
 
-	// Not the transport: roundTrip found no forwarding decision on the
-	// request, or the reverse proxy could not complete a protocol upgrade.
+	// Not the transport: roundTrip found no forwarding decision it could act
+	// on, or the reverse proxy could not complete a protocol upgrade.
 	// Both are the proxy's own failure.
 	default:
 		p.failInternal(rw, r, err)
@@ -188,7 +184,7 @@ func upstreamTermination(err error) metrics.Termination {
 // sanitized; the client receives an empty 500 body and the access record
 // carries reason=internal_error.
 func (p *Proxy) failInternal(rw http.ResponseWriter, r *http.Request, err error) {
-	logging.EmitLevel(r.Context(), p.requestLogger, logging.EventRequestHandlerFailed, slog.LevelError,
+	logging.Emit(r.Context(), p.requestLogger, logging.EventRequestHandlerFailed,
 		slog.String("reason", string(metrics.ReasonInternalError)), logging.ErrAttr(err))
 	p.recordDenial(r, metrics.ReasonInternalError, err)
 	http.Error(rw, "", http.StatusInternalServerError)

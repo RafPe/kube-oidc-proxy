@@ -336,7 +336,8 @@ against the target backend via the Kubernetes API; if it succeeds, the request
 is forwarded as-is with the token intact and no other authentication applied.
 Any `Impersonate-*` headers the client sent are forwarded too, unchecked by the
 proxy: the API server authorizes them against the token's own identity, as it
-would for a request sent to it directly.
+would for a request sent to it directly. The identity the TokenReview returned
+is what the proxy's audit event and access record name as the request's user.
 
 ```text
 --token-passthrough

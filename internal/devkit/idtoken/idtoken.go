@@ -12,7 +12,7 @@ import (
 
 	jose "github.com/go-jose/go-jose/v4"
 
-	"github.com/rafpe/kube-oidc-proxy/test/util/keybundle"
+	"github.com/rafpe/kube-oidc-proxy/internal/devkit/keybundle"
 )
 
 // Sign signs payload as an RS256 JWT with the issuer bundle's key and returns

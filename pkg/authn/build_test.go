@@ -87,7 +87,7 @@ func TestNewIssuerAuthenticator_Construction(t *testing.T) {
 func TestBuildPanicsOnNilLogger(t *testing.T) {
 	cfg := Config{Issuer: IssuerConfig{URL: "https://vault.example.com", ClientID: "my-client", UsernameClaim: "sub"}}
 	defer func() {
-		if got, want := recover(), "authn: nil root logger"; got != want {
+		if got, want := recover(), "authn: nil logger"; got != want {
 			t.Fatalf("Build panic = %v, want %q", got, want)
 		}
 	}()

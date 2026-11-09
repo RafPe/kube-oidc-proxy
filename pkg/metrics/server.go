@@ -45,13 +45,9 @@ type ServerConfig struct {
 }
 
 // NewServer builds a Server exposing cfg.Recorder on cfg.Addr. It does not
-// bind until Start. logger is the metrics component logger; a nil one is a
-// wiring mistake and panics here rather than on the first failed scrape. A
-// test passes a discarding logger.
+// bind until Start. logger is the metrics component logger.
 func NewServer(cfg ServerConfig, logger *slog.Logger) *Server {
-	if logger == nil {
-		panic("metrics: nil logger")
-	}
+	logging.RequireLogger(logger, "metrics")
 	return &Server{
 		logger:          logger,
 		shutdownTimeout: shutdownTimeout,

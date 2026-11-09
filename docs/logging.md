@@ -162,7 +162,7 @@ that must be present beyond `time`, `level`, `msg`, `schema_version`,
 |---|---|---|---|---|
 | `audit.backend.started` | `audit` | INFO | `backend_kind` | The audit backend is running. |
 | `audit.flush.completed` | `audit` | INFO | `duration_ms` | The pre-shutdown audit flush finished. The bundled backends cannot report a lost flush here: it surfaces as a bridged component=k8s ERROR record. |
-| `authn.oidc.failed` | `oidc` | DEBUG | `request_id`, `reason` | The OIDC authenticator rejected the token. The denial itself is INFO on request.access.decided. |
+| `authn.oidc.failed` | `oidc` | DEBUG | `request_id`, `reason` | The OIDC authenticator rejected the token: reason=unauthorized, or reason=client_canceled when the client hung up before it answered. The denial itself is INFO on request.access.decided. |
 | `authn.oidc.succeeded` | `oidc` | DEBUG | `request_id`, `issuer_name` | The OIDC authenticator accepted the token. Names the issuer that accepted it. |
 | `authn.token.missing` | `tokenreview` | DEBUG | `request_id` | No bearer token was presented on the TokenReview path. |
 | `authn.tokenreview.completed` | `tokenreview` | DEBUG | `request_id`, `authenticated` | A live TokenReview answered, with duration_ms. A cache hit is reported by cache.tokenreview.lookup instead. |
@@ -233,15 +233,15 @@ If an alias is ever added it goes in this table with a status of `alias`.
 | `issuer_name` | string | host of the configured issuer URL, max 256 chars | new | `request.access.decided`, `oidc.issuer.*` | never the full issuer URL |
 | `reason` | string | closed set, see [reason vocabularies](#reason-vocabularies) | new | `request.access.decided` on `AuFail`, and on error records | |
 | `decision` | string | `allow`, `deny` | new | `request.access.decided`, `cache.sar.lookup`, `authz.sar.completed` | authorization outcome |
-| `inbound_user` | string | username, sanitized, max 256 chars | frozen | `request.access.decided` | |
+| `inbound_user` | string | username, sanitized, max 256 chars | frozen | `request.access.decided` | the identity OIDC produced, or with `--token-passthrough` the one the API server's TokenReview returned; absent on a request refused before either authenticated it |
 | `inbound_uid` | string | UID, sanitized | frozen | `request.access.decided` | absent when empty |
-| `inbound_groups` | array of string | first 32 groups, sanitized | frozen | `request.access.decided` | the cap is new |
+| `inbound_groups` | array of string | first 32 groups, sanitized | frozen | `request.access.decided` | the cap is new; absent when the identity has no groups |
 | `inbound_groups_omitted` | int | groups beyond the cap | new | `request.access.decided` | absent when zero |
 | `inbound_extra_omitted` | int | count of the identity's extras, which are never logged | frozen | `request.access.decided` | absent when zero; `inbound_extra` is [retired](#retired) |
 | `outbound_user`, `outbound_uid`, `outbound_groups`, `outbound_groups_omitted`, `outbound_extra_omitted` | as the `inbound_*` fields | as the `inbound_*` fields | frozen (the caps are new) | `request.access.decided` when impersonating | compare with `inbound_*` to see who acted as whom |
 | `target_kind` | string | `user`, `group`, `uid`, `extra`, `serviceaccount`, `unknown` | new | `request.access.decided` on `impersonation_denied`, `authz.sar.completed`, `authz.impersonation.resolved` | replaces parsing the error text |
 | `target_name` | string | impersonation target, sanitized, max 256 chars | new | same as `target_kind` | |
-| `http_status` | int | HTTP status written to the client | new | `request.response.started`, `request.response.completed` | a `200` implied by the first `Write`, or by a handler that returned without writing, is recorded as `200`; `0` only when no response went out, because the connection was hijacked or the handler aborted before writing |
+| `http_status` | int | HTTP status written to the client | new | `request.response.started`, `request.response.completed` | a `200` implied by the first `Write`, or by a handler that returned without writing, is recorded as `200`; `0` only when no response went out: the connection was hijacked, the handler aborted before writing, or the client went away and the proxy answered nothing (`termination=client_cancel`) |
 | `time_to_headers_ms` | int | milliseconds from request start to the first final status | new | `request.response.started` | long-running requests only; a forwarded 1xx does not start the response |
 | `duration_ms` | int | milliseconds from request start to handler return | new | `request.response.completed`, `authz.sar.completed`, `authn.tokenreview.completed` | |
 | `response_bytes` | int | bytes written to the client | new | `request.response.completed` | absent when the connection was hijacked |
@@ -249,7 +249,7 @@ If an alias is ever added it goes in this table with a status of `alias`.
 | `error_message` | string | sanitized, max 512 chars | new | DEBUG records, ERROR records and `internal_error` | never at INFO or WARN for a client-caused failure |
 | `dropped_headers` | array of string | `x-forwarded-for`, `x-real-ip` | new | `request.headers.dropped` | |
 | `skip_reason` | string | `disabled`, `passthrough` | new | `request.impersonation.skipped` | |
-| `impersonated_header_names` | array of string | `Impersonate-User`, `Impersonate-Group`, `Impersonate-Uid`, `Impersonate-Extra-<key>` | new | `request.impersonation.applied` | header names only, never values |
+| `impersonated_header_names` | array of string | `Impersonate-User`, `Impersonate-Group`, `Impersonate-Uid`, `Impersonate-Extra-<key>` | new | `request.impersonation.applied` | header names only, never values; `<key>` is the extra key as configured or claimed, not the percent-encoded form client-go writes for a key such as `example.com/team` |
 
 ### On cache and review records
 

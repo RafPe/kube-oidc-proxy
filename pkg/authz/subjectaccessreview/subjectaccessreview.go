@@ -141,9 +141,7 @@ const DefaultTimeout = 5 * time.Second
 const DefaultMaxHeaderValues = 64
 
 // Authorizer authorizes impersonation requests by submitting a
-// SubjectAccessReview to the API server for each impersonated target. A
-// single shared timeout budget bounds the whole sequence of checks performed
-// for one request.
+// SubjectAccessReview to the API server for each impersonated target.
 type Authorizer struct {
 	// logger is the sar-component logger every record this authorizer emits
 	// goes through, so each carries component=sar. The per-request correlation
@@ -151,13 +149,12 @@ type Authorizer struct {
 	// Emit reads it from there.
 	logger *slog.Logger
 
-	// metrics receives the API-call and cache observations; nil records nothing.
+	// metrics receives the API-call and cache observations.
 	metrics *metrics.Recorder
 
 	client clientazv1.SubjectAccessReviewInterface
 
-	// timeout is the single shared budget applied across the whole sequence
-	// of SAR checks for one request.
+	// timeout is Config.Timeout, settled.
 	timeout time.Duration
 
 	// maxHeaderValues caps the total number of impersonation header values a
@@ -192,8 +189,8 @@ type Config struct {
 	// carry; zero or negative means DefaultMaxHeaderValues.
 	MaxHeaderValues int
 
-	// Metrics receives the API-call and cache observations. Optional: nil
-	// records nothing.
+	// Metrics receives the API-call and cache observations. Optional; see
+	// package metrics.
 	Metrics *metrics.Recorder
 }
 
@@ -212,11 +209,9 @@ type Config struct {
 // honoured. Set both to 0 to switch the cache off and re-check on every
 // request.
 //
-// logger is the sar-component logger; New panics when it is nil.
+// logger is the sar-component logger.
 func New(client clientazv1.SubjectAccessReviewInterface, cfg Config, logger *slog.Logger) *Authorizer {
-	if logger == nil {
-		panic("subjectaccessreview: nil logger")
-	}
+	logging.RequireLogger(logger, "subjectaccessreview")
 
 	// A zero budget would hand every review an already expired context and
 	// deny every impersonating request, and a zero cap would refuse every

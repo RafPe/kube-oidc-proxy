@@ -195,7 +195,7 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 			panicked := recover()
 			classified := reqctx.Termination(req)
 			term := classifyTermination(panicked, rec.hijacked, ctx.Err(), classified)
-			status := wireStatus(rec, panicked)
+			status := wireStatus(rec, panicked, term)
 			duration := time.Since(start)
 
 			logging.Emit(ctx, p.requestLogger, logging.EventRequestResponseCompleted,
@@ -253,10 +253,13 @@ func classifyTermination(panicked any, hijacked bool, ctxErr error, classified r
 
 // wireStatus is the status the client was actually answered with. A handler
 // that returned without writing anything is answered with a 200 by net/http
-// itself. Zero is kept only where no response went out: a hijacked connection,
-// or a panic that made the server drop the connection.
-func wireStatus(rec *responseRecorder, panicked any) int {
-	if !rec.wrote && !rec.hijacked && panicked == nil {
+// itself, unless the client had already gone: then the handler wrote nothing
+// on purpose and no answer reached anyone. Zero is kept wherever no response
+// went out -- that, a hijacked connection, or a panic that made the server
+// drop the connection -- and is rendered as code="none" on the requests
+// counter.
+func wireStatus(rec *responseRecorder, panicked any, term metrics.Termination) int {
+	if !rec.wrote && !rec.hijacked && panicked == nil && term != metrics.TerminationClientCancel {
 		return http.StatusOK
 	}
 	return rec.status

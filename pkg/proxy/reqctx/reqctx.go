@@ -3,13 +3,12 @@
 // Package reqctx stores request-scoped values on the http.Request context: the
 // values one filter decides and a filter or handler further along reads back.
 //
-// Getters are named for the value they return (ClientIP, Impersonation,
+// Getters are named for the value they return (ClientIP, ForwardDecision,
 // Termination); where that name is also the value's type, the type carries a
-// Record suffix (ImpersonationRecord, TerminationRecord).
+// Record suffix (ForwardDecisionRecord, TerminationRecord).
 package reqctx
 
 import (
-	"net"
 	"net/http"
 
 	"k8s.io/apiserver/pkg/authentication/user"
@@ -24,7 +23,7 @@ import (
 type key int
 
 const (
-	impersonationKey key = iota
+	forwardDecisionKey key = iota
 	clientIPKey
 	// originalForwardedForKey preserves the inbound X-Forwarded-For chain
 	// WithResolvedClient rewrote, for forensic logging.
@@ -38,46 +37,20 @@ const (
 	authMethodKey
 )
 
-// WithResolvedClient returns a copy of the request that carries the client IP
-// resolved under the trusted-proxy contract (see package clientip), and whose
-// forwarding headers have been reduced to what that contract allows, so audit
-// sourceIPs, the access record, the Remote-Client-IP impersonation extra and
-// the upstream API server all see the same validated client. It is the one
-// place the contract is applied; everything downstream reads the result
-// through ClientIP and the headers.
-//
-// X-Real-Ip is always removed: the proxy never honours it. X-Forwarded-For is
-// removed when the resolver would ignore it (untrusted peer, fully trusted
-// chain, or malformed hop) and collapsed to the single resolved client IP when
-// the peer is a trusted proxy. The raw inbound chain is preserved on the
-// context and available via OriginalForwardedFor so forensic logging keeps
-// seeing what the client actually sent.
-//
-// The returned request owns a copy of the header map, so the caller's request
-// is left exactly as it arrived.
-func WithResolvedClient(req *http.Request, trusted []*net.IPNet) *http.Request {
-	xff := req.Header.Get(clientip.HeaderForwardedFor)
-	ip := clientip.Resolve(req.RemoteAddr, xff, trusted)
-
+// WithResolvedClient returns a copy of the request carrying the client IP and
+// the forwarding headers clientip.Sanitize settled on, so every reader
+// downstream sees the validated client through ClientIP and the headers. The
+// raw inbound X-Forwarded-For chain stays on the context, available through
+// OriginalForwardedFor, so forensic logging keeps seeing what the client
+// actually sent. The caller's request keeps its own header map.
+func WithResolvedClient(req *http.Request, ip string, header http.Header) *http.Request {
 	ctx := request.WithValue(req.Context(), clientIPKey, ip)
-	if xff != "" {
+	if xff := req.Header.Get(clientip.HeaderForwardedFor); xff != "" {
 		ctx = request.WithValue(ctx, originalForwardedForKey, xff)
 	}
 
 	out := req.WithContext(ctx)
-	out.Header = req.Header.Clone()
-	out.Header.Del(clientip.HeaderRealIP)
-
-	switch {
-	case xff == "":
-	case ip == clientip.PeerHost(req.RemoteAddr):
-		// The resolver fell back to the direct peer: nothing in the
-		// forwarded chain is trustworthy.
-		out.Header.Del(clientip.HeaderForwardedFor)
-	default:
-		out.Header.Set(clientip.HeaderForwardedFor, ip)
-	}
-
+	out.Header = header
 	return out
 }
 
@@ -119,18 +92,20 @@ const (
 	ForwardDisabled ForwardMode = "disabled"
 )
 
-// ImpersonationRecord is how a request is forwarded, as decided once by the
+// ForwardDecisionRecord is how a request is forwarded, as decided once by the
 // filter that settled it: the token-review filter for a passthrough request,
 // the impersonation filter for every other one.
-type ImpersonationRecord struct {
+type ForwardDecisionRecord struct {
 	Mode ForwardMode
 
 	// Outbound is what the impersonating round tripper sends as Impersonate-*
-	// headers. It is set exactly when Mode is ForwardImpersonating.
+	// headers. It is set exactly when Mode is ForwardImpersonating; the round
+	// tripper refuses a record that breaks this rather than forward without it.
 	Outbound *transport.ImpersonationConfig
 
-	// InboundUser is the identity the proxy authenticated, or nil on the
-	// passthrough path, where the API server authenticates the token itself.
+	// InboundUser is the identity the request authenticated as: the one OIDC
+	// produced, or on the passthrough path the one the API server's TokenReview
+	// returned for the client's token.
 	InboundUser user.Info
 
 	// ImpersonatedUser is the identity the client asked to act as and was
@@ -265,20 +240,20 @@ func AuthMethod(req *http.Request) metrics.AuthMethod {
 	return metrics.AuthMethodNone
 }
 
-// WithImpersonation returns a copy of the request carrying how it is to be
+// WithForwardDecision returns a copy of the request carrying how it is to be
 // forwarded. When the request impersonates someone, that identity also becomes
 // the request's user so the audit chain records who was acted as.
-func WithImpersonation(req *http.Request, imp *ImpersonationRecord) *http.Request {
-	ctx := request.WithValue(req.Context(), impersonationKey, imp)
-	if imp.ImpersonatedUser != nil {
-		ctx = request.WithUser(ctx, imp.ImpersonatedUser)
+func WithForwardDecision(req *http.Request, fd *ForwardDecisionRecord) *http.Request {
+	ctx := request.WithValue(req.Context(), forwardDecisionKey, fd)
+	if fd.ImpersonatedUser != nil {
+		ctx = request.WithUser(ctx, fd.ImpersonatedUser)
 	}
 	return req.WithContext(ctx)
 }
 
-// Impersonation returns how the request is to be forwarded, or nil while no
+// ForwardDecision returns how the request is to be forwarded, or nil while no
 // filter has decided it yet.
-func Impersonation(req *http.Request) *ImpersonationRecord {
-	imp, _ := req.Context().Value(impersonationKey).(*ImpersonationRecord)
-	return imp
+func ForwardDecision(req *http.Request) *ForwardDecisionRecord {
+	fd, _ := req.Context().Value(forwardDecisionKey).(*ForwardDecisionRecord)
+	return fd
 }

@@ -100,6 +100,24 @@ func TestGroupsAreCapped(t *testing.T) {
 	}
 }
 
+// TestIdentityWithoutGroupsHasNoGroupsField pins that an identity with no
+// groups leaves the _groups field absent, not present as null or [].
+func TestIdentityWithoutGroupsHasNoGroupsField(t *testing.T) {
+	a, cap := newAccess(t)
+	req := reqctx.WithRequestID(httptest.NewRequest(http.MethodGet, "/", nil), "id")
+	LogDecision(a, req, Decision{Allowed: true, AuthMethod: "oidc",
+		Inbound: &user.DefaultInfo{Name: "alice"}, Impersonated: &user.DefaultInfo{Name: "bob", Groups: []string{}}})
+	rec := cap.Only(t, logging.EventRequestAccessDecided)
+	for _, field := range []string{"inbound_groups", "outbound_groups"} {
+		if v, has := rec[field]; has {
+			t.Errorf("%s = %v on an identity with no groups, want the field absent", field, v)
+		}
+	}
+	if rec.String("inbound_user") != "alice" || rec.String("outbound_user") != "bob" {
+		t.Errorf("users missing: %v", rec)
+	}
+}
+
 // TestNonResourceRequestHasNoKubernetesDimensions pins that the k8s_* block is
 // absent when the request-info resolver did not classify a resource request,
 // so a query on k8s_resource never sees a health or discovery path.

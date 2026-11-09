@@ -38,11 +38,11 @@ func WithIssuerHolder(ctx context.Context) (context.Context, *IssuerHolder) {
 	return context.WithValue(ctx, issuerHolderKey{}, holder), holder
 }
 
-// RecordIssuer records the issuer that accepted the token on the holder the
+// recordIssuer records the issuer that accepted the token on the holder the
 // context carries. A context without one is not an error: the readiness probe
 // drives the same authenticators with a fake JWT outside any request, and
 // there is nothing there to attribute.
-func RecordIssuer(ctx context.Context, name string) {
+func recordIssuer(ctx context.Context, name string) {
 	if holder, ok := ctx.Value(issuerHolderKey{}).(*IssuerHolder); ok {
 		holder.name = name
 	}
@@ -69,7 +69,7 @@ type namedIssuer struct {
 func (n *namedIssuer) AuthenticateToken(ctx context.Context, token string) (*authenticator.Response, bool, error) {
 	resp, ok, err := n.inner.AuthenticateToken(ctx, token)
 	if ok && err == nil {
-		RecordIssuer(ctx, n.name)
+		recordIssuer(ctx, n.name)
 	}
 	return resp, ok, err
 }

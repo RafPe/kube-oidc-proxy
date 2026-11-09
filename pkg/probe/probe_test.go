@@ -369,9 +369,10 @@ func TestCheckTransientErrorDoesNotLatch(t *testing.T) {
 	}
 }
 
-// TestHandlerRejectsNonGET verifies the readiness/liveness endpoints answer GET
-// but reject other methods with 405.
-func TestHandlerRejectsNonGET(t *testing.T) {
+// TestHandlerAnswersOnlyGET verifies the readiness/liveness endpoints follow
+// the method rule of the metrics endpoint: GET and HEAD are answered, any
+// other method is 405 with an Allow header.
+func TestHandlerAnswersOnlyGET(t *testing.T) {
 	h := newTestServer(t, false, nil,
 		"https://a.example.com")
 	// Serving, so GET /ready exercises the readiness path rather than the gate.
@@ -379,18 +380,18 @@ func TestHandlerRejectsNonGET(t *testing.T) {
 	handler := h.handler()
 
 	for _, path := range []string{"/live", "/ready"} {
-		getReq := httptest.NewRequest(http.MethodGet, path, nil)
-		getRec := httptest.NewRecorder()
-		handler.ServeHTTP(getRec, getReq)
-		if getRec.Code == http.StatusMethodNotAllowed {
-			t.Fatalf("GET %s: unexpected 405", path)
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
+			if rec.Code != http.StatusOK {
+				t.Errorf("%s %s: got %d, want 200", method, path, rec.Code)
+			}
 		}
 
-		postReq := httptest.NewRequest(http.MethodPost, path, nil)
-		postRec := httptest.NewRecorder()
-		handler.ServeHTTP(postRec, postReq)
-		if postRec.Code != http.StatusMethodNotAllowed {
-			t.Fatalf("POST %s: got %d, want %d", path, postRec.Code, http.StatusMethodNotAllowed)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
+		if rec.Code != http.StatusMethodNotAllowed || rec.Header().Get("Allow") == "" {
+			t.Errorf("POST %s: got %d (Allow %q), want 405 with an Allow header", path, rec.Code, rec.Header().Get("Allow"))
 		}
 	}
 }

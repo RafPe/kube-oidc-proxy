@@ -10,18 +10,22 @@ import (
 	utilcache "k8s.io/apimachinery/pkg/util/cache"
 )
 
+// The defaults the --subject-access-review-cache-*-ttl flags start from.
+// Unlike DefaultTimeout and DefaultMaxHeaderValues they are not what a zero
+// Config value means: a zero Config.AllowCacheTTL or DenyCacheTTL switches
+// that class of caching off.
 const (
-	// DefaultAllowCacheTTL is the default duration an allowed impersonation
-	// decision is served from the cache. It matches the delegating-authorization
+	// DefaultAllowCacheTTL is how long the flag default serves an allowed
+	// impersonation decision from the cache. It matches the delegating-authorization
 	// default in k8s.io/apiserver ("very low for responsiveness, but high enough
 	// to handle storms"). The tradeoff is revocation lag: an RBAC revoke can
 	// take up to this long to be enforced for a requester whose allow decision
 	// is cached.
 	DefaultAllowCacheTTL = 10 * time.Second
 
-	// DefaultDenyCacheTTL is the default duration a denied impersonation
-	// decision is served from the cache. A newly granted RBAC permission can
-	// take up to this long to be honoured.
+	// DefaultDenyCacheTTL is how long the flag default serves a denied
+	// impersonation decision from the cache. A newly granted RBAC permission
+	// can take up to this long to be honoured.
 	DefaultDenyCacheTTL = 10 * time.Second
 
 	// decisionCacheSize bounds the number of cached decisions. Cache keys embed

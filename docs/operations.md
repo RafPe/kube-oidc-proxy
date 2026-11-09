@@ -219,7 +219,7 @@ fine and was then refused — `inbound_user` is real and worth investigating.
 | `http_method`, `k8s_verb`, `k8s_resource`, `k8s_namespace` | The HTTP method, and the Kubernetes API dimensions the request-info resolver determined. The `k8s_*` fields are absent on non-resource paths such as `/healthz` and discovery. |
 | `auth_method` | `oidc`, `tokenreview` (passthrough) or `none` (no token presented). |
 | `issuer_name` | Which configured issuer accepted the token, in a multi-issuer setup. Never the full issuer URL. |
-| `inbound_user`, `inbound_groups`, `inbound_uid` | The identity the OIDC token authenticated as. `inbound_uid` appears only when the authenticator supplied one. |
+| `inbound_user`, `inbound_groups`, `inbound_uid` | The identity the OIDC token authenticated as, or on the token-passthrough path the identity the API server's TokenReview returned. `inbound_uid` appears only when the authenticator supplied one. |
 | `inbound_extra_omitted` | How many extras the identity carried. Extras are never logged, only counted, so you can tell data was withheld rather than absent. |
 | `outbound_user`, `outbound_groups`, `outbound_uid`, `outbound_extra_omitted` | The same fields for the impersonated identity, present only when the request carried impersonation headers. Compare these with the `inbound_*` fields to see who acted as whom. |
 | `target_kind`, `target_name` | On an impersonation denial, what was refused — so a denial never has to be recovered by parsing error text. |

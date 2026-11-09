@@ -1,5 +1,11 @@
 # Prometheus metrics — TDD evidence
 
+> **Paths are historical.** The commands and output below are the evidence as
+> recorded, so they name packages where they lived at the time. Since then
+> `pkg/proxy/tokenreview` moved to `pkg/authn/tokenreview` and
+> `pkg/proxy/subjectaccessreview` to `pkg/authz/subjectaccessreview`; run
+> today's equivalents against the new paths.
+
 Evidence for the metrics endpoint, its versioned contract and its chart
 surface, built across four phases (`metrics/phase-0-prep` through
 `metrics/phase-3-chart-e2e`). Every RED and GREEN cell below comes from a real

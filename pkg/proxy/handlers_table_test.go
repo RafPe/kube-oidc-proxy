@@ -64,8 +64,7 @@ func runHandlersCases(t *testing.T, tests map[string]handlersCase) {
 			w := httptest.NewRecorder()
 
 			if test.authResponse != nil {
-				p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), test.expAuthToken).DoAndReturn(
-					oidcAnswer(test.authResponse.resp, test.authResponse.pass, test.authResponse.err))
+				p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), test.expAuthToken).Return(test.authResponse.resp, test.authResponse.pass, test.authResponse.err)
 			}
 
 			p.fakeRT.expUser = test.expUser

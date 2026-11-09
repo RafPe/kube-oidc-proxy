@@ -51,13 +51,50 @@ func TestLogConfigLoaded(t *testing.T) {
 // mapping test reads the options exactly as RunE would.
 func parsedOptions(t *testing.T, args ...string) *options.Options {
 	t.Helper()
+	opts, _ := parsedCommand(t, args...)
+	return opts
+}
+
+// parsedCommand is parsedOptions for a function that also reads which flags
+// were set, which only the command that parsed the line records.
+func parsedCommand(t *testing.T, args ...string) (*options.Options, *cobra.Command) {
+	t.Helper()
 	opts := options.New()
 	cmd := &cobra.Command{Use: options.AppName}
 	opts.AddFlags(cmd)
 	if err := cmd.Flags().Parse(args); err != nil {
 		t.Fatalf("parsing %v: %v", args, err)
 	}
-	return opts
+	return opts, cmd
+}
+
+// TestBuildRESTConfigAppliesClientThrottling pins that --kube-client-qps and
+// --kube-client-burst reach the client configuration, and that leaving them
+// unset keeps client-go's own defaults rather than writing zero over them.
+func TestBuildRESTConfigAppliesClientThrottling(t *testing.T) {
+	// --server selects the flag-built configuration over the in-cluster one,
+	// which a test process cannot load.
+	opts, cmd := parsedCommand(t,
+		"--server=https://api.example.test:6443",
+		"--kube-client-qps=7.5",
+		"--kube-client-burst=42",
+	)
+	cfg, err := buildRESTConfig(opts, cmd)
+	if err != nil {
+		t.Fatalf("buildRESTConfig() error = %v", err)
+	}
+	if cfg.QPS != 7.5 || cfg.Burst != 42 {
+		t.Errorf("QPS/Burst = %v/%d, want 7.5/42", cfg.QPS, cfg.Burst)
+	}
+
+	opts, cmd = parsedCommand(t, "--server=https://api.example.test:6443")
+	cfg, err = buildRESTConfig(opts, cmd)
+	if err != nil {
+		t.Fatalf("buildRESTConfig() without throttling flags error = %v", err)
+	}
+	if cfg.QPS != 0 || cfg.Burst != 0 {
+		t.Errorf("QPS/Burst = %v/%d without the flags, want 0/0 so client-go applies its defaults", cfg.QPS, cfg.Burst)
+	}
 }
 
 // TestAuthenticatorConfigMapsEveryOIDCFlag pins the flag-to-config mapping

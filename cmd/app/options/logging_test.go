@@ -4,6 +4,7 @@ package options
 import (
 	"flag"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -39,8 +40,13 @@ func TestLoggingOptionsDefaultsAndValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	o.Format = "yaml"
+	if err := o.Validate(); err == nil || !strings.HasPrefix(err.Error(), "--logging-format: ") {
+		t.Fatalf("Validate() with yaml = %v, want a --logging-format error", err)
+	}
+	// The flag defaults to json, so an empty value was set explicitly.
+	o.Format = ""
 	if err := o.Validate(); err == nil {
-		t.Fatal("yaml accepted")
+		t.Fatal("empty format accepted")
 	}
 }
 

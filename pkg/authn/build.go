@@ -82,17 +82,14 @@ type Config struct {
 // been fetched yet. Its errors carry no class to match; a caller treats every
 // one as a rejected token.
 //
-// root is the root logger: Build reports under two components, so it derives
-// them itself -- oidc for the per-issuer configuration records, startup for
-// the configuration failures a CA file can raise later. Build panics when root
-// is nil.
+// root is the root logger, from which Build derives the oidc component logger
+// for the per-issuer configuration records and the startup one for the
+// configuration failures a CA file can raise later.
 //
 // The errors Build builds itself name an issuer by IssuerName and by its
 // position in the configuration, never by its full URL.
 func Build(cfg Config, root *slog.Logger) (authenticator.Token, []string, error) {
-	if root == nil {
-		panic("authn: nil root logger")
-	}
+	logging.RequireLogger(root, "authn")
 	oidcLogger := logging.ForComponent(root, logging.ComponentOIDC)
 	startupLogger := logging.ForComponent(root, logging.ComponentStartup)
 

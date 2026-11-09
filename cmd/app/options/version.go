@@ -3,7 +3,7 @@ package options
 
 import (
 	"fmt"
-	"os"
+	"io"
 	"runtime"
 	"runtime/debug"
 
@@ -108,11 +108,11 @@ func (v *VersionOptions) Commit() string {
 	return v.build.commit
 }
 
-// PrintVersionAndExit prints the build information and ends the process. It
-// is the --version flag's whole job, so the command calls it before anything
-// else is validated or built.
-func (v *VersionOptions) PrintVersionAndExit() {
-	fmt.Printf("%s version: %#v\n", AppName,
+// PrintVersion writes the build information to w. It is the --version flag's
+// whole job, so the command calls it before anything else is validated or
+// built, and then returns without starting; main owns the exit status.
+func (v *VersionOptions) PrintVersion(w io.Writer) {
+	_, _ = fmt.Fprintf(w, "%s version: %#v\n", AppName,
 		apimachineryversion.Info{
 			Major:        gitMajor,
 			Minor:        gitMinor,
@@ -125,6 +125,4 @@ func (v *VersionOptions) PrintVersionAndExit() {
 			Platform:     fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH),
 		},
 	)
-
-	os.Exit(0)
 }
