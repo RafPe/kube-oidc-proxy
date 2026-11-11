@@ -1,0 +1,2 @@
+kind: Security
+body: Build against Go 1.26.11, which fixes an HTTP/1 server crash caused by a MaxBytesReader header race in net/http (GO-2026-6859). The proxy serves its API and probe endpoints with net/http.
