@@ -186,9 +186,9 @@ fi
 log "Creating kind cluster ${CLUSTER}"
 kind create cluster --name "${CLUSTER}" >/dev/null
 kind load docker-image "${PROXY_IMAGE}" --name "${CLUSTER}" >/dev/null
-docker pull -q "${DEX_IMAGE}" >/dev/null
-kind load docker-image "${DEX_IMAGE}" --name "${CLUSTER}" >/dev/null
-ok "cluster ready, images loaded"
+# The node pulls Dex from ghcr itself: on ubuntu-26.04 runners, kind load of the
+# pulled multi-platform image fails in ctr images import --all-platforms.
+ok "cluster ready, proxy image loaded"
 
 log "Generating TLS for the local Dex issuer"
 mkdir -p "${CERTS}"
