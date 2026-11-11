@@ -1,8 +1,6 @@
 # Unreleased
 <!-- next-release -->
 
-- The Helm chart adds `extraEnv`, a list of `EnvVar` entries appended to the proxy container, for settings such as `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`; names the chart sets from `oidc.*` fail the render.
-
 ## [1.9.0] - 2026-10-21
 
 - Enable the metrics listener and dedicated Service automatically when the Helm ServiceMonitor switch is enabled, with setup guidance and unchanged opt-out defaults.
