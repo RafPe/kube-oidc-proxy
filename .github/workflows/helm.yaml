@@ -8,6 +8,7 @@ on:
       - 'chart/kube-oidc-proxy/**'
       - '.github/workflows/helm.yaml'
       - 'hack/verify-chart-logging.sh'
+      - 'hack/verify-chart-env.sh'
       - 'hack/verify-chart-rbac.sh'
       - 'hack/verify-chart-namespace.sh'
       - 'hack/verify-chart-metrics.sh'
@@ -18,6 +19,7 @@ on:
       - 'chart/kube-oidc-proxy/**'
       - '.github/workflows/helm.yaml'
       - 'hack/verify-chart-logging.sh'
+      - 'hack/verify-chart-env.sh'
       - 'hack/verify-chart-rbac.sh'
       - 'hack/verify-chart-namespace.sh'
       - 'hack/verify-chart-metrics.sh'
@@ -106,6 +108,9 @@ jobs:
 
       - name: logging values render as proxy flags
         run: bash hack/verify-chart-logging.sh
+
+      - name: extraEnv renders into the proxy container
+        run: bash hack/verify-chart-env.sh
 
       - name: ClusterRole grants every declared userextras key
         run: bash hack/verify-chart-rbac.sh
