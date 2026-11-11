@@ -470,7 +470,7 @@ func (h *Helper) deployApp(ns, name string, serviceType corev1.ServiceType, cont
 		return nil, nil, err
 	}
 	if serviceType == corev1.ServiceTypeNodePort {
-		if err := h.WaitForTLSHandshake(appNetURL, time.Second*30); err != nil {
+		if err := h.WaitForTLSHandshake(appNetURL, keyBundle.CertBytes, time.Second*30); err != nil {
 			return nil, nil, err
 		}
 	}

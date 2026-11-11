@@ -4,6 +4,8 @@ package helper
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -112,16 +114,20 @@ func (h *Helper) WaitForServiceEndpoints(namespace, service string, timeout time
 	return nil
 }
 
-// WaitForTLSHandshake waits until a TLS handshake with u's host succeeds. A
-// bare TCP dial is not enough for a port kind maps to the host: Docker's proxy
-// accepts the connection whether or not anything behind it is serving. The
-// certificate is not verified; this only checks that the server answers.
-func (h *Helper) WaitForTLSHandshake(u *url.URL, timeout time.Duration) error {
+// WaitForTLSHandshake waits until a TLS handshake with u's host succeeds and
+// the server presents a certificate that certPEM verifies. A bare TCP dial is
+// not enough for a port kind maps to the host: Docker's proxy accepts the
+// connection whether or not anything behind it is serving.
+func (h *Helper) WaitForTLSHandshake(u *url.URL, certPEM []byte, timeout time.Duration) error {
 	slog.Info("helper: waiting for TLS handshake", slog.String("url", u.String()))
 
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(certPEM) {
+		return errors.New("no certificate in the PEM to verify the TLS handshake against")
+	}
 	dialer := &tls.Dialer{
 		NetDialer: &net.Dialer{Timeout: 5 * time.Second},
-		Config:    &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // G402: a readiness check; nothing is sent over the connection.
+		Config:    &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
 	}
 
 	var lastErr error
