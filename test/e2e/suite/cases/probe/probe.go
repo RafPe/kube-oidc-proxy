@@ -22,6 +22,9 @@ var _ = framework.CasesDescribe("Readiness Probe", Label("shard-a"), func() {
 		Expect(f.Helper().DeleteProxy(f.Namespace.Name)).NotTo(HaveOccurred())
 
 		By("Deploying the Proxy should never become ready as the issuer is unavailable")
+		// This deploy is expected to time out, so do not wait out the full
+		// default budget; the readiness probe reports every 3 seconds.
+		f.Helper().DeployReadyTimeout = 15 * time.Second
 		_, _, err := f.Helper().DeployProxy(f.Namespace, f.IssuerURL(),
 			f.ClientID(), f.IssuerKeyBundle(), nil)
 		// Error should occur (not ready)

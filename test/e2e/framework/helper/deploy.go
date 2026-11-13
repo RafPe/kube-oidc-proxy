@@ -564,7 +564,7 @@ func (h *Helper) deployApp(ns, name string, serviceType corev1.ServiceType, cont
 		return nil, nil, err
 	}
 
-	if err := h.WaitForDeploymentReady(ns, name, time.Second*20); err != nil {
+	if err := h.WaitForDeploymentReady(ns, name, h.deployReadyTimeout()); err != nil {
 		return nil, nil, err
 	}
 
