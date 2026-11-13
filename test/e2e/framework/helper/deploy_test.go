@@ -9,7 +9,7 @@ import (
 )
 
 func TestDeployReadyTimeout(t *testing.T) {
-	h := NewHelper(&config.Config{})
+	h := NewHelper(&config.Config{}, nil)
 
 	// Normal deploys take 4 to 8 seconds; the default must ride out a single
 	// container-runtime stall (30 seconds observed) without masking a proxy

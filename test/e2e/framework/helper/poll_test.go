@@ -43,8 +43,7 @@ func TestWaitForDeploymentReadyTimeoutDumpsPodsAndEvents(t *testing.T) {
 		Status: appsv1.DeploymentStatus{ReadyReplicas: 0},
 	}
 
-	h := NewHelper(&config.Config{Kubectl: kubectl, KubeConfigPath: "kubeconfig"})
-	h.KubeClient = fake.NewSimpleClientset(deploy)
+	h := NewHelper(&config.Config{Kubectl: kubectl, KubeConfigPath: "kubeconfig"}, fake.NewSimpleClientset(deploy))
 
 	err := h.WaitForDeploymentReady(context.Background(), "ns", deploy.Name, 10*time.Millisecond)
 	if err == nil {
