@@ -25,9 +25,12 @@ import (
 
 var _ = framework.CasesDescribe("Impersonation", Label("shard-a"), func() {
 	// These specs all run against a default proxy with impersonation enabled.
-	// The only cluster state they create is cluster-scoped and named by
-	// GenerateName, and none of them assert on its absence, so they share a
-	// single deploy.
+	// The cluster-scoped objects they create are named by GenerateName. The
+	// ServiceAccount specs also create namespaced ServiceAccounts with fixed
+	// names (sa-imp-escalation, sa-imp-target) plus Roles and RoleBindings in
+	// the per-container test namespace. None of the specs assert on the
+	// absence of any of these, and the fixed names cannot collide because each
+	// is created once per container namespace, so they share a single deploy.
 	Describe("enabled", Ordered, ContinueOnFailure, func() {
 		f := framework.NewOrderedDefaultFramework("impersonation")
 
