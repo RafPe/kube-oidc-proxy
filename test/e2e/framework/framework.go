@@ -10,9 +10,9 @@ import (
 	. "github.com/onsi/gomega"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/config"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/helper"
@@ -98,9 +98,7 @@ func (f *Framework) BeforeEach() {
 
 	By("Creating a kubernetes client")
 
-	clientConfigFlags := genericclioptions.NewConfigFlags(true)
-	clientConfigFlags.KubeConfig = &f.config.KubeConfigPath
-	config, err := clientConfigFlags.ToRESTConfig()
+	config, err := clientcmd.BuildConfigFromFlags("", f.config.KubeConfigPath)
 	Expect(err).NotTo(HaveOccurred())
 
 	f.KubeClientSet, err = kubernetes.NewForConfig(config)

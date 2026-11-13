@@ -7,9 +7,7 @@
 package main
 
 import (
-	"flag"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/rafpe/kube-oidc-proxy/hack/internal/docsync"
@@ -25,13 +23,7 @@ var section = docsync.Section{
 }
 
 func main() {
-	check := flag.Bool("check", false, "report a diff and exit 1 instead of writing")
-	flag.Parse()
-
-	if err := docsync.Sync(section, renderTable(), *check); err != nil {
-		fmt.Fprintf(os.Stderr, "eventdoc: %v\n", err)
-		os.Exit(1)
-	}
+	docsync.Main("eventdoc", section, renderTable)
 }
 
 // renderTable renders every registered event as one markdown row, sorted by

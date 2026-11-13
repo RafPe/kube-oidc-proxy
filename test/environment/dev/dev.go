@@ -12,8 +12,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/config"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/helper"
@@ -79,9 +79,7 @@ func deploy() {
 
 	helper := helper.NewHelper(cfg)
 
-	clientConfigFlags := genericclioptions.NewConfigFlags(true)
-	clientConfigFlags.KubeConfig = &kubeconfig
-	config, err := clientConfigFlags.ToRESTConfig()
+	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	errExit(err)
 
 	kubeClient, err := kubernetes.NewForConfig(config)

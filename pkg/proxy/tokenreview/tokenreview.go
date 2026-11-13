@@ -16,8 +16,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
-	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	authv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilcache "k8s.io/apimachinery/pkg/util/cache"
@@ -26,6 +24,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 	clientauthv1 "k8s.io/client-go/kubernetes/typed/authentication/v1"
 	"k8s.io/client-go/rest"
+
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 )
 
 // defaultTimeout bounds a TokenReview call when no explicit timeout is
