@@ -19,6 +19,7 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/helper"
 	"github.com/rafpe/kube-oidc-proxy/test/environment"
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
+	"github.com/rafpe/kube-oidc-proxy/test/util"
 )
 
 const (
@@ -123,9 +124,9 @@ func deploy() {
 
 	fmt.Printf("> deployed proxy at url %s\n", proxyURL)
 
-	tokenPayload := helper.NewTokenPayload(issuerURL, clientID, time.Now().Add(time.Hour*48))
+	tokenPayload := util.NewTokenPayload(issuerURL, clientID, time.Now().Add(time.Hour*48))
 
-	signedToken, err := helper.SignToken(issuerKeyBundle, tokenPayload)
+	signedToken, err := util.SignToken(issuerKeyBundle, tokenPayload)
 	errExit(err)
 	fmt.Printf("> signed token valid for 48 hours:\n%s\n", signedToken)
 

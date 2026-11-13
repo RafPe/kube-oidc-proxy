@@ -72,9 +72,7 @@ func New(restConfig *rest.Config, audiences []string, timeout time.Duration, log
 	if err != nil {
 		return nil, err
 	}
-	if logger == nil {
-		logger = slog.New(slog.DiscardHandler)
-	}
+	logger = logging.OrDiscard(logger)
 
 	return &TokenReview{
 		logger:          logger,
@@ -178,13 +176,13 @@ func (c *cachedTokenReview) AuthenticateToken(ctx context.Context, token string)
 	if v, hit := c.cache.Get(key); hit {
 		record := v.(cachedReview)
 		logging.Emit(ctx, c.reviewer.log(), logging.EventCacheTokenReviewLookup,
-			slog.String("cache_result", "hit"),
+			slog.String("cache_result", string(metrics.CacheHit)),
 			slog.Bool("authenticated", record.ok))
 		c.reviewer.metrics.CacheLookup(metrics.ReviewTokenReview, metrics.CacheHit)
 		return record.resp, record.ok, nil
 	}
 	logging.Emit(ctx, c.reviewer.log(), logging.EventCacheTokenReviewLookup,
-		slog.String("cache_result", "miss"))
+		slog.String("cache_result", string(metrics.CacheMiss)))
 	c.reviewer.metrics.CacheLookup(metrics.ReviewTokenReview, metrics.CacheMiss)
 
 	resp, ok, err := c.reviewer.AuthenticateToken(ctx, token)
@@ -234,10 +232,7 @@ func writeLengthPrefixed(h hash.Hash, b []byte, s string) {
 // zero-valued reviewer tests build directly, which New would have given a
 // discarding logger.
 func (t *TokenReview) log() *slog.Logger {
-	if t.logger == nil {
-		return slog.New(slog.DiscardHandler)
-	}
-	return t.logger
+	return logging.OrDiscard(t.logger)
 }
 
 // reviewTimeout returns the configured TokenReview budget, defaulting when

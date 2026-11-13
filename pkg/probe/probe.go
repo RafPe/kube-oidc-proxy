@@ -12,17 +12,20 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/authn"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
+	"github.com/rafpe/kube-oidc-proxy/pkg/util/httpserve"
 )
 
 const (
@@ -37,19 +40,6 @@ const (
 	shutdownTimeout = time.Second * 5
 )
 
-// transientMarkers are substrings that unambiguously identify a transient
-// network/timeout failure while probing an issuer. The set is deliberately
-// conservative: a false "pending" is worse than a false "ready" here, because
-// in require-all mode a healthy issuer wrongly classified as pending would keep
-// the pod from ever becoming ready. Only phrases that cannot appear in an
-// ordinary JWT verification error belong here.
-var transientMarkers = []string{
-	"context deadline exceeded",
-	"connection refused",
-	"no such host",
-	"i/o timeout",
-}
-
 // Pending reasons classify why an issuer is not yet initialized. They are the
 // closed pending_reason value set carried by the oidc.issuer.pending record.
 const (
@@ -57,28 +47,6 @@ const (
 	pendingTransient      = "transient"
 	pendingError          = "error"
 )
-
-// unknownIssuerName is what an issuer whose host cannot be determined is
-// called in the log stream. It is a fixed literal rather than anything derived
-// from the input: falling back to the raw value would put the full issuer URL
-// in the record, which is exactly what the logging contract forbids.
-const unknownIssuerName = "unknown"
-
-// IssuerName derives the name an issuer is known by in the log stream. The full
-// issuer URL is never logged, so the host alone identifies the issuer, and
-// anything that does not yield a host — an unparsable value, a schemeless path,
-// an opaque URI, the empty string — becomes unknownIssuerName. The raw input is
-// never returned.
-func IssuerName(issuerURL string) string {
-	u, err := url.Parse(issuerURL)
-	if err != nil || u.Host == "" {
-		return unknownIssuerName
-	}
-	if host := strings.TrimSpace(logging.Bound(u.Host, logging.MaxIdentity)); host != "" {
-		return host
-	}
-	return unknownIssuerName
-}
 
 // pendingIssuer is one issuer that failed its probe, with the classification
 // of why. The reason is part of the state the pending record reports on
@@ -114,9 +82,9 @@ type HealthCheck struct {
 	// metrics receives the per-issuer and readiness gauges; nil records nothing.
 	metrics *metrics.Recorder
 
-	oidcAuther authenticator.Token
-	issuers    []IssuerReadiness
-	requireAll bool
+	oidcAuthenticator authenticator.Token
+	issuers           []IssuerReadiness
+	requireAll        bool
 
 	serving atomic.Bool
 
@@ -150,41 +118,36 @@ type Server struct {
 	// shutdown failure path without waiting out the production budget.
 	shutdownTimeout time.Duration
 
-	// done is closed once serving and shutdown have both finished; err holds
-	// the terminal error (nil after a clean shutdown). Closing done
-	// happens-after the write to err, so Wait observes err safely without
-	// additional synchronization.
-	done chan struct{}
-	err  error
+	// serving is the bound server once Start has succeeded.
+	serving *httpserve.Serving
 }
 
 // NewServer builds a readiness Server that probes the given issuers via
-// oidcAuther and serves the readiness endpoint on the given port. It does not
+// oidcAuthenticator and serves the readiness endpoint on port. It does not
 // bind or serve until Start is called.
 //
-// logger is the root logger: the probe reports under two components (readiness
-// for the latch, oidc for the per-issuer records) and derives both from it. A
-// nil logger yields one that discards every record, so a partially wired caller
+// root must be the process root logger, not a component-bound one: unlike its
+// sibling constructors, the probe reports under two components (readiness for
+// the latch, oidc for the per-issuer records) and derives both itself. A nil
+// root yields loggers that discard every record, so a partially wired caller
 // cannot panic on a probe.
-func NewServer(port string, issuers []IssuerReadiness, requireAll bool, oidcAuther authenticator.Token, logger *slog.Logger) *Server {
-	if logger == nil {
-		logger = slog.New(slog.DiscardHandler)
-	}
+func NewServer(port int, issuers []IssuerReadiness, requireAll bool, oidcAuthenticator authenticator.Token, root *slog.Logger) *Server {
+	root = logging.OrDiscard(root)
 
 	h := &HealthCheck{
-		readinessLogger: logging.ForComponent(logger, logging.ComponentReadiness),
-		oidcLogger:      logging.ForComponent(logger, logging.ComponentOIDC),
-		oidcAuther:      oidcAuther,
-		issuers:         issuers,
-		requireAll:      requireAll,
-		initialized:     make(map[string]bool),
+		readinessLogger:   logging.ForComponent(root, logging.ComponentReadiness),
+		oidcLogger:        logging.ForComponent(root, logging.ComponentOIDC),
+		oidcAuthenticator: oidcAuthenticator,
+		issuers:           issuers,
+		requireAll:        requireAll,
+		initialized:       make(map[string]bool),
 	}
 
 	return &Server{
 		hc:              h,
 		shutdownTimeout: shutdownTimeout,
 		srv: &http.Server{
-			Addr:    net.JoinHostPort("0.0.0.0", port),
+			Addr:    net.JoinHostPort("0.0.0.0", strconv.Itoa(port)),
 			Handler: h.handler(),
 
 			// Bound how long a client may take to send its headers. The
@@ -193,7 +156,6 @@ func NewServer(port string, issuers []IssuerReadiness, requireAll bool, oidcAuth
 			// accumulate (gosec G112, Slowloris).
 			ReadHeaderTimeout: readHeaderTimeout,
 		},
-		done: make(chan struct{}),
 	}
 }
 
@@ -205,7 +167,7 @@ func (s *Server) WithMetrics(r *metrics.Recorder) *Server {
 	s.hc.metrics = r
 	r.SetReady(false)
 	for _, issuer := range s.hc.issuers {
-		r.SetIssuerInitialized(IssuerName(issuer.IssuerURL), false)
+		r.SetIssuerInitialized(authn.IssuerName(issuer.IssuerURL), false)
 	}
 	return s
 }
@@ -257,63 +219,26 @@ func getOnly(next http.HandlerFunc) http.HandlerFunc {
 // server down (bounded by shutdownTimeout) once ctx is cancelled. Start returns
 // once the listener is bound; use Wait to block on the terminal serve error.
 func (s *Server) Start(ctx context.Context) error {
-	ln, err := net.Listen("tcp", s.srv.Addr)
+	serving, err := httpserve.Start(ctx, s.srv, s.shutdownTimeout, func(err error) {
+		// ctx may already be cancelled here, which the record does not care
+		// about: it carries no deadline and no request scope.
+		logging.Emit(ctx, s.hc.readinessLogger, logging.EventReadinessServerFailed, logging.ErrAttr(err))
+	})
 	if err != nil {
 		return fmt.Errorf("readiness probe failed to listen on %s: %w", s.srv.Addr, err)
 	}
-
-	// Serve's result travels on a channel so the single owner goroutine below
-	// can join it whichever way serving ended.
-	serveResult := make(chan error, 1)
-	go func() { serveResult <- s.srv.Serve(ln) }()
-
-	// One goroutine owns shutdown and the terminal error. Shutdown makes Serve
-	// return at once, so closing done when Serve returns would report the
-	// listener as stopped while it is still draining -- and would drop the
-	// drain's error, which cmd/app joins into the process exit status. done is
-	// closed here instead, once both have finished.
-	//
-	//nolint:gosec // G118: this goroutine runs because ctx was cancelled; a context derived from it would be dead on arrival and Shutdown would not drain the in-flight request.
-	go func() {
-		defer close(s.done)
-
-		var serveErr, shutdownErr error
-		select {
-		case serveErr = <-serveResult:
-			// Serving stopped on its own (a listener error, or a direct
-			// Shutdown call): nothing is draining, but any open connection is
-			// closed for hygiene.
-			shutdownErr = s.srv.Close()
-		case <-ctx.Done():
-			shutdownErr = s.Shutdown()
-			if shutdownErr != nil {
-				shutdownErr = errors.Join(shutdownErr, s.srv.Close())
-			}
-			serveErr = <-serveResult
-		}
-		// A graceful shutdown is expected, not a failure.
-		if errors.Is(serveErr, http.ErrServerClosed) {
-			serveErr = nil
-		}
-		s.err = errors.Join(serveErr, shutdownErr)
-		if s.err != nil {
-			// ctx may already be cancelled here, which the record does not care
-			// about: it carries no deadline and no request scope.
-			logging.Emit(ctx, s.hc.readinessLogger,
-				logging.EventReadinessServerFailed, logging.ErrAttr(s.err))
-		}
-	}()
-
+	s.serving = serving
 	return nil
 }
 
 // Shutdown gracefully stops the readiness server with a bounded timeout. It is
 // safe to call more than once and is invoked automatically when the context
-// passed to Start is cancelled.
+// passed to Start is cancelled. Before Start there is nothing to stop.
 func (s *Server) Shutdown() error {
-	ctx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
-	defer cancel()
-	return s.srv.Shutdown(ctx)
+	if s.serving == nil {
+		return nil
+	}
+	return s.serving.Shutdown()
 }
 
 // Wait blocks until serving and the graceful shutdown have both finished and
@@ -321,8 +246,7 @@ func (s *Server) Shutdown() error {
 // budget, or nil after a clean stop. http.ErrServerClosed is normalized to
 // nil. It may be called by multiple goroutines.
 func (s *Server) Wait() error {
-	<-s.done
-	return s.err
+	return s.serving.Wait()
 }
 
 // isNotInitialized reports whether err indicates the issuer's authenticator has
@@ -344,13 +268,10 @@ func isTransient(err error) bool {
 	if errors.As(err, &netErr) && netErr.Timeout() {
 		return true
 	}
-	msg := err.Error()
-	for _, marker := range transientMarkers {
-		if strings.Contains(msg, marker) {
-			return true
-		}
-	}
-	return false
+	// The issuer is not listening yet, or its name does not resolve yet: both
+	// are what a cold cluster looks like while the issuer is still coming up.
+	var dnsErr *net.DNSError
+	return errors.Is(err, syscall.ECONNREFUSED) || errors.As(err, &dnsErr)
 }
 
 // pendingReason classifies the error from an issuer probe into the closed
@@ -405,7 +326,7 @@ func (h *HealthCheck) Check() error {
 	var newlyInitialized []string
 	var pending []pendingIssuer
 	for _, issuer := range toProbe {
-		_, _, err := h.oidcAuther.AuthenticateToken(ctx, issuer.FakeJWT)
+		_, _, err := h.oidcAuthenticator.AuthenticateToken(ctx, issuer.FakeJWT)
 		// The issuer counts as initialized only once its authenticator reaches
 		// token verification. A "not initialized" signal (JWKS not fetched yet)
 		// or a transient network/timeout error both leave it pending; anything
@@ -459,9 +380,9 @@ func (h *HealthCheck) recordProbeResults(ctx context.Context, newlyInitialized [
 			continue
 		}
 		h.initialized[issuerURL] = true
-		h.metrics.SetIssuerInitialized(IssuerName(issuerURL), true)
+		h.metrics.SetIssuerInitialized(authn.IssuerName(issuerURL), true)
 		logging.Emit(ctx, h.oidcLogger, logging.EventOIDCIssuerInitialized,
-			slog.String("issuer_name", IssuerName(issuerURL)),
+			slog.String("issuer_name", authn.IssuerName(issuerURL)),
 			slog.String("issuer_state", "initialized"),
 			slog.Int("ready_issuers", len(h.initialized)),
 			slog.Int("total_issuers", len(h.issuers)))
@@ -480,7 +401,7 @@ func (h *HealthCheck) recordProbeResults(ctx context.Context, newlyInitialized [
 	if key := pendingKey(pending); key != h.lastPending {
 		for _, p := range pending {
 			logging.Emit(ctx, h.oidcLogger, logging.EventOIDCIssuerPending,
-				slog.String("issuer_name", IssuerName(p.issuerURL)),
+				slog.String("issuer_name", authn.IssuerName(p.issuerURL)),
 				slog.String("issuer_state", "pending"),
 				slog.String("pending_reason", p.reason),
 				slog.Int("ready_issuers", len(h.initialized)),

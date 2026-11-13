@@ -4,32 +4,25 @@
 // request.access.decided per request, carrying the authentication,
 // authorization and admission outcome.
 //
-// # Client-IP and trusted-proxy semantics (see issue #56)
-//
-// The immediate peer (req.RemoteAddr) is always authoritative for the client
-// IP. X-Forwarded-For is honoured ONLY to the extent that the hops closest to
-// the proxy are themselves within a configured trusted-proxy network: the chain
-// is walked right-to-left, trusted hops are skipped, and the first untrusted
-// address is taken as the client. When no trusted proxies are configured (the
-// default), forwarded headers are never trusted and the direct peer is used, so
-// an untrusted client cannot spoof its resolved IP. The networks are held by
-// the AccessLogger, not by a package global, so a test can build one without
-// disturbing the process. The raw forwarded chain is still emitted for
-// observability under the explicitly-untrusted "forwarded_for_untrusted" field
-// and must not be treated as identity.
-package logging
+// The record's src_ip is the client IP the proxy/context package resolved
+// under the trusted-proxy contract (see that package's documentation); this
+// package does not resolve addresses itself, so the access record, the audit
+// log and the Remote-Client-IP impersonation extra can never disagree. The raw
+// forwarded chain is still emitted for observability under the
+// explicitly-untrusted "forwarded_for_untrusted" field and must not be treated
+// as identity.
+package accesslog
 
 import (
 	"log/slog"
-	"net"
 	"net/http"
-	"strings"
 
 	"k8s.io/apiserver/pkg/authentication/user"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
-	proxycontext "github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
+	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 )
 
 // Extra keys the proxy itself puts on an outbound impersonated request. They
@@ -76,25 +69,18 @@ var loggableExtraKeys = map[string]struct{}{
 }
 
 // AccessLogger writes the access record. It is an injected collaborator rather
-// than a package global so that the destination, the component and the trusted
-// proxies are decided once at construction and a test can hold its own.
+// than a package global so that the destination and the component are decided
+// once at construction and a test can hold its own.
 type AccessLogger struct {
 	logger *slog.Logger
-
-	// trustedProxies holds the networks whose forwarded headers are honoured
-	// when resolving the client IP. Empty (the default) trusts no proxy.
-	trustedProxies []*net.IPNet
 }
 
 // NewAccessLogger returns an AccessLogger emitting through logger, which the
 // caller has already bound to the request component. A nil logger yields one
 // that discards every record, so a partially wired caller cannot panic the
 // request path.
-func NewAccessLogger(logger *slog.Logger, trustedProxies []*net.IPNet) *AccessLogger {
-	if logger == nil {
-		logger = slog.New(slog.DiscardHandler)
-	}
-	return &AccessLogger{logger: logger, trustedProxies: trustedProxies}
+func NewAccessLogger(logger *slog.Logger) *AccessLogger {
+	return &AccessLogger{logger: logging.OrDiscard(logger)}
 }
 
 // Decision is the outcome the access record reports. Reason, TargetKind and
@@ -106,10 +92,10 @@ type Decision struct {
 	Allowed bool
 
 	// Reason is one of the closed reason values, on a denial only.
-	Reason string
+	Reason metrics.Reason
 
-	// AuthMethod is oidc, tokenreview or none.
-	AuthMethod string
+	// AuthMethod is how the request authenticated.
+	AuthMethod metrics.AuthMethod
 
 	// Inbound is the authenticated identity that made the request; Outbound is
 	// the identity forwarded upstream when impersonation resolved a different
@@ -127,21 +113,21 @@ type Decision struct {
 // is called as soon as authentication, authorization and proxy admission are
 // decided, so a watch or exec that runs for hours is recorded immediately.
 func (a *AccessLogger) LogDecision(req *http.Request, d Decision) {
-	event, decision := "AuFail", "deny"
+	event := "AuFail"
 	if d.Allowed {
-		event, decision = "AuSuccess", "allow"
+		event = "AuSuccess"
 	}
 
 	attrs := []slog.Attr{
-		slog.String("request_id", logging.Bound(proxycontext.RequestID(req), logging.MaxRequestID)),
+		slog.String("request_id", logging.Bound(reqctx.RequestID(req), logging.MaxRequestID)),
 	}
-	if id := proxycontext.ClientRequestID(req); id != "" {
+	if id := reqctx.ClientRequestID(req); id != "" {
 		attrs = append(attrs, slog.String("client_request_id", logging.Bound(id, logging.MaxRequestID)))
 	}
 
 	attrs = append(attrs,
 		slog.String("event", event),
-		slog.String("src_ip", resolveClientIP(req.RemoteAddr, forwardedFor(req.Header), a.trustedProxies)),
+		slog.String("src_ip", reqctx.ClientIP(req)),
 		slog.String("path", sanitizePath(req)),
 	)
 	if fwd := untrustedForwardedFor(req); fwd != "" {
@@ -150,18 +136,18 @@ func (a *AccessLogger) LogDecision(req *http.Request, d Decision) {
 
 	attrs = append(attrs,
 		slog.String("http_method", req.Method),
-		slog.String("auth_method", d.AuthMethod),
+		slog.String("auth_method", string(d.AuthMethod)),
 	)
-	if name := proxycontext.IssuerName(req); name != "" {
+	if name := reqctx.IssuerName(req); name != "" {
 		attrs = append(attrs, slog.String("issuer_name", logging.Bound(name, logging.MaxIdentity)))
 	}
 
 	attrs = append(attrs, kubernetesAttrs(req)...)
-	attrs = append(attrs, slog.String("decision", decision))
+	attrs = append(attrs, slog.String("decision", string(metrics.DecisionFor(d.Allowed))))
 
 	if !d.Allowed {
 		if d.Reason != "" {
-			attrs = append(attrs, slog.String("reason", d.Reason))
+			attrs = append(attrs, slog.String("reason", string(d.Reason)))
 		}
 		if d.TargetKind != "" {
 			attrs = append(attrs, slog.String("target_kind", d.TargetKind))
@@ -183,17 +169,18 @@ func (a *AccessLogger) LogDecision(req *http.Request, d Decision) {
 	// Marked after the record is out, so a handler further down the chain that
 	// would otherwise write a second decision for the same request -- a client
 	// that cancelled after admission, say -- can see that one already exists.
-	proxycontext.MarkDecisionRecorded(req)
+	reqctx.MarkDecisionRecorded(req)
 }
 
 // untrustedForwardedFor returns the raw forwarded chain the client actually
-// sent, sanitized. It is forensic: SanitizeForwardHeaders preserved the inbound
+// sent, sanitized. It is forensic: WithResolvedClient preserved the inbound
 // value on the context before rewriting the header, so the record reports what
-// arrived rather than what was forwarded.
+// arrived rather than what was forwarded. A request that never passed through
+// it still has the header itself.
 func untrustedForwardedFor(req *http.Request) string {
-	raw := proxycontext.OriginalForwardedFor(req)
+	raw := reqctx.OriginalForwardedFor(req)
 	if raw == "" {
-		raw = forwardedFor(req.Header)
+		raw = req.Header.Get("X-Forwarded-For")
 	}
 	return logging.Sanitize(raw)
 }
@@ -281,41 +268,4 @@ func sanitizePath(req *http.Request) string {
 		return ""
 	}
 	return logging.Sanitize(req.URL.Path)
-}
-
-// forwardedFor returns the raw X-Forwarded-For header value.
-func forwardedFor(headers http.Header) string {
-	return headers.Get("X-Forwarded-For")
-}
-
-// resolveClientIP returns the authoritative client IP for a request given the
-// peer address, the X-Forwarded-For chain, and the set of trusted proxy
-// networks. See the package documentation for the full contract. It is
-// IPv4/IPv6 aware and ignores malformed forwarded entries.
-func resolveClientIP(remoteAddr, xff string, trusted []*net.IPNet) string {
-	peer := proxycontext.PeerHost(remoteAddr)
-
-	// Without trust, or when the peer itself is not a trusted proxy, forwarded
-	// headers are ignored entirely: the direct peer is the client.
-	if xff == "" || !proxycontext.IPInNetworks(peer, trusted) {
-		return peer
-	}
-
-	// The peer is a trusted proxy. Walk the forwarded chain from the hop
-	// nearest the proxy toward the origin, skipping trusted hops, and take the
-	// first untrusted (or malformed-but-parseable) address as the client.
-	hops := strings.Split(xff, ",")
-	for i := len(hops) - 1; i >= 0; i-- {
-		ip := strings.TrimSpace(hops[i])
-		if net.ParseIP(ip) == nil {
-			// Malformed hop: cannot trust anything further left through it.
-			return peer
-		}
-		if proxycontext.IPInNetworks(ip, trusted) {
-			continue
-		}
-		return ip
-	}
-
-	return peer
 }

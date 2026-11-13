@@ -1,4 +1,11 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
+
+// Package logging is the proxy's structured log contract: a closed registry of
+// first-party events, each with a fixed level, component, message and
+// required fields, emitted through Emit so a record can only ever carry a
+// registered shape. It also owns the request-scoped logger and request id that
+// travel on the context, and the sanitizing and bounding every user-influenced
+// value passes through before it reaches the stream.
 package logging
 
 import (
@@ -108,10 +115,19 @@ func NewContext(ctx context.Context, l *slog.Logger) context.Context {
 // discards every record when there is none. It never returns nil, so call
 // sites need no guard.
 func FromContext(ctx context.Context) *slog.Logger {
-	if l, ok := ctx.Value(ctxKey{}).(*slog.Logger); ok && l != nil {
-		return l
+	l, _ := ctx.Value(ctxKey{}).(*slog.Logger)
+	return OrDiscard(l)
+}
+
+// OrDiscard returns l, or a logger that discards every record when l is nil.
+// Every constructor that accepts a logger defaults through it, so a partially
+// wired caller -- a unit test building a struct by hand, a binary run without
+// a destination -- can never panic a code path by logging.
+func OrDiscard(l *slog.Logger) *slog.Logger {
+	if l == nil {
+		return slog.New(slog.DiscardHandler)
 	}
-	return slog.New(slog.DiscardHandler)
+	return l
 }
 
 // Emit logs one registered event at the level and with the message its
@@ -126,8 +142,8 @@ func Emit(ctx context.Context, l *slog.Logger, e EventType, attrs ...slog.Attr) 
 }
 
 // EmitLevel is Emit with an explicit level, for the few events whose severity
-// depends on the outcome (upstream.request.failed drops to DEBUG on a client
-// cancellation).
+// depends on the outcome (authz.sar.failed drops to DEBUG when the requester
+// itself went away).
 func EmitLevel(ctx context.Context, l *slog.Logger, e EventType, level slog.Level, attrs ...slog.Attr) {
 	spec, _ := e.Spec()
 	attrs = withContextRequestID(ctx, spec, attrs)

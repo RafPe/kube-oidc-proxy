@@ -1,5 +1,5 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
-package options
+package authn
 
 import (
 	"os"
@@ -257,8 +257,7 @@ jwt:
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			opts := &AuthenticationConfigOptions{ConfigFile: writeAuthConfig(t, tc.config)}
-			cfg, err := opts.Load(compiler)
+			cfg, err := LoadConfiguration(writeAuthConfig(t, tc.config), compiler)
 
 			if tc.wantErr != "" {
 				if err == nil {
@@ -280,8 +279,7 @@ jwt:
 }
 
 func TestAuthenticationConfigLoadMissingFile(t *testing.T) {
-	opts := &AuthenticationConfigOptions{ConfigFile: "/does/not/exist.yaml"}
-	if _, err := opts.Load(authenticationcel.NewDefaultCompiler()); err == nil {
+	if _, err := LoadConfiguration("/does/not/exist.yaml", authenticationcel.NewDefaultCompiler()); err == nil {
 		t.Fatal("expected error for missing file, got nil")
 	}
 }

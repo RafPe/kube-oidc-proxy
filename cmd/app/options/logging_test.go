@@ -29,9 +29,9 @@ func TestLoggingOptionsDefaultsAndValidation(t *testing.T) {
 
 func TestLoggingOptionsReadsVerbosityFromGlobalFlags(t *testing.T) {
 	nfs := new(cliflag.NamedFlagSets)
-	globalflag.AddGlobalFlags(nfs.FlagSet("Misc"), "test")
+	globalflag.AddGlobalFlags(nfs.FlagSet(GlobalFlagSet), "test")
 	o := NewLoggingOptions(nfs)
-	if err := nfs.FlagSet("Misc").Set("v", "3"); err != nil {
+	if err := nfs.FlagSet(GlobalFlagSet).Set("v", "3"); err != nil {
 		t.Fatal(err)
 	}
 	if got := o.Verbosity(); got != 3 {

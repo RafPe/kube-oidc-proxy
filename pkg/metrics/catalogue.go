@@ -37,11 +37,11 @@ const (
 	nameAuditBackendFailures = Namespace + "_audit_backend_failures_total"
 )
 
-// catalogue lists every first-party family, as a fresh literal on every call
-// so nothing package-level is mutable. Order is the order docs/metrics.md
-// renders them in. Append-only: a shipped name, label set or type is never
-// changed in place.
-func catalogue() []Spec {
+// Catalogue lists every first-party family, as a fresh literal on every call
+// so nothing package-level is mutable and the caller owns the slice. Order is
+// the order docs/metrics.md renders them in. Append-only: a shipped name,
+// label set or type is never changed in place.
+func Catalogue() []Spec {
 	return []Spec{
 		{Name: nameBuildInfo, Type: "gauge", Labels: []string{"version", "revision", "go_version"}, Stability: "STABLE",
 			Help: "Build information; always 1."},
@@ -72,16 +72,10 @@ func catalogue() []Spec {
 	}
 }
 
-// Catalogue returns every first-party family, in documentation order. Each
-// call returns a fresh slice the caller owns.
-func Catalogue() []Spec {
-	return catalogue()
-}
-
 // spec returns the catalogue entry for name. A missing entry is a programming
 // error caught by TestEveryCollectorIsInTheCatalogue, so it panics.
 func spec(name string) Spec {
-	for _, s := range catalogue() {
+	for _, s := range Catalogue() {
 		if s.Name == name {
 			return s
 		}
@@ -146,20 +140,13 @@ func allowedValuesFor(family, label string) []string {
 	case "code":
 		return allowedCodes()
 	case "termination":
-		return []string{
-			"normal", "hijacked", "client_cancel", "panic",
-			"upstream_timeout", "upstream_reset", "proxy_error", other,
-		}
+		return append(strs(terminations), other)
 	case "auth_method":
-		return []string{"oidc", "tokenreview", "none", other}
+		return append(strs(authMethods), other)
 	case "decision":
-		return []string{"allow", "deny"}
+		return strs([]Decision{DecisionAllow, DecisionDeny})
 	case "reason":
-		return []string{
-			"", "unauthorized", "reserved_identity", "no_username_claim",
-			"impersonation_denied", "too_many_impersonation_values", "client_canceled",
-			"internal_error", "upstream_error", "authentication_dependency_error", other,
-		}
+		return append(strs(reasons), other)
 	case "review", "cache":
 		return []string{string(ReviewTokenReview), string(ReviewSAR), other}
 	case "result":
@@ -176,6 +163,15 @@ func allowedValuesFor(family, label string) []string {
 		}
 	}
 	return nil
+}
+
+// strs renders a typed vocabulary as the plain strings the catalogue lists.
+func strs[T ~string](values []T) []string {
+	out := make([]string, 0, len(values)+1)
+	for _, v := range values {
+		out = append(out, string(v))
+	}
+	return out
 }
 
 // allowedCodes is every value CodeFor can render: the statuses Go's registry

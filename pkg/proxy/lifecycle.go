@@ -14,22 +14,7 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/audit"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
-)
-
-// How a request ended, as reported by the terminal record's termination. The
-// first four are decided by the lifecycle filter itself; the upstream three are
-// classified by the error handler and handed over on the request's termination
-// holder.
-const (
-	terminationNormal       = "normal"
-	terminationHijacked     = "hijacked"
-	terminationClientCancel = "client_cancel"
-	terminationPanic        = "panic"
-
-	terminationUpstreamTimeout = "upstream_timeout"
-	terminationUpstreamReset   = "upstream_reset"
-	terminationProxyError      = "proxy_error"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 )
 
 // responseRecorder wraps the ResponseWriter for the length of one request so
@@ -161,8 +146,8 @@ func isAbortHandler(panicked any) bool {
 func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		start := time.Now()
-		req = context.WithTerminationHolder(req)
-		req = context.WithDecisionHolder(req)
+		req = reqctx.WithTerminationHolder(req)
+		req = reqctx.WithDecisionHolder(req)
 		ctx := req.Context()
 		l := logging.FromContext(ctx)
 
@@ -206,9 +191,9 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 
 		defer func() {
 			panicked := recover()
-			classified := context.TerminationFrom(req)
+			classified := reqctx.TerminationFrom(req)
 
-			term := terminationNormal
+			term := metrics.TerminationNormal
 			switch {
 			// An http.ErrAbortHandler panic is not a fault: it is how
 			// httputil.ReverseProxy reports a response copy that failed after
@@ -216,15 +201,15 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 			// upstream connection broke is then decided exactly as it is for a
 			// request that never panicked, so the two cases below classify it.
 			case panicked != nil && !isAbortHandler(panicked):
-				term = terminationPanic
+				term = metrics.TerminationPanic
 			case rec.hijacked:
-				term = terminationHijacked
+				term = metrics.TerminationHijacked
 			case ctx.Err() != nil:
-				term = terminationClientCancel
+				term = metrics.TerminationClientCancel
 			case panicked != nil:
 				// Aborted with the client still attached: the stream broke on
 				// the upstream side.
-				term = terminationUpstreamReset
+				term = metrics.TerminationUpstreamReset
 			case classified.Termination != "":
 				// Set by the error handler for an upstream failure.
 				term = classified.Termination
@@ -242,7 +227,7 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 			attrs := []slog.Attr{
 				slog.Int("http_status", status),
 				slog.Int64("duration_ms", time.Since(start).Milliseconds()),
-				slog.String("termination", term),
+				slog.String("termination", string(term)),
 			}
 			// A hijacked connection is no longer described by the recorder: the
 			// handler wrote to the socket directly, so a byte count of zero
@@ -254,7 +239,7 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 			// the terminal record alone can tell an upstream failure from an
 			// ordinary completion.
 			if term == classified.Termination && classified.Reason != "" {
-				attrs = append(attrs, slog.String("reason", classified.Reason))
+				attrs = append(attrs, slog.String("reason", string(classified.Reason)))
 			}
 
 			logging.Emit(ctx, l, logging.EventRequestResponseCompleted, attrs...)

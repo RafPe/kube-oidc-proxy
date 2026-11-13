@@ -14,7 +14,9 @@
 //
 // Reusing helper.DeployIssuer and util.NewTLSSelfSignedCertKey means the demo
 // authenticates against exactly the issuer, and trusts exactly the kind of
-// certificate, that the e2e suite does.
+// certificate, that the e2e suite does. This is the one demo binary that
+// depends on the e2e framework, and only for that deployment primitive: the
+// load generator takes everything it needs from test/util.
 package main
 
 import (

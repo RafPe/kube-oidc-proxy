@@ -79,11 +79,11 @@ go_lint: $(BINDIR)/golangci-lint ## lint golang code for problems
 clean: ## clean up created files
 	rm -rf \
 		$(BINDIR) \
-		$(CURDIR)/pkg/mocks/authenticator.go \
+		$(CURDIR)/pkg/proxy/mocks/authenticator.go \
 		$(CURDIR)/test/e2e/framework/issuer/bin \
 		$(CURDIR)/test/e2e/framework/fake-apiserver/bin
 
-# generate (not just depend) so pkg/mocks/authenticator.go exists before
+# generate (not just depend) so pkg/proxy/mocks/authenticator.go exists before
 # go_vet ./... and go_lint compile the packages that reference it.
 verify: generate verify_boilerplate verify_eventdoc verify_metricdoc go_fmt go_vet go_lint ## verify code and mod
 
@@ -104,7 +104,7 @@ verify_metricdoc:
 
 test: generate verify ## run all go tests
 	mkdir -p $(ARTIFACTS)
-	go test -tags logcheck -v -bench $$(go list ./pkg/... ./cmd/... ./test/tools/... ./test/e2e/framework/... ./test/e2e/versions/... | grep -v pkg/e2e) | tee $(ARTIFACTS)/go-test.stdout
+	go test -race -tags logcheck -v -bench $$(go list ./pkg/... ./cmd/... ./test/tools/... ./test/e2e/framework/... ./test/e2e/versions/... | grep -v pkg/e2e) | tee $(ARTIFACTS)/go-test.stdout
 
 # Name of the kind cluster the e2e suite creates (must match the const in
 # test/kind/kind.go). Used by e2e-clean for the failure/interrupt safety net.

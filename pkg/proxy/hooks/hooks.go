@@ -6,12 +6,11 @@ package hooks
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 	"time"
-
-	k8sErrors "k8s.io/apimachinery/pkg/util/errors"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 )
@@ -50,9 +49,7 @@ type Hooks struct {
 // discards every record, so a partially wired caller cannot panic during
 // teardown.
 func New(logger *slog.Logger) *Hooks {
-	if logger == nil {
-		logger = slog.New(slog.DiscardHandler)
-	}
+	logger = logging.OrDiscard(logger)
 	return &Hooks{
 		logger:  logger,
 		indexOf: make(map[string]int),
@@ -117,5 +114,5 @@ func (h *Hooks) RunPreShutdownHooks() error {
 			slog.Int64("duration_ms", elapsed.Milliseconds()))
 	}
 
-	return k8sErrors.NewAggregate(errs)
+	return errors.Join(errs...)
 }

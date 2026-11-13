@@ -9,10 +9,9 @@ import (
 	"k8s.io/apiserver/pkg/server"
 	"k8s.io/client-go/rest"
 
-	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
-	"github.com/rafpe/kube-oidc-proxy/pkg/mocks"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/mocks"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 	fakesubjectaccessreview "github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview/fake"
 )
@@ -25,8 +24,7 @@ func validDeps(t *testing.T) Dependencies {
 	ctrl := gomock.NewController(t)
 	root, _ := logtest.New(t, 0)
 
-	sar, err := subjectaccessreview.New(fakesubjectaccessreview.New(nil), subjectaccessreview.DefaultTimeout, 0, 0,
-		subjectaccessreview.DefaultMaxHeaderValues, logging.ForComponent(root, logging.ComponentSAR))
+	sar, err := subjectaccessreview.New(fakesubjectaccessreview.New(nil), subjectaccessreview.Config{Timeout: subjectaccessreview.DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, logging.ForComponent(root, logging.ComponentSAR))
 	if err != nil {
 		t.Fatalf("building SubjectAccessReview: %v", err)
 	}
@@ -35,7 +33,7 @@ func validDeps(t *testing.T) Dependencies {
 		Logger:                root,
 		RestConfig:            &rest.Config{Host: "https://kube.example.com"},
 		TokenAuthenticator:    mocks.NewMockToken(ctrl),
-		AuditOptions:          new(options.AuditOptions),
+		AuditOptions:          nil,
 		SubjectAccessReviewer: sar,
 		SecureServingInfo:     new(server.SecureServingInfo),
 		// ExternalAddress must be set: audit.New derives the audit server's

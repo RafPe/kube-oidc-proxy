@@ -87,10 +87,10 @@ var _ = framework.CasesDescribe("Headers", Label("shard-a"), func() {
 
 func sendRequestToProxy(f *framework.Framework) *http.Response {
 	By("Building request to proxy")
-	tokenPayload := f.Helper().NewTokenPayload(
+	tokenPayload := testutil.NewTokenPayload(
 		f.IssuerURL(), f.ClientID(), time.Now().Add(time.Minute))
 
-	signedToken, err := f.Helper().SignToken(f.IssuerKeyBundle(), tokenPayload)
+	signedToken, err := testutil.SignToken(f.IssuerKeyBundle(), tokenPayload)
 	Expect(err).NotTo(HaveOccurred())
 
 	proxyConfig := f.NewProxyRestConfig()

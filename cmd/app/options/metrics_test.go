@@ -134,7 +134,7 @@ func TestValidateAggregatesMetricsErrorsWithOthers(t *testing.T) {
 
 func TestMiscCommitReportsTheBuildCommit(t *testing.T) {
 	o := New()
-	if o.Misc.Commit() != gitCommit {
-		t.Fatalf("Commit() = %q, want the ldflags value %q", o.Misc.Commit(), gitCommit)
+	if o.Version.Commit() != gitCommit {
+		t.Fatalf("Commit() = %q, want the ldflags value %q", o.Version.Commit(), gitCommit)
 	}
 }

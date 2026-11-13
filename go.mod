@@ -2,6 +2,8 @@ module github.com/rafpe/kube-oidc-proxy
 
 go 1.26.11
 
+tool go.uber.org/mock/mockgen
+
 require (
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/onsi/ginkgo/v2 v2.32.1

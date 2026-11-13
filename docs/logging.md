@@ -166,7 +166,7 @@ that must be present beyond `time`, `level`, `msg`, `schema_version`,
 | `request.response.completed` | `request` | INFO | `request_id`, `http_status`, `duration_ms`, `termination` | The handler returned. The terminal record for every request, mirroring the audit stage ResponseComplete. |
 | `request.response.started` | `request` | INFO | `request_id`, `http_status`, `time_to_headers_ms` | First final status on a long-running request; a forwarded 1xx does not start the response. Mirrors the audit stage ResponseStarted. |
 | `upstream.request.canceled` | `upstream` | DEBUG | `request_id`, `reason` | The client went away before the upstream response completed. Carries reason=client_canceled. |
-| `upstream.request.failed` | `upstream` | ERROR or DEBUG | `request_id`, `reason`, `termination`, `error_message` | The reverse proxy transport failed. Carries reason=upstream_error and a classified termination; drops to DEBUG when the client canceled the request. |
+| `upstream.request.failed` | `upstream` | ERROR | `request_id`, `reason`, `termination`, `error_message` | The reverse proxy transport failed. Carries reason=upstream_error and a classified termination. A client that canceled is reported by upstream.request.canceled instead. |
 <!-- events:end -->
 
 ## Field reference

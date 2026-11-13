@@ -12,3 +12,6 @@
 /website/.lighthouseci/
 /.lighthouseci/
 /.archify/
+
+# desloppify local state
+.desloppify/

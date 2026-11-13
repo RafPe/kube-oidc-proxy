@@ -31,7 +31,7 @@ func newMetricsRecorder(t *testing.T) *metrics.Recorder {
 
 func TestSARCacheBypassCountsOneAPICallPerRequest(t *testing.T) {
 	rec := newMetricsRecorder(t)
-	s, err := New(fake.New(nil), DefaultTimeout, 0, 0, DefaultMaxHeaderValues, slog.New(slog.DiscardHandler))
+	s, err := New(fake.New(nil), Config{Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestSARCacheBypassCountsOneAPICallPerRequest(t *testing.T) {
 
 func TestSARCacheHitDoesNotReachTheAPIServer(t *testing.T) {
 	rec := newMetricsRecorder(t)
-	s, err := New(fake.New(nil), DefaultTimeout, 10*time.Second, 10*time.Second, DefaultMaxHeaderValues, slog.New(slog.DiscardHandler))
+	s, err := New(fake.New(nil), Config{Timeout: DefaultTimeout, AllowCacheTTL: 10 * time.Second, DenyCacheTTL: 10 * time.Second, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestCoalescedSARCallersCountOneAPICall(t *testing.T) {
 		// never block a caller, and the flight admits only one caller to
 		// Create anyway.
 		gate := &gateReviewer{entered: make(chan struct{}, 1), release: make(chan struct{})}
-		s, err := New(gate, DefaultTimeout, 10*time.Second, 10*time.Second, DefaultMaxHeaderValues, slog.New(slog.DiscardHandler))
+		s, err := New(gate, Config{Timeout: DefaultTimeout, AllowCacheTTL: 10 * time.Second, DenyCacheTTL: 10 * time.Second, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 		if err != nil {
 			t.Fatal(err)
 		}

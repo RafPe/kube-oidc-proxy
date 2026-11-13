@@ -37,10 +37,6 @@ func (f *FakeReviewer) Create(ctx context.Context, req *authv1.TokenReview, co m
 	return f.CreateFn(req)
 }
 
-func (f *FakeReviewer) CreateContext(ctx context.Context, req *authv1.TokenReview) (*authv1.TokenReview, error) {
-	return f.CreateFn(req)
-}
-
 func (f *FakeReviewer) WithCreate(req *authv1.TokenReview, err error) *FakeReviewer {
 	f.CreateFn = func(*authv1.TokenReview) (*authv1.TokenReview, error) {
 		return req, err

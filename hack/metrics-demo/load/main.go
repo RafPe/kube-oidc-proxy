@@ -47,8 +47,6 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/remotecommand"
 
-	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/config"
-	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/helper"
 	"github.com/rafpe/kube-oidc-proxy/test/util"
 )
 
@@ -227,7 +225,7 @@ func loadState(dir string) (*state, error) {
 	}
 	issuerURL, err := url.Parse(strings.TrimSpace(string(rawURL)))
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse issuer-url: %s", err)
+		return nil, fmt.Errorf("failed to parse issuer-url: %w", err)
 	}
 
 	certBytes, err := read("issuer-ca.pem")
@@ -244,7 +242,7 @@ func loadState(dir string) (*state, error) {
 	}
 	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse the issuer key: %s", err)
+		return nil, fmt.Errorf("failed to parse the issuer key: %w", err)
 	}
 
 	proxyCA, err := read("proxy-ca.pem")
@@ -458,7 +456,7 @@ func startPortForward(ctx context.Context, kubeconfig, namespace, target string,
 	cmd.Stderr = stderr
 
 	if err := cmd.Start(); err != nil {
-		return 0, nil, fmt.Errorf("failed to start kubectl port-forward: %s", err)
+		return 0, nil, fmt.Errorf("failed to start kubectl port-forward: %w", err)
 	}
 
 	// The announcement is read on its own goroutine so the wait for it can be
@@ -533,7 +531,7 @@ func readForwardedPort(stdout io.Reader) (int, error) {
 		return strconv.Atoi(m[1])
 	}
 	if err := scanner.Err(); err != nil {
-		return 0, fmt.Errorf("failed to read kubectl port-forward output: %s", err)
+		return 0, fmt.Errorf("failed to read kubectl port-forward output: %w", err)
 	}
 
 	return 0, errors.New("kubectl port-forward exited before it announced a local port")
@@ -542,7 +540,6 @@ func readForwardedPort(stdout io.Reader) (int, error) {
 type generator struct {
 	logger    *slog.Logger
 	st        *state
-	helper    *helper.Helper
 	cluster   kubernetes.Interface
 	namespace string
 	tunnel    *tunnel
@@ -617,7 +614,7 @@ func (g *generator) pin(ctx context.Context, logger *slog.Logger) (*pinnedPod, e
 }
 
 // scrape reads the pinned replica's exposition.
-func (g *generator) scrape(ctx context.Context) ([]helper.Sample, error) {
+func (g *generator) scrape(ctx context.Context) ([]util.Sample, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.pinned.metrics.URL()+"/metrics", nil)
 	if err != nil {
 		return nil, err
@@ -635,7 +632,7 @@ func (g *generator) scrape(ctx context.Context) ([]helper.Sample, error) {
 		return nil, fmt.Errorf("scraping %s answered %d", g.pinned.name, resp.StatusCode)
 	}
 
-	return helper.ParseMetrics(string(body))
+	return util.ParseMetrics(string(body))
 }
 
 // sarMissLabels selects the SAR decision cache's misses. A fresh literal on
@@ -643,10 +640,10 @@ func (g *generator) scrape(ctx context.Context) ([]helper.Sample, error) {
 func sarMissLabels() map[string]string { return map[string]string{"cache": "sar", "result": "miss"} }
 
 // seriesSum totals every series of name whose labels include the given pairs,
-// which is what a delta assertion needs: helper.SampleValue answers with the
+// which is what a delta assertion needs: util.SampleValue answers with the
 // first matching series only, and a denial reason or a review outcome is
 // spread over several.
-func seriesSum(samples []helper.Sample, name string, labels map[string]string) float64 {
+func seriesSum(samples []util.Sample, name string, labels map[string]string) float64 {
 	var total float64
 	for _, s := range samples {
 		if s.Name != name {
@@ -675,16 +672,12 @@ func newGenerator(logger *slog.Logger, st *state, namespace string, tun *tunnel)
 	}
 	cluster, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build a kubernetes client: %s", err)
+		return nil, fmt.Errorf("failed to build a kubernetes client: %w", err)
 	}
-
-	h := helper.NewHelper(&config.Config{KubeConfigPath: st.kubeconfig, RepoRoot: "."})
-	h.KubeClient = cluster
 
 	return &generator{
 		logger:    logger,
 		st:        st,
-		helper:    h,
 		cluster:   cluster,
 		namespace: namespace,
 		tunnel:    tun,
@@ -699,12 +692,12 @@ func newGenerator(logger *slog.Logger, st *state, namespace string, tun *tunnel)
 
 // token mints an OIDC token for an identity the demo issuer will vouch for.
 func (g *generator) token(username string, groups []string, exp time.Time) (string, error) {
-	payload, err := g.helper.NewTokenPayloadForIdentity(g.st.issuerURL, demoClientID, username, groups, exp)
+	payload, err := util.NewTokenPayloadForIdentity(g.st.issuerURL, demoClientID, username, groups, exp)
 	if err != nil {
 		return "", err
 	}
 
-	return g.helper.SignToken(g.st.issuerBundle, payload)
+	return util.SignToken(g.st.issuerBundle, payload)
 }
 
 func (g *generator) validToken() (string, error) {
@@ -712,7 +705,7 @@ func (g *generator) validToken() (string, error) {
 }
 
 // tokenWithoutUsername mints a token the demo issuer signs and the proxy
-// accepts, whose username claim is empty. helper.NewTokenPayloadForIdentity
+// accepts, whose username claim is empty. util.NewTokenPayloadForIdentity
 // always writes an "email", so the payload is built here instead.
 func (g *generator) tokenWithoutUsername(exp time.Time) (string, error) {
 	payload, err := json.Marshal(map[string]interface{}{
@@ -723,10 +716,10 @@ func (g *generator) tokenWithoutUsername(exp time.Time) (string, error) {
 		"exp":    exp.Unix(),
 	})
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal the token payload: %s", err)
+		return "", fmt.Errorf("failed to marshal the token payload: %w", err)
 	}
 
-	return g.helper.SignToken(g.st.issuerBundle, payload)
+	return util.SignToken(g.st.issuerBundle, payload)
 }
 
 // restConfig points client-go at the proxy with a bearer token, verifying the
@@ -1222,7 +1215,7 @@ func (g *generator) watch(ctx context.Context) (int, error) {
 
 	w, err := client.CoreV1().Pods(g.namespace).Watch(watchCtx, metav1.ListOptions{})
 	if err != nil {
-		return 0, fmt.Errorf("failed to open a watch: %s", err)
+		return 0, fmt.Errorf("failed to open a watch: %w", err)
 	}
 	defer w.Stop()
 
@@ -1266,7 +1259,7 @@ func (g *generator) exec(ctx context.Context) (int, error) {
 
 	executor, err := remotecommand.NewSPDYExecutor(cfg, http.MethodPost, req.URL())
 	if err != nil {
-		return 0, fmt.Errorf("failed to build an exec executor: %s", err)
+		return 0, fmt.Errorf("failed to build an exec executor: %w", err)
 	}
 
 	execCtx, cancel := context.WithTimeout(ctx, callTimeout)

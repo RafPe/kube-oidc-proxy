@@ -79,7 +79,9 @@ func TestServerWaitReportsServeFailure(t *testing.T) {
 	if err := s.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	s.listener.Close()
+	if err := s.serving.CloseListener(); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.Wait(); err == nil {
 		t.Fatal("Wait returned nil after Serve failed")
 	}

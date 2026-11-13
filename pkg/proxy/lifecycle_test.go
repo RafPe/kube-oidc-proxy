@@ -16,6 +16,7 @@ import (
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 )
 
 // serveWith runs a handler through the two filters that own a request's
@@ -208,7 +209,7 @@ func TestUpstreamFailureReachesTheTerminalRecord(t *testing.T) {
 	}, httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil))
 
 	rec := p.logs.Only(t, logging.EventRequestResponseCompleted)
-	if rec.String("termination") != terminationUpstreamTimeout || rec.String("reason") != reasonUpstreamError {
+	if rec.String("termination") != string(metrics.TerminationUpstreamTimeout) || rec.String("reason") != string(metrics.ReasonUpstreamError) {
 		t.Fatalf("%v", rec)
 	}
 	if s, _ := rec.Int("http_status"); s != http.StatusBadGateway {
@@ -246,7 +247,7 @@ func TestFlushBeforeWriteRecordsTheImplicit200(t *testing.T) {
 	if s, _ := rec.Int("http_status"); s != http.StatusOK {
 		t.Fatalf("http_status = %d, want 200: %v", s, rec)
 	}
-	if rec.String("termination") != terminationNormal {
+	if rec.String("termination") != string(metrics.TerminationNormal) {
 		t.Fatalf("%v", rec)
 	}
 }
@@ -291,16 +292,16 @@ func TestPanicClassification(t *testing.T) {
 	tests := map[string]struct {
 		panicValue any
 		cancel     bool
-		want       string
+		want       metrics.Termination
 	}{
 		"abort after the client went away is a client cancel": {
-			panicValue: http.ErrAbortHandler, cancel: true, want: terminationClientCancel,
+			panicValue: http.ErrAbortHandler, cancel: true, want: metrics.TerminationClientCancel,
 		},
 		"abort with the client still there is an upstream reset": {
-			panicValue: http.ErrAbortHandler, cancel: false, want: terminationUpstreamReset,
+			panicValue: http.ErrAbortHandler, cancel: false, want: metrics.TerminationUpstreamReset,
 		},
 		"an unrelated panic is still a panic": {
-			panicValue: "boom", cancel: false, want: terminationPanic,
+			panicValue: "boom", cancel: false, want: metrics.TerminationPanic,
 		},
 	}
 
@@ -328,7 +329,7 @@ func TestPanicClassification(t *testing.T) {
 			}()
 
 			rec := p.logs.Only(t, logging.EventRequestResponseCompleted)
-			if got := rec.String("termination"); got != test.want {
+			if got := rec.String("termination"); got != string(test.want) {
 				t.Errorf("termination = %q, want %q: %v", got, test.want, rec)
 			}
 			if s, _ := rec.Int("http_status"); s != http.StatusOK {

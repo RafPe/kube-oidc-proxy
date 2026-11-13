@@ -294,7 +294,7 @@ func TestCacheDenyThenAllowAfterRBACChange(t *testing.T) {
 	reviewer.set(denyAll)
 	sar := newCachedSAR(reviewer, 10*time.Second, 30*time.Second, clk)
 
-	wantDenial := ImpersonationAuthError{Requester: "mmosley", Kind: "user", Target: "'bob'"}
+	wantDenial := ImpersonationAuthError{Requester: "mmosley", Kind: TargetUser, Target: "bob"}
 
 	target, err := sar.CheckAuthorizedForImpersonation(impersonateUserRequest("bob"), cacheTestRequester())
 	if target != nil {
@@ -403,7 +403,7 @@ func TestErrorsNeverCached(t *testing.T) {
 func TestCacheDisabled(t *testing.T) {
 	reviewer := &fnReviewer{}
 	reviewer.set(allowAll)
-	sar, err := New(reviewer, DefaultTimeout, 0, 0, DefaultMaxHeaderValues, slog.New(slog.DiscardHandler))
+	sar, err := New(reviewer, Config{Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

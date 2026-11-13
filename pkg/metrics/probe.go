@@ -3,7 +3,7 @@ package metrics
 
 // SetIssuerInitialized publishes whether the named issuer's authenticator has
 // completed initialization. issuerName is the configured issuer's host as
-// probe.IssuerName renders it: bounded by the configuration, never a URL.
+// authn.IssuerName renders it: bounded by the configuration, never a URL.
 func (r *Recorder) SetIssuerInitialized(issuerName string, initialized bool) {
 	if r == nil {
 		return

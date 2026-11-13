@@ -6,13 +6,15 @@ import (
 	"os"
 	"runtime"
 
+	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	apimachineryversion "k8s.io/apimachinery/pkg/version"
 	cliflag "k8s.io/component-base/cli/flag"
-	"k8s.io/component-base/cli/globalflag"
 )
 
-type MiscOptions struct {
+// VersionOptions carries the build information stamped into the binary and
+// owns the --version flag that prints it.
+type VersionOptions struct {
 	gitMajor     string // major version, always numeric
 	gitMinor     string // minor version, numeric possibly followed by "+"
 	gitVersion   string
@@ -32,8 +34,8 @@ var (
 	buildDate = "1970-01-01T00:00:00Z" // build date in ISO8601 format, output of $(date -u +'%Y-%m-%dT%H:%M:%SZ')
 )
 
-func NewMiscOptions(nfs *cliflag.NamedFlagSets) *MiscOptions {
-	m := &MiscOptions{
+func NewVersionOptions(nfs *cliflag.NamedFlagSets) *VersionOptions {
+	m := &VersionOptions{
 		gitMajor:     gitMajor,
 		gitMinor:     gitMinor,
 		gitVersion:   gitVersion,
@@ -42,28 +44,35 @@ func NewMiscOptions(nfs *cliflag.NamedFlagSets) *MiscOptions {
 		buildDate:    buildDate,
 	}
 
-	return m.AddFlags(nfs.FlagSet("Misc"))
+	return m.AddFlags(nfs.FlagSet("Version"))
 }
 
-func (m *MiscOptions) AddFlags(fs *pflag.FlagSet) *MiscOptions {
-	globalflag.AddGlobalFlags(fs, AppName)
+func (m *VersionOptions) AddFlags(fs *pflag.FlagSet) *VersionOptions {
 	fs.Bool("version", false, "Print version information and quit")
 	return m
 }
 
+// Requested reports whether --version was given on the command line.
+func (m *VersionOptions) Requested(cmd *cobra.Command) bool {
+	return cmd.Flag("version").Value.String() == "true"
+}
+
 // Version returns the build version this binary reports, for the startup
 // record that fixes what an operator is actually running.
-func (m *MiscOptions) Version() string {
+func (m *VersionOptions) Version() string {
 	return m.gitVersion
 }
 
 // Commit returns the git commit this binary was built from, for the build
 // information the metrics endpoint reports.
-func (m *MiscOptions) Commit() string {
+func (m *VersionOptions) Commit() string {
 	return m.gitCommit
 }
 
-func (m *MiscOptions) PrintVersionAndExit() {
+// PrintVersionAndExit prints the build information and ends the process. It
+// is the --version flag's whole job, so the command calls it before anything
+// else is validated or built.
+func (m *VersionOptions) PrintVersionAndExit() {
 	fmt.Printf("%s version: %#v\n", AppName,
 		apimachineryversion.Info{
 			Major:        m.gitMajor,

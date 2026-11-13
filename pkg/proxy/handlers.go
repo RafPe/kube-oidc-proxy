@@ -2,7 +2,7 @@
 package proxy
 
 import (
-	stdcontext "context"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -21,17 +21,14 @@ import (
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/client-go/transport"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/authn"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/accesslog"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/audit"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
-	accesslogging "github.com/rafpe/kube-oidc-proxy/pkg/proxy/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 )
-
-// reservedIdentityPrefix is the username/group prefix Kubernetes reserves for
-// its own identities.
-const reservedIdentityPrefix = "system:"
 
 // The inbound forwarding headers the trusted-proxy contract owns.
 const (
@@ -44,62 +41,12 @@ const (
 // of the closed reason value set.
 const warnReasonHeadersDropped = "headers_dropped"
 
-// How a request authenticated, as reported by the access record's auth_method.
-const (
-	authMethodOIDC        = "oidc"
-	authMethodTokenReview = "tokenreview"
-	authMethodNone        = "none"
-)
-
-// The closed set of access-record reasons this package classifies. A denial
-// carries exactly one of them, so a query never has to match on message text.
-const (
-	reasonUnauthorized               = "unauthorized"
-	reasonReservedIdentity           = "reserved_identity"
-	reasonNoUsernameClaim            = "no_username_claim"
-	reasonImpersonationDenied        = "impersonation_denied"
-	reasonTooManyImpersonationValues = "too_many_impersonation_values"
-	reasonClientCanceled             = "client_canceled"
-	reasonInternalError              = "internal_error"
-
-	// reasonUpstreamError classifies a failure of the hop to the API server
-	// itself, as opposed to anything the proxy decided about the request. It
-	// is carried by the upstream record and by the terminal record, never by
-	// an access decision: the request was already admitted.
-	reasonUpstreamError = "upstream_error"
-
-	// reasonAuthenticationDependencyError classifies a TokenReview that could
-	// not be answered at all: the API server was unreachable or returned a
-	// status error. It is not a verdict on the credential.
-	reasonAuthenticationDependencyError = "authentication_dependency_error"
-)
-
 // Why impersonation was not applied to a request, as reported by
 // request.impersonation.skipped.
 const (
 	skipReasonDisabled    = "disabled"
 	skipReasonPassthrough = "passthrough"
 )
-
-// authMethodKey is the context key carrying how the request authenticated. It
-// is set by the handler that accepted the credential and read by the access
-// record, which runs after the decision on both the success and failure paths.
-type authMethodKey struct{}
-
-// withAuthMethod records how the request authenticated.
-func withAuthMethod(req *http.Request, method string) *http.Request {
-	return req.WithContext(stdcontext.WithValue(req.Context(), authMethodKey{}, method))
-}
-
-// authMethodFrom returns how the request authenticated. A request refused
-// before any authenticator accepted it has none.
-func authMethodFrom(req *http.Request) string {
-	method, _ := req.Context().Value(authMethodKey{}).(string)
-	if method == "" {
-		return authMethodNone
-	}
-	return method
-}
 
 // userFromContext returns the identity the request presented, or nil when it
 // was refused before one was established.
@@ -111,17 +58,9 @@ func userFromContext(req *http.Request) authuser.Info {
 	return info
 }
 
-// impersonationTargetKind maps the kind as the client-facing denial message
-// renders it onto the closed target_kind value set.
-func impersonationTargetKind(kind string) string {
-	if kind == "extra info" {
-		return "extra"
-	}
-	return kind
-}
-
+// withHandlers composes the request filter chain around the reverse proxy,
+// outermost last.
 func (p *Proxy) withHandlers(handler http.Handler) http.Handler {
-	// Set up proxy handlers
 	handler = p.auditor.WithRequest(handler)
 	handler = p.withImpersonateRequest(handler)
 	handler = p.withAuthenticateRequest(handler)
@@ -131,9 +70,6 @@ func (p *Proxy) withHandlers(handler http.Handler) http.Handler {
 	// run outside the audit chain and need the request's verb and resource.
 	handler = p.auditor.WithRequestInfo(handler)
 	handler = p.withRequestID(handler)
-
-	// Add the auditor backend as a shutdown hook
-	p.hooks.AddPreShutdownHook("AuditBackend", p.auditor.Shutdown)
 
 	return handler
 }
@@ -147,12 +83,10 @@ func (p *Proxy) withHandlers(handler http.Handler) http.Handler {
 // sees sanitized headers.
 func (p *Proxy) withSanitizedForwardHeaders(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-		// Snapshot the values, not the header map: SanitizeForwardHeaders
-		// rewrites the map in place even though it returns a new request.
 		inboundXFF := req.Header.Get(headerForwardedFor)
 		inboundRealIP := req.Header.Get(headerRealIP)
 
-		req = context.SanitizeForwardHeaders(req)
+		req = reqctx.WithResolvedClient(req, p.trustedProxies)
 
 		if inboundXFF != "" || inboundRealIP != "" {
 			req = p.logForwardHeaders(req, inboundXFF, inboundRealIP)
@@ -172,7 +106,7 @@ func (p *Proxy) withSanitizedForwardHeaders(handler http.Handler) http.Handler {
 // Only the drop is token-bucketed; it is the one an untrusted client can
 // produce on every request.
 func (p *Proxy) logForwardHeaders(req *http.Request, inboundXFF, inboundRealIP string) *http.Request {
-	req, srcIP := context.RemoteAddr(req)
+	srcIP := reqctx.ClientIP(req)
 	forwardedFor := slog.String("forwarded_for_untrusted", logging.Sanitize(inboundXFF))
 
 	if outboundXFF := req.Header.Get(headerForwardedFor); outboundXFF != "" && outboundXFF != inboundXFF {
@@ -215,22 +149,20 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 		// how the issuer that accepts the token reports its name back, without
 		// it travelling in the identity's extras and out as an impersonation
 		// header; it is read back below.
-		ctx, issuer := withIssuerHolder(req.Context())
+		ctx, issuer := authn.WithIssuerHolder(req.Context())
 		req = req.WithContext(ctx)
 
 		// Auth request and handle unauthed
-		info, ok, err := p.oidcRequestAuther.AuthenticateRequest(req)
+		info, ok, err := p.oidcRequestAuthenticator.AuthenticateRequest(req)
 		if err != nil {
 			// An error here means a token was present and failed validation;
 			// an absent or unparseable token yields ok == false with a nil
 			// error. The error text itself stays out of the record: the denial
 			// is reported by reason, and a validation message is attacker
 			// influenced.
-			p.metrics.AuthenticationAttempt(authMethodOIDC, metrics.AuthRejected)
-			var srcIP string
-			req, srcIP = context.RemoteAddr(req)
-			logging.Emit(req.Context(), componentLogger(p.oidcLog), logging.EventAuthnOIDCFailed,
-				slog.String("src_ip", srcIP), slog.String("reason", reasonUnauthorized))
+			p.metrics.AuthenticationAttempt(metrics.AuthMethodOIDC, metrics.AuthRejected)
+			logging.Emit(req.Context(), logging.OrDiscard(p.oidcLog), logging.EventAuthnOIDCFailed,
+				slog.String("src_ip", reqctx.ClientIP(req)), slog.String("reason", string(metrics.ReasonUnauthorized)))
 
 			// Since we have failed OIDC auth, we will try a token review, if enabled.
 			// Routing is deliberately unchanged: falling through to token
@@ -241,25 +173,25 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 
 		// Failed authorization
 		if !ok {
-			p.metrics.AuthenticationAttempt(authMethodNone, metrics.AuthRejected)
+			p.metrics.AuthenticationAttempt(metrics.AuthMethodNone, metrics.AuthRejected)
 			p.handleError(rw, req, errUnauthorized)
 			return
 		}
 
-		p.metrics.AuthenticationAttempt(authMethodOIDC, metrics.AuthAccepted)
+		p.metrics.AuthenticationAttempt(metrics.AuthMethodOIDC, metrics.AuthAccepted)
 
 		// Attribute the request to the issuer that accepted its token, for this
 		// record and for every access record the request goes on to produce.
-		req = context.WithIssuerName(req, issuer.name)
+		req = reqctx.WithIssuerName(req, issuer.Name())
 
-		logging.Emit(req.Context(), componentLogger(p.oidcLog), logging.EventAuthnOIDCSucceeded,
-			slog.String("issuer_name", logging.Bound(issuer.name, logging.MaxIdentity)))
+		logging.Emit(req.Context(), logging.OrDiscard(p.oidcLog), logging.EventAuthnOIDCSucceeded,
+			slog.String("issuer_name", logging.Bound(issuer.Name(), logging.MaxIdentity)))
 
 		// The token was accepted, so every record from here on -- including a
 		// rejection by the reserved-identity guard -- reports the OIDC path.
-		req = withAuthMethod(req, authMethodOIDC)
+		req = reqctx.WithAuthMethod(req, metrics.AuthMethodOIDC)
 
-		// Add the user info to the request context. Done before the
+		// Add the user info to the request reqctx. Done before the
 		// reserved-identity check so a rejection is audited against the identity
 		// that was presented.
 		req = req.WithContext(genericapirequest.WithUser(req.Context(), info.User))
@@ -298,7 +230,7 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 // It applies to groups only: a reserved username has no legitimate use, so
 // there is deliberately no way to allow one short of disabling the guard.
 func checkReservedIdentity(info authuser.Info, allowedGroups sets.Set[string]) error {
-	if strings.HasPrefix(info.GetName(), reservedIdentityPrefix) {
+	if strings.HasPrefix(info.GetName(), ReservedIdentityPrefix) {
 		return fmt.Errorf("%w: username %q", errReservedIdentity, info.GetName())
 	}
 
@@ -306,7 +238,7 @@ func checkReservedIdentity(info authuser.Info, allowedGroups sets.Set[string]) e
 		if group == authuser.AllAuthenticated || allowedGroups.Has(group) {
 			continue
 		}
-		if strings.HasPrefix(group, reservedIdentityPrefix) {
+		if strings.HasPrefix(group, ReservedIdentityPrefix) {
 			return fmt.Errorf("%w: group %q", errReservedIdentity, group)
 		}
 	}
@@ -332,8 +264,8 @@ func (p *Proxy) withTokenReview(handler http.Handler) http.Handler {
 		}
 
 		// Set no impersonation headers and re-add removed headers.
-		req = withAuthMethod(req, authMethodTokenReview)
-		req = context.WithNoImpersonation(req)
+		req = reqctx.WithAuthMethod(req, metrics.AuthMethodTokenReview)
+		req = reqctx.WithNoImpersonation(req)
 
 		handler.ServeHTTP(rw, req)
 	})
@@ -343,7 +275,7 @@ func (p *Proxy) withTokenReview(handler http.Handler) http.Handler {
 func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		// If no impersonation has already been set, return early
-		if context.NoImpersonation(req) {
+		if reqctx.NoImpersonation(req) {
 			logging.Emit(req.Context(), logging.FromContext(req.Context()), logging.EventRequestImpersonationSkipped,
 				slog.String("skip_reason", skipReasonPassthrough))
 			handler.ServeHTTP(rw, req)
@@ -352,15 +284,12 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 
 		var targetForContext authuser.Info
 
-		var remoteAddr string
-		req, remoteAddr = context.RemoteAddr(req)
-
 		// If we have disabled impersonation we can forward the request right away
 		if p.config.DisableImpersonation {
 			logging.Emit(req.Context(), logging.FromContext(req.Context()), logging.EventRequestImpersonationSkipped,
 				slog.String("skip_reason", skipReasonDisabled))
 			// Indicate we need to not use impersonation.
-			req = context.WithNoImpersonation(req)
+			req = reqctx.WithNoImpersonation(req)
 			handler.ServeHTTP(rw, req)
 			return
 		}
@@ -374,18 +303,23 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 
 		userForContext := user
 
-		if p.hasImpersonation(req.Header) {
+		if subjectaccessreview.HasImpersonationHeaders(req.Header) {
 			// if impersonation headers are present, let's check to see
 			// if the user is authorized to perform the impersonation
 			target, err := p.subjectAccessReviewer.CheckAuthorizedForImpersonation(req, user)
-
 			if err != nil {
 				p.handleError(rw, req, err)
 				return
 			}
 
+			// The client's headers have been authorized and become the
+			// outbound identity below. They must not travel on the forwarded
+			// request: client-go's impersonating round tripper leaves a request
+			// that already carries Impersonate-User untouched, which would
+			// forward them under the proxy's own credentials.
+			req.Header = subjectaccessreview.StripImpersonationHeaders(req.Header)
+
 			if target != nil {
-				// TODO - store original context for logging
 				user = target
 				targetForContext = target
 			}
@@ -406,7 +340,7 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 		// If client IP user extra header option set then append the remote client
 		// address.
 		if p.config.ExtraUserHeadersClientIPEnabled {
-			extra[UserHeaderClientIPKey] = append(extra[UserHeaderClientIPKey], remoteAddr)
+			extra[accesslog.UserHeaderClientIPKey] = append(extra[accesslog.UserHeaderClientIPKey], reqctx.ClientIP(req))
 		}
 
 		// Add custom extra user headers to impersonation request. append copies
@@ -419,14 +353,14 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 		if targetForContext != nil {
 			// add the original user's information as extra headers
 			// so they're recorded in the API server's audit log
-			extra[accesslogging.ExtraKeyOriginalUser] = []string{userForContext.GetName()}
+			extra[accesslog.ExtraKeyOriginalUser] = []string{userForContext.GetName()}
 
 			if origGroups := userForContext.GetGroups(); len(origGroups) > 0 {
-				extra[accesslogging.ExtraKeyOriginalGroups] = slices.Clone(origGroups)
+				extra[accesslog.ExtraKeyOriginalGroups] = slices.Clone(origGroups)
 			}
 
 			if userForContext.GetUID() != "" {
-				extra[accesslogging.ExtraKeyOriginalUID] = []string{userForContext.GetUID()}
+				extra[accesslog.ExtraKeyOriginalUID] = []string{userForContext.GetUID()}
 			}
 
 			if len(userForContext.GetExtra()) > 0 {
@@ -435,27 +369,27 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 					p.handleError(rw, req, errJSONMarshal)
 					return
 				}
-				extra[accesslogging.ExtraKeyOriginalExtra] = []string{string(jsonExtras)}
+				extra[accesslog.ExtraKeyOriginalExtra] = []string{string(jsonExtras)}
 			}
 		}
 
-		conf := &context.ImpersonationRequest{
+		conf := &reqctx.ImpersonationRequest{
 			ImpersonationConfig: &transport.ImpersonationConfig{
 				UserName: user.GetName(),
 				UID:      user.GetUID(),
 				Groups:   groups,
 				Extra:    extra,
 			},
-			InboundUser:      &userForContext,
-			ImpersonatedUser: &targetForContext,
+			InboundUser:      userForContext,
+			ImpersonatedUser: targetForContext,
 		}
 
 		logging.Emit(req.Context(), logging.FromContext(req.Context()), logging.EventRequestImpersonationApplied,
 			slog.String("outbound_user", logging.Bound(user.GetName(), logging.MaxIdentity)),
 			slog.Any("impersonated_header_names", impersonatedHeaderNames(conf.ImpersonationConfig)))
 
-		// Add the impersonation configuration to the context.
-		req = context.WithImpersonationConfig(req, conf)
+		// Add the impersonation configuration to the reqctx.
+		req = reqctx.WithImpersonationConfig(req, conf)
 		handler.ServeHTTP(rw, req)
 	})
 }
@@ -493,7 +427,7 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 	// Audited through the ordinary request chain rather than the
 	// failed-authentication one: the request authenticated successfully and was
 	// then refused, and the caller has already put the identity in the request
-	// context. The client body carries no claim values; they are logged and
+	// reqctx. The client body carries no claim values; they are logged and
 	// audited instead.
 	forbiddenHandler := audit.NewForbiddenHandler(p.auditor, func(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "identities with the reserved \"system:\" prefix are not accepted from an authentication token", http.StatusForbidden)
@@ -504,8 +438,8 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 		if err == nil {
 			// Nothing was decided about a request, so nothing is recorded about
 			// one; the proxy bug is still reported.
-			logging.EmitLevel(r.Context(), componentLogger(p.logger), logging.EventRequestHandlerFailed, slog.LevelError,
-				slog.String("reason", reasonInternalError),
+			logging.EmitLevel(r.Context(), logging.OrDiscard(p.logger), logging.EventRequestHandlerFailed, slog.LevelError,
+				slog.String("reason", string(metrics.ReasonInternalError)),
 				slog.String("error_message", "error handler called with nil error"))
 			http.Error(rw, "", http.StatusInternalServerError)
 			return
@@ -518,7 +452,7 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 		// Failed auth
 		case errors.Is(err, errUnauthorized):
 			// If Unauthorized then error and report to audit
-			p.logDenied(r, reasonUnauthorized, err)
+			p.logDenied(r, metrics.ReasonUnauthorized, err)
 			unauthedHandler.ServeHTTP(rw, r)
 			return
 
@@ -526,28 +460,21 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 		case errors.Is(err, errReservedIdentity):
 			// A token minting a system: identity is an exploit attempt or a
 			// badly broken claim mapping, not an ordinary denial.
-			p.logAnomaly(r, reasonReservedIdentity)
-			p.logDenied(r, reasonReservedIdentity, err)
+			p.logAnomaly(r, metrics.ReasonReservedIdentity)
+			p.logDenied(r, metrics.ReasonReservedIdentity, err)
 			forbiddenHandler.ServeHTTP(rw, r)
 			return
 
 			// No name given or available in oidc request
 		case errors.Is(err, errNoName):
-			p.logDenied(r, reasonNoUsernameClaim, err)
+			p.logDenied(r, metrics.ReasonNoUsernameClaim, err)
 			http.Error(rw, "Username claim not available in OIDC Issuer response", http.StatusForbidden)
 			return
 
-			// No impersonation configuration found in context
-		case errors.Is(err, errNoImpersonationConfig):
-			p.logHandlerFailed(r, err)
-			p.logDenied(r, reasonInternalError, err)
-			http.Error(rw, "", http.StatusInternalServerError)
-			return
-
 			// No impersonation user found
-		case errors.Is(err, subjectaccessreview.ErrorNoImpersonationUserFound):
-			p.logDenied(r, reasonInternalError, err)
-			http.Error(rw, subjectaccessreview.ErrorNoImpersonationUserFound.Error(), http.StatusInternalServerError)
+		case errors.Is(err, subjectaccessreview.ErrNoImpersonationUser):
+			p.logDenied(r, metrics.ReasonInternalError, err)
+			http.Error(rw, subjectaccessreview.ErrNoImpersonationUser.Error(), http.StatusInternalServerError)
 			return
 
 			// Request carries more impersonation header values than the
@@ -556,36 +483,24 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 		case errors.Is(err, subjectaccessreview.ErrTooManyImpersonationHeaderValues):
 			// Far more impersonation values than any client legitimately sends:
 			// a resource-exhaustion attempt against the SubjectAccessReview path.
-			p.logAnomaly(r, reasonTooManyImpersonationValues)
-			p.logDenied(r, reasonTooManyImpersonationValues, err)
+			p.logAnomaly(r, metrics.ReasonTooManyImpersonationValues)
+			p.logDenied(r, metrics.ReasonTooManyImpersonationValues, err)
 			http.Error(rw, err.Error(), http.StatusRequestHeaderFieldsTooLarge)
 			return
 
 			// Requester is not authorized to impersonate the requested identity.
 			// Classified by typed error (errors.Is), not by message text.
 		case errors.Is(err, subjectaccessreview.ErrImpersonationNotAllowed):
-			p.logDenied(r, reasonImpersonationDenied, err)
+			p.logDenied(r, metrics.ReasonImpersonationDenied, err)
 			http.Error(rw, err.Error(), http.StatusForbidden)
 			return
 
 			// Client canceled the request (SAR or reverse-proxy). Nothing to
 			// write back; the connection is already going away.
-		case errors.Is(err, stdcontext.Canceled):
-			logging.Emit(r.Context(), componentLogger(p.upstreamLog), logging.EventUpstreamRequestCanceled,
-				slog.String("reason", reasonClientCanceled))
-			p.logDenied(r, reasonClientCanceled, err)
-			return
-
-			// A SubjectAccessReview the proxy could not submit. It wraps a
-			// client-go transport error that satisfies net.Error, so it has to
-			// be matched ahead of the upstream case below: the call that failed
-			// is the proxy's own authorization dependency, not the reverse
-			// proxy's hop to the API server, and the request is refused rather
-			// than proxied.
-		case errors.Is(err, subjectaccessreview.ErrCreateSubjectAccessReview):
-			p.logHandlerFailed(r, err)
-			p.logDenied(r, reasonInternalError, err)
-			http.Error(rw, "", http.StatusInternalServerError)
+		case errors.Is(err, context.Canceled):
+			logging.Emit(r.Context(), logging.OrDiscard(p.upstreamLog), logging.EventUpstreamRequestCanceled,
+				slog.String("reason", string(metrics.ReasonClientCanceled)))
+			p.logDenied(r, metrics.ReasonClientCanceled, err)
 			return
 
 			// The reverse proxy could not reach or complete the call to the API
@@ -596,18 +511,20 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 			// to the lifecycle filter for the terminal record.
 		case isUpstreamTransportError(err):
 			term := upstreamTermination(err)
-			context.WithTermination(r, term, reasonUpstreamError)
-			logging.Emit(r.Context(), componentLogger(p.upstreamLog), logging.EventUpstreamRequestFailed,
-				slog.String("reason", reasonUpstreamError), slog.String("termination", term),
+			reqctx.RecordTermination(r, term, metrics.ReasonUpstreamError)
+			logging.Emit(r.Context(), logging.OrDiscard(p.upstreamLog), logging.EventUpstreamRequestFailed,
+				slog.String("reason", string(metrics.ReasonUpstreamError)), slog.String("termination", string(term)),
 				logging.ErrAttr(err))
 			http.Error(rw, "", http.StatusBadGateway)
 			return
 
-			// Server or unknown error. Details stay server-side; the client
-			// receives an empty 500 body.
+			// Server or unknown error, including a missing impersonation
+			// configuration and a SubjectAccessReview the proxy could not
+			// submit. Details stay server-side; the client receives an empty
+			// 500 body.
 		default:
 			p.logHandlerFailed(r, err)
-			p.logDenied(r, reasonInternalError, err)
+			p.logDenied(r, metrics.ReasonInternalError, err)
 			http.Error(rw, "", http.StatusInternalServerError)
 		}
 	}
@@ -619,6 +536,14 @@ func (p *Proxy) newErrorHandler() func(rw http.ResponseWriter, r *http.Request, 
 // impersonation filters call it directly, not only the reverse proxy -- so the
 // test is by error type, never a catch-all: an unrecognised error stays a 500.
 func isUpstreamTransportError(err error) bool {
+	// A SubjectAccessReview the proxy could not submit wraps a client-go
+	// transport error that satisfies net.Error, but the call that failed is
+	// the proxy's own authorization dependency, not the hop to the API server:
+	// the request is refused, not proxied, so it is a 500 and never a 502.
+	if errors.Is(err, subjectaccessreview.ErrCreateSubjectAccessReview) {
+		return false
+	}
+
 	var (
 		netErr  net.Error
 		opErr   *net.OpError
@@ -636,66 +561,65 @@ func isUpstreamTransportError(err error) bool {
 // termination set the terminal record reports, so an operator can tell an API
 // server that is slow from one that is dropping connections without reading
 // error text.
-func upstreamTermination(err error) string {
+func upstreamTermination(err error) metrics.Termination {
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
-		return terminationUpstreamTimeout
+		return metrics.TerminationUpstreamTimeout
 	}
 
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
 		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
-		return terminationUpstreamReset
+		return metrics.TerminationUpstreamReset
 	}
 
-	return terminationProxyError
+	return metrics.TerminationProxyError
 }
 
 // logHandlerFailed reports a failure the proxy itself is responsible for. The
 // error text is kept out of the client-facing body and recorded here instead,
 // bounded and sanitized; the access record carries reason=internal_error.
 func (p *Proxy) logHandlerFailed(r *http.Request, err error) {
-	logging.EmitLevel(r.Context(), componentLogger(p.logger), logging.EventRequestHandlerFailed, slog.LevelError,
-		slog.String("reason", reasonInternalError), logging.ErrAttr(err))
+	logging.EmitLevel(r.Context(), logging.OrDiscard(p.logger), logging.EventRequestHandlerFailed, slog.LevelError,
+		slog.String("reason", string(metrics.ReasonInternalError)), logging.ErrAttr(err))
 }
 
 // logAnomaly reports a rejection that indicates an exploit attempt or gross
 // misconfiguration rather than an ordinary denial. It is token-bucketed per
 // reason, because a client can produce these without bound; the access record,
 // which is never sampled, still carries the outcome.
-func (p *Proxy) logAnomaly(r *http.Request, reason string) {
-	if !p.warnLimiter.Allow(reason) {
+func (p *Proxy) logAnomaly(r *http.Request, reason metrics.Reason) {
+	if !p.warnLimiter.Allow(string(reason)) {
 		return
 	}
 
-	_, srcIP := context.RemoteAddr(r)
-	logging.Emit(r.Context(), componentLogger(p.logger), logging.EventRequestAnomalyDetected,
-		slog.String("src_ip", srcIP), slog.String("reason", reason))
+	logging.Emit(r.Context(), logging.OrDiscard(p.logger), logging.EventRequestAnomalyDetected,
+		slog.String("src_ip", reqctx.ClientIP(r)), slog.String("reason", string(reason)))
 }
 
 // logDenied writes the access record for a refused request. The impersonation
 // target, when the error names one, is taken from the typed error rather than
 // parsed back out of the client-facing message.
-func (p *Proxy) logDenied(r *http.Request, reason string, err error) {
+func (p *Proxy) logDenied(r *http.Request, reason metrics.Reason, err error) {
 	// RoundTrip writes the access record for an admitted request before the
 	// upstream call, so a failure arriving after that -- a client that
 	// cancelled, an upstream that broke -- has no decision left to make. Every
 	// refusal below the error handler shares this guard, which keeps the
 	// promise of one request.access.decided per request.
-	if context.DecisionRecorded(r) {
+	if reqctx.DecisionRecorded(r) {
 		return
 	}
 
-	d := accesslogging.Decision{
+	d := accesslog.Decision{
 		Allowed:    false,
 		Reason:     reason,
-		AuthMethod: authMethodFrom(r),
+		AuthMethod: reqctx.AuthMethod(r),
 		Inbound:    userFromContext(r),
 	}
 
 	var authErr *subjectaccessreview.ImpersonationAuthError
 	if errors.As(err, &authErr) {
-		d.TargetKind = impersonationTargetKind(authErr.Kind)
-		d.TargetName = strings.Trim(authErr.Target, "'")
+		d.TargetKind = authErr.Kind
+		d.TargetName = authErr.TargetName()
 	}
 
 	p.recordDecision(r, d)
@@ -712,14 +636,4 @@ func cloneExtra(in map[string][]string) map[string][]string {
 		out[k] = slices.Clone(v)
 	}
 	return out
-}
-
-func (p *Proxy) hasImpersonation(header http.Header) bool {
-	for h := range header {
-		if strings.HasPrefix(strings.ToLower(h), "impersonate-") {
-			return true
-		}
-	}
-
-	return false
 }

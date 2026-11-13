@@ -2,13 +2,13 @@
 package audit
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"testing"
 
 	"k8s.io/apiserver/pkg/server"
 
-	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics/metricstest"
 )
@@ -17,7 +17,7 @@ const metricAuditFailures = "kube_oidc_proxy_audit_backend_failures_total"
 
 func newAuditWithBackend(t *testing.T, b *fakeBackend, rec *metrics.Recorder) *Audit {
 	t.Helper()
-	a, err := New(new(options.AuditOptions), "0.0.0.0:1234", new(server.SecureServingInfo), slog.New(slog.DiscardHandler))
+	a, err := New(nil, "0.0.0.0:1234", new(server.SecureServingInfo), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +28,7 @@ func newAuditWithBackend(t *testing.T, b *fakeBackend, rec *metrics.Recorder) *A
 func TestAuditRunFailureIsCounted(t *testing.T) {
 	rec, _ := metrics.New(metrics.BuildInfo{Version: "test"})
 	a := newAuditWithBackend(t, &fakeBackend{runErr: errors.New("cannot start")}, rec)
-	if err := a.Run(make(chan struct{})); err == nil {
+	if err := a.Run(context.Background()); err == nil {
 		t.Fatal("Run should fail")
 	}
 	if v, _ := metricstest.Value(t, rec.Gatherer(), metricAuditFailures, map[string]string{"operation": "run"}); v != 1 {
@@ -50,7 +50,7 @@ func TestAuditShutdownFailureIsCounted(t *testing.T) {
 func TestAuditCleanShutdownCountsNothing(t *testing.T) {
 	rec, _ := metrics.New(metrics.BuildInfo{Version: "test"})
 	a := newAuditWithBackend(t, &fakeBackend{}, rec)
-	if err := a.Run(make(chan struct{})); err != nil {
+	if err := a.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.Shutdown(); err != nil {

@@ -106,7 +106,7 @@ func TestSubjectAccessReview(t *testing.T) {
 
 			expImpersonationHeaders:  true,
 			expAz:                    false,
-			expErr:                   &ImpersonationAuthError{Requester: "mmosley", Kind: "user", Target: "'jjackson-x'"},
+			expErr:                   &ImpersonationAuthError{Requester: "mmosley", Kind: TargetUser, Target: "jjackson-x"},
 			expErrorRbac:             nil,
 			extraImpersonationHeader: false,
 		},
@@ -132,7 +132,7 @@ func TestSubjectAccessReview(t *testing.T) {
 
 			expImpersonationHeaders:  true,
 			expAz:                    false,
-			expErr:                   &ImpersonationAuthError{Requester: "mmosley", Kind: "group", Target: "'group4'"},
+			expErr:                   &ImpersonationAuthError{Requester: "mmosley", Kind: TargetGroup, Target: "group4"},
 			expErrorRbac:             nil,
 			extraImpersonationHeader: false,
 		},
@@ -158,7 +158,7 @@ func TestSubjectAccessReview(t *testing.T) {
 
 			expImpersonationHeaders:  true,
 			expAz:                    false,
-			expErr:                   &ImpersonationAuthError{Requester: "mmosley", Kind: "extra info", Target: "'remoteaddr'='1.2.3.5'"},
+			expErr:                   &ImpersonationAuthError{Requester: "mmosley", Kind: TargetExtra, ExtraKey: "remoteaddr", Target: "1.2.3.5"},
 			expErrorRbac:             nil,
 			extraImpersonationHeader: false,
 		},
@@ -183,7 +183,7 @@ func TestSubjectAccessReview(t *testing.T) {
 
 			expImpersonationHeaders:  true,
 			expAz:                    false,
-			expErr:                   &ImpersonationAuthError{Requester: "mmosley", Kind: "uid", Target: "'1-2-3-5'"},
+			expErr:                   &ImpersonationAuthError{Requester: "mmosley", Kind: TargetUID, Target: "1-2-3-5"},
 			expErrorRbac:             nil,
 			extraImpersonationHeader: false,
 		},
@@ -297,7 +297,7 @@ func runTest(t *testing.T, name string, test testT) {
 		extras[key] = value
 	}
 
-	testReviewer, _ := New(fake.New(test.expErrorRbac), DefaultTimeout, 0, 0, DefaultMaxHeaderValues, slog.New(slog.DiscardHandler))
+	testReviewer, _ := New(fake.New(test.expErrorRbac), Config{Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 
 	headers := map[string][]string{}
 
@@ -378,19 +378,19 @@ func TestImpersonationAuthErrorClassification(t *testing.T) {
 		expMsg string
 	}{
 		"user": {
-			err:    &ImpersonationAuthError{Requester: "mmosley", Kind: "user", Target: "'a-user'"},
+			err:    &ImpersonationAuthError{Requester: "mmosley", Kind: TargetUser, Target: "a-user"},
 			expMsg: "mmosley is not allowed to impersonate user 'a-user'",
 		},
 		"group": {
-			err:    &ImpersonationAuthError{Requester: "mmosley", Kind: "group", Target: "'a-group'"},
+			err:    &ImpersonationAuthError{Requester: "mmosley", Kind: TargetGroup, Target: "a-group"},
 			expMsg: "mmosley is not allowed to impersonate group 'a-group'",
 		},
 		"uid": {
-			err:    &ImpersonationAuthError{Requester: "mmosley", Kind: "uid", Target: "'bar'"},
+			err:    &ImpersonationAuthError{Requester: "mmosley", Kind: TargetUID, Target: "bar"},
 			expMsg: "mmosley is not allowed to impersonate uid 'bar'",
 		},
 		"extra info": {
-			err:    &ImpersonationAuthError{Requester: "mmosley", Kind: "extra info", Target: "'foo'='bar'"},
+			err:    &ImpersonationAuthError{Requester: "mmosley", Kind: TargetExtra, ExtraKey: "foo", Target: "bar"},
 			expMsg: "mmosley is not allowed to impersonate extra info 'foo'='bar'",
 		},
 	}
@@ -416,8 +416,8 @@ func TestImpersonationAuthErrorClassification(t *testing.T) {
 	}
 
 	// Unrelated errors must not be misclassified as a denial.
-	if errors.Is(ErrorNoImpersonationUserFound, ErrImpersonationNotAllowed) {
-		t.Error("ErrorNoImpersonationUserFound must not classify as ErrImpersonationNotAllowed")
+	if errors.Is(ErrNoImpersonationUser, ErrImpersonationNotAllowed) {
+		t.Error("ErrNoImpersonationUser must not classify as ErrImpersonationNotAllowed")
 	}
 	if errors.Is(errors.New("boom"), ErrImpersonationNotAllowed) {
 		t.Error("arbitrary error must not classify as ErrImpersonationNotAllowed")
@@ -510,7 +510,7 @@ func TestCheckAuthorizedForImpersonationHeaderValueCap(t *testing.T) {
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			reviewer := &countingFakeReviewer{FakeReviewer: fake.New(nil)}
-			sar, err := New(reviewer, DefaultTimeout, 0, 0, tc.max, slog.New(slog.DiscardHandler))
+			sar, err := New(reviewer, Config{Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: tc.max}, slog.New(slog.DiscardHandler))
 			if err != nil {
 				t.Fatalf("New() error = %v", err)
 			}
@@ -555,7 +555,7 @@ func TestCheckAuthorizedForImpersonationHeaderValueCap(t *testing.T) {
 // reviewer must not be constructible.
 func TestNewRejectsNonPositiveMaxHeaderValues(t *testing.T) {
 	for _, max := range []int{0, -1} {
-		if _, err := New(fake.New(nil), DefaultTimeout, 0, 0, max, slog.New(slog.DiscardHandler)); err == nil {
+		if _, err := New(fake.New(nil), Config{Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: max}, slog.New(slog.DiscardHandler)); err == nil {
 			t.Errorf("New(maxHeaderValues=%d) error = nil, want error", max)
 		}
 	}
@@ -609,7 +609,7 @@ type sarResult struct {
 // sequence with context.Canceled and does not run further checks.
 func TestCheckAuthorizedForImpersonationCanceled(t *testing.T) {
 	reviewer := &blockingReviewer{entered: make(chan struct{}, 1)}
-	sar, err := New(reviewer, DefaultTimeout, 0, 0, DefaultMaxHeaderValues, slog.New(slog.DiscardHandler))
+	sar, err := New(reviewer, Config{Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -657,7 +657,7 @@ func TestCheckAuthorizedForImpersonationCanceled(t *testing.T) {
 // context.DeadlineExceeded and runs at most the first check.
 func TestCheckAuthorizedForImpersonationDeadlineExceeded(t *testing.T) {
 	reviewer := &blockingReviewer{entered: make(chan struct{}, 1)}
-	sar, err := New(reviewer, DefaultTimeout, 0, 0, DefaultMaxHeaderValues, slog.New(slog.DiscardHandler))
+	sar, err := New(reviewer, Config{Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -698,7 +698,7 @@ func TestCheckAuthorizedForImpersonationDeadlineExceeded(t *testing.T) {
 // budget distinguishable from a longer one that would only expire much later.
 func TestCheckAuthorizedForImpersonationConfiguredTimeout(t *testing.T) {
 	reviewer := &blockingReviewer{entered: make(chan struct{}, 1)}
-	sar, err := New(reviewer, 50*time.Millisecond, 0, 0, DefaultMaxHeaderValues, slog.New(slog.DiscardHandler))
+	sar, err := New(reviewer, Config{Timeout: 50 * time.Millisecond, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -739,8 +739,7 @@ func TestCheckAuthorizedForImpersonationConfiguredTimeout(t *testing.T) {
 func newLoggingSAR(t *testing.T, root *slog.Logger, r clientazv1.SubjectAccessReviewInterface, sarTimeout, allowTTL, denyTTL time.Duration) *SubjectAccessReview {
 	t.Helper()
 
-	s, err := New(r, sarTimeout, allowTTL, denyTTL, DefaultMaxHeaderValues,
-		logging.ForComponent(root, logging.ComponentSAR))
+	s, err := New(r, Config{Timeout: sarTimeout, AllowCacheTTL: allowTTL, DenyCacheTTL: denyTTL, MaxHeaderValues: DefaultMaxHeaderValues}, logging.ForComponent(root, logging.ComponentSAR))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -772,7 +771,7 @@ func TestCacheHitAndLiveCheckEvents(t *testing.T) {
 	requester := &user.DefaultInfo{Name: "mmosley", Groups: []string{"group1"}}
 	ctx := logging.WithRequestID(logging.NewContext(context.Background(), root), "r1")
 
-	if _, err := s.checkRbacImpersonationAuthorization(ctx, "users", "bob", requester); err != nil {
+	if _, err := s.checkRbacImpersonationAuthorization(ctx, userTarget("bob"), requester); err != nil {
 		t.Fatal(err)
 	}
 	miss := cap.ByEvent(logging.EventCacheSARLookup)
@@ -787,7 +786,7 @@ func TestCacheHitAndLiveCheckEvents(t *testing.T) {
 		t.Fatal("duration_ms missing")
 	}
 
-	if _, err := s.checkRbacImpersonationAuthorization(ctx, "users", "bob", requester); err != nil {
+	if _, err := s.checkRbacImpersonationAuthorization(ctx, userTarget("bob"), requester); err != nil {
 		t.Fatal(err)
 	}
 	hits := cap.ByEvent(logging.EventCacheSARLookup)
@@ -827,7 +826,7 @@ func TestCacheBypassEvents(t *testing.T) {
 			ctx := logging.WithRequestID(context.Background(), "r1")
 
 			for i := range 2 {
-				if _, err := s.checkRbacImpersonationAuthorization(ctx, "users", tc.name, loggingTestRequester()); err != nil {
+				if _, err := s.checkRbacImpersonationAuthorization(ctx, userTarget(tc.name), loggingTestRequester()); err != nil {
 					t.Fatalf("check %d: %v", i, err)
 				}
 			}
@@ -865,7 +864,7 @@ func TestCachedDenyDecisionEvents(t *testing.T) {
 	ctx := logging.WithRequestID(context.Background(), "r1")
 
 	for i := range 2 {
-		allowed, err := s.checkRbacImpersonationAuthorization(ctx, "groups", "group3", loggingTestRequester())
+		allowed, err := s.checkRbacImpersonationAuthorization(ctx, impersonationTarget{kind: TargetGroup, resource: "groups", name: "group3"}, loggingTestRequester())
 		if err != nil {
 			t.Fatalf("check %d: %v", i, err)
 		}
@@ -902,7 +901,7 @@ func TestLiveCheckFailureEvents(t *testing.T) {
 		s := newLoggingSAR(t, root, &fnReviewer{fn: failWith(errReview)}, DefaultTimeout, DefaultAllowCacheTTL, DefaultDenyCacheTTL)
 		ctx := logging.WithRequestID(context.Background(), "r1")
 
-		if _, err := s.checkRbacImpersonationAuthorization(ctx, "users", "bob", loggingTestRequester()); !errors.Is(err, ErrCreateSubjectAccessReview) {
+		if _, err := s.checkRbacImpersonationAuthorization(ctx, userTarget("bob"), loggingTestRequester()); !errors.Is(err, ErrCreateSubjectAccessReview) {
 			t.Fatalf("error = %v, want errors.Is(ErrCreateSubjectAccessReview)", err)
 		}
 
@@ -936,7 +935,7 @@ func TestLiveCheckFailureEvents(t *testing.T) {
 
 		done := make(chan error, 1)
 		go func() {
-			_, err := s.checkRbacImpersonationAuthorization(ctx, "users", "bob", loggingTestRequester())
+			_, err := s.checkRbacImpersonationAuthorization(ctx, userTarget("bob"), loggingTestRequester())
 			done <- err
 		}()
 
@@ -1099,7 +1098,7 @@ func TestCoalescedLiveCheckEvent(t *testing.T) {
 
 	check := func(wg *sync.WaitGroup, err *error) {
 		defer wg.Done()
-		_, e := s.checkRbacImpersonationAuthorization(ctx, "users", "bob", loggingTestRequester())
+		_, e := s.checkRbacImpersonationAuthorization(ctx, userTarget("bob"), loggingTestRequester())
 		*err = e
 	}
 
@@ -1182,34 +1181,78 @@ func TestImpersonationResolvedEvent(t *testing.T) {
 	}
 }
 
-// TestTargetKind pins the closed target_kind value set at its source. The four
-// caller forms are internal constants today, so nothing user-controlled reaches
-// this function -- but the mapping is what keeps target_kind a closed set, and
-// a resource nobody anticipated must report that it was not recognised rather
-// than borrow the label of the extras it is not.
-func TestTargetKind(t *testing.T) {
-	t.Parallel()
+// userTarget is the impersonation target for a user, which is what most of the
+// cache and logging tests below ask about.
+func userTarget(name string) impersonationTarget {
+	return impersonationTarget{kind: TargetUser, resource: "users", name: name}
+}
 
-	tests := map[string]string{
-		"users":             "user",
-		"groups":            "group",
-		"uids":              "uid",
-		"userextras/scopes": "extra",
-		"userextras/":       "extra",
-		"pods":              "unknown",
-		"":                  "unknown",
-		"userextra/scopes":  "unknown",
-		"serviceaccounts":   "unknown",
-		"USERS":             "unknown",
+// TestHasImpersonationHeaders pins the predicate that decides whether a
+// request is authorized through CheckAuthorizedForImpersonation at all: any
+// Impersonate- prefixed key, however the client spelled it, counts, including
+// kinds this proxy does not know, so nothing impersonation-shaped is ever
+// forwarded unexamined.
+func TestHasImpersonationHeaders(t *testing.T) {
+	noImpersonation := []http.Header{
+		{},
+		{"foo": {"bar", "foo"}},
+		{"impersonation": {"bar"}, "impersonate": {"bar"}},
+		{"Impersonate": {"bar", "foo"}},
+		{"-impersonate-Extra-": {"bar", "foo"}},
+		{"a": {"Impersonate-User"}, "b": {"Impersonate-Group"}, "c": {"Impersonate-Extra-"}},
+	}
+	hasImpersonation := []http.Header{
+		{"Impersonate-User": {"bar", "foo"}},
+		{"impersonate-user": {"bar", "foo"}},
+		{"impersonate-user": nil},
+		{"impersonate-group": nil},
+		{"impersonate-Group": {"bar", "foo"}},
+		{"impersonate-Extra-foobar___foo": {"bar", "foo"}},
+		{"impersonate-Extra-": {"bar", "foo"}},
+		{"impersonate-Extra-": {"bar", "foo"}, "impersonate-Group": {"bar", "foo"}, "impersonate-User": {"bar"}},
+		{"impersonate-Extra-": {"bar", "foo"}, "foo": {"bar", "foo"}, "bar": {"bar"}},
+		// A kind this proxy does not know is still an impersonation attempt.
+		{"impersonate-Extra": {"bar", "foo"}},
 	}
 
-	for resource, want := range tests {
-		resource, want := resource, want
-		t.Run(resource, func(t *testing.T) {
-			t.Parallel()
-			if got := targetKind(resource); got != want {
-				t.Errorf("targetKind(%q) = %q, want %q", resource, got, want)
-			}
-		})
+	for _, h := range noImpersonation {
+		if HasImpersonationHeaders(h) {
+			t.Errorf("HasImpersonationHeaders(%v) = true, want false", h)
+		}
+	}
+	for _, h := range hasImpersonation {
+		if !HasImpersonationHeaders(h) {
+			t.Errorf("HasImpersonationHeaders(%v) = false, want true", h)
+		}
+	}
+}
+
+// TestStripImpersonationHeaders pins that the forwarded request keeps every
+// other header and loses every impersonation header, and that the caller's
+// map is left alone.
+func TestStripImpersonationHeaders(t *testing.T) {
+	in := http.Header{
+		"Impersonate-User":      {"bob"},
+		"impersonate-group":     {"a", "b"},
+		"Impersonate-Extra-Foo": {"bar"},
+		"Authorization":         {"Bearer x"},
+		"Accept":                {"application/json", "*/*"},
+	}
+
+	out := StripImpersonationHeaders(in)
+
+	want := http.Header{
+		"Authorization": {"Bearer x"},
+		"Accept":        {"application/json", "*/*"},
+	}
+	if !reflect.DeepEqual(out, want) {
+		t.Errorf("StripImpersonationHeaders = %v, want %v", out, want)
+	}
+	if len(in) != 5 {
+		t.Errorf("caller's headers were modified: %v", in)
+	}
+	out["Accept"][0] = "changed"
+	if in["Accept"][0] != "application/json" {
+		t.Error("stripped headers share value slices with the caller")
 	}
 }

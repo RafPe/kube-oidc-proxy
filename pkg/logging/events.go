@@ -338,12 +338,11 @@ var Registry = map[EventType]EventSpec{
 		Summary:    "The pre-shutdown audit flush failed.",
 	},
 	EventUpstreamRequestFailed: {
-		Components:    []Component{ComponentUpstream},
-		Level:         slog.LevelError,
-		AllowedLevels: []slog.Level{slog.LevelDebug},
-		Required:      []string{"request_id", "reason", "termination", "error_message"},
-		Message:       "upstream request failed",
-		Summary:       "The reverse proxy transport failed. Carries reason=upstream_error and a classified termination; drops to DEBUG when the client canceled the request.",
+		Components: []Component{ComponentUpstream},
+		Level:      slog.LevelError,
+		Required:   []string{"request_id", "reason", "termination", "error_message"},
+		Message:    "upstream request failed",
+		Summary:    "The reverse proxy transport failed. Carries reason=upstream_error and a classified termination. A client that canceled is reported by upstream.request.canceled instead.",
 	},
 	EventUpstreamRequestCanceled: {
 		Components: []Component{ComponentUpstream},
