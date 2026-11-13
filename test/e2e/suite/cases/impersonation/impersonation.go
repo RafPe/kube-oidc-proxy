@@ -13,6 +13,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -115,6 +116,102 @@ var _ = framework.CasesDescribe("Impersonation", Label("shard-a"), func() {
 				},
 			}, http.StatusForbidden, "user@example.com is not allowed to impersonate extra info 'foo'='k1'")
 
+		})
+
+		// The two specs below use distinct ServiceAccounts: the container is
+		// Ordered, so RBAC from one spec is still present in the next.
+		It("should not let a users grant impersonate a ServiceAccount", func(ctx SpecContext) {
+			ns := f.Namespace.Name
+			saName := "sa-imp-escalation"
+			saUser := fmt.Sprintf("system:serviceaccount:%s:%s", ns, saName)
+			kc := f.Helper().KubeClient
+
+			By("Creating a ServiceAccount that is directly bound to list Pods")
+			_, err := kc.CoreV1().ServiceAccounts(ns).Create(ctx,
+				&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: saName}}, metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+
+			rolePods, err := kc.RbacV1().Roles(ns).Create(ctx, &rbacv1.Role{
+				ObjectMeta: metav1.ObjectMeta{GenerateName: "sa-imp-escalation-pods-"},
+				Rules: []rbacv1.PolicyRule{
+					{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get", "list"}},
+				},
+			}, metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = kc.RbacV1().RoleBindings(ns).Create(ctx, &rbacv1.RoleBinding{
+				ObjectMeta: metav1.ObjectMeta{GenerateName: "sa-imp-escalation-pods-"},
+				Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: saName, Namespace: ns}},
+				RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: rolePods.Name},
+			}, metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Granting user@example.com impersonate on the *users* resource for the ServiceAccount's username")
+			roleImp, err := kc.RbacV1().ClusterRoles().Create(ctx, &rbacv1.ClusterRole{
+				ObjectMeta: metav1.ObjectMeta{GenerateName: "sa-imp-escalation-users-"},
+				Rules: []rbacv1.PolicyRule{
+					{APIGroups: []string{""}, Resources: []string{"users"}, ResourceNames: []string{saUser}, Verbs: []string{"impersonate"}},
+				},
+			}, metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = kc.RbacV1().ClusterRoleBindings().Create(ctx, &rbacv1.ClusterRoleBinding{
+				ObjectMeta: metav1.ObjectMeta{GenerateName: "sa-imp-escalation-users-"},
+				Subjects:   []rbacv1.Subject{{Kind: "User", Name: "user@example.com", APIGroup: "rbac.authorization.k8s.io"}},
+				RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: roleImp.Name},
+			}, metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Impersonating the ServiceAccount is denied: a users grant does not cover a ServiceAccount")
+			tryImpersonationClient(ctx, f, rest.ImpersonationConfig{UserName: saUser}, http.StatusForbidden,
+				fmt.Sprintf("user@example.com is not allowed to impersonate user '%s'", saUser))
+		})
+
+		It("should impersonate a ServiceAccount via a namespaced serviceaccounts grant", func(ctx SpecContext) {
+			ns := f.Namespace.Name
+			saName := "sa-imp-target"
+			saUser := fmt.Sprintf("system:serviceaccount:%s:%s", ns, saName)
+			kc := f.Helper().KubeClient
+
+			By("Creating a ServiceAccount with no direct bindings")
+			_, err := kc.CoreV1().ServiceAccounts(ns).Create(ctx,
+				&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: saName}}, metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Granting user@example.com impersonate on the namespaced serviceaccounts resource")
+			roleImp, err := kc.RbacV1().Roles(ns).Create(ctx, &rbacv1.Role{
+				ObjectMeta: metav1.ObjectMeta{GenerateName: "sa-imp-target-impersonate-"},
+				Rules: []rbacv1.PolicyRule{
+					{APIGroups: []string{""}, Resources: []string{"serviceaccounts"}, ResourceNames: []string{saName}, Verbs: []string{"impersonate"}},
+				},
+			}, metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = kc.RbacV1().RoleBindings(ns).Create(ctx, &rbacv1.RoleBinding{
+				ObjectMeta: metav1.ObjectMeta{GenerateName: "sa-imp-target-impersonate-"},
+				Subjects:   []rbacv1.Subject{{Kind: "User", Name: "user@example.com", APIGroup: "rbac.authorization.k8s.io"}},
+				RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: roleImp.Name},
+			}, metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Granting list Pods to the system:serviceaccounts:<ns> group only")
+			rolePods, err := kc.RbacV1().Roles(ns).Create(ctx, &rbacv1.Role{
+				ObjectMeta: metav1.ObjectMeta{GenerateName: "sa-imp-target-pods-"},
+				Rules: []rbacv1.PolicyRule{
+					{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get", "list"}},
+				},
+			}, metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = kc.RbacV1().RoleBindings(ns).Create(ctx, &rbacv1.RoleBinding{
+				ObjectMeta: metav1.ObjectMeta{GenerateName: "sa-imp-target-pods-"},
+				Subjects:   []rbacv1.Subject{{Kind: "Group", Name: "system:serviceaccounts:" + ns, APIGroup: "rbac.authorization.k8s.io"}},
+				RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: rolePods.Name},
+			}, metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Impersonating the ServiceAccount succeeds and carries its implied groups")
+			tryImpersonationClient(ctx, f, rest.ImpersonationConfig{UserName: saUser}, http.StatusOK, "")
 		})
 	})
 
