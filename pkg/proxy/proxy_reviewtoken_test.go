@@ -59,6 +59,14 @@ func TestReviewToken(t *testing.T) {
 			expErr: errUnauthorized,
 		},
 
+		"an authenticated result without an identity is the reviewer's failure": {
+			authHeader: "bearer " + bearer,
+			reviewerResult: func(m *authntest.MockToken) {
+				m.EXPECT().AuthenticateToken(gomock.Any(), bearer).Return(&authenticator.Response{}, true, nil)
+			},
+			expErr: errReviewerNoIdentity,
+		},
+
 		"an authenticated result passes through": {
 			authHeader: "bearer " + bearer,
 			reviewerResult: func(m *authntest.MockToken) {
@@ -80,7 +88,7 @@ func TestReviewToken(t *testing.T) {
 				req.Header.Set("Authorization", test.authHeader)
 			}
 
-			if got := p.reviewToken(req); !errors.Is(got, test.expErr) {
+			if _, got := p.reviewToken(req); !errors.Is(got, test.expErr) {
 				t.Errorf("reviewToken = %v, want %v", got, test.expErr)
 			}
 		})

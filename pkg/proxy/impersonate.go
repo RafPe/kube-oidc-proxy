@@ -12,7 +12,6 @@ import (
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/client-go/transport"
 
-	"github.com/rafpe/kube-oidc-proxy/pkg/authz/subjectaccessreview"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 )
@@ -66,9 +65,9 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		// An earlier filter already decided this request: token passthrough
 		// forwards it with the client's own token.
-		if imp := reqctx.Impersonation(req); imp != nil {
+		if fd := reqctx.ForwardDecision(req); fd != nil {
 			logging.Emit(req.Context(), p.requestLogger, logging.EventRequestImpersonationSkipped,
-				slog.String("skip_reason", string(imp.Mode)))
+				slog.String("skip_reason", string(fd.Mode)))
 			handler.ServeHTTP(rw, req)
 			return
 		}
@@ -76,7 +75,7 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 		if p.config.DisableImpersonation {
 			logging.Emit(req.Context(), p.requestLogger, logging.EventRequestImpersonationSkipped,
 				slog.String("skip_reason", string(reqctx.ForwardDisabled)))
-			handler.ServeHTTP(rw, reqctx.WithImpersonation(req, &reqctx.ImpersonationRecord{
+			handler.ServeHTTP(rw, reqctx.WithForwardDecision(req, &reqctx.ForwardDecisionRecord{
 				Mode:        reqctx.ForwardDisabled,
 				InboundUser: userFromContext(req),
 			}))
@@ -85,29 +84,21 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 
 		inbound, ok := genericapirequest.UserFrom(req.Context())
 		if !ok || len(inbound.GetName()) == 0 {
-			p.refuse(rw, req, errNoName)
+			p.refuse(rw, req, errNoUsername)
 			return
 		}
 
 		// target is the identity the client asked to impersonate, once the
 		// SubjectAccessReviews allowed it; nil when the request impersonates
-		// nobody and the inbound identity is forwarded as itself.
-		var target authuser.Info
-		if subjectaccessreview.HasImpersonationHeaders(req.Header) {
-			var err error
-			target, err = p.subjectAccessReviewer.ResolveImpersonation(req, asAuthenticated(inbound))
-			if err != nil {
-				p.refuse(rw, req, err)
-				return
-			}
-
-			// The client's headers have been authorized and become the
-			// outbound identity below. They must not travel on the forwarded
-			// request: client-go's impersonating round tripper leaves a request
-			// that already carries Impersonate-User untouched, which would
-			// forward them under the proxy's own credentials.
-			req.Header = subjectaccessreview.StripImpersonationHeaders(req.Header)
+		// nobody and the inbound identity is forwarded as itself. The request
+		// that comes back no longer carries the client's Impersonate-*
+		// headers: they become the outbound identity below.
+		forward, target, err := p.impersonationAuthorizer.ConsumeImpersonation(req, asAuthenticated(inbound))
+		if err != nil {
+			p.refuse(rw, req, err)
+			return
 		}
+		req = forward
 
 		outbound, err := p.outboundIdentity(req, inbound, target)
 		if err != nil {
@@ -115,7 +106,7 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 			return
 		}
 
-		imp := &reqctx.ImpersonationRecord{
+		fd := &reqctx.ForwardDecisionRecord{
 			Mode:             reqctx.ForwardImpersonating,
 			Outbound:         outbound,
 			InboundUser:      inbound,
@@ -126,7 +117,7 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 			slog.String("outbound_user", logging.Bound(outbound.UserName, logging.MaxIdentity)),
 			slog.Any("impersonated_header_names", impersonatedHeaderNames(outbound)))
 
-		handler.ServeHTTP(rw, reqctx.WithImpersonation(req, imp))
+		handler.ServeHTTP(rw, reqctx.WithForwardDecision(req, fd))
 	})
 }
 
@@ -182,9 +173,9 @@ func authenticatedGroups(groups []string) []string {
 // for a request authenticated as inbound: target when the client impersonated
 // someone (and the SubjectAccessReviews allowed it), inbound itself otherwise.
 // The identity is enriched with the group kube-apiserver would add (see
-// impersonatedGroups), the client IP
-// and configured extras, and, when impersonating, with the original identity
-// so the API server's audit log records who really acted.
+// impersonatedGroups), the client IP and configured extras, and, when
+// impersonating, with the original identity so the API server's audit log
+// records who really acted.
 func (p *Proxy) outboundIdentity(req *http.Request, inbound, target authuser.Info) (*transport.ImpersonationConfig, error) {
 	forwarded := inbound
 	if target != nil {
@@ -210,13 +201,13 @@ func (p *Proxy) outboundIdentity(req *http.Request, inbound, target authuser.Inf
 	}
 
 	if p.config.ExtraUserHeadersClientIPEnabled {
-		extra[ExtraKeyClientIP] = append(extra[ExtraKeyClientIP], reqctx.ClientIP(req))
+		extra[ExtraKeyClientIP] = []string{reqctx.ClientIP(req)}
 	}
 
-	// append copies into the freshly cloned value slice, so the configured
-	// slice is never aliased into the outbound request.
+	// Cloned, so the configured slice is never aliased into the outbound
+	// request.
 	for k, vs := range p.config.ExtraUserHeaders {
-		extra[k] = append(extra[k], vs...)
+		extra[k] = slices.Clone(vs)
 	}
 
 	if target != nil {
@@ -268,16 +259,18 @@ func (p *Proxy) writesExtraKey(key string) bool {
 }
 
 // impersonatedHeaderNames returns the sorted names of the impersonation headers
-// the round tripper will send for this configuration. Names only: the values
+// the round tripper will send for this configuration, with each extra key in
+// its logical, unescaped form: the key as configured or claimed, which is how
+// an operator searches for it, rather than the percent-encoded form client-go
+// puts on the wire for a key such as example.com/team. Names only: the values
 // carry the impersonated identity, the client address and operator-supplied
 // secrets, none of which belong in a log record. Sorted because map iteration
 // is unordered and a record whose fields shuffle between otherwise identical
 // requests is harder to diff.
 func impersonatedHeaderNames(c *transport.ImpersonationConfig) []string {
-	names := []string{transport.ImpersonateUserHeader}
-	if len(c.Groups) > 0 {
-		names = append(names, transport.ImpersonateGroupHeader)
-	}
+	// outboundIdentity always adds system:authenticated or
+	// system:unauthenticated, so there is always a group to send.
+	names := []string{transport.ImpersonateUserHeader, transport.ImpersonateGroupHeader}
 	if c.UID != "" {
 		names = append(names, transport.ImpersonateUIDHeader)
 	}

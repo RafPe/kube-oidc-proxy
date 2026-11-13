@@ -1,0 +1,3 @@
+kind: Changed
+body: |-
+  A cancellation that reaches the upstream round trip while the client is still connected is an internal error (500, `internal_error`), not a client cancellation; `authn.tokenreview.failed` is now emitted by the token reviewer itself, with unchanged content.

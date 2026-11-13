@@ -58,7 +58,7 @@ func (c *ClientOptions) AddFlags(fs *pflag.FlagSet) *ClientOptions {
 		"kubernetes client, this will configure throttling on requests sent to the apiserver "+
 		"(If not set, it will use client default ones)")
 	fs.IntVar(&c.KubeClientBurst, "kube-client-burst", c.KubeClientBurst, "Sets the burst on the app "+
-		"kubernetes client, this will configure throttling on requests sent to the apiserver"+
+		"kubernetes client, this will configure throttling on requests sent to the apiserver "+
 		"(If not set, it will use client default ones)")
 
 	return c
@@ -75,20 +75,7 @@ func (c *ClientOptions) ToRESTConfig() (*rest.Config, error) {
 // ClientFlagsChanged reports whether any connection flag was given, which is
 // what selects the kubeconfig path over the in-cluster configuration. The
 // connection flags are every flag in the Client set except the throttling
-// ones, which apply to either configuration.
+// ones, which tune whichever configuration is chosen rather than selecting one.
 func (c *ClientOptions) ClientFlagsChanged(cmd *cobra.Command) bool {
-	changed := false
-	c.fs.VisitAll(func(f *pflag.Flag) {
-		if throttlingFlags[f.Name] {
-			return
-		}
-		if cf := cmd.Flag(f.Name); cf != nil && cf.Changed {
-			changed = true
-		}
-	})
-	return changed
+	return flagsChanged(cmd, c.fs, "kube-client-qps", "kube-client-burst")
 }
-
-// throttlingFlags are the Client flags that tune whichever configuration is
-// chosen rather than selecting one.
-var throttlingFlags = map[string]bool{"kube-client-qps": true, "kube-client-burst": true}

@@ -68,10 +68,12 @@ go_fmt:
 
 # Both build configurations: a build tag selects one of pkg/logging's two
 # checkRequired implementations, so one pass can only ever see one of them.
-# Untagged is what ships; -tags logcheck is what every test run compiles.
+# Untagged is what ships; -tags logcheck is what every test run compiles. The
+# second pass also sets e2e, the tag that gates test/e2e/suite (so a plain
+# go test ./... never provisions a kind cluster), to keep the suite vetted.
 go_vet:
 	go vet ./...
-	go vet -tags logcheck ./...
+	go vet -tags logcheck,e2e ./...
 
 go_lint: $(BINDIR)/golangci-lint ## lint golang code for problems
 	$(BINDIR)/golangci-lint run --timeout 5m ./...
@@ -113,7 +115,7 @@ verify_metricdoc:
 # first package path as the pattern and skips testing that package.
 test: generate verify ## run all go tests
 	mkdir -p $(ARTIFACTS)
-	go test -race -tags logcheck -v -bench=. -benchtime=1x $$(go list ./pkg/... ./cmd/... ./hack/... ./test/tools/... ./test/util/... ./test/e2e/framework/... ./test/e2e/versions/...) | tee $(ARTIFACTS)/go-test.stdout
+	go test -race -tags logcheck -v -bench=. -benchtime=1x $$(go list ./pkg/... ./cmd/... ./hack/... ./internal/... ./test/tools/... ./test/util/... ./test/e2e/framework/... ./test/e2e/versions/...) | tee $(ARTIFACTS)/go-test.stdout
 
 # Name of the kind cluster the e2e suite creates (must match the const in
 # test/kind/kind.go). Used by e2e-clean for the failure/interrupt safety net.
@@ -144,7 +146,7 @@ e2e: $(BINDIR)/kubectl ## run the e2e suite hermetically (creates + destroys its
 	@echo "e2e: removing any stale cluster from a previous run"
 	@$(MAKE) --no-print-directory e2e-clean
 	trap '$(MAKE) --no-print-directory e2e-clean' EXIT INT TERM; \
-	KUBE_OIDC_PROXY_ROOT_PATH="$$(pwd)" go test -timeout $(E2E_TIMEOUT) -v --count=1 ./test/e2e/suite/. $(E2E_GOTEST_ARGS) 2>&1 | tee $(ARTIFACTS)/e2e.log
+	KUBE_OIDC_PROXY_ROOT_PATH="$$(pwd)" go test -tags e2e -timeout $(E2E_TIMEOUT) -v --count=1 ./test/e2e/suite/. $(E2E_GOTEST_ARGS) 2>&1 | tee $(ARTIFACTS)/e2e.log
 
 e2e-clean: ## delete the e2e kind cluster if present (safe to run anytime)
 	@command -v kind >/dev/null 2>&1 || { \

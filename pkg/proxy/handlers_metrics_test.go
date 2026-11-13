@@ -2,7 +2,9 @@
 package proxy
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -10,6 +12,7 @@ import (
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	authuser "k8s.io/apiserver/pkg/authentication/user"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics/metricstest"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/accesslog"
@@ -90,5 +93,34 @@ func TestRecordDecisionCountsAnAllowOnce(t *testing.T) {
 	p.recordDenial(req, metrics.ReasonUpstreamError, errors.New("late"))
 	if v, _ := metricstest.Value(t, p.metrics.Gatherer(), metricAccessDecisions, map[string]string{"decision": "deny"}); v != 0 {
 		t.Fatalf("a second decision was counted: %v", v)
+	}
+}
+
+// TestOIDCClientGoneIsClassifiedLikeTheReviewers pins that an OIDC error
+// caused by the client hanging up is reported as the TokenReview and SAR paths
+// report it -- reason=client_canceled, counted as an error attempt -- and is
+// refused without a second look by TokenReview, even with passthrough on.
+func TestOIDCClientGoneIsClassifiedLikeTheReviewers(t *testing.T) {
+	p := newTestProxy(t, withConfig(Config{TokenPassthrough: true}))
+	ctx, cancel := context.WithCancel(context.Background())
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "tok").DoAndReturn(
+		func(context.Context, string) (*authenticator.Response, bool, error) {
+			cancel()
+			return nil, false, fmt.Errorf("fetching keys: %w", context.Canceled)
+		})
+	// No fakeReviewer expectation: a TokenReview here fails the test.
+
+	req := watchRequest().WithContext(ctx)
+	req.Header.Set("Authorization", "bearer tok")
+	serveChain(t, p, req, noopHandler)
+
+	if got := p.logs.Only(t, logging.EventAuthnOIDCFailed).String("reason"); got != string(metrics.ReasonClientCanceled) {
+		t.Errorf("authn.oidc.failed reason = %q, want %q", got, metrics.ReasonClientCanceled)
+	}
+	if got := p.logs.Only(t, logging.EventRequestAccessDecided).String("reason"); got != string(metrics.ReasonClientCanceled) {
+		t.Errorf("access record reason = %q, want %q", got, metrics.ReasonClientCanceled)
+	}
+	if v, _ := metricstest.Value(t, p.metrics.Gatherer(), metricAuthnAttempts, map[string]string{"auth_method": "oidc", "outcome": "error"}); v != 1 {
+		t.Errorf("attempts{oidc,error} = %v, want 1", v)
 	}
 }

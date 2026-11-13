@@ -1,5 +1,14 @@
 # Structured logging pipeline — TDD evidence
 
+> **Paths are historical.** The commands and output below are the evidence as
+> recorded, so they name packages where they lived at the time. Since then
+> `pkg/proxy/tokenreview` moved to `pkg/authn/tokenreview`,
+> `pkg/proxy/subjectaccessreview` to `pkg/authz/subjectaccessreview`,
+> `pkg/proxy/context` to `pkg/proxy/reqctx`, the generated mocks in
+> `pkg/mocks` to `pkg/authn/authntest`, and `pkg/util/token` into `pkg/proxy`
+> (`bearer.go`); `pkg/proxy/hooks` was removed. Run today's equivalents against
+> the new paths.
+
 Evidence for the structured logging work tracked in issue #129. Every RED and
 GREEN cell below comes from a real run recorded while the change was built; no
 result here was written from expectation.

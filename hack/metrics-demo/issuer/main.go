@@ -14,8 +14,8 @@
 //
 // Deploying through appdeploy.Issuer and minting with keybundle.NewSelfSigned
 // means the demo authenticates against exactly the issuer, and trusts exactly
-// the kind of certificate, that the e2e suite does. Both are test/util leaf
-// packages, as is everything the load generator uses, so no demo binary
+// the kind of certificate, that the e2e suite does. Both are internal/devkit
+// leaf packages, as is everything the load generator uses, so no demo binary
 // depends on the e2e framework or its kind tooling.
 package main
 
@@ -35,8 +35,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/rafpe/kube-oidc-proxy/test/util/appdeploy"
-	"github.com/rafpe/kube-oidc-proxy/test/util/keybundle"
+	"github.com/rafpe/kube-oidc-proxy/internal/devkit/appdeploy"
+	"github.com/rafpe/kube-oidc-proxy/internal/devkit/keybundle"
 )
 
 func main() {

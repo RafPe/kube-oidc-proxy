@@ -15,6 +15,7 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/authn/tokenreview/fake"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
+	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 )
 
 // authenticatedResponse is the API-server reply newCachedWithFake serves:
@@ -112,34 +113,96 @@ func TestLiveTokenReviewCompletedEvent(t *testing.T) {
 	}
 }
 
-// TestTokenReviewFailureEmitsNoCompletedEvent pins that a review which never
-// reached an answer emits no completion record: neither a transport failure nor
-// an API server status error is an authentication outcome. The ERROR record for
-// those is authn.tokenreview.failed, emitted by the caller.
-func TestTokenReviewFailureEmitsNoCompletedEvent(t *testing.T) {
-	tests := map[string]func(*authv1.TokenReview) (*authv1.TokenReview, error){
-		"the apiserver call itself failed": func(*authv1.TokenReview) (*authv1.TokenReview, error) {
-			return nil, errors.New("apiserver unreachable")
+// TestTokenReviewFailureEvent pins the one record a review that never reached
+// an answer emits: authn.tokenreview.failed, never a completion record,
+// because neither a transport failure nor an API server status error is an
+// authentication outcome. A failure is an ERROR, except when the caller's own
+// context ended first: a client that hung up cannot drive the ERROR stream.
+// The reviewer's own timeout expiring with the caller still waiting means the
+// API server did not answer, so it stays an ERROR.
+func TestTokenReviewFailureEvent(t *testing.T) {
+	tests := map[string]struct {
+		timeout   time.Duration
+		create    func(ctx context.Context, cancelCaller context.CancelFunc) (*authv1.TokenReview, error)
+		expLevel  string
+		expReason metrics.Reason
+		expErrMsg string
+	}{
+		"the apiserver call itself failed": {
+			create: func(context.Context, context.CancelFunc) (*authv1.TokenReview, error) {
+				return nil, errors.New("apiserver unreachable")
+			},
+			expLevel:  "ERROR",
+			expReason: metrics.ReasonAuthenticationDependencyError,
+			expErrMsg: "create TokenReview: apiserver unreachable",
 		},
-		"the apiserver answered with a status error": func(*authv1.TokenReview) (*authv1.TokenReview, error) {
-			return &authv1.TokenReview{
-				Status: authv1.TokenReviewStatus{Error: "token lookup failed"},
-			}, nil
+		"the apiserver answered with a status error": {
+			create: func(context.Context, context.CancelFunc) (*authv1.TokenReview, error) {
+				return &authv1.TokenReview{
+					Status: authv1.TokenReviewStatus{Error: "token lookup failed"},
+				}, nil
+			},
+			expLevel:  "ERROR",
+			expReason: metrics.ReasonAuthenticationDependencyError,
+			expErrMsg: "create TokenReview: status error: token lookup failed",
+		},
+		"the client hung up mid-review": {
+			create: func(_ context.Context, cancelCaller context.CancelFunc) (*authv1.TokenReview, error) {
+				cancelCaller()
+				return nil, context.Canceled
+			},
+			expLevel:  "DEBUG",
+			expReason: metrics.ReasonClientCanceled,
+		},
+		"the reviewer's own timeout expired": {
+			timeout: time.Millisecond,
+			create: func(ctx context.Context, _ context.CancelFunc) (*authv1.TokenReview, error) {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+			expLevel:  "ERROR",
+			expReason: metrics.ReasonAuthenticationDependencyError,
 		},
 	}
 
-	for name, create := range tests {
+	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			root, cap := logtest.New(t, 2)
 			defer logtest.AssertRegistered(t, cap)
-			tr := newLoggingTokenReview(root, create)
 
-			if _, ok, err := tr.AuthenticateToken(testRequestContext(), "s3cr3t-tok-value"); err == nil || ok {
-				t.Fatalf("want a failed review, got ok=%t err=%v", ok, err)
+			ctx, cancel := context.WithCancel(testRequestContext())
+			defer cancel()
+			client := &fake.Reviewer{CreateCtxFn: func(ctx context.Context, _ *authv1.TokenReview) (*authv1.TokenReview, error) {
+				return tc.create(ctx, cancel)
+			}}
+			tr := newLiveReviewer(client, Config{Timeout: tc.timeout}, logging.ForComponent(root, logging.ComponentTokenReview))
+
+			_, ok, err := tr.AuthenticateToken(ctx, "s3cr3t-tok-value")
+			if !errors.Is(err, ErrCreateTokenReview) || ok {
+				t.Fatalf("want a failed review wrapping ErrCreateTokenReview, got ok=%t err=%v", ok, err)
 			}
 
+			rec := cap.Only(t, logging.EventAuthnTokenReviewFailed)
+			if got := rec.String("level"); got != tc.expLevel {
+				t.Errorf("level = %q, want %q", got, tc.expLevel)
+			}
+			if got := rec.String("reason"); got != string(tc.expReason) {
+				t.Errorf("reason = %q, want %q", got, tc.expReason)
+			}
+			if got := rec.String("error_message"); got != err.Error() {
+				t.Errorf("error_message = %q, want the returned error %q", got, err.Error())
+			}
+			if tc.expErrMsg != "" && err.Error() != tc.expErrMsg {
+				t.Errorf("error = %q, want %q", err.Error(), tc.expErrMsg)
+			}
+			if got := rec.String("request_id"); got != "test-request" {
+				t.Errorf("request_id = %q, want test-request from the caller context", got)
+			}
 			if got := cap.ByEvent(logging.EventAuthnTokenReviewCompleted); len(got) != 0 {
 				t.Errorf("a failed review must not emit a completion record, got %v", got)
+			}
+			if strings.Contains(cap.Raw(), "s3cr3t") {
+				t.Error("token material logged")
 			}
 		})
 	}

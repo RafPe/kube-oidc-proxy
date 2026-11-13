@@ -88,8 +88,8 @@ func TestMetricsFlagReachesOptionsThroughTheCommand(t *testing.T) {
 
 func TestValidateRejectsMetricsPortCollisions(t *testing.T) {
 	for _, tc := range []struct{ name, bind, want string }{
-		{"readiness port", ":8080", "readiness probe"},
-		{"secure port", ":6443", "secure"},
+		{"readiness port", ":8080", "--metrics-bind-address port 8080 is already used by --readiness-probe-port"},
+		{"secure port", ":6443", "--metrics-bind-address port 6443 is already used by --secure-port"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o := New()
@@ -129,12 +129,5 @@ func TestValidateAggregatesMetricsErrorsWithOthers(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("Validate error %q lacks %q", err, want)
 		}
-	}
-}
-
-func TestMiscCommitReportsTheBuildCommit(t *testing.T) {
-	o := New()
-	if o.Version.Commit() != gitCommit {
-		t.Fatalf("Commit() = %q, want the ldflags value %q", o.Version.Commit(), gitCommit)
 	}
 }

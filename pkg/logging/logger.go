@@ -29,6 +29,19 @@ const (
 	FormatText Format = "text"
 )
 
+// Validate reports whether f is a format the root logger can build. It is the
+// one definition of that set, for Options and the --logging-format flag
+// alike. The empty Format is not in it: Options reads it as FormatJSON, but it
+// names no format of its own.
+func (f Format) Validate() error {
+	switch f {
+	case FormatJSON, FormatText:
+		return nil
+	default:
+		return fmt.Errorf("unknown log format %q, want %q or %q", f, FormatJSON, FormatText)
+	}
+}
+
 // Options configures the root logger. The zero value is a JSON logger at the
 // INFO floor writing to stdout.
 type Options struct {
@@ -40,12 +53,13 @@ type Options struct {
 // Validate reports whether the options describe a logger that can be built. An
 // empty Format is the JSON default, matching the --logging-format flag.
 func (o Options) Validate() error {
-	switch o.Format {
-	case "", FormatJSON, FormatText:
+	if o.Format == "" {
 		return nil
-	default:
-		return fmt.Errorf("logging: unknown format %q, want %q or %q", o.Format, FormatJSON, FormatText)
 	}
+	if err := o.Format.Validate(); err != nil {
+		return fmt.Errorf("logging: %w", err)
+	}
+	return nil
 }
 
 // LevelFor maps the single -v verbosity knob onto a slog level. -v=0 shows
@@ -79,9 +93,21 @@ func New(o Options) (*slog.Logger, error) {
 }
 
 // ForComponent derives the logger a subsystem emits through. Every first-party
-// record carries exactly one component.
+// record carries exactly one component. A constructor that reports under one
+// component takes that component's logger; one that reports under several
+// takes the root and derives them here.
 func ForComponent(root *slog.Logger, c Component) *slog.Logger {
 	return root.With(slog.String("component", string(c)))
+}
+
+// RequireLogger panics, naming owner, when a constructor is handed a nil
+// logger. There is no package-level logger to fall back on, so a missing one
+// is a wiring mistake, and failing at construction beats emitting nothing at
+// runtime. A test passes a discarding logger.
+func RequireLogger(l *slog.Logger, owner string) {
+	if l == nil {
+		panic(owner + ": nil logger")
+	}
 }
 
 // attrRequestID is the record field naming the per-request id, and the one
@@ -112,8 +138,8 @@ func Emit(ctx context.Context, l *slog.Logger, e EventType, attrs ...slog.Attr) 
 }
 
 // EmitLevel is Emit with an explicit level, for the few events whose severity
-// depends on the outcome (authz.sar.failed drops to DEBUG when the requester
-// itself went away).
+// depends on the outcome: those whose registry entry declares AllowedLevels.
+// An event with a fixed level goes through Emit.
 //
 // Like Emit it panics on an unregistered event.
 func EmitLevel(ctx context.Context, l *slog.Logger, e EventType, level slog.Level, attrs ...slog.Attr) {

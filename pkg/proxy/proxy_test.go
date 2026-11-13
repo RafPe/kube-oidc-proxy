@@ -3,16 +3,16 @@ package proxy
 
 import (
 	stdcontext "context"
+	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +20,7 @@ import (
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/server"
+	apiserveroptions "k8s.io/apiserver/pkg/server/options"
 	"k8s.io/client-go/rest"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/authn"
@@ -45,23 +46,11 @@ type fakeProxy struct {
 	*Proxy
 }
 
-// testIssuerName is the issuer the fake OIDC authenticator attributes an
-// accepted token to, standing in for the AttributeToIssuer wrapper run.go puts
-// around every configured issuer's authenticator.
-const testIssuerName = "corp"
-
-// oidcAnswer returns a fake AuthenticateToken body that answers with resp and,
-// when it accepted the token, names testIssuerName on the request the way the
-// AttributeToIssuer wrapper does in production. Every success path needs it:
+// testIssuerName is the issuer every accepted token is attributed to:
+// newTestProxy wraps the fake OIDC authenticator in authn.AttributeToIssuer,
+// as authn.Build wraps every configured issuer's authenticator.
 // authn.oidc.succeeded requires a non-empty issuer_name.
-func oidcAnswer(resp *authenticator.Response, ok bool, err error) func(stdcontext.Context, string) (*authenticator.Response, bool, error) {
-	return func(ctx stdcontext.Context, _ string) (*authenticator.Response, bool, error) {
-		if ok && err == nil {
-			authn.RecordIssuer(ctx, testIssuerName)
-		}
-		return resp, ok, err
-	}
-}
+const testIssuerName = "corp"
 
 // withTestRequestID stamps the correlation id the request-id filter mints in
 // production. Every access record is required to carry one.
@@ -161,12 +150,20 @@ func newTestAuditor(t *testing.T, root *slog.Logger) *audit.Audit {
 	return auditor
 }
 
+// newArgs is what newTestProxy passes to New, gathered so an option can adjust
+// any of it.
+type newArgs struct {
+	cfg  Config
+	deps Dependencies
+	root *slog.Logger
+}
+
 // newTestProxy builds a Proxy through New, from fakes: a mock OIDC
 // authenticator and token reviewer, a SubjectAccessReview over the fake
 // review client, a real metrics recorder and one log capture. opts adjust the
-// Dependencies before New sees them, so a test that needs a different
-// configuration or reviewer gets it wired the way the binary wires it.
-func newTestProxy(t *testing.T, opts ...func(*Dependencies)) *fakeProxy {
+// arguments before New sees them, so a test that needs a different
+// configuration or authorizer gets it wired the way the binary wires it.
+func newTestProxy(t *testing.T, opts ...func(*newArgs)) *fakeProxy {
 	t.Helper()
 
 	ctrl := gomock.NewController(t)
@@ -191,22 +188,23 @@ func newTestProxy(t *testing.T, opts ...func(*Dependencies)) *fakeProxy {
 		t.Fatalf("metrics.New: %v", err)
 	}
 
-	deps := Dependencies{
-		Logger:                 root,
-		RestConfig:             &rest.Config{Host: "https://kube.example.com"},
-		OIDCTokenAuthenticator: fakeToken,
-		TokenReviewer:          fakeReviewer,
-		SubjectAccessReviewer:  sar,
-		SecureServingInfo:      new(server.SecureServingInfo),
-		Config:                 &Config{},
-		Auditor:                newTestAuditor(t, root),
-		Metrics:                recorder,
+	args := newArgs{
+		deps: Dependencies{
+			RestConfig:              &rest.Config{Host: "https://kube.example.com"},
+			OIDCTokenAuthenticator:  authn.AttributeToIssuer(testIssuerName, fakeToken),
+			TokenReviewer:           fakeReviewer,
+			ImpersonationAuthorizer: sar,
+			SecureServingInfo:       new(server.SecureServingInfo),
+			Auditor:                 newTestAuditor(t, root),
+			Metrics:                 recorder,
+		},
+		root: root,
 	}
 	for _, opt := range opts {
-		opt(&deps)
+		opt(&args)
 	}
 
-	p, err := New(deps)
+	p, err := New(args.cfg, args.deps, args.root)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -216,8 +214,8 @@ func newTestProxy(t *testing.T, opts ...func(*Dependencies)) *fakeProxy {
 	// would reach the API server instead of sending it. Its limiter runs on
 	// the wall clock; a frozen clock and a small burst let a test count
 	// exactly how many warnings survive sampling without sleeping for a refill.
-	p.clientTransport = fakeRT
-	p.noAuthClientTransport = fakeRT
+	p.proxyCredentialTransport = fakeRT
+	p.noProxyCredentialTransport = fakeRT
 	p.warnLimiter = logging.NewLimiter(1, 3, time.Minute, func() time.Time { return frozenClock })
 
 	return &fakeProxy{
@@ -234,25 +232,25 @@ func newTestProxy(t *testing.T, opts ...func(*Dependencies)) *fakeProxy {
 // it derives from a Config (the parsed trusted proxies and reserved-group
 // allowlist, the transport for unimpersonated requests) exactly as it does in
 // production.
-func withConfig(cfg Config) func(*Dependencies) {
-	return func(d *Dependencies) {
-		d.Config = &cfg
+func withConfig(cfg Config) func(*newArgs) {
+	return func(a *newArgs) {
+		a.cfg = cfg
 	}
 }
 
 // withLogger has newTestProxy build the proxy on root instead of its own
 // capture, for a test that needs a different verbosity.
-func withLogger(root *slog.Logger) func(*Dependencies) {
-	return func(d *Dependencies) {
-		d.Logger = root
+func withLogger(root *slog.Logger) func(*newArgs) {
+	return func(a *newArgs) {
+		a.root = root
 	}
 }
 
-// withSubjectAccessReviewer has newTestProxy wire sar in place of its default
-// reviewer.
-func withSubjectAccessReviewer(sar *subjectaccessreview.Authorizer) func(*Dependencies) {
-	return func(d *Dependencies) {
-		d.SubjectAccessReviewer = sar
+// withImpersonationAuthorizer has newTestProxy wire sar in place of its
+// default authorizer.
+func withImpersonationAuthorizer(sar *subjectaccessreview.Authorizer) func(*newArgs) {
+	return func(a *newArgs) {
+		a.deps.ImpersonationAuthorizer = sar
 	}
 }
 
@@ -282,197 +280,214 @@ func TestRoundTripLogsTokenReviewPassthrough(t *testing.T) {
 	if got := rec.String("auth_method"); got != string(metrics.AuthMethodTokenReview) {
 		t.Errorf("auth_method = %q, want %q", got, metrics.AuthMethodTokenReview)
 	}
+	// The identity TokenReview returned is who the record names.
+	if got := rec.String("inbound_user"); got != "system:serviceaccount:default:sa" {
+		t.Errorf("inbound_user = %q, want the TokenReview identity", got)
+	}
 
 	p.ctrl.Finish()
+}
+
+// TestTokenReviewPassthroughAuditsTheReviewedIdentity pins that a passthrough
+// request is audited as the identity TokenReview returned, as an OIDC request
+// is audited as its claims' identity, while what is forwarded is unchanged:
+// the client's own token and no impersonation.
+func TestTokenReviewPassthroughAuditsTheReviewedIdentity(t *testing.T) {
+	auditor, auditLog := newFileAuditor(t)
+	p := newTestProxy(t, withConfig(Config{TokenPassthrough: true}), func(a *newArgs) { a.deps.Auditor = auditor })
+
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(nil, false, errors.New("not an oidc token"))
+	p.fakeReviewer.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(
+		&authenticator.Response{User: &user.DefaultInfo{
+			Name:   "system:serviceaccount:default:sa",
+			Groups: []string{"system:serviceaccounts"},
+		}}, true, nil)
+
+	var forwarded *http.Request
+	p.proxyCredentialTransport = roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		t.Error("a passthrough request went out on the proxy's own credentials")
+		return nil, errors.New("unexpected")
+	})
+	p.noProxyCredentialTransport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		forwarded = req
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Request: req}, nil
+	})
+
+	handler := p.withFilterChain(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		if _, err := p.roundTrip(req); err != nil {
+			t.Errorf("unexpected error: %s", err)
+		}
+		rw.WriteHeader(http.StatusOK)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), withTestRequestID(reservedIdentityRequest(t, nil)))
+
+	if forwarded == nil {
+		t.Fatal("the request was not forwarded")
+	}
+	if got := forwarded.Header.Get("Authorization"); got != "bearer fake-token" {
+		t.Errorf("forwarded Authorization = %q, want the client's own token", got)
+	}
+	for k := range forwarded.Header {
+		if strings.HasPrefix(k, "Impersonate-") {
+			t.Errorf("passthrough request carries %s", k)
+		}
+	}
+
+	events := readAuditEvents(t, auditor, auditLog)
+	if len(events) == 0 {
+		t.Fatal("no audit event was written")
+	}
+	for _, event := range events {
+		if event.User.Username != "system:serviceaccount:default:sa" {
+			t.Errorf("audit event %s user = %q, want the TokenReview identity", event.Stage, event.User.Username)
+		}
+		if !reflect.DeepEqual(event.User.Groups, []string{"system:serviceaccounts"}) {
+			t.Errorf("audit event %s groups = %v, want the TokenReview groups", event.Stage, event.User.Groups)
+		}
+	}
+}
+
+// auditEvent is the subset of an audit.k8s.io/v1 Event the tests assert on.
+type auditEvent struct {
+	Stage string `json:"stage"`
+	User  struct {
+		Username string   `json:"username"`
+		Groups   []string `json:"groups"`
+	} `json:"user"`
+}
+
+// newFileAuditor builds a started auditor that writes every stage but
+// RequestReceived of every request to a log file at Metadata level, and
+// returns it with the file's path.
+func newFileAuditor(t *testing.T) (*audit.Audit, string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	policyPath := filepath.Join(dir, "policy.yaml")
+	policy := "apiVersion: audit.k8s.io/v1\nkind: Policy\nomitStages: [RequestReceived]\nrules:\n  - level: Metadata\n"
+	if err := os.WriteFile(policyPath, []byte(policy), 0o600); err != nil {
+		t.Fatalf("writing audit policy: %v", err)
+	}
+
+	opts := apiserveroptions.NewAuditOptions()
+	opts.PolicyFile = policyPath
+	opts.LogOptions.Path = filepath.Join(dir, "audit.log")
+
+	auditor, err := audit.New(audit.Config{Options: opts, ExternalAddress: "0.0.0.0:1234"}, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+	ctx, cancel := stdcontext.WithCancel(stdcontext.Background())
+	t.Cleanup(cancel)
+	if err := auditor.Start(ctx); err != nil {
+		t.Fatalf("starting audit backend: %v", err)
+	}
+	return auditor, opts.LogOptions.Path
+}
+
+// readAuditEvents flushes the auditor and decodes every event it wrote.
+func readAuditEvents(t *testing.T, auditor *audit.Audit, path string) []auditEvent {
+	t.Helper()
+
+	auditor.Shutdown()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading audit log: %v", err)
+	}
+	var events []auditEvent
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if line == "" {
+			continue
+		}
+		var event auditEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("decoding audit event %q: %v", line, err)
+		}
+		events = append(events, event)
+	}
+	return events
+}
+
+// TestRoundTripRefusesAnUnusableForwardDecision pins that roundTrip checks
+// the decision it is about to act on, rather than dereferencing an outbound
+// identity that is not there, and does so before the access record: a request
+// it cannot forward is not recorded as allowed.
+func TestRoundTripRefusesAnUnusableForwardDecision(t *testing.T) {
+	tests := map[string]*reqctx.ForwardDecisionRecord{
+		"impersonating without an outbound identity": {Mode: reqctx.ForwardImpersonating},
+		"unknown mode": {Mode: "teleport"},
+	}
+
+	for name, fd := range tests {
+		t.Run(name, func(t *testing.T) {
+			p := newTestProxy(t)
+			req := reqctx.WithDecisionHolder(withTestRequestID(httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil)))
+
+			if _, err := p.roundTrip(reqctx.WithForwardDecision(req, fd)); !errors.Is(err, errInvalidForwardDecision) {
+				t.Errorf("roundTrip error = %v, want errInvalidForwardDecision", err)
+			}
+			if reqctx.DecisionRecorded(req) {
+				t.Errorf("an unforwardable request was recorded as allowed: %s", p.logs.Raw())
+			}
+		})
+	}
+}
+
+// TestReverseProxyWiring pins the handler Start serves at the bottom of the
+// filter chain: its transport is roundTrip and its failures go to
+// handleUpstreamError (a request with no forwarding decision reaches the
+// first and is answered 500 by the second), it flushes at the configured
+// interval, and what it only logs arrives as a WARN on the upstream component.
+// The ErrorLog record carries no event_type, so it is written to a capture of
+// its own rather than the one the package sweep holds to the registry.
+func TestReverseProxyWiring(t *testing.T) {
+	root, logs := logtest.New(t, 0)
+	p := newTestProxy(t, withConfig(Config{FlushInterval: 250 * time.Millisecond}), withLogger(root))
+
+	rp, err := p.reverseProxy()
+	if err != nil {
+		t.Fatalf("reverseProxy: %v", err)
+	}
+	if rp.FlushInterval != 250*time.Millisecond {
+		t.Errorf("FlushInterval = %v, want 250ms", rp.FlushInterval)
+	}
+
+	rw := httptest.NewRecorder()
+	rp.ServeHTTP(rw, withTestRequestID(httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil)))
+	if rw.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", rw.Code)
+	}
+	if got := logs.Only(t, logging.EventRequestHandlerFailed).String("error_message"); !strings.Contains(got, errNoForwardDecision.Error()) {
+		t.Errorf("request.handler.failed error_message = %q, want it to name %q", got, errNoForwardDecision)
+	}
+
+	rp.ErrorLog.Print("httputil: ReverseProxy read error during body copy")
+	var found bool
+	for _, r := range logs.Records() {
+		if strings.Contains(r.String("msg"), "body copy") {
+			found = true
+			if r.String("component") != string(logging.ComponentUpstream) || r.String("level") != "WARN" {
+				t.Errorf("ErrorLog record = %v, want component=upstream level=WARN", r)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("ErrorLog wrote no record: %s", logs.Raw())
+	}
+}
+
+// TestReverseProxyRejectsUnparseableHost pins that a malformed API server URL
+// fails Start before anything is served.
+func TestReverseProxyRejectsUnparseableHost(t *testing.T) {
+	p := newTestProxy(t)
+	p.restConfig = &rest.Config{Host: "https://kube.example.com/%zz"}
+	if _, err := p.reverseProxy(); err == nil {
+		t.Fatal("reverseProxy accepted an unparseable host")
+	}
 }
 
 // TestWaitBeforeStartReturns pins that a Proxy that never served has nothing to
 // wait for.
 func TestWaitBeforeStartReturns(t *testing.T) {
 	newTestProxy(t).Wait()
-}
-
-// sweep collects every capture a test in this package built through
-// newTestProxy. Holding them all at the end catches an unregistered event, a
-// wrong component or level and a missing required attribute in whatever record
-// any test happened to produce, without every test having to assert it.
-var sweep struct {
-	mu       sync.Mutex
-	captures []*logtest.Capture
-}
-
-// trackCapture adds a capture to the package sweep. It is called from
-// newTestProxy, so tests running in parallel append concurrently.
-func trackCapture(c *logtest.Capture) {
-	sweep.mu.Lock()
-	defer sweep.mu.Unlock()
-	sweep.captures = append(sweep.captures, c)
-}
-
-// TestMain runs the package's tests and then holds every record they emitted
-// against the event registry. It runs after m.Run so the captures are complete.
-func TestMain(m *testing.M) {
-	code := m.Run()
-
-	tb := new(sweepTB)
-	sweep.mu.Lock()
-	for _, c := range sweep.captures {
-		logtest.AssertRegistered(tb, c)
-	}
-	sweep.mu.Unlock()
-
-	if tb.failed && code == 0 {
-		code = 1
-	}
-	os.Exit(code)
-}
-
-// sweepTB is the testing.TB AssertRegistered reports through when there is no
-// *testing.T to report through, which is the case inside TestMain. The
-// embedded interface stays nil: every method the assertion uses is overridden
-// below, and a call to any other one is a programming error worth the panic.
-type sweepTB struct {
-	testing.TB
-	failed bool
-}
-
-func (s *sweepTB) Helper() {}
-
-func (s *sweepTB) Errorf(format string, args ...any) {
-	s.failed = true
-	fmt.Fprintf(os.Stderr, "events sweep: "+format+"\n", args...)
-}
-
-func (s *sweepTB) Error(args ...any) {
-	s.Errorf("%s", fmt.Sprint(args...))
-}
-
-func (s *sweepTB) Fatalf(format string, args ...any) {
-	s.Errorf(format, args...)
-}
-
-func (s *sweepTB) Fatal(args ...any) {
-	s.Error(args...)
-}
-
-// validDeps returns a Dependencies value with every required field populated,
-// so individual tests can null out one field to exercise validation.
-func validDeps(t *testing.T) Dependencies {
-	t.Helper()
-
-	ctrl := gomock.NewController(t)
-	root, _ := logtest.New(t, 0)
-
-	sar := subjectaccessreview.New(fakesubjectaccessreview.New(nil), subjectaccessreview.Config{MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, logging.ForComponent(root, logging.ComponentSAR))
-
-	return Dependencies{
-		Logger:                 root,
-		RestConfig:             &rest.Config{Host: "https://kube.example.com"},
-		OIDCTokenAuthenticator: authntest.NewMockToken(ctrl),
-		SubjectAccessReviewer:  sar,
-		SecureServingInfo:      new(server.SecureServingInfo),
-		Config:                 &Config{},
-		Auditor:                newTestAuditor(t, root),
-	}
-}
-
-// TestNewPanicsOnNilLogger pins that the root logger is a required dependency:
-// there is no package-level logger to fall back on, and a caller that forgets
-// to inject one has a wiring bug, so New panics naming the package rather than
-// emitting nothing at runtime.
-func TestNewPanicsOnNilLogger(t *testing.T) {
-	deps := validDeps(t)
-	deps.Logger = nil
-	defer func() {
-		if r := recover(); r == nil || !strings.Contains(fmt.Sprint(r), "proxy:") {
-			t.Fatalf("New(nil Logger) recovered %v, want a panic naming the proxy package", r)
-		}
-	}()
-	_, _ = New(deps)
-}
-
-func TestNewValidatesDependencies(t *testing.T) {
-	tests := map[string]struct {
-		mutate  func(d *Dependencies)
-		wantErr bool
-	}{
-		"valid dependencies succeed": {
-			mutate:  func(d *Dependencies) {},
-			wantErr: false,
-		},
-		"nil RestConfig fails": {
-			mutate:  func(d *Dependencies) { d.RestConfig = nil },
-			wantErr: true,
-		},
-		"nil OIDCTokenAuthenticator fails": {
-			mutate:  func(d *Dependencies) { d.OIDCTokenAuthenticator = nil },
-			wantErr: true,
-		},
-		"nil SubjectAccessReviewer fails": {
-			mutate:  func(d *Dependencies) { d.SubjectAccessReviewer = nil },
-			wantErr: true,
-		},
-		"nil SecureServingInfo fails": {
-			mutate:  func(d *Dependencies) { d.SecureServingInfo = nil },
-			wantErr: true,
-		},
-		"nil Config fails": {
-			mutate:  func(d *Dependencies) { d.Config = nil },
-			wantErr: true,
-		},
-		"TokenReview enabled without reviewer fails": {
-			mutate: func(d *Dependencies) {
-				d.Config = &Config{TokenPassthrough: true}
-				d.TokenReviewer = nil
-			},
-			wantErr: true,
-		},
-	}
-
-	for name, tc := range tests {
-		t.Run(name, func(t *testing.T) {
-			deps := validDeps(t)
-			tc.mutate(&deps)
-
-			p, err := New(deps)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("New(%s): expected an error, got nil", name)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("New(%s): unexpected error: %v", name, err)
-			}
-			if p == nil {
-				t.Fatalf("New(%s): expected a Proxy, got nil", name)
-			}
-		})
-	}
-}
-
-// TestNewCopiesExtraUserHeaders verifies New copies the caller's Config and its
-// ExtraUserHeaders map at the construction boundary, so mutating the caller's
-// map afterward cannot change proxy behavior.
-func TestNewCopiesExtraUserHeaders(t *testing.T) {
-	deps := validDeps(t)
-	src := map[string][]string{"team": {"platform"}}
-	deps.Config = &Config{ExtraUserHeaders: src}
-
-	p, err := New(deps)
-	if err != nil {
-		t.Fatalf("New returned unexpected error: %v", err)
-	}
-
-	// Mutate the caller-owned map and slice after construction.
-	src["team"][0] = "mutated"
-	src["injected"] = []string{"value"}
-
-	got := p.config.ExtraUserHeaders
-	if v := got["team"][0]; v != "platform" {
-		t.Fatalf("proxy shares slice storage with caller: got %q want %q", v, "platform")
-	}
-	if _, ok := got["injected"]; ok {
-		t.Fatal("proxy shares map storage with caller: injected key leaked into proxy config")
-	}
 }

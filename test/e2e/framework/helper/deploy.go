@@ -13,9 +13,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
+	"github.com/rafpe/kube-oidc-proxy/internal/devkit/appdeploy"
+	"github.com/rafpe/kube-oidc-proxy/internal/devkit/keybundle"
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
-	"github.com/rafpe/kube-oidc-proxy/test/util/appdeploy"
-	"github.com/rafpe/kube-oidc-proxy/test/util/keybundle"
 )
 
 // ProxyExtras holds additions to the proxy pod that cannot be expressed with

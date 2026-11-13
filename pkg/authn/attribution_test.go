@@ -54,5 +54,5 @@ func TestAttributeToIssuerAttributesOnlyAcceptedTokens(t *testing.T) {
 // wrapped authenticator with a fake JWT — where no holder was ever placed on
 // the context.
 func TestRecordIssuerWithoutHolderIsNoOp(t *testing.T) {
-	RecordIssuer(context.Background(), "corp")
+	recordIssuer(context.Background(), "corp")
 }

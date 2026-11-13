@@ -147,10 +147,10 @@ and a PromQL query select the same thing.
 | --- | --- |
 | `k8s_verb` | `get`, `list`, `watch`, `create`, `update`, `patch`, `delete`, `deletecollection`, `proxy`, `connect`, `other`, lowercase. A request to a streaming subresource (`exec`, `attach`, `portforward`, `log`, `proxy`) is `connect` whichever method carried it, the normalisation kube-apiserver applies in its own request metrics (which are uppercase and also distinguish `APPLY`). On a non-resource path the resolver's verb is the raw HTTP method, so only `GET` maps to a value (`get`) and everything else is `other`. |
 | `scope` | `cluster`, `namespace`, `resource`, `none`. `none` is a non-resource request (kube-apiserver renders that as an empty label; the proxy never emits an empty value because Prometheus cannot tell it from an absent label). |
-| `code` | The HTTP status as a number, bounded by the IANA registry; `none` when no status was written (a hijacked connection, a dropped one); `other` for a code outside the registry. Note the log field is `http_status`; the metric label follows the `code` convention of kube-apiserver and promhttp so existing dashboards apply. |
+| `code` | The HTTP status as a number, bounded by the IANA registry; `none` when no status was written (a hijacked connection, a dropped one, or a request the proxy left unanswered because the client had gone); `other` for a code outside the registry. Note the log field is `http_status`; the metric label follows the `code` convention of kube-apiserver and promhttp so existing dashboards apply. |
 | `termination` | `normal`, `hijacked`, `client_cancel`, `panic`, `upstream_timeout`, `upstream_reset`, `proxy_error`. |
 | `auth_method` | `oidc`, `tokenreview`, `none`. |
-| `outcome` (authentication) | `accepted`, `rejected`, `error`. An OIDC failure then a successful TokenReview is two attempts and one decision. |
+| `outcome` (authentication) | `accepted`, `rejected`, `error`. `error` is a TokenReview that could not be answered, or an OIDC or TokenReview attempt the client abandoned by hanging up. An OIDC failure then a successful TokenReview is two attempts and one decision. |
 | `decision` | `allow`, `deny`. |
 | `reason` | Empty on allow; on deny one of `unauthorized`, `reserved_identity`, `no_username_claim`, `impersonation_denied`, `too_many_impersonation_values`, `malformed_impersonation`, `client_canceled`, `internal_error`, `upstream_error`, `authentication_dependency_error`, `authorization_dependency_error`. |
 | `review` | `tokenreview`, `sar`. |

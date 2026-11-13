@@ -11,19 +11,21 @@ import (
 )
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stderr))
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
 // run executes the proxy command with args and returns the process exit
-// status. An error raised once the logger existed is already a record on the
+// status. stdout receives the command's own output, such as --help and
+// --version; the log stream always goes to the process stdout. An error raised once the logger existed is already a record on the
 // log stream; printing it again would put an unstructured line beside the
 // JSON. Only a failure before that point, such as a flag error, is reported
 // on stderr.
-func run(args []string, stderr io.Writer) int {
+func run(args []string, stdout, stderr io.Writer) int {
 	// The signal handler is installed by the command itself, once the root
 	// logger it reports through has been built from the parsed flags.
 	cmd := app.NewRunCommand()
 	cmd.SetArgs(args)
+	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
 
 	if err := cmd.Execute(); err != nil {

@@ -46,7 +46,7 @@ service:
   externalTrafficPolicy: ""
   # Topology-aware routing (Kubernetes 1.31+): set to "PreferClose" to prefer
   # endpoints in the same zone, reducing cross-zone traffic/cost. Leave empty to
-  # disable. Mutually exclusive with the older topologyKeys.
+  # disable.
   trafficDistribution: ""
   # Session stickiness: "ClientIP" pins a client to one backend pod, or "None".
   # Usually unnecessary for this stateless proxy. Leave empty for the default.

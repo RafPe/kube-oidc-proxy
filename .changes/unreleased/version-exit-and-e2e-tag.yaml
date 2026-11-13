@@ -1,0 +1,3 @@
+kind: Changed
+body: |-
+  `--version` prints and exits through the normal exit path; the e2e suite now needs the `e2e` build tag (`make e2e` passes it), so `go test ./...` never starts a kind cluster.

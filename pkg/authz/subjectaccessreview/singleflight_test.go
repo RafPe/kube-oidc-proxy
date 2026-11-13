@@ -40,7 +40,7 @@ func TestSingleflightDedup(t *testing.T) {
 		results := make(chan error, concurrent)
 		for i := 0; i < concurrent; i++ {
 			go func() {
-				target, err := sar.ResolveImpersonation(impersonateUserRequest("bob"), cacheTestRequester())
+				_, target, err := sar.ConsumeImpersonation(impersonateUserRequest("bob"), cacheTestRequester())
 				if err == nil && (target == nil || target.GetName() != "bob") {
 					err = errors.New("allowed check returned wrong target")
 				}
@@ -87,14 +87,14 @@ func TestSingleflightWinnerCancellationDoesNotPoisonWaiters(t *testing.T) {
 		winnerDone := make(chan outcome, 1)
 		go func() {
 			req := impersonateUserRequest("bob").WithContext(winnerCtx)
-			target, err := sar.ResolveImpersonation(req, cacheTestRequester())
+			_, target, err := sar.ConsumeImpersonation(req, cacheTestRequester())
 			winnerDone <- outcome{target, err}
 		}()
 		synctest.Wait()
 
 		waiterDone := make(chan outcome, 1)
 		go func() {
-			target, err := sar.ResolveImpersonation(impersonateUserRequest("bob"), cacheTestRequester())
+			_, target, err := sar.ConsumeImpersonation(impersonateUserRequest("bob"), cacheTestRequester())
 			waiterDone <- outcome{target, err}
 		}()
 

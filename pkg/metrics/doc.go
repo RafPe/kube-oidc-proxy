@@ -9,6 +9,6 @@
 // The package also owns the closed request-outcome vocabulary in labels.go --
 // AuthMethod, Reason, Termination, Decision, Verb and Scope -- which the
 // access record, the error classifier and the request context reuse as their
-// own types. One owner is what guarantees that a log record and a metric
-// series describing the same request can never disagree.
+// own types, so a log record and a metric series describing the same request
+// use the same values.
 package metrics

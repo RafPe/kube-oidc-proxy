@@ -111,7 +111,7 @@ func Start(ctx context.Context, srv *http.Server, shutdownTimeout time.Duration,
 			// closed for hygiene.
 			shutdownErr = srv.Close()
 		case <-ctx.Done():
-			shutdownErr = s.Shutdown()
+			shutdownErr = s.shutdown()
 			if shutdownErr != nil {
 				shutdownErr = errors.Join(shutdownErr, srv.Close())
 			}
@@ -136,9 +136,10 @@ func (s *Serving) Addr() string {
 	return s.listener.Addr().String()
 }
 
-// Shutdown gracefully stops the server inside the shutdown budget. It is safe
-// to call more than once, and it is what cancelling the Start context does.
-func (s *Serving) Shutdown() error {
+// shutdown gracefully stops the server inside the shutdown budget. It is what
+// cancelling the Start context does, and the only way a Serving is stopped
+// gracefully.
+func (s *Serving) shutdown() error {
 	ctx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
 	defer cancel()
 	return s.srv.Shutdown(ctx)

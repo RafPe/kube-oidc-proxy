@@ -17,10 +17,11 @@ type (
 	// listener is one.
 	drainingListener interface{ Wait() error }
 
-	// flusher flushes buffered events. Flushing cannot fail: the upstream
-	// audit backends have no way to report a lost flush through Shutdown
-	// (see audit.Audit.Shutdown), which reports its own record.
-	flusher interface{ Shutdown() }
+	// shutdowner flushes buffered events on Shutdown. Flushing cannot fail:
+	// the upstream audit backends have no way to report a lost flush through
+	// Shutdown (see audit.Audit.Shutdown), which reports its own record. The
+	// auditor is one.
+	shutdowner interface{ Shutdown() }
 
 	// stoppableListener is a listener only shutdown stops; Stop returns once
 	// its drain finished. The metrics listener is one.
@@ -39,7 +40,7 @@ type (
 // it first. The audit flush runs next. The metrics listener stops last, so a
 // scrape landing anywhere in the drain window still reaches it and reads the
 // final state of everything recorded before it.
-func shutdown(root *slog.Logger, readiness drainingListener, auditor flusher, metrics stoppableListener) error {
+func shutdown(root *slog.Logger, readiness drainingListener, auditor shutdowner, metrics stoppableListener) error {
 	shutdownSince := time.Now()
 
 	readinessErr := readiness.Wait()

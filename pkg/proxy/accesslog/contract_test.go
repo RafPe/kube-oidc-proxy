@@ -14,6 +14,7 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/clientip"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 )
 
@@ -92,8 +93,7 @@ func TestUpdateFixtures(t *testing.T) {
 // emitFixture emits one access record through LogDecision and returns it
 // decoded. The allow case is alice impersonating bob, each carrying extras
 // that must be counted rather than logged; the deny case is the impersonation
-// refusal. Both cases are deterministic so the
-// golden file is stable.
+// refusal. Both cases are deterministic so the golden file is stable.
 func emitFixture(t *testing.T, name string) map[string]any {
 	t.Helper()
 
@@ -106,7 +106,8 @@ func emitFixture(t *testing.T, name string) map[string]any {
 	// Run the header through the real sanitizer so the fixture pins the path
 	// production takes: the raw chain is stashed on the context and the header
 	// itself is dropped for this untrusted peer.
-	req = reqctx.WithResolvedClient(req, nil)
+	ip, header := clientip.Sanitize(req.RemoteAddr, req.Header, nil)
+	req = reqctx.WithResolvedClient(req, ip, header)
 	req = reqctx.WithRequestID(req, "fixture-request-id")
 
 	d := Decision{

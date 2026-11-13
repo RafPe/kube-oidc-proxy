@@ -24,8 +24,8 @@ Every request that passes through the proxy can leave two audit events:
 
 | Trail | Written by | `user` in the event | Sees |
 | --- | --- | --- | --- |
-| Proxy audit log | the proxy, before impersonation | the identity your claim mappings produced, groups and extras included | every request that reached the proxy, including 401s the API server never saw |
-| API server audit log | kube-apiserver, after impersonation | the proxy's ServiceAccount; the mapped identity is under `impersonatedUser` | every request the proxy forwarded, with the authorization decision |
+| Proxy audit log | the proxy, before impersonation | the identity your claim mappings produced, groups and extras included; with `--token-passthrough`, for a token OIDC did not accept, the identity the API server's TokenReview returned | every request that reached the proxy, including 401s the API server never saw |
+| API server audit log | kube-apiserver, after impersonation | the proxy's ServiceAccount, with the mapped identity under `impersonatedUser`; for a passthrough request, the token's own identity, since it is forwarded without impersonation | every request the proxy forwarded, with the authorization decision |
 
 The proxy mints a request ID for every request, sets it as the `Audit-ID`
 header on the request it forwards, and uses it as `auditID` in its own events.
@@ -123,7 +123,8 @@ The proxy embeds the API server's audit stack rather than reimplementing it.
    the lifecycle filter, forwarding-header sanitization, authentication,
    impersonation, and finally the audit filter, which sits directly in front of
    the reverse proxy. Because the audit filter runs after authentication, the
-   event's `user` is the mapped identity. Because request info was resolved
+   event's `user` is the mapped identity, or on the token-passthrough path the
+   identity TokenReview returned. Because request info was resolved
    early, the event carries a proper `objectRef` and Kubernetes verb
    (`create`, not `post`) even for core-group paths under `/api`.
 4. **Failed authentication.** A 401 never reaches the main audit filter, so the

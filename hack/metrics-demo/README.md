@@ -206,4 +206,4 @@ denominator is an ungrouped `sum(rate(...))`.
 | `kube-prometheus-stack-values.yaml` | Prometheus discovery, anonymous Grafana, the image renderer, the dashboard sidecar. |
 | `proxy-values.yaml` | This chart, with metrics and dashboards on. |
 | `demo-identities.yaml` | The RBAC the traffic kinds need to be allowed, and refused, plus the `demo-shell` pod. |
-| `issuer/` | Deploys the e2e suite's mock OIDC issuer (through `test/util/appdeploy`) and writes its key material. |
+| `issuer/` | Deploys the e2e suite's mock OIDC issuer (through `internal/devkit/appdeploy`) and writes its key material. |

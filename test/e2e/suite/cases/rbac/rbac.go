@@ -1,4 +1,7 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
+
+//go:build e2e
+
 package rbac
 
 import (

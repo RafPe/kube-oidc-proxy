@@ -150,7 +150,7 @@ var registry = map[EventType]EventSpec{
 		Level:      slog.LevelDebug,
 		Required:   []string{"request_id", "reason"},
 		Message:    "oidc authentication failed",
-		Summary:    "The OIDC authenticator rejected the token. The denial itself is INFO on request.access.decided.",
+		Summary:    "The OIDC authenticator rejected the token: reason=unauthorized, or reason=client_canceled when the client hung up before it answered. The denial itself is INFO on request.access.decided.",
 	},
 	EventAuthnTokenMissing: {
 		Components: []Component{ComponentTokenReview},

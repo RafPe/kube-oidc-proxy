@@ -2,7 +2,6 @@
 package proxy
 
 import (
-	"context"
 	"crypto/tls"
 	"errors"
 	"io"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/authn/tokenreview"
 	"github.com/rafpe/kube-oidc-proxy/pkg/authz/subjectaccessreview"
+	"github.com/rafpe/kube-oidc-proxy/pkg/ctxerr"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/accesslog"
@@ -47,14 +47,10 @@ func (p *Proxy) refuse(rw http.ResponseWriter, r *http.Request, err error) {
 	// records why the request was refused before it writes the response.
 	switch {
 	// The client went away while its credential or its impersonation was
-	// being reviewed: cancelled, or its own deadline passed. Nothing is
-	// written back; the connection is already going away. No upstream call
-	// was made, so there is no upstream record either: the review that saw it
-	// reported authn.tokenreview.failed or authz.sar.failed with
-	// reason=client_canceled by the same predicate, and the access record
-	// carries the same reason. Checked first, because the review failure
-	// wraps the cancellation.
-	case reqctx.ClientGone(r.Context(), err):
+	// being checked: cancelled, or its own deadline passed. Nothing is
+	// written back; the connection is already going away. Checked first,
+	// because the dependency's error wraps the cancellation.
+	case ctxerr.ClientGone(r.Context(), err):
 		p.recordDenial(r, metrics.ReasonClientCanceled, err)
 
 	case errors.Is(err, errUnauthorized):
@@ -77,8 +73,7 @@ func (p *Proxy) refuse(rw http.ResponseWriter, r *http.Request, err error) {
 		// audited instead.
 		deny(http.StatusForbidden, "identities with the reserved \"system:\" prefix are not accepted from an authentication token")
 
-	// The token carried no username claim.
-	case errors.Is(err, errNoName):
+	case errors.Is(err, errNoUsername):
 		p.recordDenial(r, metrics.ReasonNoUsernameClaim, err)
 		deny(http.StatusForbidden, "Username claim not available in OIDC Issuer response")
 
@@ -103,8 +98,7 @@ func (p *Proxy) refuse(rw http.ResponseWriter, r *http.Request, err error) {
 		p.recordDenial(r, metrics.ReasonTooManyImpersonationValues, err)
 		deny(http.StatusRequestHeaderFieldsTooLarge, err.Error())
 
-	// The requester may not impersonate the requested identity. Classified by
-	// typed error (errors.Is), not by message text.
+	// The requester may not impersonate the requested identity.
 	case errors.Is(err, subjectaccessreview.ErrImpersonationNotAllowed):
 		p.recordDenial(r, metrics.ReasonImpersonationDenied, err)
 		deny(http.StatusForbidden, err.Error())
@@ -117,7 +111,6 @@ func (p *Proxy) refuse(rw http.ResponseWriter, r *http.Request, err error) {
 		p.recordDenial(r, metrics.ReasonAuthorizationDependencyError, err)
 		deny(http.StatusInternalServerError, "")
 
-	// Server or unknown error.
 	default:
 		p.failInternal(rw, r, err)
 	}
@@ -130,9 +123,11 @@ func (p *Proxy) refuse(rw http.ResponseWriter, r *http.Request, err error) {
 // terminal record.
 func (p *Proxy) handleUpstreamError(rw http.ResponseWriter, r *http.Request, err error) {
 	switch {
-	// The client went away before the upstream response completed. Nothing is
-	// written back; the connection is already going away.
-	case errors.Is(err, context.Canceled):
+	// The client went away before the upstream response completed: cancelled,
+	// or its own deadline passed. Nothing is written back; the connection is
+	// already going away. The same ctxerr.ClientGone rule as refuse, so a
+	// cancellation the client did not cause is never demoted to client_canceled.
+	case ctxerr.ClientGone(r.Context(), err):
 		logging.Emit(r.Context(), p.upstreamLogger, logging.EventUpstreamRequestCanceled,
 			slog.String("reason", string(metrics.ReasonClientCanceled)))
 
@@ -145,8 +140,8 @@ func (p *Proxy) handleUpstreamError(rw http.ResponseWriter, r *http.Request, err
 			logging.ErrAttr(err))
 		http.Error(rw, "", http.StatusBadGateway)
 
-	// Not the transport: roundTrip found no forwarding decision on the
-	// request, or the reverse proxy could not complete a protocol upgrade.
+	// Not the transport: roundTrip found no forwarding decision it could act
+	// on, or the reverse proxy could not complete a protocol upgrade.
 	// Both are the proxy's own failure.
 	default:
 		p.failInternal(rw, r, err)
@@ -189,7 +184,7 @@ func upstreamTermination(err error) metrics.Termination {
 // sanitized; the client receives an empty 500 body and the access record
 // carries reason=internal_error.
 func (p *Proxy) failInternal(rw http.ResponseWriter, r *http.Request, err error) {
-	logging.EmitLevel(r.Context(), p.requestLogger, logging.EventRequestHandlerFailed, slog.LevelError,
+	logging.Emit(r.Context(), p.requestLogger, logging.EventRequestHandlerFailed,
 		slog.String("reason", string(metrics.ReasonInternalError)), logging.ErrAttr(err))
 	p.recordDenial(r, metrics.ReasonInternalError, err)
 	http.Error(rw, "", http.StatusInternalServerError)

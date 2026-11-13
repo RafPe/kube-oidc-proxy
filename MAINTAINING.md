@@ -75,8 +75,12 @@ cherry-pick:
 grep -rl 'jetstack/kube-oidc-proxy' --include='*.go' . \
   | xargs sed -i '' 's#github.com/jetstack/kube-oidc-proxy#github.com/rafpe/kube-oidc-proxy#g'  # macOS; drop the '' on GNU sed
 
-go build ./... && go vet ./... && go test ./...
+go build ./... && go vet ./... && go vet -tags e2e ./test/e2e/suite/... && go test ./...
 ```
+
+The e2e suite (`test/e2e/suite`) is behind the `e2e` build tag, so
+`go test ./...` skips it; `make e2e` sets the tag and runs it against its own
+kind cluster.
 
 Also note that `hack/cherry-pick-pull.sh` fetches the PR patch from a
 hardcoded `github.com/jetstack/kube-oidc-proxy` URL. If you are cherry-picking
@@ -129,9 +133,14 @@ Two package suffixes, two meanings, each following the library it mirrors:
   for `net/http`.
 
 A new double goes in whichever of the two matches what it stands in for; do
-not add a third naming scheme. Helpers shared only by the e2e suite and the
-metrics demo live under `test/util/`, one purpose-named package each
-(`keybundle`, `idtoken`, `promtext`, `port`), never a catch-all `util`.
+not add a third naming scheme. Fixtures shared by the e2e suite and the
+metrics demo (`hack/metrics-demo`) live under `internal/devkit/`, one
+purpose-named package each (`keybundle`, `idtoken`, `promtext`, `appdeploy`):
+the path says the demo, which is not a test, depends on them, and Go's
+`internal/` rule keeps them out of other modules. Helpers only the e2e suite
+uses stay under `test/util/` (`port`). Never a catch-all `util`, and nothing
+under `cmd/` or `pkg/` imports `internal/devkit`: it is development tooling,
+not part of the proxy.
 
 ## Dependencies worth knowing about
 

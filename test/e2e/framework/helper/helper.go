@@ -13,6 +13,8 @@ import (
 type Helper struct {
 	cfg *config.Config
 
+	// KubeClient talks to the test cluster directly, as its admin, rather
+	// than through the proxy.
 	KubeClient kubernetes.Interface
 
 	// DeployReadyTimeout bounds how long a deployed app (proxy, issuer,
@@ -35,9 +37,12 @@ func (h *Helper) deployReadyTimeout() time.Duration {
 	return DefaultDeployReadyTimeout
 }
 
-func NewHelper(cfg *config.Config) *Helper {
+// NewHelper returns a Helper for the cluster cfg describes, which kubeClient
+// must already be connected to.
+func NewHelper(cfg *config.Config, kubeClient kubernetes.Interface) *Helper {
 	return &Helper{
-		cfg: cfg,
+		cfg:        cfg,
+		KubeClient: kubeClient,
 	}
 }
 

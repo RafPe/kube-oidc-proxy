@@ -1,0 +1,3 @@
+kind: Changed
+body: |-
+  `inbound_groups` / `outbound_groups` are omitted when empty instead of logged as `null`.

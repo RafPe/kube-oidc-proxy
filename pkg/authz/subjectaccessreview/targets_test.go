@@ -88,9 +88,9 @@ func TestServiceAccountTargetReview(t *testing.T) {
 			rec := &attributeRecorder{}
 			a := newUncachedAuthorizer(rec.reviewer(allowAllAttributes))
 
-			target, err := a.ResolveImpersonation(impersonationRequest(http.Header{"Impersonate-User": {tc.name}}), cacheTestRequester())
+			_, target, err := a.ConsumeImpersonation(impersonationRequest(http.Header{"Impersonate-User": {tc.name}}), cacheTestRequester())
 			if err != nil {
-				t.Fatalf("ResolveImpersonation() error = %v", err)
+				t.Fatalf("ConsumeImpersonation() error = %v", err)
 			}
 			if target.GetName() != tc.name {
 				t.Errorf("resolved name = %q, want %q", target.GetName(), tc.name)
@@ -113,7 +113,7 @@ func TestUsersGrantDoesNotAuthorizeServiceAccount(t *testing.T) {
 	usersOnly := newUncachedAuthorizer((&attributeRecorder{}).reviewer(func(attrs azv1.ResourceAttributes) bool {
 		return attrs.Resource == "users"
 	}))
-	_, err := usersOnly.ResolveImpersonation(req(), cacheTestRequester())
+	_, _, err := usersOnly.ConsumeImpersonation(req(), cacheTestRequester())
 	want := &ImpersonationAuthError{Requester: "mmosley", Kind: TargetUser, Target: sa}
 	if !reflect.DeepEqual(err, want) {
 		t.Fatalf("users-only grant: error = %v, want %v", err, want)
@@ -122,7 +122,7 @@ func TestUsersGrantDoesNotAuthorizeServiceAccount(t *testing.T) {
 	saInNamespace := newUncachedAuthorizer((&attributeRecorder{}).reviewer(func(attrs azv1.ResourceAttributes) bool {
 		return attrs.Resource == "serviceaccounts" && attrs.Namespace == "team-a" && attrs.Name == "deployer"
 	}))
-	target, err := saInNamespace.ResolveImpersonation(req(), cacheTestRequester())
+	_, target, err := saInNamespace.ConsumeImpersonation(req(), cacheTestRequester())
 	if err != nil || target.GetName() != sa {
 		t.Fatalf("service-account grant: target = %v, error = %v, want %q allowed", target, err, sa)
 	}
@@ -149,12 +149,12 @@ func TestExtraKeyDecoding(t *testing.T) {
 			rec := &attributeRecorder{}
 			a := newUncachedAuthorizer(rec.reviewer(allowAllAttributes))
 
-			target, err := a.ResolveImpersonation(impersonationRequest(http.Header{
+			_, target, err := a.ConsumeImpersonation(impersonationRequest(http.Header{
 				"Impersonate-User": {"jane"},
 				tc.header:          {"v"},
 			}), cacheTestRequester())
 			if err != nil {
-				t.Fatalf("ResolveImpersonation() error = %v", err)
+				t.Fatalf("ConsumeImpersonation() error = %v", err)
 			}
 			if want := map[string][]string{tc.want: {"v"}}; !reflect.DeepEqual(target.GetExtra(), want) {
 				t.Errorf("resolved extra = %v, want %v", target.GetExtra(), want)
@@ -231,8 +231,8 @@ func TestReviewOrderIsFixed(t *testing.T) {
 	for i := range 20 {
 		rec := &attributeRecorder{}
 		a := newUncachedAuthorizer(rec.reviewer(allowAllAttributes))
-		if _, err := a.ResolveImpersonation(impersonationRequest(headers()), cacheTestRequester()); err != nil {
-			t.Fatalf("iteration %d: ResolveImpersonation() error = %v", i, err)
+		if _, _, err := a.ConsumeImpersonation(impersonationRequest(headers()), cacheTestRequester()); err != nil {
+			t.Fatalf("iteration %d: ConsumeImpersonation() error = %v", i, err)
 		}
 		if !reflect.DeepEqual(rec.asked, wantOrder) {
 			t.Fatalf("iteration %d: reviews asked = %+v, want %+v", i, rec.asked, wantOrder)
@@ -243,7 +243,7 @@ func TestReviewOrderIsFixed(t *testing.T) {
 		denyAll := newUncachedAuthorizer((&attributeRecorder{}).reviewer(func(attrs azv1.ResourceAttributes) bool {
 			return attrs.Resource == "users"
 		}))
-		_, err := denyAll.ResolveImpersonation(impersonationRequest(headers()), cacheTestRequester())
+		_, _, err := denyAll.ConsumeImpersonation(impersonationRequest(headers()), cacheTestRequester())
 		var denial *ImpersonationAuthError
 		if !errors.As(err, &denial) || denial.Kind != TargetGroup || denial.Target != "g2" {
 			t.Fatalf("iteration %d: error = %v, want the denial of group g2", i, err)
@@ -255,13 +255,13 @@ func TestReviewOrderIsFixed(t *testing.T) {
 // groups and extra values in the order the request sent them.
 func TestResolvedIdentityKeepsHeaderOrder(t *testing.T) {
 	a := newUncachedAuthorizer((&attributeRecorder{}).reviewer(allowAllAttributes))
-	target, err := a.ResolveImpersonation(impersonationRequest(http.Header{
+	_, target, err := a.ConsumeImpersonation(impersonationRequest(http.Header{
 		"Impersonate-User":       {"jane"},
 		"Impersonate-Group":      {"g2", "g1"},
 		"Impersonate-Extra-Keys": {"b", "a"},
 	}), cacheTestRequester())
 	if err != nil {
-		t.Fatalf("ResolveImpersonation() error = %v", err)
+		t.Fatalf("ConsumeImpersonation() error = %v", err)
 	}
 	want := &user.DefaultInfo{Name: "jane", Groups: []string{"g2", "g1"}, Extra: map[string][]string{"keys": {"b", "a"}}}
 	if !reflect.DeepEqual(target, want) {
@@ -312,9 +312,9 @@ func TestServiceAccountTargetGroups(t *testing.T) {
 			rec := &attributeRecorder{}
 			a := newUncachedAuthorizer(rec.reviewer(allowAllAttributes))
 
-			target, err := a.ResolveImpersonation(impersonationRequest(tc.headers), cacheTestRequester())
+			_, target, err := a.ConsumeImpersonation(impersonationRequest(tc.headers), cacheTestRequester())
 			if err != nil {
-				t.Fatalf("ResolveImpersonation() error = %v", err)
+				t.Fatalf("ConsumeImpersonation() error = %v", err)
 			}
 			if !reflect.DeepEqual(target.GetGroups(), tc.wantGroups) {
 				t.Errorf("resolved groups = %q, want %q", target.GetGroups(), tc.wantGroups)
@@ -370,19 +370,19 @@ func TestUnforwardableExtraKeyIsRefusedBeforeAnyReview(t *testing.T) {
 			client := (&attributeRecorder{}).reviewer(allowAllAttributes)
 			a := newUncachedAuthorizer(client)
 
-			_, err := a.ResolveImpersonation(impersonationRequest(http.Header{
+			_, _, err := a.ConsumeImpersonation(impersonationRequest(http.Header{
 				"Impersonate-User": {"jane"},
 				tc.header:          {"v"},
 			}), cacheTestRequester())
 
 			if !tc.refused {
 				if err != nil {
-					t.Fatalf("ResolveImpersonation() error = %v, want the key accepted", err)
+					t.Fatalf("ConsumeImpersonation() error = %v, want the key accepted", err)
 				}
 				return
 			}
 			if !errors.Is(err, ErrUnforwardableExtraKey) {
-				t.Fatalf("ResolveImpersonation() error = %v, want ErrUnforwardableExtraKey", err)
+				t.Fatalf("ConsumeImpersonation() error = %v, want ErrUnforwardableExtraKey", err)
 			}
 			if errors.Is(err, ErrImpersonationNotAllowed) {
 				t.Errorf("a shape refusal must not classify as an authorization denial: %v", err)

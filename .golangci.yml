@@ -6,10 +6,13 @@ version: "2"
 
 # The logcheck build tag guards the required-attribute check in pkg/logging and
 # the tests that drive it. Every test run sets it, so lint the code behind it
-# too: without this the files are invisible to golangci-lint.
+# too: without this the files are invisible to golangci-lint. The e2e tag gates
+# test/e2e/suite (only `make e2e` sets it); lint the suite under it for the
+# same reason.
 run:
   build-tags:
     - logcheck
+    - e2e
 
 linters:
   # Defaults already include errcheck, govet, ineffassign, staticcheck and
@@ -31,16 +34,17 @@ linters:
         # this one check while keeping the valuable SA* (deprecated-API) checks.
         - -ST1000
   exclusions:
-    # Test scaffolding and fixtures get lighter treatment: they are not shipped
-    # and often use patterns (dot-imports for Ginkgo, unchecked cleanup) that
-    # are idiomatic in tests.
+    # Test scaffolding and fixtures (test/, and internal/devkit, the fixtures the
+    # e2e suite shares with the metrics demo) get lighter treatment: they are
+    # not shipped and often use patterns (dot-imports for Ginkgo, unchecked
+    # cleanup) that are idiomatic in tests.
     rules:
       - path: _test\.go
         linters:
           - bodyclose
           - errcheck
           - gosec
-      - path: (^|/)test/
+      - path: (^|/)(test|internal/devkit)/
         linters:
           - bodyclose
           - errcheck

@@ -18,7 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 
-	"github.com/rafpe/kube-oidc-proxy/test/util/appdeploy"
+	"github.com/rafpe/kube-oidc-proxy/internal/devkit/appdeploy"
 )
 
 func (h *Helper) WaitForDeploymentReady(ctx context.Context, namespace, name string, timeout time.Duration) error {

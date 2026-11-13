@@ -10,7 +10,7 @@ import (
 
 	"k8s.io/client-go/rest"
 
-	"github.com/rafpe/kube-oidc-proxy/test/util/keybundle"
+	"github.com/rafpe/kube-oidc-proxy/internal/devkit/keybundle"
 )
 
 // NewValidRestConfig returns a client-go configuration that reaches the proxy

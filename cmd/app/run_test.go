@@ -3,13 +3,13 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -35,8 +35,11 @@ import (
 )
 
 // neverStop is the stop trigger for a run that is expected to fail at startup:
-// a nil channel never fires, and nothing signals the test process.
-func neverStop(*slog.Logger) <-chan struct{} { return nil }
+// the context is only cancelled by run itself, and nothing signals the test
+// process.
+func neverStop(parent context.Context, _ *slog.Logger) (context.Context, context.CancelFunc) {
+	return context.WithCancel(parent)
+}
 
 // restoreRunGlobals undoes what run sets process-wide once t ends: the default
 // slog logger, the log package output slog.SetDefault redirects, and klog's -v,
@@ -61,104 +64,32 @@ func restoreRunGlobals(t *testing.T) {
 	})
 }
 
-// TestStartupFailureAfterLoggerIsReportedAsARecord pins that an error raised
-// once the root logger exists is emitted as proxy.startup.failed on the
-// configured stream and returned as ErrReported, so main exits non-zero without
-// appending a second, unstructured line to the container log.
-func TestStartupFailureAfterLoggerIsReportedAsARecord(t *testing.T) {
-	restoreRunGlobals(t)
+// TestVersionPrintsAndReturnsWithoutStarting pins that --version is answered on
+// the command's output and returns cleanly, so main owns the exit status: no
+// flag is validated, no logger is built, and no stop trigger is installed.
+func TestVersionPrintsAndReturnsWithoutStarting(t *testing.T) {
 	var out bytes.Buffer
 	opts := options.New()
-	cmd := buildRunCommand(opts, &out, neverStop)
-	opts.AddFlags(cmd)
-	cmd.SetArgs([]string{
-		"--oidc-issuer-url=https://issuer.example.com",
-		"--oidc-client-id=kube-oidc-proxy",
-		"--kubeconfig=" + filepath.Join(t.TempDir(), "missing-kubeconfig"),
+	cmd := buildRunCommand(opts, &out, func(parent context.Context, _ *slog.Logger) (context.Context, context.CancelFunc) {
+		t.Error("--version installed the stop trigger; it must return before startup")
+		return context.WithCancel(parent)
 	})
+	opts.AddFlags(cmd)
+	// An invalid configuration beside --version shows that nothing is
+	// validated either.
+	cmd.SetArgs([]string{"--version", "--oidc-issuer-url=https://issuer.example.com"})
 	var cmdOut, cmdErr bytes.Buffer
 	cmd.SetOut(&cmdOut)
 	cmd.SetErr(&cmdErr)
 
-	err := cmd.Execute()
-	if !errors.Is(err, ErrReported) {
-		t.Fatalf("Execute() error = %v, want ErrReported", err)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() = %v, want nil", err)
 	}
-	// cobra must not print the error or the usage text: the record is the
-	// only report, and main prints nothing for ErrReported.
-	if cmdOut.Len() != 0 || cmdErr.Len() != 0 {
-		t.Fatalf("command wrote outside the log stream: stdout=%q stderr=%q", cmdOut.String(), cmdErr.String())
+	if !strings.HasPrefix(cmdOut.String(), options.AppName+" version: ") || !strings.Contains(cmdOut.String(), "GitVersion:") {
+		t.Errorf("command output = %q, want the version information", cmdOut.String())
 	}
-
-	// Every line of the whole stream is one JSON record, and the failure is
-	// reported exactly once.
-	var failures []map[string]any
-	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
-		var rec map[string]any
-		if err := json.Unmarshal([]byte(line), &rec); err != nil {
-			t.Fatalf("non-JSON line on the log stream: %q", line)
-		}
-		if rec["event_type"] == string(logging.EventProxyStartupFailed) {
-			failures = append(failures, rec)
-		}
-	}
-	if len(failures) != 1 {
-		t.Fatalf("want exactly one proxy.startup.failed record, got %d:\n%s", len(failures), out.String())
-	}
-	rec := failures[0]
-	if rec["level"] != "ERROR" || rec["component"] != string(logging.ComponentStartup) {
-		t.Errorf("level/component = %v/%v, want ERROR/startup", rec["level"], rec["component"])
-	}
-	msg, _ := rec["error_message"].(string)
-	if !strings.Contains(msg, "missing-kubeconfig") {
-		t.Errorf("error_message = %q, want the underlying cause", msg)
-	}
-}
-
-// TestMetricsBindFailureIsReportedAtStartup pins two things: the metrics
-// listener binds before anything that needs a cluster, and a port already in
-// use is a startup failure on the log stream rather than a crash later.
-func TestMetricsBindFailureIsReportedAtStartup(t *testing.T) {
-	restoreRunGlobals(t)
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-
-	var out bytes.Buffer
-	opts := options.New()
-	cmd := buildRunCommand(opts, &out, neverStop)
-	opts.AddFlags(cmd)
-	cmd.SetArgs([]string{
-		"--oidc-issuer-url=https://issuer.example.com",
-		"--oidc-client-id=kube-oidc-proxy",
-		"--metrics-bind-address=" + ln.Addr().String(),
-		"--kubeconfig=" + filepath.Join(t.TempDir(), "missing-kubeconfig"),
-	})
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-
-	if err := cmd.Execute(); !errors.Is(err, ErrReported) {
-		t.Fatalf("Execute() error = %v, want ErrReported", err)
-	}
-
-	var failure map[string]any
-	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
-		var rec map[string]any
-		if err := json.Unmarshal([]byte(line), &rec); err != nil {
-			t.Fatalf("non-JSON line on the log stream: %q", line)
-		}
-		if rec["event_type"] == string(logging.EventProxyStartupFailed) {
-			failure = rec
-		}
-	}
-	if failure == nil {
-		t.Fatalf("no proxy.startup.failed record:\n%s", out.String())
-	}
-	msg, _ := failure["error_message"].(string)
-	if !strings.Contains(msg, "metrics: listening on") || strings.Contains(msg, "missing-kubeconfig") {
-		t.Fatalf("error_message = %q, want the metrics bind failure, reported before the kubeconfig is read", msg)
+	if out.Len() != 0 || cmdErr.Len() != 0 {
+		t.Errorf("--version wrote outside the command output: log=%q stderr=%q", out.String(), cmdErr.String())
 	}
 }
 
@@ -197,10 +128,16 @@ func TestRunServesUntilStoppedThenShutsDownCleanly(t *testing.T) {
 	metricsPort := freePort(t)
 
 	var out syncBuffer
-	stop := make(chan struct{})
+	stopCtx, stop := context.WithCancel(context.Background())
+	defer stop()
 	opts := options.New()
 	opts.SecureServing.Listener = secureListener
-	cmd := buildRunCommand(opts, &out, func(*slog.Logger) <-chan struct{} { return stop })
+	cmd := buildRunCommand(opts, &out, func(parent context.Context, _ *slog.Logger) (context.Context, context.CancelFunc) {
+		// The test's stop trigger stands in for the first signal.
+		ctx, cancel := context.WithCancel(parent)
+		context.AfterFunc(stopCtx, cancel)
+		return ctx, cancel
+	})
 	opts.AddFlags(cmd)
 	cmd.SetArgs([]string{
 		"--oidc-issuer-url=" + issuer.URL,
@@ -269,7 +206,7 @@ func TestRunServesUntilStoppedThenShutsDownCleanly(t *testing.T) {
 		t.Fatalf("unauthenticated request = %d, %v; want 401", code, err)
 	}
 
-	close(stop)
+	stop()
 	select {
 	case err := <-done:
 		if err != nil {

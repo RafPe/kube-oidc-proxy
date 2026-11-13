@@ -1,0 +1,3 @@
+kind: Changed
+body: |-
+  A request the proxy leaves unanswered because the client went away is recorded with `http_status=0` and `code="none"`, not 200. A client that hangs up during OIDC authentication is recorded as `client_canceled` and is not passed on to TokenReview.

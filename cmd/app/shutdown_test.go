@@ -33,10 +33,10 @@ func (f fakeStep) Wait() error { *f.order = append(*f.order, f.name); return f.e
 func (f fakeStep) Shutdown()   { *f.order = append(*f.order, f.name) }
 func (f fakeStep) Stop() error { *f.order = append(*f.order, f.name); return f.err }
 
-// funcFlusher adapts a function to the flusher shutdown calls.
-type funcFlusher func()
+// funcShutdowner adapts a function to the shutdowner shutdown calls.
+type funcShutdowner func()
 
-func (f funcFlusher) Shutdown() { f() }
+func (f funcShutdowner) Shutdown() { f() }
 
 // TestShutdownStopsTheMetricsListenerLast pins the shutdown order: the
 // metrics listener stops last, so a scrape landing anywhere in the drain
@@ -101,7 +101,7 @@ func TestShutdownKeepsTheMetricsEndpointUpForTheFlush(t *testing.T) {
 
 	var body string
 	var scrapeErr error
-	flush := funcFlusher(func() {
+	flush := funcShutdowner(func() {
 		resp, err := http.Get("http://" + srv.Addr() + "/metrics")
 		if err != nil {
 			scrapeErr = fmt.Errorf("scraping during the drain window: %w", err)

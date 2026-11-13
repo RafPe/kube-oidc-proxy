@@ -36,7 +36,11 @@ func (g *generator) coalescedImpersonation(ctx context.Context) []result {
 			break
 		}
 	}
-	if err != nil && len(results) > 0 {
+	if err != nil {
+		if len(results) == 0 {
+			// The attempt failed before any call was made.
+			return failed("impersonation_coalesced", err)
+		}
 		// Only the last attempt's results are returned, so --once sees one
 		// set of scenario names and one verdict rather than a mixture.
 		results[0].err = err
@@ -47,19 +51,21 @@ func (g *generator) coalescedImpersonation(ctx context.Context) []result {
 
 // coalesceBurst runs one attempt: wait the cache out, release coalesceCalls
 // identical calls together, and read the verdict off the replica's counters.
-// The results it returns are the calls this attempt made.
+// The results it returns are the calls this attempt made; every failure that
+// is not one of those calls' own outcome (a cancelled wait, a failed scrape,
+// the verdict) is the returned error.
 func (g *generator) coalesceBurst(ctx context.Context, attempt int, token string) ([]result, error) {
 	// The cache is what would otherwise answer these calls, and a cached
 	// decision never reaches the flight group at all.
 	select {
 	case <-ctx.Done():
-		return failed("impersonation_coalesced", ctx.Err()), nil
+		return nil, fmt.Errorf("wait out the decision cache: %w", ctx.Err())
 	case <-time.After(sarCacheTTL + time.Second):
 	}
 
 	before, err := g.scrape(ctx)
 	if err != nil {
-		return failed("impersonation_coalesced", err), nil
+		return nil, fmt.Errorf("scrape before burst: %w", err)
 	}
 
 	headers := http.Header{"Impersonate-User": []string{impersonated}}
@@ -97,9 +103,7 @@ func (g *generator) coalesceBurst(ctx context.Context, attempt int, token string
 
 	after, err := g.scrape(ctx)
 	if err != nil {
-		results[0].err = err
-
-		return results, nil
+		return results, fmt.Errorf("scrape after burst: %w", err)
 	}
 
 	sar := map[string]string{"review": "sar"}

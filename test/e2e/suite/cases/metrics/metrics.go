@@ -1,5 +1,7 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
 
+//go:build e2e
+
 // Package metrics scrapes the proxy's metrics endpoint inside the kind
 // cluster and asserts on what the chart-rendered configuration exposes.
 package metrics
@@ -20,11 +22,11 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/rest"
 
+	"github.com/rafpe/kube-oidc-proxy/internal/devkit/promtext"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/helper"
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
-	"github.com/rafpe/kube-oidc-proxy/test/util/promtext"
 )
 
 const (

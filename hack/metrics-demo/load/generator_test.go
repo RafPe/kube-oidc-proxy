@@ -4,7 +4,7 @@ package main
 import (
 	"testing"
 
-	"github.com/rafpe/kube-oidc-proxy/test/util/promtext"
+	"github.com/rafpe/kube-oidc-proxy/internal/devkit/promtext"
 )
 
 // TestSeriesSumTotalsMatchingSeriesOnly pins the delta helper: every series of

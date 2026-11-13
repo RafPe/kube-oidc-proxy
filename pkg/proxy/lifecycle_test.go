@@ -17,6 +17,7 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
+	"github.com/rafpe/kube-oidc-proxy/pkg/metrics/metricstest"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 )
 
@@ -259,8 +260,7 @@ func TestFlushBeforeWriteRecordsTheImplicit200(t *testing.T) {
 // the flush is recognised as the moment the response began.
 func TestFlushStartsALongRunningResponse(t *testing.T) {
 	p := newTestProxy(t)
-	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(
-		oidcAnswer(&authenticator.Response{User: &authuser.DefaultInfo{Name: "alice"}}, true, nil))
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(&authenticator.Response{User: &authuser.DefaultInfo{Name: "alice"}}, true, nil)
 
 	req := watchRequest()
 	req.Header.Set("Authorization", "bearer fake-token")
@@ -343,7 +343,8 @@ func TestPanicClassification(t *testing.T) {
 // TestUnwrittenReturnRecordsTheImplicit200 pins that a handler which returns
 // without writing a header, a body or a flush is recorded with the 200 net/http
 // sends on its behalf, not with 0. A status of 0 is reserved for a response
-// that never went out at all: a hijacked connection or an aborted handler.
+// that never went out at all: a hijacked connection, an aborted handler, or a
+// client that had gone before anything was written.
 func TestUnwrittenReturnRecordsTheImplicit200(t *testing.T) {
 	p := newTestProxy(t)
 	serveWith(t, p, func(http.ResponseWriter, *http.Request) {}, httptest.NewRequest(http.MethodGet, "/", nil))
@@ -353,6 +354,33 @@ func TestUnwrittenReturnRecordsTheImplicit200(t *testing.T) {
 	}
 	if rec.String("termination") != "normal" {
 		t.Fatalf("termination = %q, want normal", rec.String("termination"))
+	}
+}
+
+// TestClientGoneUnansweredRecordsNoStatus pins that a request the proxy
+// deliberately left unanswered because the client went away -- refuse and
+// handleUpstreamError both write nothing then -- is recorded with no status,
+// not with the 200 net/http would have sent to a client still listening: the
+// terminal record carries http_status=0 and the requests counter code="none".
+func TestClientGoneUnansweredRecordsNoStatus(t *testing.T) {
+	p := newTestProxy(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx)
+	serveWith(t, p, func(http.ResponseWriter, *http.Request) { cancel() }, req)
+
+	rec := p.logs.Only(t, logging.EventRequestResponseCompleted)
+	if s, _ := rec.Int("http_status"); s != 0 {
+		t.Errorf("http_status = %d, want 0", s)
+	}
+	if got := rec.String("termination"); got != string(metrics.TerminationClientCancel) {
+		t.Errorf("termination = %q, want %q", got, metrics.TerminationClientCancel)
+	}
+	if v, _ := metricstest.Value(t, p.metrics.Gatherer(), metricRequestsTotal,
+		map[string]string{"code": "none", "termination": "client_cancel"}); v != 1 {
+		t.Errorf("requests_total{code=none,termination=client_cancel} = %v, want 1", v)
+	}
+	if v, _ := metricstest.Value(t, p.metrics.Gatherer(), metricRequestsTotal, map[string]string{"code": "200"}); v != 0 {
+		t.Errorf("requests_total{code=200} = %v, want 0: no 200 was sent", v)
 	}
 }
 

@@ -8,8 +8,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/rafpe/kube-oidc-proxy/internal/devkit/appdeploy"
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
-	"github.com/rafpe/kube-oidc-proxy/test/util/appdeploy"
 )
 
 func (h *Helper) DeployFakeAPIServer(ctx context.Context, ns string) ([]corev1.Volume, *url.URL, error) {

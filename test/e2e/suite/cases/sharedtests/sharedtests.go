@@ -1,4 +1,7 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
+
+//go:build e2e
+
 // Package sharedtests defines token-validation Ginkgo cases that must pass
 // against any proxy deployment — OIDC-flags or AuthenticationConfiguration.
 // Callers deploy the proxy in the desired mode, then register these cases.
@@ -17,9 +20,9 @@ import (
 	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/rafpe/kube-oidc-proxy/internal/devkit/idtoken"
+	"github.com/rafpe/kube-oidc-proxy/internal/devkit/keybundle"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
-	"github.com/rafpe/kube-oidc-proxy/test/util/idtoken"
-	"github.com/rafpe/kube-oidc-proxy/test/util/keybundle"
 )
 
 // RunTokenValidationTests registers Ginkgo It blocks exercising the proxy's

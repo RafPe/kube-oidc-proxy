@@ -21,6 +21,12 @@ import (
 const (
 	impersonateVerb   = "impersonate"
 	authenticationAPI = "authentication.k8s.io"
+
+	resourceUsers           = "users"
+	resourceServiceAccounts = "serviceaccounts"
+	resourceGroups          = "groups"
+	resourceUIDs            = "uids"
+	resourceUserExtras      = "userextras"
 )
 
 // impersonationTarget is one identity attribute a request asks to impersonate:
@@ -44,35 +50,39 @@ type impersonationTarget struct {
 
 	// extraKey is the extra's key when kind is TargetExtra.
 	extraKey string
+
+	// serviceAccount is set for a TargetUser whose name is a valid
+	// service-account username; namespace is then the account's namespace.
+	serviceAccount bool
 }
 
 // userImpersonation asks about an Impersonate-User value. A name of the form
-// system:serviceaccount:<namespace>:<name>, valid as serviceaccount.SplitUsername
-// judges it, is a service account and is reviewed as serviceaccounts/<name>
-// in <namespace>, the way kube-apiserver reviews it (and parseImpersonation
-// gives it the service-account groups when the request names none); every
-// other name,
-// including a malformed service-account name, is reviewed as users/<name>.
+// system:serviceaccount:<namespace>:<name>, valid as
+// serviceaccount.SplitUsername judges it, is a service account and is reviewed
+// as serviceaccounts/<name> in <namespace>, the way kube-apiserver reviews it
+// (and parseImpersonation gives it the service-account groups when the request
+// names none). Every other name, including a malformed service-account name,
+// is reviewed as users/<name>.
 func userImpersonation(name string) impersonationTarget {
 	if namespace, account, err := serviceaccount.SplitUsername(name); err == nil {
-		return impersonationTarget{kind: TargetUser, resource: "serviceaccounts",
-			namespace: namespace, name: account, value: name}
+		return impersonationTarget{kind: TargetUser, resource: resourceServiceAccounts,
+			namespace: namespace, name: account, value: name, serviceAccount: true}
 	}
-	return impersonationTarget{kind: TargetUser, resource: "users", name: name, value: name}
+	return impersonationTarget{kind: TargetUser, resource: resourceUsers, name: name, value: name}
 }
 
 func groupImpersonation(name string) impersonationTarget {
-	return impersonationTarget{kind: TargetGroup, resource: "groups", name: name, value: name}
+	return impersonationTarget{kind: TargetGroup, resource: resourceGroups, name: name, value: name}
 }
 
 func uidImpersonation(uid string) impersonationTarget {
-	return impersonationTarget{kind: TargetUID, group: authenticationAPI, resource: "uids", name: uid, value: uid}
+	return impersonationTarget{kind: TargetUID, group: authenticationAPI, resource: resourceUIDs, name: uid, value: uid}
 }
 
 // extraImpersonation asks about one value of a user extra. key is the extra's
 // key as extraKeyFromHeader decodes it.
 func extraImpersonation(key, value string) impersonationTarget {
-	return impersonationTarget{kind: TargetExtra, group: authenticationAPI, resource: "userextras",
+	return impersonationTarget{kind: TargetExtra, group: authenticationAPI, resource: resourceUserExtras,
 		subresource: key, name: value, value: value, extraKey: key}
 }
 
@@ -97,7 +107,7 @@ func (t impersonationTarget) denial(requester user.Info) error {
 func parseImpersonation(headers http.Header) (*user.DefaultInfo, []impersonationTarget, error) {
 	keys := make([]string, 0, len(headers))
 	for key := range headers {
-		if !IsImpersonationHeader(key) {
+		if !isImpersonationHeader(key) {
 			continue
 		}
 		if !isKnownImpersonationHeader(key) {
@@ -106,12 +116,6 @@ func parseImpersonation(headers http.Header) (*user.DefaultInfo, []impersonation
 		keys = append(keys, key)
 	}
 	slices.Sort(keys)
-
-	// Groups, uids and extras refine a user; without one there is nothing to
-	// impersonate.
-	if headers.Get(transport.ImpersonateUserHeader) == "" {
-		return nil, nil, ErrNoImpersonationUser
-	}
 
 	targetUser := &user.DefaultInfo{
 		Groups: make([]string, 0),
@@ -143,9 +147,9 @@ func parseImpersonation(headers http.Header) (*user.DefaultInfo, []impersonation
 		default:
 			// An Impersonate-Extra- header: every other kind was refused above.
 			extraKey := extraKeyFromHeader(key)
-			if forwardedExtraKey(extraKey) != extraKey {
+			if forwarded := forwardedExtraKey(extraKey); forwarded != extraKey {
 				return nil, nil, fmt.Errorf("%w: %q decodes to the key %q, which the API server would receive as %q",
-					ErrUnforwardableExtraKey, key, extraKey, forwardedExtraKey(extraKey))
+					ErrUnforwardableExtraKey, key, extraKey, forwarded)
 			}
 			for _, value := range values {
 				extraTargets = append(extraTargets, extraImpersonation(extraKey, value))
@@ -154,12 +158,18 @@ func parseImpersonation(headers http.Header) (*user.DefaultInfo, []impersonation
 		}
 	}
 
+	// Groups, uids and extras refine a user; without one there is nothing to
+	// impersonate.
+	if targetUser.Name == "" {
+		return nil, nil, ErrNoImpersonationUser
+	}
+
 	// A service account's groups are a fixed mapping from its namespace, so
 	// when the request names none, the identity gets them unreviewed, exactly
 	// as kube-apiserver's impersonation filter does with
 	// serviceaccount.MakeGroupNames. Groups the request does name are the
 	// authority, and only those are reviewed and kept.
-	if userTarget.resource == "serviceaccounts" && len(groupTargets) == 0 {
+	if userTarget.serviceAccount && len(groupTargets) == 0 {
 		targetUser.Groups = serviceaccount.MakeGroupNames(userTarget.namespace)
 	}
 

@@ -42,13 +42,10 @@ func (o *LoggingOptions) AddFlags(fs *pflag.FlagSet) *LoggingOptions {
 // Validate rejects a format the root logger cannot build. An empty value is
 // refused too: the flag defaults to json, so an empty one was set explicitly.
 func (o *LoggingOptions) Validate() error {
-	switch o.Format {
-	case logging.FormatJSON, logging.FormatText:
-		return nil
-	default:
-		return fmt.Errorf("--logging-format must be %q or %q, got %q",
-			logging.FormatJSON, logging.FormatText, o.Format)
+	if err := o.Format.Validate(); err != nil {
+		return fmt.Errorf("--logging-format: %w", err)
 	}
+	return nil
 }
 
 // Verbosity returns the -v value the command line carries, or 0 when the flag

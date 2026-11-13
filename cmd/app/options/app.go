@@ -11,6 +11,7 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/authn/tokenreview"
 	"github.com/rafpe/kube-oidc-proxy/pkg/authz/subjectaccessreview"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy"
 )
 
 // KubeOIDCProxyOptions are the proxy's own flags: impersonation, readiness,
@@ -26,7 +27,7 @@ type KubeOIDCProxyOptions struct {
 
 	MaxImpersonationHeaderValues int
 
-	ExtraHeaderOptions  ExtraHeaderOptions
+	ExtraHeaders        ExtraHeaderOptions
 	SubjectAccessReview SubjectAccessReviewOptions
 	TokenPassthrough    TokenPassthroughOptions
 
@@ -64,7 +65,7 @@ type SubjectAccessReviewOptions struct {
 // ExtraHeaderOptions configure the extra user headers the proxy adds to every
 // impersonated request.
 type ExtraHeaderOptions struct {
-	EnableClientIPExtraUserHeader bool
+	ExtraUserHeadersClientIPEnabled bool
 
 	ExtraUserHeaders map[string][]string
 }
@@ -78,8 +79,11 @@ func NewKubeOIDCProxyOptions(nfs *cliflag.NamedFlagSets) *KubeOIDCProxyOptions {
 // AddFlags binds the proxy flags to fs and returns k for chaining.
 func (k *KubeOIDCProxyOptions) AddFlags(fs *pflag.FlagSet) *KubeOIDCProxyOptions {
 	fs.BoolVar(&k.DisableImpersonation, "disable-impersonation", k.DisableImpersonation,
-		"(Alpha) Disable the impersonation of authenticated requests. All "+
-			"authenticated requests will be forwarded as is.")
+		"(Alpha) Forward authenticated requests without impersonation and without "+
+			"the proxy's own credentials. Authentication consumes the OIDC bearer token, "+
+			"so the request reaches the API server as system:anonymous; any "+
+			"Impersonate-* headers the client sent are passed through unchecked, for "+
+			"the API server to authorize against that anonymous identity.")
 
 	fs.IntVarP(&k.ReadinessProbePort, "readiness-probe-port", "P", 8080,
 		"Port to expose readiness probe.")
@@ -131,7 +135,7 @@ func (k *KubeOIDCProxyOptions) AddFlags(fs *pflag.FlagSet) *KubeOIDCProxyOptions
 
 	k.SubjectAccessReview.AddFlags(fs)
 	k.TokenPassthrough.AddFlags(fs)
-	k.ExtraHeaderOptions.AddFlags(fs)
+	k.ExtraHeaders.AddFlags(fs)
 
 	return k
 }
@@ -171,46 +175,46 @@ func (r *SubjectAccessReviewOptions) AddFlags(fs *pflag.FlagSet) *SubjectAccessR
 
 // AddFlags binds the token passthrough flags to fs and returns t for chaining.
 func (t *TokenPassthroughOptions) AddFlags(fs *pflag.FlagSet) *TokenPassthroughOptions {
-	fs.StringSliceVar(&t.Audiences, "token-passthrough-audiences", t.Audiences, ""+
+	fs.StringSliceVar(&t.Audiences, "token-passthrough-audiences", t.Audiences,
 		"(Alpha) List of the identifiers that the resource server presented with the token "+
-		"identifies as. The resource server will verify that non OIDC tokens are intended "+
-		"for at least one of the audiences in this list. If no audiences are "+
-		"provided, the audience will default to the audience of the Kubernetes "+
-		"apiserver. Only used when --token-passthrough is also enabled.")
+			"identifies as. The resource server will verify that non OIDC tokens are intended "+
+			"for at least one of the audiences in this list. If no audiences are "+
+			"provided, the audience will default to the audience of the Kubernetes "+
+			"apiserver. Only used when --token-passthrough is also enabled.")
 
-	fs.DurationVar(&t.Timeout, "token-passthrough-request-timeout", tokenreview.DefaultTimeout, ""+
+	fs.DurationVar(&t.Timeout, "token-passthrough-request-timeout", tokenreview.DefaultTimeout,
 		"Timeout for each TokenReview request the proxy sends to the target API server "+
-		"when validating a passthrough token. Only used when --token-passthrough is "+
-		"also enabled.")
+			"when validating a passthrough token. Only used when --token-passthrough is "+
+			"also enabled.")
 
-	fs.DurationVar(&t.SuccessCacheTTL, "token-passthrough-cache-success-ttl", tokenreview.DefaultSuccessCacheTTL, ""+
+	fs.DurationVar(&t.SuccessCacheTTL, "token-passthrough-cache-success-ttl", tokenreview.DefaultSuccessCacheTTL,
 		"How long a successful TokenReview result is cached and reused without a new "+
-		"request to the target API server. A cached success outlives token revocation "+
-		"for up to this duration, so keep it low; the default matches the "+
-		"kube-apiserver's own delegated-authentication cache (10s). Set to 0 to "+
-		"disable caching successful results. Only used when --token-passthrough is "+
-		"also enabled.")
+			"request to the target API server. A cached success outlives token revocation "+
+			"for up to this duration, so keep it low; the default matches the "+
+			"kube-apiserver's own delegated-authentication cache (10s). Set to 0 to "+
+			"disable caching successful results. Only used when --token-passthrough is "+
+			"also enabled.")
 
-	fs.DurationVar(&t.FailureCacheTTL, "token-passthrough-cache-failure-ttl", tokenreview.DefaultFailureCacheTTL, ""+
+	fs.DurationVar(&t.FailureCacheTTL, "token-passthrough-cache-failure-ttl", tokenreview.DefaultFailureCacheTTL,
 		"How long an unauthenticated TokenReview result is cached, shielding the "+
-		"target API server from repeated reviews of the same invalid token (for "+
-		"example during an OIDC issuer outage with --token-passthrough enabled). "+
-		"Errors reaching the API server are never cached and are retried on the next "+
-		"request. Set to 0 to disable caching unauthenticated results. Only used when "+
-		"--token-passthrough is also enabled.")
+			"target API server from repeated reviews of the same invalid token (for "+
+			"example during an OIDC issuer outage with --token-passthrough enabled). "+
+			"Errors reaching the API server are never cached and are retried on the next "+
+			"request. Set to 0 to disable caching unauthenticated results. Only used when "+
+			"--token-passthrough is also enabled.")
 
-	fs.BoolVar(&t.Enabled, "token-passthrough", t.Enabled, ""+
+	fs.BoolVar(&t.Enabled, "token-passthrough", t.Enabled,
 		"(Alpha) Requests with Bearer tokens that fail OIDC validation are tried against "+
-		"the API server using the Token Review endpoint. If successful, the request "+
-		"is sent on as is, with no impersonation.")
+			"the API server using the Token Review endpoint. If successful, the request "+
+			"is sent on as is, with no impersonation.")
 
 	return t
 }
 
 // AddFlags binds the extra header flags to fs and returns e for chaining.
 func (e *ExtraHeaderOptions) AddFlags(fs *pflag.FlagSet) *ExtraHeaderOptions {
-	fs.BoolVar(&e.EnableClientIPExtraUserHeader, "extra-user-header-client-ip",
-		e.EnableClientIPExtraUserHeader, "(Alpha) If enabled, proxied requests will "+
+	fs.BoolVar(&e.ExtraUserHeadersClientIPEnabled, "extra-user-header-client-ip",
+		e.ExtraUserHeadersClientIPEnabled, "(Alpha) If enabled, proxied requests will "+
 			"include the extra user header 'Impersonate-Extra-Remote-Client-IP: "+
 			"<CLIENT_IP>' where <CLIENT_IP> is the resolved client IP of the request. "+
 			"By default this is the direct peer address; X-Forwarded-For is only "+
@@ -228,9 +232,15 @@ func (e *ExtraHeaderOptions) AddFlags(fs *pflag.FlagSet) *ExtraHeaderOptions {
 func (k *KubeOIDCProxyOptions) Validate() error {
 	var errs []error
 
-	if k.DisableImpersonation &&
-		(k.ExtraHeaderOptions.EnableClientIPExtraUserHeader || len(k.ExtraHeaderOptions.ExtraUserHeaders) > 0) {
-		errs = append(errs, errors.New("cannot add extra user headers when impersonation disabled"))
+	// Extra user headers are part of the impersonated request, which
+	// --disable-impersonation never sends.
+	if k.DisableImpersonation {
+		if k.ExtraHeaders.ExtraUserHeadersClientIPEnabled {
+			errs = append(errs, errors.New("--extra-user-header-client-ip cannot be used with --disable-impersonation"))
+		}
+		if len(k.ExtraHeaders.ExtraUserHeaders) > 0 {
+			errs = append(errs, errors.New("--extra-user-headers cannot be used with --disable-impersonation"))
+		}
 	}
 
 	// The passthrough flags are checked regardless of --token-passthrough —
@@ -239,13 +249,13 @@ func (k *KubeOIDCProxyOptions) Validate() error {
 	// cache TTLs (it disables that class of caching); only negatives are
 	// configuration mistakes.
 	if k.TokenPassthrough.Timeout <= 0 {
-		errs = append(errs, errors.New("--token-passthrough-request-timeout must be greater than zero"))
+		errs = append(errs, fmt.Errorf("--token-passthrough-request-timeout must be greater than 0, got %s", k.TokenPassthrough.Timeout))
 	}
 	if k.TokenPassthrough.SuccessCacheTTL < 0 {
-		errs = append(errs, errors.New("--token-passthrough-cache-success-ttl must not be negative"))
+		errs = append(errs, fmt.Errorf("--token-passthrough-cache-success-ttl must not be negative (0 disables caching of successful results), got %s", k.TokenPassthrough.SuccessCacheTTL))
 	}
 	if k.TokenPassthrough.FailureCacheTTL < 0 {
-		errs = append(errs, errors.New("--token-passthrough-cache-failure-ttl must not be negative"))
+		errs = append(errs, fmt.Errorf("--token-passthrough-cache-failure-ttl must not be negative (0 disables caching of unauthenticated results), got %s", k.TokenPassthrough.FailureCacheTTL))
 	}
 
 	if k.SubjectAccessReview.Timeout <= 0 {
@@ -262,6 +272,15 @@ func (k *KubeOIDCProxyOptions) Validate() error {
 
 	if k.MaxImpersonationHeaderValues <= 0 {
 		errs = append(errs, fmt.Errorf("--max-impersonation-header-values must be greater than 0, got %d", k.MaxImpersonationHeaderValues))
+	}
+
+	// The proxy's own rules, applied here too so a bad value is reported with
+	// the other flag errors rather than only once the proxy is being built.
+	if err := proxy.ValidateTrustedProxies(k.TrustedProxies); err != nil {
+		errs = append(errs, fmt.Errorf("--trusted-proxies: %w", err))
+	}
+	if err := proxy.ValidateAllowedReservedGroups(k.AllowedReservedGroups); err != nil {
+		errs = append(errs, fmt.Errorf("--allow-reserved-groups: %w", err))
 	}
 
 	return errors.Join(errs...)

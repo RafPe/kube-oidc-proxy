@@ -19,7 +19,7 @@ func main() {
 	addr := flag.String("listen", ":8080", "Address to serve HTTP on.")
 	flag.Parse()
 
-	stopCh := signals.NotifyStop(slog.Default())
+	stopCtx, stop := signals.NotifyContext(context.Background(), slog.Default())
 
 	srv := &http.Server{
 		Addr:              *addr,
@@ -28,7 +28,8 @@ func main() {
 	}
 
 	go func() {
-		<-stopCh
+		<-stopCtx.Done()
+		stop()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(ctx)

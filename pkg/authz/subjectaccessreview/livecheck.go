@@ -3,7 +3,6 @@ package subjectaccessreview
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -12,9 +11,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apiserver/pkg/authentication/user"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/ctxerr"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 )
 
 // reviewCall is one request's authorization questions: the context its
@@ -22,7 +21,7 @@ import (
 // own context, and the identity asking. The two contexts are kept apart
 // because a review that fails with a context error must say whose deadline
 // expired: the requester's, when the client went away, or the proxy's budget,
-// when the API server did not answer in time. reqctx.ClientGone tells them
+// when the API server did not answer in time. ctxerr.ClientGone tells them
 // apart.
 type reviewCall struct {
 	ctx        context.Context
@@ -71,7 +70,7 @@ func (a *Authorizer) cachedCheck(call reviewCall, target impersonationTarget) (b
 }
 
 // recordCacheLookup reports one decision-cache consultation, as a record and
-// as a metric, so the two can never disagree about what the cache did.
+// as a metric.
 func (a *Authorizer) recordCacheLookup(ctx context.Context, result metrics.CacheResult, attrs ...slog.Attr) {
 	attrs = append([]slog.Attr{slog.String("cache_result", string(result))}, attrs...)
 	logging.Emit(ctx, a.logger, logging.EventCacheSARLookup, attrs...)
@@ -102,9 +101,9 @@ func (a *Authorizer) observeLiveCheck(call reviewCall, target impersonationTarge
 	if err := res.err; err != nil {
 		reason, level, logged := metrics.ReasonAuthorizationDependencyError, slog.LevelError, err
 		switch {
-		case reqctx.ClientGone(call.requestCtx, err):
+		case ctxerr.ClientGone(call.requestCtx, err):
 			reason, level = metrics.ReasonClientCanceled, slog.LevelDebug
-		case isContextError(err):
+		case ctxerr.Is(err):
 			logged = fmt.Errorf("subject access review timed out after %s: %w", a.timeout, err)
 		}
 		logging.EmitLevel(call.ctx, a.logger, logging.EventAuthzSARFailed, level,
@@ -156,7 +155,7 @@ func (a *Authorizer) sharedLiveCheck(call reviewCall, target impersonationTarget
 	case res := <-ch:
 		coalesced := !led
 		if res.Err != nil {
-			if coalesced && ctx.Err() == nil && isContextError(res.Err) {
+			if coalesced && ctx.Err() == nil && ctxerr.Is(res.Err) {
 				// The leader's failure was not ours to report; the retry below
 				// emits this caller's one terminal record.
 				return a.timedLiveCheck(call, target, spec)
@@ -168,12 +167,6 @@ func (a *Authorizer) sharedLiveCheck(call reviewCall, target impersonationTarget
 		a.observeLiveCheck(call, target, start, liveResult{allowed: allowed, coalesced: coalesced})
 		return allowed, nil
 	}
-}
-
-// isContextError reports whether err is a cancellation or an expired deadline,
-// the failures whose owner has to be worked out before they are reported.
-func isContextError(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // liveCheck submits spec to the API server as a SubjectAccessReview and
@@ -190,14 +183,14 @@ func (a *Authorizer) liveCheck(ctx context.Context, spec *v1.SubjectAccessReview
 	if err != nil {
 		return false, fmt.Errorf("%w: %w", ErrCreateSubjectAccessReview, err)
 	}
-	return reviewResult.Status.Allowed, nil
+	return allowed, nil
 }
 
 // impersonationReviewSpec builds the SubjectAccessReviewSpec asking whether
 // requester may impersonate the named resource. The same spec is both
 // submitted to the API server and serialized as the cache key, so every field
 // that can influence the decision — including the requester's UID and Extra
-// fields — is part of the key by construction.
+// fields — is part of the key.
 func impersonationReviewSpec(target impersonationTarget, requester user.Info) v1.SubjectAccessReviewSpec {
 	extras := make(map[string]v1.ExtraValue, len(requester.GetExtra()))
 	for key, value := range requester.GetExtra() {

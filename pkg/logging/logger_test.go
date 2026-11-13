@@ -58,6 +58,34 @@ func TestTextFormatIsValid(t *testing.T) {
 	}
 }
 
+// TestFormatValidate pins the one definition of the format set: the empty
+// Format names no format, though Options reads it as the JSON default.
+func TestFormatValidate(t *testing.T) {
+	for _, f := range []logging.Format{logging.FormatJSON, logging.FormatText} {
+		if err := f.Validate(); err != nil {
+			t.Errorf("%q.Validate() = %v, want nil", f, err)
+		}
+	}
+	for _, f := range []logging.Format{"", "yaml"} {
+		if err := f.Validate(); err == nil {
+			t.Errorf("%q.Validate() = nil, want an error", f)
+		}
+	}
+	if err := (logging.Options{}).Validate(); err != nil {
+		t.Errorf("Options{}.Validate() = %v, want nil: the empty format is the JSON default", err)
+	}
+}
+
+func TestRequireLogger(t *testing.T) {
+	logging.RequireLogger(slog.New(slog.DiscardHandler), "owner")
+	defer func() {
+		if got := recover(); got != "owner: nil logger" {
+			t.Fatalf("RequireLogger(nil) panic = %v, want %q", got, "owner: nil logger")
+		}
+	}()
+	logging.RequireLogger(nil, "owner")
+}
+
 func TestRequestIDIsEmptyWhenAbsent(t *testing.T) {
 	if got := logging.RequestID(context.Background()); got != "" {
 		t.Fatalf("RequestID on a bare context = %q, want empty", got)
@@ -90,5 +118,27 @@ func TestEmitKeepsAnExplicitRequestIDOverTheContext(t *testing.T) {
 	}
 	if n := strings.Count(cap.Raw(), "request_id"); n != 1 {
 		t.Errorf("request_id appears %d times, want 1: %s", n, cap.Raw())
+	}
+}
+
+// TestNewTextFormatWritesKeyValueRecords drives the text branch of New, which
+// only --logging-format=text reaches: the record is logfmt-style key=value
+// pairs, not JSON, and still carries schema_version.
+func TestNewTextFormatWritesKeyValueRecords(t *testing.T) {
+	var buf strings.Builder
+	root, err := logging.New(logging.Options{Format: logging.FormatText, Output: &buf})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	root.Info("hello", slog.String("k", "v"))
+
+	out := buf.String()
+	if strings.HasPrefix(strings.TrimSpace(out), "{") {
+		t.Fatalf("text format wrote JSON: %q", out)
+	}
+	for _, want := range []string{"msg=hello", "k=v", "schema_version="} {
+		if !strings.Contains(out, want) {
+			t.Errorf("text record %q lacks %q", out, want)
+		}
 	}
 }

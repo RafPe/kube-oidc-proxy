@@ -175,8 +175,9 @@ fi
 
 log "Building proxy image ${PROXY_IMAGE}"
 ( cd "${REPO_ROOT}" \
-  && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags '-w' -o ./bin/amd64/kube-oidc-proxy ./cmd/. \
-  && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags '-w' -o ./bin/arm64/kube-oidc-proxy ./cmd/. )
+  && ldflags="-w $(hack/version-ldflags.sh)" \
+  && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "${ldflags}" -o ./bin/amd64/kube-oidc-proxy ./cmd/. \
+  && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "${ldflags}" -o ./bin/arm64/kube-oidc-proxy ./cmd/. )
 docker build -q -t "${PROXY_IMAGE}" "${REPO_ROOT}" >/dev/null
 ok "image built"
 

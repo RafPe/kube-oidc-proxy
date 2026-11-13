@@ -127,9 +127,9 @@ func TestAllowedValuesCoversEveryBoundedLabel(t *testing.T) {
 				t.Errorf("%s: allowed values for %s is empty", s.Name, label)
 			}
 		}
-		for label := range allowed {
+		for label := range s.Values {
 			if !slices.Contains(s.Labels, label) {
-				t.Errorf("%s: AllowedValues has %s, which is not a label of the family", s.Name, label)
+				t.Errorf("%s: Values has %s, which is not a label of the family", s.Name, label)
 			}
 		}
 	}

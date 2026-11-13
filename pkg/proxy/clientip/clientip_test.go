@@ -3,7 +3,12 @@ package clientip
 
 import (
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"testing"
+
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 )
 
 // mustCIDRs parses CIDR strings into networks, failing the test on error.
@@ -155,6 +160,101 @@ func TestPeerHost(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if got := PeerHost(tc.in); got != tc.exp {
 				t.Errorf("PeerHost(%q) = %q, want %q", tc.in, got, tc.exp)
+			}
+		})
+	}
+}
+
+// TestSanitize pins the trusted-proxy contract as applied to the inbound
+// forwarding headers. The final assertion runs the apiserver's own
+// utilnet.SourceIPs over a request carrying the sanitized headers -- that
+// function is what the audit filter uses to fill sourceIPs, so it is the
+// audit-visible outcome that is pinned, not just the header rewrite.
+func TestSanitize(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		trusted      []*net.IPNet
+		xff          string
+		realIP       string
+		expIP        string
+		expXFF       string
+		expSourceIPs []string
+	}{
+		"no trusted proxies: forwarded headers are stripped": {
+			xff:          "1.2.3.4",
+			realIP:       "9.9.9.9",
+			expIP:        "10.0.0.5",
+			expSourceIPs: []string{"10.0.0.5"},
+		},
+		"trusted peer: chain collapses to the resolved client": {
+			trusted:      mustCIDRs(t, "10.0.0.0/8"),
+			xff:          "1.2.3.4, 10.0.0.9",
+			expIP:        "1.2.3.4",
+			expXFF:       "1.2.3.4",
+			expSourceIPs: []string{"1.2.3.4", "10.0.0.5"},
+		},
+		"entirely trusted chain: stripped": {
+			trusted:      mustCIDRs(t, "10.0.0.0/8"),
+			xff:          "10.0.0.7, 10.0.0.9",
+			expIP:        "10.0.0.5",
+			expSourceIPs: []string{"10.0.0.5"},
+		},
+		"malformed hop: stripped": {
+			trusted:      mustCIDRs(t, "10.0.0.0/8"),
+			xff:          "not-an-ip, 10.0.0.9",
+			expIP:        "10.0.0.5",
+			expSourceIPs: []string{"10.0.0.5"},
+		},
+		"x-real-ip alone is removed": {
+			trusted:      mustCIDRs(t, "10.0.0.0/8"),
+			realIP:       "9.9.9.9",
+			expIP:        "10.0.0.5",
+			expSourceIPs: []string{"10.0.0.5"},
+		},
+		"no forwarding headers: untouched": {
+			trusted:      mustCIDRs(t, "10.0.0.0/8"),
+			expIP:        "10.0.0.5",
+			expSourceIPs: []string{"10.0.0.5"},
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil)
+			req.RemoteAddr = "10.0.0.5:12345"
+			if test.xff != "" {
+				req.Header.Set(HeaderForwardedFor, test.xff)
+			}
+			if test.realIP != "" {
+				req.Header.Set(HeaderRealIP, test.realIP)
+			}
+			inbound := req.Header.Clone()
+
+			ip, out := Sanitize(req.RemoteAddr, req.Header, test.trusted)
+
+			if ip != test.expIP {
+				t.Errorf("ip = %q, want %q", ip, test.expIP)
+			}
+			if got := out.Get(HeaderForwardedFor); got != test.expXFF {
+				t.Errorf("X-Forwarded-For after sanitizing = %q, want %q", got, test.expXFF)
+			}
+			if got := out.Get(HeaderRealIP); got != "" {
+				t.Errorf("X-Real-Ip must always be removed, got %q", got)
+			}
+			if !reflect.DeepEqual(req.Header, inbound) {
+				t.Errorf("Sanitize modified the inbound headers: %v, want %v", req.Header, inbound)
+			}
+
+			req.Header = out
+			var sourceIPs []string
+			for _, ip := range utilnet.SourceIPs(req) {
+				sourceIPs = append(sourceIPs, ip.String())
+			}
+			if !reflect.DeepEqual(sourceIPs, test.expSourceIPs) {
+				t.Errorf("audit-visible source IPs = %v, want %v", sourceIPs, test.expSourceIPs)
 			}
 		})
 	}

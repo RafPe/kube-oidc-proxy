@@ -1,0 +1,3 @@
+kind: Changed
+body: |-
+  Flag validation reports every problem at once, before the logger starts: the reserved-identity prefix check and the `--trusted-proxies` and `--allow-reserved-groups` checks moved from startup (a `proxy.startup.failed` record) into the flag validation error, and every message names its flag with the `--` prefix.

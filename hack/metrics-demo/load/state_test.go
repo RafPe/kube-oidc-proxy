@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/rafpe/kube-oidc-proxy/test/util/keybundle"
+	"github.com/rafpe/kube-oidc-proxy/internal/devkit/keybundle"
 )
 
 // writeDemoState lays down what up.sh leaves in .state.

@@ -13,6 +13,7 @@ import (
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/authn"
+	"github.com/rafpe/kube-oidc-proxy/pkg/ctxerr"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/clientip"
@@ -54,22 +55,18 @@ func (p *Proxy) withFilterChain(handler http.Handler) http.Handler {
 	return handler
 }
 
-// withSanitizedForwardHeaders enforces the trusted-proxy contract on the
-// forwarding headers before anything downstream reads them: the audit filters
-// fill sourceIPs from these headers, the access log resolves the client IP
-// from them, and the reverse proxy forwards them to the API server. The three
-// filters outside it -- request id, request info and lifecycle -- never read
-// X-Forwarded-For or X-Real-Ip: the request-id filter reads only its own id
-// headers and the peer address, request info resolves from the method, path
-// and query, and the lifecycle records carry no client address. So every
-// reader of the forwarding headers, including the unauthenticated audit
-// chain, which runs inside withAuthenticateRequest, sees them sanitized.
+// withSanitizedForwardHeaders enforces the trusted-proxy contract (see
+// clientip.Sanitize) on the forwarding headers before anything downstream
+// reads them: the audit filters fill sourceIPs from them, the access record
+// reports the client IP resolved here, and the reverse proxy forwards them to
+// the API server. The filters outside it do not read the forwarding headers.
 func (p *Proxy) withSanitizedForwardHeaders(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		inboundXFF := req.Header.Get(clientip.HeaderForwardedFor)
 		inboundRealIP := req.Header.Get(clientip.HeaderRealIP)
 
-		req = reqctx.WithResolvedClient(req, p.trustedProxies)
+		ip, header := clientip.Sanitize(req.RemoteAddr, req.Header, p.trustedProxies)
+		req = reqctx.WithResolvedClient(req, ip, header)
 
 		if inboundXFF != "" || inboundRealIP != "" {
 			p.logForwardHeaders(req, inboundXFF, inboundRealIP)
@@ -125,11 +122,8 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 	tokenReviewHandler := p.withTokenReview(handler)
 
 	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-		// An authenticator is handed a context and answers with a user, so it
-		// has no way to name itself on the request. The holder placed here is
-		// how the issuer that accepts the token reports its name back, without
-		// it travelling in the identity's extras and out as an impersonation
-		// header; it is read back below.
+		// The issuer that accepts the token names itself on this holder; see
+		// authn.IssuerHolder.
 		ctx, issuer := authn.WithIssuerHolder(req.Context())
 		req = req.WithContext(ctx)
 
@@ -140,6 +134,18 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 			// error. The error text itself stays out of the record: the denial
 			// is reported by reason, and a validation message is attacker
 			// influenced.
+			//
+			// A client that hung up mid-validation is classified as the
+			// review paths classify it, and refused without a second look:
+			// there is nobody left to forward a TokenReview's answer to.
+			if ctxerr.ClientGone(req.Context(), err) {
+				p.metrics.AuthenticationAttempt(metrics.AuthMethodOIDC, metrics.AuthError)
+				logging.Emit(req.Context(), p.oidcLogger, logging.EventAuthnOIDCFailed,
+					slog.String("src_ip", reqctx.ClientIP(req)), slog.String("reason", string(metrics.ReasonClientCanceled)))
+				p.refuse(rw, req, err)
+				return
+			}
+
 			p.metrics.AuthenticationAttempt(metrics.AuthMethodOIDC, metrics.AuthRejected)
 			logging.Emit(req.Context(), p.oidcLogger, logging.EventAuthnOIDCFailed,
 				slog.String("src_ip", reqctx.ClientIP(req)), slog.String("reason", string(metrics.ReasonUnauthorized)))
@@ -229,22 +235,34 @@ func checkReservedIdentity(info authuser.Info, allowedGroups sets.Set[string]) e
 // and without it the request is refused.
 func (p *Proxy) withTokenReview(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-		err := errUnauthorized
+		var (
+			info authuser.Info
+			err  = errUnauthorized
+		)
 		if p.config.TokenPassthrough {
-			err = p.reviewToken(req)
+			info, err = p.reviewToken(req)
 		}
 		if err != nil {
 			p.refuse(rw, req, err)
 			return
 		}
 
-		// OIDC did not accept the token, so the bearer authenticator left the
-		// Authorization header in place; the request is forwarded with the
-		// client's own token. That decides how it is forwarded, so the
-		// impersonation filter and roundTrip both see it settled: no outbound
-		// identity, and no proxy-authenticated inbound one either.
+		// The identity TokenReview returned is the request's user, as the
+		// OIDC identity is on that path, so the audit event and the access
+		// record name who made the request. It is not checked against the
+		// reserved prefix: the API server minted it, and every service
+		// account is a system: name.
+		//
+		// What is forwarded is unchanged: OIDC did not accept the token, so
+		// the bearer authenticator left the Authorization header in place and
+		// the request goes out with the client's own token and no
+		// impersonation.
 		req = reqctx.WithAuthMethod(req, metrics.AuthMethodTokenReview)
-		req = reqctx.WithImpersonation(req, &reqctx.ImpersonationRecord{Mode: reqctx.ForwardPassthrough})
+		req = req.WithContext(genericapirequest.WithUser(req.Context(), info))
+		req = reqctx.WithForwardDecision(req, &reqctx.ForwardDecisionRecord{
+			Mode:        reqctx.ForwardPassthrough,
+			InboundUser: info,
+		})
 
 		handler.ServeHTTP(rw, req)
 	})
