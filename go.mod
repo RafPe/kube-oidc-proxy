@@ -6,7 +6,7 @@ tool go.uber.org/mock/mockgen
 
 require (
 	github.com/go-jose/go-jose/v4 v4.1.4
-	github.com/onsi/ginkgo/v2 v2.32.1
+	github.com/onsi/ginkgo/v2 v2.34.0
 	github.com/onsi/gomega v1.43.0
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
 	github.com/prometheus/client_golang v1.24.1
