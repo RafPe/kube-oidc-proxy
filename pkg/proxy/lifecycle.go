@@ -149,7 +149,6 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 		req = reqctx.WithTerminationHolder(req)
 		req = reqctx.WithDecisionHolder(req)
 		ctx := req.Context()
-		l := logging.FromContext(ctx)
 
 		// The verb and scope labels come from the RequestInfo the audit filter
 		// resolved ahead of this one; both projections collapse anything
@@ -171,7 +170,7 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 				}
 			}
 			rec.onStart = func(code int) {
-				logging.Emit(ctx, l, logging.EventRequestResponseStarted,
+				logging.Emit(ctx, p.requestLogger, logging.EventRequestResponseStarted,
 					slog.Int("http_status", code),
 					slog.Int64("time_to_headers_ms", time.Since(start).Milliseconds()))
 				// Only a success status opens a stream: a refused watch (401,
@@ -191,7 +190,7 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 
 		defer func() {
 			panicked := recover()
-			classified := reqctx.TerminationFrom(req)
+			classified := reqctx.Termination(req)
 
 			term := metrics.TerminationNormal
 			switch {
@@ -210,9 +209,9 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 				// Aborted with the client still attached: the stream broke on
 				// the upstream side.
 				term = metrics.TerminationUpstreamReset
-			case classified.Termination != "":
+			case classified.Kind != "":
 				// Set by the error handler for an upstream failure.
-				term = classified.Termination
+				term = classified.Kind
 			}
 
 			// A handler that returned without writing anything is answered
@@ -238,11 +237,11 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 			// The classified reason travels with its termination, so a query on
 			// the terminal record alone can tell an upstream failure from an
 			// ordinary completion.
-			if term == classified.Termination && classified.Reason != "" {
+			if term == classified.Kind && classified.Reason != "" {
 				attrs = append(attrs, slog.String("reason", string(classified.Reason)))
 			}
 
-			logging.Emit(ctx, l, logging.EventRequestResponseCompleted, attrs...)
+			logging.Emit(ctx, p.requestLogger, logging.EventRequestResponseCompleted, attrs...)
 
 			// One request, one record, one observation: the metric carries the
 			// same status and termination the record does, by construction.

@@ -140,7 +140,7 @@ skipped_dirs = [
     '.git',
     "vendor",
     "hack",
-    "pkg/proxy/mocks",
+    "pkg/authn/authntest/authenticator.go",
     "bin",
     "demo/infrastructure",
 ]

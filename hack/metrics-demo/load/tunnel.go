@@ -229,13 +229,13 @@ func startPortForward(ctx context.Context, kubeconfig, namespace, target string,
 	case <-time.After(ready):
 		err = fmt.Errorf("kubectl port-forward did not announce a local port within %s", ready)
 	case <-ctx.Done():
-		err = fmt.Errorf("kubectl port-forward was stopped before it announced a local port: %s", ctx.Err())
+		err = fmt.Errorf("kubectl port-forward was stopped before it announced a local port: %w", ctx.Err())
 	}
 	if err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 
-		return 0, nil, fmt.Errorf("%s: %s", err, strings.TrimSpace(stderr.String()))
+		return 0, nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 
 	// kubectl keeps writing a line per connection. Nothing reads them, so the
@@ -256,7 +256,12 @@ func startPortForward(ctx context.Context, kubeconfig, namespace, target string,
 		select {
 		case <-stopping: // stop() killed it; expected.
 		default:
-			onDeath(fmt.Errorf("kubectl port-forward exited (%v): %s",
+			// A clean exit is still a death: nothing else stops kubectl. Wait
+			// returns nil then, and %w of a nil error would print garbage.
+			if err == nil {
+				err = errors.New("exit status 0")
+			}
+			onDeath(fmt.Errorf("kubectl port-forward exited (%w): %s",
 				err, strings.TrimSpace(stderr.String())))
 		}
 	}()

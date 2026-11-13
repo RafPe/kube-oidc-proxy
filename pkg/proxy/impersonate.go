@@ -12,34 +12,38 @@ import (
 	"k8s.io/client-go/transport"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/accesslog"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 )
 
-// withImpersonateRequest adds the impersonation request handler to the chain.
+// withImpersonateRequest decides how an authenticated request is forwarded:
+// as the identity the client asked to impersonate, once the
+// SubjectAccessReviews allowed it, or as the inbound identity itself.
+//
+// Client Impersonate-* headers are checked and consumed only here, on the
+// impersonating path. On the two paths that forward without the proxy's own
+// credentials -- token passthrough and --disable-impersonation -- the headers
+// travel on untouched and the API server authorizes them against the
+// identity it authenticates: the client's own token, or anonymous.
 func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-		// If no impersonation has already been set, return early
-		if reqctx.NoImpersonation(req) {
-			logging.Emit(req.Context(), logging.FromContext(req.Context()), logging.EventRequestImpersonationSkipped,
+		// Token passthrough already decided this request: it is forwarded with
+		// the client's own token.
+		if reqctx.ImpersonationOf(req) != nil {
+			logging.Emit(req.Context(), p.requestLogger, logging.EventRequestImpersonationSkipped,
 				slog.String("skip_reason", skipReasonPassthrough))
 			handler.ServeHTTP(rw, req)
 			return
 		}
 
-		// If we have disabled impersonation we can forward the request right away
 		if p.config.DisableImpersonation {
-			logging.Emit(req.Context(), logging.FromContext(req.Context()), logging.EventRequestImpersonationSkipped,
+			logging.Emit(req.Context(), p.requestLogger, logging.EventRequestImpersonationSkipped,
 				slog.String("skip_reason", skipReasonDisabled))
-			// Indicate we need to not use impersonation.
-			req = reqctx.WithNoImpersonation(req)
-			handler.ServeHTTP(rw, req)
+			handler.ServeHTTP(rw, reqctx.WithImpersonation(req, &reqctx.Impersonation{InboundUser: userFromContext(req)}))
 			return
 		}
 
 		inbound, ok := genericapirequest.UserFrom(req.Context())
-		// No name available so reject request
 		if !ok || len(inbound.GetName()) == 0 {
 			p.handleError(rw, req, errNoName)
 			return
@@ -51,7 +55,7 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 		var target authuser.Info
 		if subjectaccessreview.HasImpersonationHeaders(req.Header) {
 			var err error
-			target, err = p.subjectAccessReviewer.CheckAuthorizedForImpersonation(req, inbound)
+			target, err = p.subjectAccessReviewer.CheckAuthorizedForImpersonation(req, asAuthenticated(inbound))
 			if err != nil {
 				p.handleError(rw, req, err)
 				return
@@ -65,24 +69,52 @@ func (p *Proxy) withImpersonateRequest(handler http.Handler) http.Handler {
 			req.Header = subjectaccessreview.StripImpersonationHeaders(req.Header)
 		}
 
-		impersonation, err := p.outboundIdentity(req, inbound, target)
+		outbound, err := p.outboundIdentity(req, inbound, target)
 		if err != nil {
 			p.handleError(rw, req, err)
 			return
 		}
 
-		conf := &reqctx.ImpersonationRequest{
-			ImpersonationConfig: impersonation,
-			InboundUser:         inbound,
-			ImpersonatedUser:    target,
+		imp := &reqctx.Impersonation{
+			Outbound:         outbound,
+			InboundUser:      inbound,
+			ImpersonatedUser: target,
 		}
 
-		logging.Emit(req.Context(), logging.FromContext(req.Context()), logging.EventRequestImpersonationApplied,
-			slog.String("outbound_user", logging.Bound(impersonation.UserName, logging.MaxIdentity)),
-			slog.Any("impersonated_header_names", impersonatedHeaderNames(impersonation)))
+		logging.Emit(req.Context(), p.requestLogger, logging.EventRequestImpersonationApplied,
+			slog.String("outbound_user", logging.Bound(outbound.UserName, logging.MaxIdentity)),
+			slog.Any("impersonated_header_names", impersonatedHeaderNames(outbound)))
 
-		handler.ServeHTTP(rw, reqctx.WithImpersonationConfig(req, conf))
+		handler.ServeHTTP(rw, reqctx.WithImpersonation(req, imp))
 	})
+}
+
+// asAuthenticated returns the identity kube-apiserver would authorize an
+// impersonation request for: its authenticator adds system:authenticated to
+// every user it authenticates before the impersonation check runs, so an
+// impersonate grant bound to that group works there. The SubjectAccessReviews
+// ask about the same identity, so the grant works through the proxy too.
+// inbound itself is left untouched; it is still what the access record and the
+// originaluser extras report.
+func asAuthenticated(inbound authuser.Info) authuser.Info {
+	return &authuser.DefaultInfo{
+		Name:   inbound.GetName(),
+		UID:    inbound.GetUID(),
+		Groups: authenticatedGroups(inbound.GetGroups()),
+		Extra:  inbound.GetExtra(),
+	}
+}
+
+// authenticatedGroups returns a copy of groups that includes
+// system:authenticated, added only if absent. It copies because user.Info
+// implementations are not required to return fresh slices, so appending to
+// GetGroups() in place could mutate cached or shared authenticator state.
+func authenticatedGroups(groups []string) []string {
+	out := slices.Clone(groups)
+	if !slices.Contains(out, authuser.AllAuthenticated) {
+		out = append(out, authuser.AllAuthenticated)
+	}
+	return out
 }
 
 // outboundIdentity builds the identity the API server is asked to impersonate
@@ -97,19 +129,13 @@ func (p *Proxy) outboundIdentity(req *http.Request, inbound, target authuser.Inf
 		forwarded = target
 	}
 
-	// Defensively copy the authenticator-owned collections before enriching
-	// them. user.Info implementations are not required to return fresh
-	// slices/maps, so appending to GetGroups() or writing into GetExtra()
-	// could otherwise mutate cached or shared authenticator state.
-	groups := slices.Clone(forwarded.GetGroups())
+	// Both collections are copies: writing into GetExtra() could otherwise
+	// mutate cached or shared authenticator state.
+	groups := authenticatedGroups(forwarded.GetGroups())
 	extra := cloneExtra(forwarded.GetExtra())
 
-	if !slices.Contains(groups, authuser.AllAuthenticated) {
-		groups = append(groups, authuser.AllAuthenticated)
-	}
-
 	if p.config.ExtraUserHeadersClientIPEnabled {
-		extra[accesslog.UserHeaderClientIPKey] = append(extra[accesslog.UserHeaderClientIPKey], reqctx.ClientIP(req))
+		extra[reqctx.UserHeaderClientIPKey] = append(extra[reqctx.UserHeaderClientIPKey], reqctx.ClientIP(req))
 	}
 
 	// append copies into the freshly cloned value slice, so the configured
@@ -119,14 +145,14 @@ func (p *Proxy) outboundIdentity(req *http.Request, inbound, target authuser.Inf
 	}
 
 	if target != nil {
-		extra[accesslog.ExtraKeyOriginalUser] = []string{inbound.GetName()}
+		extra[reqctx.ExtraKeyOriginalUser] = []string{inbound.GetName()}
 
 		if origGroups := inbound.GetGroups(); len(origGroups) > 0 {
-			extra[accesslog.ExtraKeyOriginalGroups] = slices.Clone(origGroups)
+			extra[reqctx.ExtraKeyOriginalGroups] = slices.Clone(origGroups)
 		}
 
 		if inbound.GetUID() != "" {
-			extra[accesslog.ExtraKeyOriginalUID] = []string{inbound.GetUID()}
+			extra[reqctx.ExtraKeyOriginalUID] = []string{inbound.GetUID()}
 		}
 
 		if len(inbound.GetExtra()) > 0 {
@@ -134,7 +160,7 @@ func (p *Proxy) outboundIdentity(req *http.Request, inbound, target authuser.Inf
 			if err != nil {
 				return nil, err
 			}
-			extra[accesslog.ExtraKeyOriginalExtra] = []string{string(jsonExtras)}
+			extra[reqctx.ExtraKeyOriginalExtra] = []string{string(jsonExtras)}
 		}
 	}
 

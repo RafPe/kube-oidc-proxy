@@ -26,11 +26,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - package: ./pkg/util/token
-            target: FuzzParseFromRequest
+          - package: ./pkg/proxy
+            target: FuzzBearerToken
           - package: ./pkg/proxy
             target: FuzzParseTrustedProxies
-          - package: ./pkg/util/flags
+          - package: ./cmd/app/options
             target: FuzzStringToStringSliceSet
     steps:
       - name: Checkout
@@ -44,7 +44,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Generate mocks
-        run: go run go.uber.org/mock/mockgen -package=mocks -destination pkg/proxy/mocks/authenticator.go k8s.io/apiserver/pkg/authentication/authenticator Token
+        run: make mocks
 
       # Inputs go through env rather than ${{ }} interpolation in the shell, so
       # a dispatch value can never be spliced into the command line.

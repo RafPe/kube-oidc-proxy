@@ -139,9 +139,9 @@ change with a changelog entry.
 
 ## Label values
 
-Every label is a closed set. The sets repeat the vocabularies the
-[log records](./logging.md#field-reference) use, so a log query and a PromQL
-query select the same thing.
+Every label is a closed set, defined once in `pkg/metrics/labels.go`. The
+[log records](./logging.md#field-reference) use the same types, so a log query
+and a PromQL query select the same thing.
 
 | Label | Values |
 | --- | --- |
@@ -152,7 +152,7 @@ query select the same thing.
 | `auth_method` | `oidc`, `tokenreview`, `none`. |
 | `outcome` (authentication) | `accepted`, `rejected`, `error`. An OIDC failure then a successful TokenReview is two attempts and one decision. |
 | `decision` | `allow`, `deny`. |
-| `reason` | Empty on allow; on deny one of `unauthorized`, `reserved_identity`, `no_username_claim`, `impersonation_denied`, `too_many_impersonation_values`, `client_canceled`, `internal_error`, `upstream_error`, `authentication_dependency_error`. |
+| `reason` | Empty on allow; on deny one of `unauthorized`, `reserved_identity`, `no_username_claim`, `impersonation_denied`, `too_many_impersonation_values`, `malformed_impersonation`, `client_canceled`, `internal_error`, `upstream_error`, `authentication_dependency_error`, `authorization_dependency_error`. |
 | `review` | `tokenreview`, `sar`. |
 | `outcome` (review) | `allow`, `deny`, `timeout`, `canceled`, `error`, classified from the API call itself. For a TokenReview, `allow` means authenticated. |
 | `cache` / `result` | `tokenreview` or `sar`; `hit`, `miss`, `bypass`. For `sar`, `bypass` is a review spec too large to cache or a cache disabled by a zero TTL. For `tokenreview` only `hit` and `miss` occur: with both TTLs at zero the cache layer is not constructed and no lookup is counted. |
@@ -198,8 +198,9 @@ a 10s default timeout.
   incremented from a pre-shutdown hook. The metrics listener is stopped only
   after those hooks return, so the series is observable — but only to a scrape
   that lands inside the drain window, which is shorter than any ordinary scrape
-  interval. Treat the `audit.flush.failed` log record as the operational signal
-  for that case and the counter as best-effort corroboration.
+  interval. Treat the `proxy.hook.failed` log record with `hook=AuditBackend`
+  as the operational signal for that case and the counter as best-effort
+  corroboration.
 - Not covered by this catalogue and deliberately so: request and response
   sizes, TLS handshake failures on the proxy listener (they end before HTTP
   handling), and transport failures inside an upgraded stream after the

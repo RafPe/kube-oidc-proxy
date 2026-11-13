@@ -111,8 +111,7 @@ func TestCachedAllowNotInheritedAcrossUID(t *testing.T) {
 // another's cached allow decision.
 func TestDecisionCacheKeyCollisionResistance(t *testing.T) {
 	type input struct {
-		resource  string
-		name      string
+		target    impersonationTarget
 		requester user.Info
 	}
 
@@ -121,121 +120,121 @@ func TestDecisionCacheKeyCollisionResistance(t *testing.T) {
 	// same string.
 	tests := map[string]input{
 		"alice impersonates bob": {
-			resource: "users", name: "bob",
+			target:    userImpersonation("bob"),
 			requester: &user.DefaultInfo{Name: "alice"},
 		},
 		"requester/name boundary shifted": {
 			// Naive requester+resource+name concatenation collides with the
 			// case above: "aliceusers"+"users"+"bob" vs "alice"+"users"+"usersbob".
-			resource: "users", name: "usersbob",
+			target:    userImpersonation("usersbob"),
 			requester: &user.DefaultInfo{Name: "aliceusers"},
 		},
 		"boundary-shift counterpart": {
-			resource: "users", name: "bob",
+			target:    userImpersonation("bob"),
 			requester: &user.DefaultInfo{Name: "aliceusers"},
 		},
 		"two groups": {
-			resource: "users", name: "bob",
+			target:    userImpersonation("bob"),
 			requester: &user.DefaultInfo{Name: "alice", Groups: []string{"g1", "g2"}},
 		},
 		"one group with separator in name": {
-			resource: "users", name: "bob",
+			target:    userImpersonation("bob"),
 			requester: &user.DefaultInfo{Name: "alice", Groups: []string{"g1,g2"}},
 		},
 		"group boundary shifted": {
-			resource: "users", name: "bob",
+			target:    userImpersonation("bob"),
 			requester: &user.DefaultInfo{Name: "alice", Groups: []string{"g", "1g2"}},
 		},
 		"extra with two values": {
-			resource: "users", name: "bob",
+			target:    userImpersonation("bob"),
 			requester: &user.DefaultInfo{Name: "alice", Extra: map[string][]string{"k": {"ab", "c"}}},
 		},
 		"extra value boundary shifted": {
-			resource: "users", name: "bob",
+			target:    userImpersonation("bob"),
 			requester: &user.DefaultInfo{Name: "alice", Extra: map[string][]string{"k": {"a", "bc"}}},
 		},
 		"extra key/value boundary shifted": {
-			resource: "users", name: "bob",
+			target:    userImpersonation("bob"),
 			requester: &user.DefaultInfo{Name: "alice", Extra: map[string][]string{"ka": {"b", "c"}}},
 		},
 		"group vs extra holding same strings": {
-			resource: "users", name: "bob",
+			target:    userImpersonation("bob"),
 			requester: &user.DefaultInfo{Name: "alice", Extra: map[string][]string{"g1": {"g2"}}},
 		},
 		"same target as group kind": {
-			resource: "groups", name: "bob",
+			target:    groupImpersonation("bob"),
 			requester: &user.DefaultInfo{Name: "alice"},
 		},
 		"same target as uid kind": {
-			resource: "uids", name: "bob",
+			target:    uidImpersonation("bob"),
 			requester: &user.DefaultInfo{Name: "alice"},
 		},
 		"same target as extra kind": {
-			resource: "userextras/team", name: "bob",
+			target:    extraImpersonation("team", "bob"),
 			requester: &user.DefaultInfo{Name: "alice"},
 		},
 		"subresource/name boundary shifted": {
-			resource: "userextras/teambob", name: "",
+			target:    extraImpersonation("teambob", ""),
 			requester: &user.DefaultInfo{Name: "alice"},
 		},
 		"colon-joined concatenation, colon in requester": {
 			// Colon-delimited requester:resource:name concatenation renders
 			// this and the case below as "alice:users:bob".
-			resource: "users", name: "bob",
+			target:    userImpersonation("bob"),
 			requester: &user.DefaultInfo{Name: "alice:users"},
 		},
 		"colon-joined concatenation, colon in target": {
-			resource: "users", name: "users:bob",
+			target:    userImpersonation("users:bob"),
 			requester: &user.DefaultInfo{Name: "alice"},
 		},
 		"space-joined concatenation, space in requester": {
 			// Space-delimited concatenation renders this and the case below
 			// as "alice users bob".
-			resource: "users", name: "bob",
+			target:    userImpersonation("bob"),
 			requester: &user.DefaultInfo{Name: "alice users"},
 		},
 		"space-joined concatenation, space in target": {
-			resource: "users", name: "users bob",
+			target:    userImpersonation("users bob"),
 			requester: &user.DefaultInfo{Name: "alice"},
 		},
 		"unicode requester": {
-			resource: "users", name: "bob",
+			target:    userImpersonation("bob"),
 			requester: &user.DefaultInfo{Name: "ålice"},
 		},
 		"unicode target, precomposed form": {
 			// U+00F6 LATIN SMALL LETTER O WITH DIAERESIS.
-			resource: "users", name: "böb",
+			target:    userImpersonation("böb"),
 			requester: &user.DefaultInfo{Name: "alice"},
 		},
 		"unicode target, decomposed form": {
 			// "o" followed by U+0308 COMBINING DIAERESIS: canonically equivalent
 			// to the precomposed case yet a distinct byte sequence, so it must
 			// remain a distinct authorization question and key.
-			resource: "users", name: "bo\u0308b",
+			target:    userImpersonation("bo\u0308b"),
 			requester: &user.DefaultInfo{Name: "alice"},
 		},
 		"empty requester name": {
-			resource: "users", name: "bob",
+			target:    userImpersonation("bob"),
 			requester: &user.DefaultInfo{Name: ""},
 		},
 		"empty group name": {
-			resource: "users", name: "bob",
+			target:    userImpersonation("bob"),
 			requester: &user.DefaultInfo{Name: "alice", Groups: []string{""}},
 		},
 		"empty extra value": {
-			resource: "users", name: "bob",
+			target:    userImpersonation("bob"),
 			requester: &user.DefaultInfo{Name: "alice", Extra: map[string][]string{"k": {""}}},
 		},
 		"extra key with no values": {
-			resource: "users", name: "bob",
+			target:    userImpersonation("bob"),
 			requester: &user.DefaultInfo{Name: "alice", Extra: map[string][]string{"k": {}}},
 		},
 		"requester uid": {
-			resource: "users", name: "bob",
+			target:    userImpersonation("bob"),
 			requester: &user.DefaultInfo{Name: "alice", UID: "uid-1"},
 		},
 		"same identity differing only in uid": {
-			resource: "users", name: "bob",
+			target:    userImpersonation("bob"),
 			requester: &user.DefaultInfo{Name: "alice", UID: "uid-2"},
 		},
 	}
@@ -244,7 +243,7 @@ func TestDecisionCacheKeyCollisionResistance(t *testing.T) {
 
 	keys := map[string]string{}
 	for testName, in := range tests {
-		spec := impersonationReviewSpec(in.resource, in.name, in.requester)
+		spec := impersonationReviewSpec(in.target, in.requester)
 		key, ok := cache.key(&spec)
 		if !ok {
 			t.Fatalf("%s: key() not cacheable, want cacheable", testName)

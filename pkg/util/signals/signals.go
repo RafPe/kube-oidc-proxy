@@ -15,8 +15,9 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 )
 
-// forcedSignalCount is how many further signals are absorbed after the first
-// before the process stops waiting for a graceful teardown and exits.
+// forcedSignalCount is the repeat signal, counted after the first, that stops
+// waiting for the graceful teardown and exits: the repeats before it are
+// absorbed.
 const forcedSignalCount = 3
 
 // signalName renders a signal as the name an operator typed or a supervisor
@@ -33,22 +34,22 @@ func signalName(sig os.Signal) string {
 	}
 }
 
-// Handler installs a SIGINT/SIGTERM handler and returns a stop channel that is
-// closed on the first such signal, requesting a graceful shutdown. Each
-// subsequent signal (up to three) is absorbed while the teardown runs; the
-// next one after that forces an immediate os.Exit(1). Handler is intended to be
-// called once during process startup.
+// NotifyStop installs a SIGINT/SIGTERM handler and returns a stop channel that
+// is closed on the first such signal, requesting a graceful shutdown. The next
+// two signals are absorbed while the teardown runs; the third repeat forces an
+// immediate os.Exit(1). NotifyStop is intended to be called once during
+// process startup.
 //
 // logger is the shutdown-component logger the handler reports through.
-func Handler(logger *slog.Logger) chan struct{} {
+func NotifyStop(logger *slog.Logger) <-chan struct{} {
 	ch := make(chan os.Signal, 2)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 
 	return handle(logger, ch, func() { os.Exit(1) })
 }
 
-// handle is Handler's behaviour with the two process-wide dependencies passed
-// in: the signal source and the forced exit. Handler supplies the real ones; a
+// handle is NotifyStop's behaviour with the two process-wide dependencies passed
+// in: the signal source and the forced exit. NotifyStop supplies the real ones; a
 // test supplies a channel it writes to and an exit it can observe, so the whole
 // sequence is exercised without signalling the test process or killing it.
 //

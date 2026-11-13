@@ -330,7 +330,7 @@ func (g *generator) exec(ctx context.Context) (int, error) {
 		Stdout: io.Discard,
 		Stderr: io.Discard,
 	}); err != nil {
-		return 0, fmt.Errorf("exec into %s/%s failed: %s", g.namespace, demoPod, err)
+		return 0, fmt.Errorf("exec into %s/%s failed: %w", g.namespace, demoPod, err)
 	}
 
 	return statusNone, nil

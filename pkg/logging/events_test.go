@@ -42,7 +42,7 @@ func TestEventTypeGrammar(t *testing.T) {
 		}
 		seen[e] = true
 	}
-	if got, want := len(AllEventTypes()), 43; got != want {
+	if got, want := len(AllEventTypes()), 41; got != want {
 		t.Errorf("registry has %d events, want %d", got, want)
 	}
 }

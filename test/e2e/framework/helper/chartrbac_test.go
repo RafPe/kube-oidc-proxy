@@ -10,7 +10,7 @@ import (
 
 	"k8s.io/apiserver/pkg/authentication/user"
 
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/accesslog"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 )
 
 // repoRoot locates the repository from this file, so the test needs no
@@ -56,7 +56,7 @@ func TestChartGrantsWhatTheProxyNeeds(t *testing.T) {
 	// credential ID the Kubernetes authenticator adds to every OIDC identity.
 	// The API server lowercases extra keys taken from headers before
 	// authorizing them, so the grant must be lowercase.
-	for _, key := range append(accesslog.FixedImpersonationExtraKeys(), user.CredentialIDKey) {
+	for _, key := range append(reqctx.FixedImpersonationExtraKeys(), user.CredentialIDKey) {
 		needs = append(needs, need{"authentication.k8s.io", "userextras/" + strings.ToLower(key), "impersonate"})
 	}
 

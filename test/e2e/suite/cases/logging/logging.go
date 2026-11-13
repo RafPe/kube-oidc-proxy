@@ -19,7 +19,6 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/suite/cases/sharedtests"
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
-	"github.com/rafpe/kube-oidc-proxy/test/util"
 )
 
 const (
@@ -83,32 +82,32 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 	It("correlates a successful request across the access record, the terminal record and the response header", func() {
 		grantPodList(f, defaultUsername)
 
-		resp := doRequest(f, validToken(f), nil)
+		resp := doRequest(f, f.SignedTokenFor(defaultUsername, []string{"group-1"}), nil)
 		Expect(resp.StatusCode).To(Equal(http.StatusOK))
 		id := resp.Header.Get("Audit-ID")
 		Expect(id).To(MatchRegexp(`^[0-9a-f-]{36}$`))
 
 		Eventually(func() []map[string]any {
 			recs, _ := records(f)
-			return sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)
+			return sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)
 		}, 20*time.Second, time.Second).Should(HaveLen(1))
 		recs, _ := records(f)
-		dec := sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)[0]
+		dec := sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)[0]
 		Expect(dec).To(HaveKeyWithValue("event", "AuSuccess"))
 		Expect(dec).To(HaveKeyWithValue("auth_method", "oidc"))
 		Expect(dec).To(HaveKeyWithValue("k8s_resource", "pods"))
 		Expect(dec).To(HaveKey("issuer_name"))
-		done := sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.response.completed"), id)
+		done := sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.response.completed"), id)
 		Expect(done).To(HaveLen(1))
 		Expect(done[0]).To(HaveKeyWithValue("http_status", float64(200)))
 		Expect(done[0]).To(HaveKeyWithValue("termination", "normal"))
 	})
 
 	It("does not adopt a client-supplied Audit-ID", func() {
-		resp := doRequest(f, validToken(f), map[string]string{"Audit-ID": "client-chosen"})
+		resp := doRequest(f, f.SignedTokenFor(defaultUsername, []string{"group-1"}), map[string]string{"Audit-ID": "client-chosen"})
 		Expect(resp.Header.Get("Audit-ID")).NotTo(Equal("client-chosen"))
 		recs, _ := records(f)
-		Expect(sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.access.decided"), "client-chosen")).To(BeEmpty())
+		Expect(sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.access.decided"), "client-chosen")).To(BeEmpty())
 	})
 
 	It("records a rejected token with a reason and never the token itself", func() {
@@ -118,10 +117,10 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 		id := resp.Header.Get("Audit-ID")
 		Eventually(func() []map[string]any {
 			recs, _ := records(f)
-			return sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)
+			return sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)
 		}, 20*time.Second, time.Second).Should(HaveLen(1))
 		recs, raw := records(f)
-		Expect(sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)[0]).To(HaveKeyWithValue("reason", "unauthorized"))
+		Expect(sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)[0]).To(HaveKeyWithValue("reason", "unauthorized"))
 		Expect(raw).NotTo(ContainSubstring(tok))
 		// The stream is checked for an unmasked credential rather than for the
 		// header name: at -v=10 client-go's debug round tripper prints a curl
@@ -135,7 +134,7 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 		// with a group it does not: a group header on its own never reaches a
 		// SubjectAccessReview, so the denial being asserted here would not
 		// happen. The SAR clears the user and refuses the group.
-		resp := doRequest(f, validToken(f), map[string]string{
+		resp := doRequest(f, f.SignedTokenFor(defaultUsername, []string{"group-1"}), map[string]string{
 			"Impersonate-User":  "ok-to-impersonate@nodomain.dev",
 			"Impersonate-Group": "system:masters",
 		})
@@ -143,24 +142,24 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 		id := resp.Header.Get("Audit-ID")
 		Eventually(func() []map[string]any {
 			recs, _ := records(f)
-			return sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)
+			return sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)
 		}, 20*time.Second, time.Second).Should(HaveLen(1))
 		recs, _ := records(f)
-		dec := sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)[0]
+		dec := sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)[0]
 		Expect(dec).To(HaveKeyWithValue("event", "AuFail"))
 		Expect(dec).To(HaveKeyWithValue("reason", "impersonation_denied"))
 		Expect(dec).To(HaveKeyWithValue("target_kind", "group"))
 	})
 
 	It("drops forwarded headers from an untrusted client and says so at WARN", func() {
-		resp := doRequest(f, validToken(f), map[string]string{"X-Forwarded-For": "9.9.9.9"})
+		resp := doRequest(f, f.SignedTokenFor(defaultUsername, []string{"group-1"}), map[string]string{"X-Forwarded-For": "9.9.9.9"})
 		id := resp.Header.Get("Audit-ID")
 		Eventually(func() []map[string]any {
 			recs, _ := records(f)
-			return sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.headers.dropped"), id)
+			return sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.headers.dropped"), id)
 		}, 20*time.Second, time.Second).Should(HaveLen(1))
 		recs, _ := records(f)
-		Expect(sharedtests.WithRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)[0]).NotTo(HaveKeyWithValue("src_ip", "9.9.9.9"))
+		Expect(sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)[0]).NotTo(HaveKeyWithValue("src_ip", "9.9.9.9"))
 	})
 
 	It("bridges client-go output as component=k8s without event_type", func() {
@@ -176,7 +175,7 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 		extraOIDCVolumes, fakeAPIServerURL, err := f.Helper().DeployFakeAPIServer(f.Namespace.Name)
 		Expect(err).NotTo(HaveOccurred())
 		f.DeployProxyWith(extraOIDCVolumes, fmt.Sprintf("--server=%s", fakeAPIServerURL), "--certificate-authority=/fake-apiserver/ca.pem")
-		resp := doRequest(f, validToken(f), nil)
+		resp := doRequest(f, f.SignedTokenFor(defaultUsername, []string{"group-1"}), nil)
 		id := resp.Header.Get("Audit-ID")
 
 		// The fake API server logs header names without their values, so the
@@ -226,18 +225,6 @@ func nonEmptyLines(raw string) []string {
 	}
 
 	return out
-}
-
-// validToken mints a token the proxy's OIDC authenticator accepts.
-func validToken(f *framework.Framework) string {
-	payload, err := util.NewTokenPayloadForIdentity(f.IssuerURL(), f.ClientID(),
-		defaultUsername, []string{"group-1"}, time.Now().Add(time.Minute*10))
-	Expect(err).NotTo(HaveOccurred())
-
-	signedToken, err := util.SignToken(f.IssuerKeyBundle(), payload)
-	Expect(err).NotTo(HaveOccurred())
-
-	return signedToken
 }
 
 // doRequest lists pods through the proxy with the given bearer token and extra

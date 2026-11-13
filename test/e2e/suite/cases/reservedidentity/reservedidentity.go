@@ -20,7 +20,6 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/suite/cases/sharedtests"
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
-	"github.com/rafpe/kube-oidc-proxy/test/util"
 )
 
 const (
@@ -82,7 +81,7 @@ var _ = framework.CasesDescribe("Reserved identity", Label("shard-c"), func() {
 
 		It("should refuse a token whose groups claim contains system:masters, without reaching the SubjectAccessReview", func() {
 			By("Listing pods with a system:masters group claim and an Impersonate-User header")
-			code, body := listPods(f, signedTokenFor(f, defaultUsername, []string{reservedGroup}), impersonationTarget)
+			code, body := listPods(f, f.SignedTokenFor(defaultUsername, []string{reservedGroup}), impersonationTarget)
 
 			Expect(code).To(Equal(http.StatusForbidden), body)
 			Expect(body).To(ContainSubstring(forbiddenBody))
@@ -111,7 +110,7 @@ var _ = framework.CasesDescribe("Reserved identity", Label("shard-c"), func() {
 
 		It("should refuse a token whose username claim has the reserved system: prefix", func() {
 			By("Listing pods as a service account username, with no impersonation")
-			code, body := listPods(f, signedTokenFor(f, reservedUsername, []string{"group-1"}), "")
+			code, body := listPods(f, f.SignedTokenFor(reservedUsername, []string{"group-1"}), "")
 
 			Expect(code).To(Equal(http.StatusForbidden), body)
 			Expect(body).To(ContainSubstring(forbiddenBody))
@@ -123,7 +122,7 @@ var _ = framework.CasesDescribe("Reserved identity", Label("shard-c"), func() {
 			// also emits it must not be refused. The username rule has no such
 			// exception, which the spec above covers.
 			By("Listing pods with a system:authenticated group claim")
-			code, body := listPods(f, signedTokenFor(f, defaultUsername, []string{"system:authenticated", "group-1"}), "")
+			code, body := listPods(f, f.SignedTokenFor(defaultUsername, []string{"system:authenticated", "group-1"}), "")
 
 			Expect(code).To(Equal(http.StatusOK), body)
 		})
@@ -145,7 +144,7 @@ var _ = framework.CasesDescribe("Reserved identity", Label("shard-c"), func() {
 			grantPodList(f, impersonationTarget)
 
 			By("Listing pods with a system:masters group claim and an Impersonate-User header")
-			code, body := listPods(f, signedTokenFor(f, defaultUsername, []string{reservedGroup}), impersonationTarget)
+			code, body := listPods(f, f.SignedTokenFor(defaultUsername, []string{reservedGroup}), impersonationTarget)
 
 			// 200 only because the SubjectAccessReview authorizing the
 			// impersonation was built with the token's forged system:masters
@@ -185,19 +184,6 @@ func grantPodList(f *framework.Framework, username string) {
 			RoleRef:  rbacv1.RoleRef{Name: role.Name, Kind: "Role"},
 		}, metav1.CreateOptions{})
 	Expect(err).NotTo(HaveOccurred())
-}
-
-// signedTokenFor mints a token for the given identity, signed by the suite's
-// mock issuer.
-func signedTokenFor(f *framework.Framework, username string, groups []string) string {
-	payload, err := util.NewTokenPayloadForIdentity(f.IssuerURL(), f.ClientID(),
-		username, groups, time.Now().Add(time.Minute*10))
-	Expect(err).NotTo(HaveOccurred())
-
-	signedToken, err := util.SignToken(f.IssuerKeyBundle(), payload)
-	Expect(err).NotTo(HaveOccurred())
-
-	return signedToken
 }
 
 // listPods lists pods in the test namespace through the proxy with the given

@@ -4,32 +4,24 @@ package options
 import (
 	"net"
 
-	"github.com/spf13/pflag"
 	apiserveroptions "k8s.io/apiserver/pkg/server/options"
 	cliflag "k8s.io/component-base/cli/flag"
 )
 
-type SecureServingOptions struct {
-	*apiserveroptions.SecureServingOptions
-}
-
-func NewSecureServingOptions(nfs *cliflag.NamedFlagSets) *SecureServingOptions {
-	s := &SecureServingOptions{
-		SecureServingOptions: &apiserveroptions.SecureServingOptions{
-			BindAddress: net.ParseIP("0.0.0.0"),
-			BindPort:    6443,
-			Required:    true,
-			ServerCert: apiserveroptions.GeneratableKeyCert{
-				PairName:      AppName,
-				CertDirectory: "/var/run/kubernetes",
-			},
+// newSecureServingOptions binds the apiserver's own serving flags under the
+// Secure Serving flag set, with the proxy's defaults: all interfaces, port
+// 6443, a certificate pair named after the binary. The proxy adds nothing else
+// to them, so it holds the apiserver type directly.
+func newSecureServingOptions(nfs *cliflag.NamedFlagSets) *apiserveroptions.SecureServingOptions {
+	s := &apiserveroptions.SecureServingOptions{
+		BindAddress: net.ParseIP("0.0.0.0"),
+		BindPort:    6443,
+		Required:    true,
+		ServerCert: apiserveroptions.GeneratableKeyCert{
+			PairName:      AppName,
+			CertDirectory: "/var/run/kubernetes",
 		},
 	}
-
-	return s.AddFlags(nfs.FlagSet("Secure Serving"))
-}
-
-func (s *SecureServingOptions) AddFlags(fs *pflag.FlagSet) *SecureServingOptions {
-	s.SecureServingOptions.AddFlags(fs)
+	s.AddFlags(nfs.FlagSet("Secure Serving"))
 	return s
 }

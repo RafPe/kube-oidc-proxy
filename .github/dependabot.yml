@@ -5,6 +5,13 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      # The k8s.io libraries are released together and must move in lockstep
+      # (test/e2e/versions checks it), so a bump arrives as one PR rather than
+      # one per module that could never pass on its own.
+      kubernetes:
+        patterns:
+          - "k8s.io/*"
 
   # GitHub Actions used by the workflows in .github/workflows.
   - package-ecosystem: "github-actions"

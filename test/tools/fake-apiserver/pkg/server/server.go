@@ -5,13 +5,12 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"sort"
 	"strings"
-
-	"k8s.io/klog/v2"
 )
 
 // hopByHopHeaders are connection and framing headers that must not be copied
@@ -75,23 +74,23 @@ func (s *Server) Run(bindAddress, listenPort string) (<-chan struct{}, error) {
 
 		err := http.ServeTLS(l, s, s.certFile, s.keyFile)
 		if err != nil {
-			klog.Errorf("stopped serving TLS (%s): %s", serveAddr, err)
+			slog.Error("fake apiserver: stopped serving TLS", slog.String("address", serveAddr), slog.Any("error", err))
 		}
 	}()
 
-	klog.Infof("fake API server listening and serving on %s", serveAddr)
+	slog.Info("fake apiserver: listening and serving", slog.String("address", serveAddr))
 
 	return compCh, nil
 }
 
 func (s *Server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
-	klog.Infof("(%s) Fake API server received url %s", r.RemoteAddr, r.URL)
+	slog.Info("fake apiserver: received request", slog.String("remote", r.RemoteAddr), slog.String("url", r.URL.String()))
 
 	// Log header names only, never values. The proxy forwards end-user
 	// credentials upstream (Authorization, Impersonate-*) and this tool's logs
 	// are collected as CI artifacts, so values must not be written out.
-	klog.Infof("(%s) Request header names: %s",
-		r.RemoteAddr, strings.Join(headerNames(r.Header), ", "))
+	slog.Info("fake apiserver: request header names",
+		slog.String("remote", r.RemoteAddr), slog.String("headers", strings.Join(headerNames(r.Header), ", ")))
 
 	// Echo the request headers back. The e2e "Headers" case asserts on the
 	// Impersonate-Extra-* headers the proxy added by reading them off this
@@ -107,12 +106,12 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		klog.Errorf("failed to read request body: %s", err)
+		slog.Error("fake apiserver: failed to read request body", slog.String("remote", r.RemoteAddr), slog.Any("error", err))
 		rw.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
-	klog.Infof("(%s) Request body: %d bytes", r.RemoteAddr, len(body))
+	slog.Info("fake apiserver: request body", slog.String("remote", r.RemoteAddr), slog.Int("bytes", len(body)))
 
 	// The body is caller-controlled and echoed back verbatim, so pin the
 	// response to an opaque type and forbid MIME sniffing — a client must never
@@ -126,7 +125,7 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	rw.WriteHeader(http.StatusOK)
 
 	if _, err := rw.Write(body); err != nil {
-		klog.Errorf("failed to write request body to response: %s", err)
+		slog.Error("fake apiserver: failed to write request body to response", slog.String("remote", r.RemoteAddr), slog.Any("error", err))
 	}
 }
 

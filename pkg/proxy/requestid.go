@@ -4,12 +4,10 @@ package proxy
 import (
 	"net"
 	"net/http"
-	"strings"
 	"unicode"
 
 	"k8s.io/apimachinery/pkg/util/uuid"
 
-	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 )
 
@@ -25,9 +23,9 @@ const (
 // the header and overwrites any context value, so the header is the one channel
 // both audit chains and the upstream API server honour.
 //
-// It is also where the request-scoped logger is installed. The id goes on the
-// context (never bound onto a logger with With), so Emit can supply request_id
-// to any event that requires it however deep in the chain the call site sits.
+// The id also goes on the context (never bound onto a logger with With), so
+// Emit can supply request_id to any event that requires it however deep in the
+// chain the call site sits.
 func (p *Proxy) withRequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		inbound := validRequestID(r.Header.Get(headerAuditID))
@@ -47,8 +45,6 @@ func (p *Proxy) withRequestID(next http.Handler) http.Handler {
 		r.Header.Del(headerRequestID)
 		w.Header().Set(headerAuditID, id)
 
-		r = r.WithContext(logging.NewContext(r.Context(), p.logger))
-
 		next.ServeHTTP(w, reqctx.WithRequestID(r, id))
 	})
 }
@@ -64,7 +60,7 @@ func validRequestID(v string) string {
 			return ""
 		}
 	}
-	return strings.TrimSpace(v)
+	return v
 }
 
 // peerIsTrusted reports whether the immediate peer is inside one of the

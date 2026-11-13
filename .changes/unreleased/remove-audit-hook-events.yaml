@@ -1,0 +1,3 @@
+kind: Removed
+body: |-
+  The `audit.backend.failed` and `audit.flush.failed` log events are removed. An audit backend that fails to start is reported once as `proxy.startup.failed`; a failed flush at shutdown as `proxy.hook.failed` with `hook=AuditBackend`.

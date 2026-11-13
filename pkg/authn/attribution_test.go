@@ -10,7 +10,7 @@ import (
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	authuser "k8s.io/apiserver/pkg/authentication/user"
 
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/mocks"
+	"github.com/rafpe/kube-oidc-proxy/pkg/authn/authntest"
 )
 
 // TestAttributeToIssuerAttributesOnlyAcceptedTokens pins what the wrapper reports.
@@ -34,7 +34,7 @@ func TestAttributeToIssuerAttributesOnlyAcceptedTokens(t *testing.T) {
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
-			inner := mocks.NewMockToken(ctrl)
+			inner := authntest.NewMockToken(ctrl)
 			inner.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(test.resp, test.ok, test.err)
 
 			ctx, holder := WithIssuerHolder(context.Background())

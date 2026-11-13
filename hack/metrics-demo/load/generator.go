@@ -18,7 +18,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/rafpe/kube-oidc-proxy/test/util"
+	"github.com/rafpe/kube-oidc-proxy/test/util/idtoken"
+	"github.com/rafpe/kube-oidc-proxy/test/util/promtext"
 )
 
 type generator struct {
@@ -56,7 +57,7 @@ func (p *pinnedPod) Close() {
 func (g *generator) pin(ctx context.Context, logger *slog.Logger) (*pinnedPod, error) {
 	pods, err := g.cluster.CoreV1().Pods(g.namespace).List(ctx, metav1.ListOptions{LabelSelector: proxyPodSelector})
 	if err != nil {
-		return nil, fmt.Errorf("failed to list the proxy pods in %s: %s", g.namespace, err)
+		return nil, fmt.Errorf("failed to list the proxy pods in %s: %w", g.namespace, err)
 	}
 
 	var pod *corev1.Pod
@@ -98,14 +99,14 @@ func (g *generator) pin(ctx context.Context, logger *slog.Logger) (*pinnedPod, e
 }
 
 // scrape reads the pinned replica's exposition.
-func (g *generator) scrape(ctx context.Context) ([]util.Sample, error) {
+func (g *generator) scrape(ctx context.Context) ([]promtext.Sample, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.pinned.metrics.URL()+"/metrics", nil)
 	if err != nil {
 		return nil, err
 	}
 	resp, err := g.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to scrape %s: %s", g.pinned.name, err)
+		return nil, fmt.Errorf("failed to scrape %s: %w", g.pinned.name, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
@@ -116,7 +117,7 @@ func (g *generator) scrape(ctx context.Context) ([]util.Sample, error) {
 		return nil, fmt.Errorf("scraping %s answered %d", g.pinned.name, resp.StatusCode)
 	}
 
-	return util.ParseMetrics(string(body))
+	return promtext.Parse(string(body))
 }
 
 // sarMissLabels selects the SAR decision cache's misses. A fresh literal on
@@ -124,10 +125,10 @@ func (g *generator) scrape(ctx context.Context) ([]util.Sample, error) {
 func sarMissLabels() map[string]string { return map[string]string{"cache": "sar", "result": "miss"} }
 
 // seriesSum totals every series of name whose labels include the given pairs,
-// which is what a delta assertion needs: util.SampleValue answers with the
+// which is what a delta assertion needs: promtext.SampleValue answers with the
 // first matching series only, and a denial reason or a review outcome is
 // spread over several.
-func seriesSum(samples []util.Sample, name string, labels map[string]string) float64 {
+func seriesSum(samples []promtext.Sample, name string, labels map[string]string) float64 {
 	var total float64
 	for _, s := range samples {
 		if s.Name != name {
@@ -152,7 +153,7 @@ func seriesSum(samples []util.Sample, name string, labels map[string]string) flo
 func newGenerator(logger *slog.Logger, st *state, namespace string, tun *tunnel) (*generator, error) {
 	restConfig, err := clientcmd.BuildConfigFromFlags("", st.kubeconfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build a rest config from %q: %s", st.kubeconfig, err)
+		return nil, fmt.Errorf("failed to build a rest config from %q: %w", st.kubeconfig, err)
 	}
 	cluster, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
@@ -176,12 +177,12 @@ func newGenerator(logger *slog.Logger, st *state, namespace string, tun *tunnel)
 
 // token mints an OIDC token for an identity the demo issuer will vouch for.
 func (g *generator) token(username string, groups []string, exp time.Time) (string, error) {
-	payload, err := util.NewTokenPayloadForIdentity(g.st.issuerURL, demoClientID, username, groups, exp)
+	payload, err := idtoken.NewPayloadForIdentity(g.st.issuerURL, demoClientID, username, groups, exp)
 	if err != nil {
 		return "", err
 	}
 
-	return util.SignToken(g.st.issuerBundle, payload)
+	return idtoken.Sign(g.st.issuerBundle, payload)
 }
 
 func (g *generator) validToken() (string, error) {
@@ -189,7 +190,7 @@ func (g *generator) validToken() (string, error) {
 }
 
 // tokenWithoutUsername mints a token the demo issuer signs and the proxy
-// accepts, whose username claim is empty. util.NewTokenPayloadForIdentity
+// accepts, whose username claim is empty. idtoken.NewPayloadForIdentity
 // always writes an "email", so the payload is built here instead.
 func (g *generator) tokenWithoutUsername(exp time.Time) (string, error) {
 	payload, err := json.Marshal(map[string]interface{}{
@@ -203,7 +204,7 @@ func (g *generator) tokenWithoutUsername(exp time.Time) (string, error) {
 		return "", fmt.Errorf("failed to marshal the token payload: %w", err)
 	}
 
-	return util.SignToken(g.st.issuerBundle, payload)
+	return idtoken.Sign(g.st.issuerBundle, payload)
 }
 
 // restConfig points client-go at the proxy with a bearer token, verifying the
@@ -269,7 +270,7 @@ func (g *generator) serviceAccountToken(ctx context.Context) (string, error) {
 	tr, err := g.cluster.CoreV1().ServiceAccounts(g.namespace).
 		CreateToken(ctx, demoSA, req, metav1.CreateOptions{})
 	if err != nil {
-		return "", fmt.Errorf("failed to mint a token for serviceaccount %s/%s: %s", g.namespace, demoSA, err)
+		return "", fmt.Errorf("failed to mint a token for serviceaccount %s/%s: %w", g.namespace, demoSA, err)
 	}
 
 	return tr.Status.Token, nil

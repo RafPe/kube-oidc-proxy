@@ -52,7 +52,7 @@ func New(masterNodesCount, workerNodesCount int) (*Environment, error) {
 
 func (e *Environment) Create() error {
 	if err := e.kind.Create(); err != nil {
-		return fmt.Errorf("failed to create kind cluster: %s", err)
+		return fmt.Errorf("failed to create kind cluster: %w", err)
 	}
 
 	if err := e.kind.LoadAllImages(); err != nil {
@@ -117,7 +117,7 @@ func RootPath() (string, error) {
 
 	rootPath, err := filepath.Abs(rootPath)
 	if err != nil {
-		return "", fmt.Errorf("failed to get absolute path %q: %s",
+		return "", fmt.Errorf("failed to get absolute path %q: %w",
 			rootPath, err)
 	}
 

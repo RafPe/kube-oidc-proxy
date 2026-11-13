@@ -4,13 +4,13 @@ package main
 import (
 	"testing"
 
-	"github.com/rafpe/kube-oidc-proxy/test/util"
+	"github.com/rafpe/kube-oidc-proxy/test/util/promtext"
 )
 
 // TestSeriesSumTotalsMatchingSeriesOnly pins the delta helper: every series of
 // the family whose labels include the given pairs is summed, and nothing else.
 func TestSeriesSumTotalsMatchingSeriesOnly(t *testing.T) {
-	samples := []util.Sample{
+	samples := []promtext.Sample{
 		{Name: "kube_oidc_proxy_cache_lookups_total", Labels: map[string]string{"cache": "sar", "result": "miss"}, Value: 2},
 		{Name: "kube_oidc_proxy_cache_lookups_total", Labels: map[string]string{"cache": "sar", "result": "miss", "pod": "b"}, Value: 3},
 		{Name: "kube_oidc_proxy_cache_lookups_total", Labels: map[string]string{"cache": "sar", "result": "hit"}, Value: 7},

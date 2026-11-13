@@ -1,0 +1,3 @@
+kind: Changed
+body: |-
+  `--token-passthrough-request-timeout` is validated even when token passthrough is disabled, like the other timeout flags; a value of zero or less now fails startup.

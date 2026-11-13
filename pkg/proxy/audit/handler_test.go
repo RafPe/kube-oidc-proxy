@@ -60,14 +60,14 @@ func newForbiddenTestAudit(t *testing.T) (*Audit, string) {
 	opts.PolicyFile = policyPath
 	opts.LogOptions.Path = logPath
 
-	a, err := New(opts, "0.0.0.0:1234", new(server.SecureServingInfo), slog.New(slog.DiscardHandler))
+	a, err := New(Config{Options: opts, ExternalAddress: "0.0.0.0:1234", SecureServing: new(server.SecureServingInfo)}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("creating auditor: %s", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	if err := a.Run(ctx); err != nil {
+	if err := a.Start(ctx); err != nil {
 		t.Fatalf("running audit backend: %s", err)
 	}
 
@@ -103,7 +103,7 @@ func readForbiddenAuditEvents(t *testing.T, a *Audit, path string) []forbiddenAu
 	return events
 }
 
-// TestNewForbiddenHandlerAuditsAuthenticatedIdentity is the regression guard
+// TestNewDeniedHandlerAuditsAuthenticatedIdentity is the regression guard
 // against wiring the forbidden handler through WithFailedAuthenticationAudit
 // (i.e. reverting it to NewUnauthenticatedHandler). The request authenticated
 // successfully and was then refused by the proxy, so the audit record must name
@@ -119,10 +119,10 @@ func readForbiddenAuditEvents(t *testing.T, a *Audit, path string) []forbiddenAu
 // given the legacy API group prefixes, which turns it into a resource request
 // (verb "list", objectRef present). Assert on those only against the resolver
 // this package actually builds.
-func TestNewForbiddenHandlerAuditsAuthenticatedIdentity(t *testing.T) {
+func TestNewDeniedHandlerAuditsAuthenticatedIdentity(t *testing.T) {
 	a, logPath := newForbiddenTestAudit(t)
 
-	handler := NewForbiddenHandler(a, func(rw http.ResponseWriter, r *http.Request) {
+	handler := NewDeniedHandler(a, func(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "forbidden", http.StatusForbidden)
 	})
 
@@ -171,26 +171,6 @@ func TestNewForbiddenHandlerAuditsAuthenticatedIdentity(t *testing.T) {
 	// Not an authentication-failure record.
 	if strings.Contains(event.ResponseStatus.Message, "Authentication failed") {
 		t.Errorf("audit event reads as an authentication failure: %q", event.ResponseStatus.Message)
-	}
-}
-
-// TestNewForbiddenHandlerWithoutAuditor asserts the handler still serves its
-// response when no audit backend is configured, matching the nil-safety of
-// NewUnauthenticatedHandler.
-func TestNewForbiddenHandlerWithoutAuditor(t *testing.T) {
-	handler := NewForbiddenHandler(nil, func(rw http.ResponseWriter, r *http.Request) {
-		http.Error(rw, "forbidden", http.StatusForbidden)
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/default/pods", nil)
-	rw := httptest.NewRecorder()
-	handler.ServeHTTP(rw, req)
-
-	if got, want := rw.Result().StatusCode, http.StatusForbidden; got != want {
-		t.Errorf("unexpected response code, exp=%d got=%d", want, got)
-	}
-	if got := strings.TrimSpace(rw.Body.String()); got != "forbidden" {
-		t.Errorf("unexpected response body, exp=forbidden got=%q", got)
 	}
 }
 

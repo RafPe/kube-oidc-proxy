@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/rafpe/kube-oidc-proxy/test/util"
+	"github.com/rafpe/kube-oidc-proxy/test/util/keybundle"
 )
 
 // writeDemoState lays down what up.sh leaves in .state.
@@ -21,7 +21,7 @@ func writeDemoState(t *testing.T, dir string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proxyCA, err := util.NewTLSSelfSignedCertKey("proxy.example.test", []net.IP{net.ParseIP("127.0.0.1")}, nil)
+	proxyCA, err := keybundle.NewSelfSigned("proxy.example.test", []net.IP{net.ParseIP("127.0.0.1")}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

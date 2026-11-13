@@ -102,8 +102,8 @@ not need to raise verbosity to see which issuers are up.
 | `readiness.proxy.ready` | INFO | `ready_issuers`, `total_issuers`, `readiness_mode` | Readiness latched to ready. `readiness_mode` is `any` or `all`, mirroring `readinessRequireAllIssuers`. |
 
 `pending_reason` is one of `not_initialized` (the first fetch has not finished
-yet), `transient` (the JWKS endpoint is failing but the fetch is being retried),
-or `error`. `ready_issuers`/`total_issuers` on any of these records tells you
+yet) or `transient` (the JWKS endpoint is failing but the fetch is being
+retried). `ready_issuers`/`total_issuers` on any of these records tells you
 how far initialization has got without reading the probe.
 
 `issuer_name` is the **configured** issuer name, bounded to 256 characters and

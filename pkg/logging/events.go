@@ -48,9 +48,7 @@ const (
 	EventProxyHookCompleted         EventType = "proxy.hook.completed"
 	EventProxyHookFailed            EventType = "proxy.hook.failed"
 	EventAuditBackendStarted        EventType = "audit.backend.started"
-	EventAuditBackendFailed         EventType = "audit.backend.failed"
 	EventAuditFlushCompleted        EventType = "audit.flush.completed"
-	EventAuditFlushFailed           EventType = "audit.flush.failed"
 	EventUpstreamRequestFailed      EventType = "upstream.request.failed"
 	EventUpstreamRequestCanceled    EventType = "upstream.request.canceled"
 	EventLogWarningSuppressed       EventType = "log.warning.suppressed"
@@ -73,10 +71,11 @@ type EventSpec struct {
 	Summary       string   // one line for docs
 }
 
-// Registry holds one entry per EventType constant. Required lists the mandatory
+// registry holds one entry per EventType constant. It is unexported so the
+// event contract can only be read through AllEventTypes and EventType.Spec. Required lists the mandatory
 // attributes beyond time, level, msg, schema_version, component and event_type;
 // conditional attributes are documented in the summary, not required here.
-var Registry = map[EventType]EventSpec{
+var registry = map[EventType]EventSpec{
 	EventRequestAccessDecided: {
 		Components: []Component{ComponentRequest},
 		Level:      slog.LevelInfo,
@@ -307,7 +306,7 @@ var Registry = map[EventType]EventSpec{
 		Level:      slog.LevelError,
 		Required:   []string{"hook", "error_message"},
 		Message:    "shutdown hook failed",
-		Summary:    "A pre-shutdown hook returned an error.",
+		Summary:    "A pre-shutdown hook returned an error. hook=AuditBackend is a failed audit flush: audit events for requests already served were dropped.",
 	},
 	EventAuditBackendStarted: {
 		Components: []Component{ComponentAudit},
@@ -316,26 +315,12 @@ var Registry = map[EventType]EventSpec{
 		Message:    "audit backend started",
 		Summary:    "The audit backend is running.",
 	},
-	EventAuditBackendFailed: {
-		Components: []Component{ComponentAudit},
-		Level:      slog.LevelError,
-		Required:   []string{"error_message"},
-		Message:    "audit backend failed",
-		Summary:    "The audit backend did not start.",
-	},
 	EventAuditFlushCompleted: {
 		Components: []Component{ComponentAudit},
 		Level:      slog.LevelInfo,
 		Required:   []string{"duration_ms"},
 		Message:    "audit flush completed",
 		Summary:    "The pre-shutdown audit flush succeeded.",
-	},
-	EventAuditFlushFailed: {
-		Components: []Component{ComponentAudit},
-		Level:      slog.LevelError,
-		Required:   []string{"error_message"},
-		Message:    "audit flush failed",
-		Summary:    "The pre-shutdown audit flush failed.",
 	},
 	EventUpstreamRequestFailed: {
 		Components: []Component{ComponentUpstream},
@@ -383,8 +368,8 @@ var Registry = map[EventType]EventSpec{
 
 // AllEventTypes returns every registered event type, sorted by string value.
 func AllEventTypes() []EventType {
-	out := make([]EventType, 0, len(Registry))
-	for e := range Registry {
+	out := make([]EventType, 0, len(registry))
+	for e := range registry {
 		out = append(out, e)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
@@ -396,6 +381,16 @@ func (e EventType) Attr() slog.Attr { return slog.String("event_type", string(e)
 
 // Spec returns the registry entry for e.
 func (e EventType) Spec() (EventSpec, bool) {
-	s, ok := Registry[e]
+	s, ok := registry[e]
 	return s, ok
+}
+
+// mustSpec returns e's registry entry and panics when there is none: passing
+// an unregistered event is a programming error, and the event set is closed.
+func (e EventType) mustSpec() EventSpec {
+	spec, ok := e.Spec()
+	if !ok {
+		panic("logging: unregistered event " + string(e))
+	}
+	return spec
 }

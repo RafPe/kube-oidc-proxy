@@ -11,6 +11,8 @@ import (
 	cliflag "k8s.io/component-base/cli/flag"
 )
 
+// OIDCAuthenticationOptions configure the single issuer of the --oidc-* flags,
+// and the client certificate presented to issuers in either mode.
 type OIDCAuthenticationOptions struct {
 	CAFile            string
 	TLSClientCertFile string
@@ -25,6 +27,8 @@ type OIDCAuthenticationOptions struct {
 	RequiredClaims    map[string]string
 }
 
+// NewOIDCAuthenticationOptions registers the OIDC flag set on nfs and returns
+// the options it binds.
 func NewOIDCAuthenticationOptions(nfs *cliflag.NamedFlagSets) *OIDCAuthenticationOptions {
 	return new(OIDCAuthenticationOptions).AddFlags(nfs.FlagSet("OIDC"))
 }
@@ -61,6 +65,7 @@ func (o *OIDCAuthenticationOptions) ValidateIssuerFlags() error {
 	return nil
 }
 
+// AddFlags binds the --oidc-* flags to fs and returns o for chaining.
 func (o *OIDCAuthenticationOptions) AddFlags(fs *pflag.FlagSet) *OIDCAuthenticationOptions {
 	fs.StringVar(&o.IssuerURL, "oidc-issuer-url", o.IssuerURL, ""+
 		"The URL of the OpenID issuer, only HTTPS scheme will be accepted.")

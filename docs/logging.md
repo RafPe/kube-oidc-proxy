@@ -124,10 +124,8 @@ that must be present beyond `time`, `level`, `msg`, `schema_version`,
 <!-- events:begin -->
 | `event_type` | components | level | required | summary |
 |---|---|---|---|---|
-| `audit.backend.failed` | `audit` | ERROR | `error_message` | The audit backend did not start. |
 | `audit.backend.started` | `audit` | INFO | `backend_kind` | The audit backend is running. |
 | `audit.flush.completed` | `audit` | INFO | `duration_ms` | The pre-shutdown audit flush succeeded. |
-| `audit.flush.failed` | `audit` | ERROR | `error_message` | The pre-shutdown audit flush failed. |
 | `authn.oidc.failed` | `oidc` | DEBUG | `request_id`, `reason` | The OIDC authenticator rejected the token. The denial itself is INFO on request.access.decided. |
 | `authn.oidc.succeeded` | `oidc` | DEBUG | `request_id`, `issuer_name` | The OIDC authenticator accepted the token. Names the issuer that accepted it. |
 | `authn.token.missing` | `tokenreview` | DEBUG | `request_id` | No bearer token was presented on the TokenReview path. |
@@ -148,7 +146,7 @@ that must be present beyond `time`, `level`, `msg`, `schema_version`,
 | `proxy.config.invalid` | `startup` | ERROR | `reason`, `error_message` | The configuration cannot be used, including a CA bundle that cannot be read. |
 | `proxy.config.loaded` | `startup` | INFO | `version`, `config_hash`, `issuer_count`, `readiness_mode` | The effective non-secret configuration is fixed. |
 | `proxy.hook.completed` | `shutdown` | INFO | `hook`, `duration_ms` | One record per pre-shutdown hook that finished. |
-| `proxy.hook.failed` | `shutdown` | ERROR | `hook`, `error_message` | A pre-shutdown hook returned an error. |
+| `proxy.hook.failed` | `shutdown` | ERROR | `hook`, `error_message` | A pre-shutdown hook returned an error. hook=AuditBackend is a failed audit flush: audit events for requests already served were dropped. |
 | `proxy.server.started` | `server` | INFO | `address` | The secure listener is serving. |
 | `proxy.server.stopped` | `server` | INFO | `duration_ms` | The secure listener stopped. |
 | `proxy.shutdown.completed` | `shutdown` | INFO | `duration_ms` | Listeners stopped, readiness stopped and pre-shutdown hooks finished. |
@@ -240,7 +238,7 @@ logged. The cache identity is in the event type, not in a field.
 | `config_hash` | string | hash of the effective non-secret configuration | `proxy.config.loaded` |
 | `issuer_count` | int | configured issuers | `proxy.config.loaded`, `oidc.issuer.configured` |
 | `issuer_state` | string | `pending`, `initialized` | `oidc.issuer.initialized`, `oidc.issuer.pending` |
-| `pending_reason` | string | `not_initialized`, `transient`, `error` | `oidc.issuer.pending` |
+| `pending_reason` | string | `not_initialized`, `transient` | `oidc.issuer.pending` |
 | `ready_issuers`, `total_issuers` | int | counts | `oidc.issuer.initialized`, `oidc.issuer.pending`, `readiness.proxy.ready` |
 | `readiness_mode` | string | `any`, `all` | `proxy.config.loaded`, `readiness.proxy.ready` |
 | `hook` | string | pre-shutdown hook name | `proxy.hook.completed`, `proxy.hook.failed` |
@@ -261,9 +259,10 @@ logged. The cache identity is in the event type, not in a field.
 `authn.*`, `authz.*`, `upstream.*` and `request.handler.failed` records:
 
 `unauthorized`, `reserved_identity`, `impersonation_denied`,
-`too_many_impersonation_values`, `no_username_claim`,
-`authentication_dependency_error`, `authorization_dependency_error`,
-`upstream_error`, `internal_error`, `client_canceled`.
+`too_many_impersonation_values`, `malformed_impersonation`,
+`no_username_claim`, `authentication_dependency_error`,
+`authorization_dependency_error`, `upstream_error`, `internal_error`,
+`client_canceled`.
 
 **Startup configuration failures** — on `proxy.config.invalid` only, a
 startup-scoped vocabulary that is deliberately disjoint from the request set so
@@ -303,8 +302,8 @@ Kubernetes error handler instead. So with a bundled backend, alert on the
 `component=k8s` ERROR, not on the exit status.
 
 A backend that implements the optional `ShutdownErr() error` extension gets
-stricter handling: a flush it reports as failed emits `audit.flush.failed`,
-propagates out of the pre-shutdown hooks as `proxy.hook.failed`, and makes the
+stricter handling: a flush it reports as failed is reported once, as
+`proxy.hook.failed` with `hook=AuditBackend`, and makes the
 process **exit non-zero**, on the grounds that a dropped audit event for a
 request this process already served is not a warning to be tidied away. None
 of the bundled backends implement the extension today.
@@ -548,7 +547,7 @@ This table is for whoever writes the ingest pipeline that copies them.
   `outbound_groups_omitted` reporting the drop.
 - Prefer a classified `reason` over raw error text at INFO and WARN. A truncated
   `error_message` appears only on internal failures and at DEBUG.
-- `issuer_name` is the configured name. Full issuer URLs are never logged.
+- `issuer_name` is the host of the issuer URL. Full issuer URLs are never logged.
 
 ## See also
 

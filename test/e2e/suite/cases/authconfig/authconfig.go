@@ -16,7 +16,8 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/suite/cases/sharedtests"
-	"github.com/rafpe/kube-oidc-proxy/test/util"
+	"github.com/rafpe/kube-oidc-proxy/test/util/idtoken"
+	"github.com/rafpe/kube-oidc-proxy/test/util/keybundle"
 )
 
 const (
@@ -36,7 +37,7 @@ var _ = framework.CasesDescribe("AuthenticationConfiguration multi-issuer", Orde
 	f := framework.NewOrderedDefaultFramework("authconfig")
 
 	var (
-		issuer2Bundle *util.KeyBundle
+		issuer2Bundle *keybundle.Bundle
 		issuer2URL    *url.URL
 	)
 
@@ -71,7 +72,7 @@ var _ = framework.CasesDescribe("AuthenticationConfiguration multi-issuer", Orde
 	sharedtests.RunTokenValidationTests(f)
 
 	It("accepts a valid token from the second configured issuer", func() {
-		payload := util.NewTokenPayload(issuer2URL, f.ClientID(), time.Now().Add(time.Minute))
+		payload := idtoken.NewPayload(issuer2URL, f.ClientID(), time.Now().Add(time.Minute))
 		sharedtests.ExpectProxyAuthenticated(f, issuer2Bundle, payload)
 	})
 

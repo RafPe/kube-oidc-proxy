@@ -4,6 +4,7 @@ package upgrade
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,7 +30,7 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
-	"github.com/rafpe/kube-oidc-proxy/test/util"
+	"github.com/rafpe/kube-oidc-proxy/test/util/idtoken"
 	"github.com/rafpe/kube-oidc-proxy/test/util/port"
 )
 
@@ -205,73 +206,56 @@ var _ = framework.CasesDescribe("Upgrade", Ordered, ContinueOnFailure, Label("sh
 		errCh := make(chan error, 1)
 
 		go func() {
+			// Closing stopCh ends the port forward, which is what lets
+			// forwardPorts below return once the request has been checked.
 			defer close(pfopts.stopCh)
-
-			// give a chance to establish a connection
-			time.Sleep(time.Second * 2)
-
-			By("Attempting to curl through port forward")
-
-			portInR := bytes.NewReader([]byte("hello world"))
-
-			client := &http.Client{
-				Timeout: 10 * time.Second,
-				Transport: &http.Transport{
-					DisableKeepAlives: true,
-				},
-			}
-
-			// send message through port forward
-			fmt.Println("Pre-post")
-			resp, err := client.Post(fmt.Sprintf("http://127.0.0.1:%s", freePort), "", portInR)
-			if err != nil {
-				errCh <- err
-				return
-			}
-			fmt.Println("pre defer")
-			defer resp.Body.Close()
-			fmt.Println("post defer")
-			//_, _ = io.ReadAll(resp.Body)
-			fmt.Println("drain body")
-
-			// expect 200 resp and correct body
-
-			if resp.StatusCode != 200 {
-				errCh <- fmt.Errorf("got unexpected response code from server, exp=200 got=%d",
-					resp.StatusCode)
-				return
-			}
-
-			fmt.Println("read data")
-			body, err := io.ReadAll(resp.Body)
-			fmt.Println("data read")
-			if err != nil {
-				errCh <- fmt.Errorf("failed to read body: %s", err)
-				return
-			}
-			fmt.Printf("check for data %s\n", string(body))
-			// should have correct output from echo server
-			if !bytes.Contains(body, []byte("Request Body:\nhello world")) {
-				errCh <- fmt.Errorf("execOut.String())got unexpected echoserver response: exp=...hello world got=%s",
-					body)
-				return
-			}
-			fmt.Println("after check")
+			errCh <- curlThroughPortForward(freePort, pfopts.readyCh)
 		}()
 
 		By("Running port forward")
-		if err := forwardPorts("POST", req.URL(), pfopts); err != nil {
-			Expect(err).NotTo(HaveOccurred())
-		}
-
-		select {
-		case <-pfopts.stopCh:
-			return
-		case err := <-errCh:
-			Expect(err).NotTo(HaveOccurred())
-		}
+		Expect(forwardPorts("POST", req.URL(), pfopts)).To(Succeed())
+		Expect(<-errCh).To(Succeed())
 	})
 })
+
+// curlThroughPortForward waits for the port forward to report ready, then
+// posts a body through it to the echo server and checks it comes back.
+func curlThroughPortForward(localPort string, readyCh <-chan struct{}) error {
+	select {
+	case <-readyCh:
+	case <-time.After(30 * time.Second):
+		return errors.New("port forward did not become ready within 30s")
+	}
+
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			DisableKeepAlives: true,
+		},
+	}
+
+	resp, err := client.Post(fmt.Sprintf("http://127.0.0.1:%s", localPort), "", strings.NewReader("hello world"))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("got unexpected response code from server, exp=200 got=%d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read body: %w", err)
+	}
+
+	// The echo server answers with the request it received.
+	if !bytes.Contains(body, []byte("Request Body:\nhello world")) {
+		return fmt.Errorf("got unexpected echoserver response: exp=...hello world got=%s", body)
+	}
+
+	return nil
+}
 
 type portForwardOptions struct {
 	address, ports  []string
@@ -296,8 +280,8 @@ func forwardPorts(method string, url *url.URL, opts *portForwardOptions) error {
 }
 
 func newRestConfig(f *framework.Framework) *rest.Config {
-	payload := util.NewTokenPayload(f.IssuerURL(), f.ClientID(), time.Now().Add(time.Minute))
-	signedToken, err := util.SignToken(f.IssuerKeyBundle(), payload)
+	payload := idtoken.NewPayload(f.IssuerURL(), f.ClientID(), time.Now().Add(time.Minute))
+	signedToken, err := idtoken.Sign(f.IssuerKeyBundle(), payload)
 	Expect(err).NotTo(HaveOccurred())
 
 	return &rest.Config{

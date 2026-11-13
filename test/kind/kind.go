@@ -4,6 +4,7 @@ package kind
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,7 +16,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/klog/v2"
 	configv1alpha4 "sigs.k8s.io/kind/pkg/apis/config/v1alpha4"
 	"sigs.k8s.io/kind/pkg/cluster"
 	"sigs.k8s.io/kind/pkg/cluster/nodes"
@@ -99,10 +99,10 @@ func New(rootPath, nodeImage string, masterNodes, workerNodes int) *Kind {
 }
 
 func (k *Kind) Create() error {
-	klog.Infof("kind: using k8s node image %q", k.nodeImage)
+	slog.Info("kind: using node image", slog.String("image", k.nodeImage))
 
 	// create kind cluster
-	klog.Infof("kind: creating kind cluster %q", clusterName)
+	slog.Info("kind: creating cluster", slog.String("cluster", clusterName))
 	k.provider = cluster.NewProvider()
 	if err := k.provider.Create(
 		clusterName,
@@ -123,25 +123,25 @@ func (k *Kind) Create() error {
 
 	restConfig, err := clientcmd.BuildConfigFromFlags("", k.KubeConfigPath())
 	if err != nil {
-		return k.errDestroy(fmt.Errorf("failed to build kind rest client: %s", err))
+		return k.errDestroy(fmt.Errorf("failed to build kind rest client: %w", err))
 	}
 	k.restConfig = restConfig
 
 	client, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
-		return k.errDestroy(fmt.Errorf("failed to build kind kubernetes client: %s", err))
+		return k.errDestroy(fmt.Errorf("failed to build kind kubernetes client: %w", err))
 	}
 	k.client = client
 
 	if err := k.waitForNodesReady(); err != nil {
-		return k.errDestroy(fmt.Errorf("failed to wait for nodes to become ready: %s", err))
+		return k.errDestroy(fmt.Errorf("failed to wait for nodes to become ready: %w", err))
 	}
 
 	if err := k.waitForCoreDNSReady(); err != nil {
-		return k.errDestroy(fmt.Errorf("failed to wait for DNS pods to become ready: %s", err))
+		return k.errDestroy(fmt.Errorf("failed to wait for DNS pods to become ready: %w", err))
 	}
 
-	klog.Infof("kind: cluster ready %q", clusterName)
+	slog.Info("kind: cluster ready", slog.String("cluster", clusterName))
 
 	return nil
 }
@@ -160,7 +160,7 @@ func DeleteCluster(name string) error {
 	// Remove the throwaway kubeconfig on every path, success or error.
 	defer func() {
 		if rmErr := os.Remove(f.Name()); rmErr != nil && !os.IsNotExist(rmErr) {
-			klog.Errorf("kind: failed to remove temp kubeconfig %q: %s", f.Name(), rmErr)
+			slog.Error("kind: failed to remove temp kubeconfig", slog.String("path", f.Name()), slog.Any("error", rmErr))
 		}
 	}()
 
@@ -189,20 +189,20 @@ func DeleteCluster(name string) error {
 func (k *Kind) Destroy() error {
 	if err := k.collectLogs(); err != nil {
 		// Don't hard fail here as we should still attempt to delete the cluster
-		klog.Errorf("kind: failed to collect logs: %s", err)
+		slog.Error("kind: failed to collect logs", slog.Any("error", err))
 	}
 
-	klog.Infof("kind: destroying cluster %q", clusterName)
+	slog.Info("kind: destroying cluster", slog.String("cluster", clusterName))
 
 	if err := DeleteCluster(clusterName); err != nil {
-		return fmt.Errorf("failed to delete kind cluster: %s", err)
+		return fmt.Errorf("failed to delete kind cluster: %w", err)
 	}
 
 	if err := os.Remove(k.KubeConfigPath()); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to delete kubeconfig file: %w", err)
 	}
 
-	klog.Infof("kind: destroyed cluster %q", clusterName)
+	slog.Info("kind: destroyed cluster", slog.String("cluster", clusterName))
 
 	return nil
 }
@@ -211,21 +211,21 @@ func (k *Kind) collectLogs() error {
 	provider := cluster.NewProvider()
 	logDir := filepath.Join(k.rootPath, "artifacts", "logs")
 
-	klog.Infof("kind: collecting logs to %q", logDir)
+	slog.Info("kind: collecting logs", slog.String("dir", logDir))
 
 	if err := os.RemoveAll(logDir); err != nil {
-		return fmt.Errorf("failed to remove old logs directory: %s", err)
+		return fmt.Errorf("failed to remove old logs directory: %w", err)
 	}
 
 	if err := os.MkdirAll(logDir, 0755); err != nil {
-		return fmt.Errorf("failed to create logs directory: %s", err)
+		return fmt.Errorf("failed to create logs directory: %w", err)
 	}
 
 	if err := provider.CollectLogs(clusterName, logDir); err != nil {
-		return fmt.Errorf("failed to collect logs: %s", err)
+		return fmt.Errorf("failed to collect logs: %w", err)
 	}
 
-	klog.Infof("kind: collected logs at %q", logDir)
+	slog.Info("kind: collected logs", slog.String("dir", logDir))
 
 	return nil
 }
@@ -247,14 +247,14 @@ func (k *Kind) Nodes() ([]nodes.Node, error) {
 
 func (k *Kind) errDestroy(err error) error {
 	if dErr := k.Destroy(); dErr != nil {
-		err = fmt.Errorf("%s\nkind failed to destroy: %s", err, dErr)
+		err = fmt.Errorf("%w\nkind failed to destroy: %w", err, dErr)
 	}
 
 	return err
 }
 
 func (k *Kind) waitForNodesReady() error {
-	klog.Infof("kind: waiting for all nodes to become ready...")
+	slog.Info("kind: waiting for all nodes to become ready")
 
 	return wait.PollUntilContextTimeout(context.Background(), time.Second*5, time.Minute*10, true, func(ctx context.Context) (bool, error) {
 		nodes, err := k.client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
@@ -263,7 +263,7 @@ func (k *Kind) waitForNodesReady() error {
 		}
 
 		if len(nodes.Items) == 0 {
-			klog.Warning("kind: no nodes found - checking again...")
+			slog.Warn("kind: no nodes found, checking again")
 			return false, nil
 		}
 
@@ -283,8 +283,8 @@ func (k *Kind) waitForNodesReady() error {
 		}
 
 		if len(notReady) > 0 {
-			klog.Infof("kind: nodes not ready: %s",
-				strings.Join(notReady, ", "))
+			slog.Info("kind: nodes not ready",
+				slog.String("nodes", strings.Join(notReady, ", ")))
 			return false, nil
 		}
 
@@ -293,7 +293,7 @@ func (k *Kind) waitForNodesReady() error {
 }
 
 func (k *Kind) waitForCoreDNSReady() error {
-	klog.Infof("kind: waiting for all DNS pods to become ready...")
+	slog.Info("kind: waiting for all DNS pods to become ready")
 	return k.waitForPodsReady("kube-system", "k8s-app=kube-dns")
 }
 
@@ -307,8 +307,8 @@ func (k *Kind) waitForPodsReady(namespace, labelSelector string) error {
 		}
 
 		if len(pods.Items) == 0 {
-			klog.Warningf("kind: no pods found in namespace %q with selector %q - checking again...",
-				namespace, labelSelector)
+			slog.Warn("kind: no pods found, checking again",
+				slog.String("namespace", namespace), slog.String("selector", labelSelector))
 			return false, nil
 		}
 
@@ -321,8 +321,8 @@ func (k *Kind) waitForPodsReady(namespace, labelSelector string) error {
 		}
 
 		if len(notReady) > 0 {
-			klog.Infof("kind: pods not ready: %s",
-				strings.Join(notReady, ", "))
+			slog.Info("kind: pods not ready",
+				slog.String("pods", strings.Join(notReady, ", ")))
 			return false, nil
 		}
 

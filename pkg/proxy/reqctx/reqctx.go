@@ -1,7 +1,10 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
 
-// Package context stores request-scoped values on the http.Request context and
-// owns the proxy's client-IP resolution.
+// Package reqctx stores request-scoped values on the http.Request context and
+// owns the proxy's client-IP resolution. It also defines the fixed extra keys
+// the proxy puts on an impersonated request, a contract with the Helm chart's
+// RBAC (see ExtraKeyOriginalUser): they live here because this is the one
+// package both the impersonation filter and the access log already share.
 //
 // # Client-IP and trusted-proxy semantics (see issue #56)
 //
@@ -41,11 +44,8 @@ import (
 type key int
 
 const (
-	// noImpersonationKey is the context key for whether to use impersonation.
-	noImpersonationKey key = iota
-
-	// impersonationConfigKey is the context key for the impersonation config.
-	impersonationConfigKey
+	// impersonationKey is the context key for the impersonation decision.
+	impersonationKey key = iota
 
 	// clientIPKey is the context key for the resolved client IP.
 	clientIPKey
@@ -58,8 +58,8 @@ const (
 	// client supplied that was NOT adopted as the authoritative id.
 	clientRequestIDKey
 
-	// issuerNameKey is the context key for the configured name of the OIDC
-	// issuer that authenticated the request.
+	// issuerNameKey is the context key for the name of the OIDC issuer that
+	// authenticated the request: the host of its URL (see authn.IssuerName).
 	issuerNameKey
 
 	// decisionKey is the context key for the holder that records whether the
@@ -75,10 +75,11 @@ const (
 	authMethodKey
 )
 
-// The inbound forwarding headers the trusted-proxy contract owns.
+// The inbound forwarding headers the trusted-proxy contract owns. They are
+// exported so every reader of the headers spells them the same way.
 const (
-	headerForwardedFor = "X-Forwarded-For"
-	headerRealIP       = "X-Real-Ip"
+	HeaderForwardedFor = "X-Forwarded-For"
+	HeaderRealIP       = "X-Real-Ip"
 )
 
 // WithResolvedClient returns a copy of the request that carries the client IP
@@ -97,7 +98,7 @@ const (
 // The returned request owns a copy of the header map, so the caller's request
 // is left exactly as it arrived.
 func WithResolvedClient(req *http.Request, trusted []*net.IPNet) *http.Request {
-	xff := req.Header.Get(headerForwardedFor)
+	xff := req.Header.Get(HeaderForwardedFor)
 	clientIP := ResolveClientIP(req.RemoteAddr, xff, trusted)
 
 	ctx := request.WithValue(req.Context(), clientIPKey, clientIP)
@@ -107,16 +108,16 @@ func WithResolvedClient(req *http.Request, trusted []*net.IPNet) *http.Request {
 
 	out := req.WithContext(ctx)
 	out.Header = req.Header.Clone()
-	out.Header.Del(headerRealIP)
+	out.Header.Del(HeaderRealIP)
 
 	switch {
 	case xff == "":
 	case clientIP == PeerHost(req.RemoteAddr):
 		// The resolver fell back to the direct peer: nothing in the
 		// forwarded chain is trustworthy.
-		out.Header.Del(headerForwardedFor)
+		out.Header.Del(HeaderForwardedFor)
 	default:
-		out.Header.Set(headerForwardedFor, clientIP)
+		out.Header.Set(HeaderForwardedFor, clientIP)
 	}
 
 	return out
@@ -140,25 +141,24 @@ func OriginalForwardedFor(req *http.Request) string {
 	return xff
 }
 
-// ImpersonationRequest is the outbound identity the impersonation filter
-// resolved for a request, together with the inbound identity it was derived
-// from. ImpersonatedUser is nil when the request impersonates nobody and the
-// inbound identity is forwarded as itself.
-type ImpersonationRequest struct {
-	ImpersonationConfig *transport.ImpersonationConfig
-	InboundUser         user.Info
-	ImpersonatedUser    user.Info
-}
+// Impersonation is how a request is forwarded, as decided once by the filter
+// that settled it: the token-review filter for a passthrough request, the
+// impersonation filter for every other one.
+type Impersonation struct {
+	// Outbound is what the impersonating round tripper sends as Impersonate-*
+	// headers. Nil means the request is forwarded without impersonation and
+	// without the proxy's own credentials: impersonation is disabled, or the
+	// client's token is passed through.
+	Outbound *transport.ImpersonationConfig
 
-// WithNoImpersonation returns a copy of the request in which the noImpersonation context value is set.
-func WithNoImpersonation(req *http.Request) *http.Request {
-	return req.WithContext(request.WithValue(req.Context(), noImpersonationKey, true))
-}
+	// InboundUser is the identity the proxy authenticated, or nil on the
+	// passthrough path, where the API server authenticates the token itself.
+	InboundUser user.Info
 
-// NoImpersonation returns whether the noImpersonation context key has been set
-func NoImpersonation(req *http.Request) bool {
-	noImp, _ := req.Context().Value(noImpersonationKey).(bool)
-	return noImp
+	// ImpersonatedUser is the identity the client asked to act as and was
+	// allowed to, or nil when the request impersonates nobody and the inbound
+	// identity is forwarded as itself.
+	ImpersonatedUser user.Info
 }
 
 // WithRequestID returns a copy of the request carrying id as the request's
@@ -189,14 +189,14 @@ func ClientRequestID(req *http.Request) string {
 	return id
 }
 
-// WithIssuerName returns a copy of the request carrying the configured name of
-// the OIDC issuer that authenticated it.
+// WithIssuerName returns a copy of the request carrying the name of the OIDC
+// issuer that authenticated it.
 func WithIssuerName(req *http.Request, name string) *http.Request {
 	return req.WithContext(request.WithValue(req.Context(), issuerNameKey, name))
 }
 
-// IssuerName returns the configured name of the OIDC issuer that authenticated
-// the request, or "" when it is not known.
+// IssuerName returns the name of the OIDC issuer that authenticated the
+// request -- the host of its URL -- or "" when it is not known.
 func IssuerName(req *http.Request) string {
 	name, _ := req.Context().Value(issuerNameKey).(string)
 	return name
@@ -217,8 +217,8 @@ func WithDecisionHolder(req *http.Request) *http.Request {
 }
 
 // MarkDecisionRecorded records that the request's access decision has been
-// written. It is a no-op when the request carries no holder, so a decision
-// logged outside the request chain needs no special case.
+// written. It is a no-op when the request carries no holder, which is the case
+// only for a request that never passed through the lifecycle filter.
 func MarkDecisionRecorded(req *http.Request) {
 	if h, ok := req.Context().Value(decisionKey).(*decisionHolder); ok {
 		h.recorded = true
@@ -233,12 +233,12 @@ func DecisionRecorded(req *http.Request) bool {
 	return ok && h.recorded
 }
 
-// Termination is how a request ended, as classified by a handler deeper in the
-// chain than the lifecycle filter that reports it. Reason is the closed
+// TerminationRecord is how a request ended, as classified by a handler deeper
+// in the chain than the lifecycle filter that reports it. Reason is the closed
 // access-record reason that goes with it, or metrics.ReasonNone.
-type Termination struct {
-	Termination metrics.Termination
-	Reason      metrics.Reason
+type TerminationRecord struct {
+	Kind   metrics.Termination
+	Reason metrics.Reason
 }
 
 // WithTerminationHolder returns a copy of the request carrying an empty
@@ -249,27 +249,27 @@ type Termination struct {
 // written there is invisible to the filter that installed it; a write through
 // the shared holder is not.
 func WithTerminationHolder(req *http.Request) *http.Request {
-	return req.WithContext(request.WithValue(req.Context(), terminationKey, new(Termination)))
+	return req.WithContext(request.WithValue(req.Context(), terminationKey, new(TerminationRecord)))
 }
 
-// RecordTermination writes how the request ended onto the holder the lifecycle
+// MarkTermination writes how the request ended onto the holder the lifecycle
 // filter installed. Like MarkDecisionRecorded it mutates shared state rather
 // than deriving a request, and it is a no-op when the request carries no
 // holder, so a handler called outside that filter -- a test, or an error on a
 // request that never reached it -- needs no special case.
-func RecordTermination(req *http.Request, termination metrics.Termination, reason metrics.Reason) {
-	if h, ok := req.Context().Value(terminationKey).(*Termination); ok {
-		h.Termination = termination
+func MarkTermination(req *http.Request, kind metrics.Termination, reason metrics.Reason) {
+	if h, ok := req.Context().Value(terminationKey).(*TerminationRecord); ok {
+		h.Kind = kind
 		h.Reason = reason
 	}
 }
 
-// TerminationFrom returns the termination a handler classified for the
-// request, or the zero value when none did.
-func TerminationFrom(req *http.Request) Termination {
-	h, ok := req.Context().Value(terminationKey).(*Termination)
+// Termination returns the termination a handler classified for the request,
+// or the zero value when none did.
+func Termination(req *http.Request) TerminationRecord {
+	h, ok := req.Context().Value(terminationKey).(*TerminationRecord)
 	if !ok {
-		return Termination{}
+		return TerminationRecord{}
 	}
 
 	return *h
@@ -291,21 +291,22 @@ func AuthMethod(req *http.Request) metrics.AuthMethod {
 	return metrics.AuthMethodNone
 }
 
-// WithImpersonationConfig returns a copy of the request carrying the resolved
-// outbound identity. When the request impersonates someone, that identity also
-// becomes the request's user so the audit chain records who was acted as.
-func WithImpersonationConfig(req *http.Request, conf *ImpersonationRequest) *http.Request {
-	ctxToReturn := request.WithValue(req.Context(), impersonationConfigKey, conf)
-	if conf.ImpersonatedUser != nil {
-		ctxToReturn = request.WithUser(ctxToReturn, conf.ImpersonatedUser)
+// WithImpersonation returns a copy of the request carrying how it is to be
+// forwarded. When the request impersonates someone, that identity also becomes
+// the request's user so the audit chain records who was acted as.
+func WithImpersonation(req *http.Request, imp *Impersonation) *http.Request {
+	ctx := request.WithValue(req.Context(), impersonationKey, imp)
+	if imp.ImpersonatedUser != nil {
+		ctx = request.WithUser(ctx, imp.ImpersonatedUser)
 	}
-	return req.WithContext(ctxToReturn)
+	return req.WithContext(ctx)
 }
 
-// ImpersonationConfig returns the impersonation configuration held in the context if existing.
-func ImpersonationConfig(req *http.Request) *ImpersonationRequest {
-	conf, _ := req.Context().Value(impersonationConfigKey).(*ImpersonationRequest)
-	return conf
+// ImpersonationOf returns how the request is to be forwarded, or nil while no
+// filter has decided it yet.
+func ImpersonationOf(req *http.Request) *Impersonation {
+	imp, _ := req.Context().Value(impersonationKey).(*Impersonation)
+	return imp
 }
 
 // ResolveClientIP returns the authoritative client IP for a request given the
@@ -368,4 +369,35 @@ func IPInNetworks(ip string, networks []*net.IPNet) bool {
 		}
 	}
 	return false
+}
+
+// Extra keys the proxy itself puts on an outbound impersonated request. They
+// are a runtime API contract: the API server authorizes each one as
+// `impersonate` on `userextras/<key>` (lowercased), so the chart's ClusterRole
+// must grant every key listed here, and a test holds the two together.
+const (
+	// UserHeaderClientIPKey carries the resolved client IP when
+	// --extra-user-header-client-ip is set.
+	UserHeaderClientIPKey = "Remote-Client-IP"
+
+	// The originaluser.jetstack.io-* keys carry the authenticated identity on a
+	// request that impersonates someone else (kubectl --as), so the API
+	// server's audit log records who really acted. Unchanged from upstream.
+	ExtraKeyOriginalUser   = "originaluser.jetstack.io-user"
+	ExtraKeyOriginalGroups = "originaluser.jetstack.io-groups"
+	ExtraKeyOriginalUID    = "originaluser.jetstack.io-uid"
+	ExtraKeyOriginalExtra  = "originaluser.jetstack.io-extra"
+)
+
+// FixedImpersonationExtraKeys lists every extra key the proxy can set on its
+// own, independent of claim mappings and operator-configured headers. The
+// chart grants exactly these, plus whatever the configuration declares.
+func FixedImpersonationExtraKeys() []string {
+	return []string{
+		UserHeaderClientIPKey,
+		ExtraKeyOriginalUser,
+		ExtraKeyOriginalGroups,
+		ExtraKeyOriginalUID,
+		ExtraKeyOriginalExtra,
+	}
 }

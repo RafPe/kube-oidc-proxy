@@ -110,7 +110,7 @@
   "crypto_password_storage_status": "N/A",
   "crypto_password_storage_justification": "The proxy stores no passwords or user credentials; authentication is by bearer token verified against the issuer's published keys.",
   "crypto_random_status": "Met",
-  "crypto_random_justification": "All randomness comes from the Go standard library's crypto/rand: TLS session material via the TLS stack, and the per-process 32-byte HMAC key the TokenReview cache draws with rand.Read to key token hashes (pkg/proxy/tokenreview/tokenreview.go).",
+  "crypto_random_justification": "All randomness comes from the Go standard library's crypto/rand: TLS session material via the TLS stack, and the per-process 32-byte HMAC key the TokenReview cache draws with rand.Read to key token hashes (pkg/authn/tokenreview/tokenreview.go).",
   "delivery_mitm_status": "Met",
   "delivery_mitm_justification": "Source, the container image (ghcr.io) and the OCI Helm chart are all delivered over HTTPS; image and chart are signed with cosign keyless signatures and the image carries an SBOM: https://github.com/RafPe/kube-oidc-proxy/blob/main/.github/workflows/release-image.yaml",
   "delivery_unsigned_status": "Met",

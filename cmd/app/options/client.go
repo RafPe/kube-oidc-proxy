@@ -24,23 +24,34 @@ type ClientOptions struct {
 	// overrides holds the --server, --token, --context and friends that
 	// override whatever the kubeconfig says.
 	overrides clientcmd.ConfigOverrides
+
+	// fs is the Client flag set, kept so ClientFlagsChanged can derive the
+	// connection flags from what was registered rather than from a list.
+	fs *pflag.FlagSet
 }
 
+// NewClientOptions registers the Client flag set on nfs and returns the
+// options it binds.
 func NewClientOptions(nfs *cliflag.NamedFlagSets) *ClientOptions {
 	return new(ClientOptions).AddFlags(nfs.FlagSet("Client"))
 }
 
+// AddFlags binds the client flags to fs and returns c for chaining.
 func (c *ClientOptions) AddFlags(fs *pflag.FlagSet) *ClientOptions {
+	c.fs = fs
 	fs.StringVar(&c.Kubeconfig, "kubeconfig", c.Kubeconfig,
 		"Path to the kubeconfig file to use for requests to the API server.")
 
 	// Impersonation is the proxy's own job: an --as flag here would make the
-	// proxy impersonate that identity on every call of its own, so the three
-	// impersonation overrides are not offered.
+	// proxy impersonate that identity on every call of its own, so the
+	// impersonation overrides are not offered. Basic auth was never offered
+	// and is not added here either.
 	names := clientcmd.RecommendedConfigOverrideFlags("")
 	names.AuthOverrideFlags.Impersonate.LongName = ""
 	names.AuthOverrideFlags.ImpersonateUID.LongName = ""
 	names.AuthOverrideFlags.ImpersonateGroups.LongName = ""
+	names.AuthOverrideFlags.Username.LongName = ""
+	names.AuthOverrideFlags.Password.LongName = ""
 	clientcmd.BindOverrideFlags(&c.overrides, fs, names)
 
 	fs.Float32Var(&c.KubeClientQPS, "kube-client-qps", c.KubeClientQPS, "Sets the QPS on the app "+
@@ -62,20 +73,22 @@ func (c *ClientOptions) ToRESTConfig() (*rest.Config, error) {
 }
 
 // ClientFlagsChanged reports whether any connection flag was given, which is
-// what selects the kubeconfig path over the in-cluster configuration.
+// what selects the kubeconfig path over the in-cluster configuration. The
+// connection flags are every flag in the Client set except the throttling
+// ones, which apply to either configuration.
 func (c *ClientOptions) ClientFlagsChanged(cmd *cobra.Command) bool {
-	for _, f := range clientOptionFlags() {
-		if ff := cmd.Flag(f); ff != nil && ff.Changed {
-			return true
+	changed := false
+	c.fs.VisitAll(func(f *pflag.Flag) {
+		if throttlingFlags[f.Name] {
+			return
 		}
-	}
-
-	return false
+		if cf := cmd.Flag(f.Name); cf != nil && cf.Changed {
+			changed = true
+		}
+	})
+	return changed
 }
 
-func clientOptionFlags() []string {
-	return []string{"certificate-authority", "client-certificate", "client-key", "cluster",
-		"context", "insecure-skip-tls-verify", "kubeconfig", "namespace",
-		"request-timeout", "server", "token", "user",
-	}
-}
+// throttlingFlags are the Client flags that tune whichever configuration is
+// chosen rather than selecting one.
+var throttlingFlags = map[string]bool{"kube-client-qps": true, "kube-client-burst": true}

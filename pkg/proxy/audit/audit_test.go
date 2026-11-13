@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	auditinternal "k8s.io/apiserver/pkg/apis/audit"
@@ -140,7 +141,7 @@ func TestLongRunningRequests(t *testing.T) {
 func TestRequestInfoLongRunning(t *testing.T) {
 	// An external address with a port, since without one Complete() insists on
 	// deriving the port from a secure serving info this test has no use for.
-	auditor, err := New(apiserveroptions.NewAuditOptions(), "127.0.0.1:6443", nil, slog.New(slog.DiscardHandler))
+	auditor, err := New(Config{Options: apiserveroptions.NewAuditOptions(), ExternalAddress: "127.0.0.1:6443", SecureServing: nil}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("failed to create auditor: %s", err)
 	}
@@ -328,7 +329,7 @@ func (f *fakeBackend) ShutdownErr() error                           { return f.s
 func newTestAuditWithBackend(t testing.TB, root *slog.Logger, backend audit.Backend) *Audit {
 	t.Helper()
 
-	a, err := New(apiserveroptions.NewAuditOptions(), "127.0.0.1:6443", nil,
+	a, err := New(Config{Options: apiserveroptions.NewAuditOptions(), ExternalAddress: "127.0.0.1:6443", SecureServing: nil},
 		logging.ForComponent(root, logging.ComponentAudit))
 	if err != nil {
 		t.Fatalf("failed to create auditor: %s", err)
@@ -350,22 +351,20 @@ func TestShutdownReportsFlushResult(t *testing.T) {
 	cap.Only(t, logging.EventAuditFlushCompleted)
 }
 
-// TestShutdownReportsFlushFailure covers the failure case: a backend that
-// reports a shutdown error through errorReporter yields audit.flush.failed and
-// the error reaches the caller, so a lost audit flush is not silent.
-func TestShutdownReportsFlushFailure(t *testing.T) {
+// TestShutdownReturnsFlushFailure covers the failure case: a backend that
+// reports a shutdown error through errorReporter hands the error to the
+// caller, so a lost audit flush is not silent. The auditor does not log it
+// itself: the caller reports it once, as the failed shutdown step.
+func TestShutdownReturnsFlushFailure(t *testing.T) {
 	root, cap := logtest.New(t, 0)
 	defer logtest.AssertRegistered(t, cap)
 	a := newTestAuditWithBackend(t, root, &fakeBackend{shutdownErr: errors.New("flush timed out")})
 	err := a.Shutdown()
-	if err == nil {
-		t.Fatal("Shutdown reported success for a backend that failed to flush")
+	if err == nil || !strings.Contains(err.Error(), "flush timed out") {
+		t.Fatalf("Shutdown() = %v, want the backend's flush error", err)
 	}
-	if got := cap.Only(t, logging.EventAuditFlushFailed).String("error_message"); got != "flush timed out" {
-		t.Fatalf("error_message = %q, want %q", got, "flush timed out")
-	}
-	if len(cap.ByEvent(logging.EventAuditFlushCompleted)) != 0 {
-		t.Fatal("a failed flush also reported completion")
+	if len(cap.Records()) != 0 {
+		t.Fatalf("a failed flush was logged by the auditor as well as returned: %s", cap.Raw())
 	}
 }
 
@@ -377,7 +376,7 @@ func TestRunReportsBackendStarted(t *testing.T) {
 	defer logtest.AssertRegistered(t, cap)
 	a := newTestAuditWithBackend(t, root, &fakeBackend{})
 
-	if err := a.Run(context.Background()); err != nil {
+	if err := a.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -390,28 +389,21 @@ func TestRunReportsBackendStarted(t *testing.T) {
 	}
 }
 
-// TestRunReportsBackendFailed covers the failure case: a backend that cannot
-// start is an error the process cannot serve correctly through, so it is
-// reported at ERROR and the cause reaches the caller.
-func TestRunReportsBackendFailed(t *testing.T) {
+// TestRunReturnsBackendFailure covers the failure case: a backend that cannot
+// start is an error the process cannot serve correctly through, so the cause
+// reaches the caller, which reports it once as the startup failure. Nothing is
+// logged here, and in particular no start.
+func TestRunReturnsBackendFailure(t *testing.T) {
 	root, cap := logtest.New(t, 0)
 	defer logtest.AssertRegistered(t, cap)
 	a := newTestAuditWithBackend(t, root, &fakeBackend{runErr: errors.New("webhook unreachable")})
 
-	err := a.Run(context.Background())
-	if err == nil {
-		t.Fatal("Run reported success for a backend that failed to start")
+	err := a.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "webhook unreachable") {
+		t.Fatalf("Start() = %v, want the backend's start error", err)
 	}
-
-	rec := cap.Only(t, logging.EventAuditBackendFailed)
-	if rec.String("error_message") != "webhook unreachable" {
-		t.Fatalf("error_message = %q", rec.String("error_message"))
-	}
-	if rec.String("level") != "ERROR" {
-		t.Fatalf("level = %q, want ERROR", rec.String("level"))
-	}
-	if len(cap.ByEvent(logging.EventAuditBackendStarted)) != 0 {
-		t.Fatal("a backend that failed to start also reported starting")
+	if len(cap.Records()) != 0 {
+		t.Fatalf("a failed start was logged by the auditor as well as returned: %s", cap.Raw())
 	}
 }
 
@@ -423,7 +415,7 @@ func TestRunWithoutBackendIsSilent(t *testing.T) {
 	defer logtest.AssertRegistered(t, cap)
 	a := newTestAuditWithBackend(t, root, nil)
 
-	if err := a.Run(context.Background()); err != nil {
+	if err := a.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.Shutdown(); err != nil {
@@ -440,7 +432,7 @@ func TestRunWithoutBackendIsSilent(t *testing.T) {
 // silently collapse the k8s_verb metric label to "other" and the scope label
 // to "none" for the whole core group.
 func TestWithRequestInfoResolvesCoreGroupAsResourceRequest(t *testing.T) {
-	a, err := New(nil, "0.0.0.0:1234", new(server.SecureServingInfo), slog.New(slog.DiscardHandler))
+	a, err := New(Config{ExternalAddress: "0.0.0.0:1234", SecureServing: new(server.SecureServingInfo)}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -485,5 +477,13 @@ func TestWithRequestInfoResolvesCoreGroupAsResourceRequest(t *testing.T) {
 					got, tc.wantResource, tc.wantVerb, tc.wantRes, tc.wantNamespace)
 			}
 		})
+	}
+}
+
+// TestNewRequiresLogger pins that the logger is a required collaborator: a nil
+// one fails at construction rather than on the first record.
+func TestNewRequiresLogger(t *testing.T) {
+	if _, err := New(Config{ExternalAddress: "0.0.0.0:1234", SecureServing: new(server.SecureServingInfo)}, nil); err == nil {
+		t.Fatal("New(nil logger) error = nil, want an error")
 	}
 }

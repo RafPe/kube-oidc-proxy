@@ -17,6 +17,11 @@ import (
 // the published contract and never changes.
 const Namespace = "kube_oidc_proxy"
 
+// The types below are the proxy's closed outcome vocabulary. This file is
+// their single owner: the access record, the error classifier and the request
+// context use these types directly instead of keeping copies, so a label and
+// a log field naming the same outcome cannot drift apart.
+
 // other is the value every projection collapses an undocumented input onto.
 // A label must never carry a client-controlled string: kube-apiserver can
 // label by resource because its labels come from its route table, but this
@@ -78,13 +83,15 @@ func VerbFor(info *genericapirequest.RequestInfo) Verb {
 	return Verb(projectVerb(Verb(info.Verb)))
 }
 
+// verbs is the documented verb set, in catalogue order. VerbOther is the
+// catch-all and is listed last.
+var verbs = []Verb{
+	VerbGet, VerbList, VerbWatch, VerbCreate, VerbUpdate, VerbPatch,
+	VerbDelete, VerbDeleteCollection, VerbProxy, VerbConnect, VerbOther,
+}
+
 func projectVerb(v Verb) string {
-	switch v {
-	case VerbGet, VerbList, VerbWatch, VerbCreate, VerbUpdate, VerbPatch,
-		VerbDelete, VerbDeleteCollection, VerbProxy, VerbConnect:
-		return string(v)
-	}
-	return string(VerbOther)
+	return project(verbs, v, VerbOther)
 }
 
 // Scope is how much of the API a request addressed, mirroring kube-apiserver's
@@ -114,12 +121,11 @@ func ScopeFor(info *genericapirequest.RequestInfo) Scope {
 	return ScopeCluster
 }
 
+// scopes is the documented scope set. ScopeNone doubles as the catch-all.
+var scopes = []Scope{ScopeCluster, ScopeNamespace, ScopeResource, ScopeNone}
+
 func projectScope(s Scope) string {
-	switch s {
-	case ScopeCluster, ScopeNamespace, ScopeResource, ScopeNone:
-		return string(s)
-	}
-	return string(ScopeNone)
+	return project(scopes, s, ScopeNone)
 }
 
 // CodeFor renders an HTTP status for the code label. The domain is the IANA
@@ -159,10 +165,7 @@ var terminations = []Termination{
 }
 
 func projectTermination(t Termination) string {
-	if slices.Contains(terminations, t) {
-		return string(t)
-	}
-	return other
+	return project(terminations, t, other)
 }
 
 // AuthMethod is how a request authenticated, as the access record's
@@ -182,10 +185,7 @@ const (
 var authMethods = []AuthMethod{AuthMethodOIDC, AuthMethodTokenReview, AuthMethodNone}
 
 func projectAuthMethod(m AuthMethod) string {
-	if slices.Contains(authMethods, m) {
-		return string(m)
-	}
-	return other
+	return project(authMethods, m, other)
 }
 
 // Decision is the outcome of a request's single access decision.
@@ -229,6 +229,16 @@ const (
 	// not be answered at all: the API server was unreachable or returned a
 	// status error. It is not a verdict on the credential.
 	ReasonAuthenticationDependencyError Reason = "authentication_dependency_error"
+
+	// ReasonAuthorizationDependencyError classifies a SubjectAccessReview
+	// that could not be answered, the authorization counterpart of
+	// ReasonAuthenticationDependencyError.
+	ReasonAuthorizationDependencyError Reason = "authorization_dependency_error"
+
+	// ReasonMalformedImpersonation classifies a request whose Impersonate-*
+	// headers have a shape the proxy refuses before asking anyone: a kind it
+	// does not know, or groups, uid or extras with no user to refine.
+	ReasonMalformedImpersonation Reason = "malformed_impersonation"
 )
 
 // reasons is the documented set, in catalogue order. ReasonNone is the
@@ -237,13 +247,11 @@ var reasons = []Reason{
 	ReasonNone, ReasonUnauthorized, ReasonReservedIdentity, ReasonNoUsernameClaim,
 	ReasonImpersonationDenied, ReasonTooManyImpersonationValues, ReasonClientCanceled,
 	ReasonInternalError, ReasonUpstreamError, ReasonAuthenticationDependencyError,
+	ReasonAuthorizationDependencyError, ReasonMalformedImpersonation,
 }
 
 func projectReason(r Reason) string {
-	if slices.Contains(reasons, r) {
-		return string(r)
-	}
-	return other
+	return project(reasons, r, other)
 }
 
 // AuthOutcome is how one authentication attempt ended, before the identity
@@ -256,12 +264,10 @@ const (
 	AuthError    AuthOutcome = "error"
 )
 
+var authOutcomes = []AuthOutcome{AuthAccepted, AuthRejected, AuthError}
+
 func projectAuthOutcome(o AuthOutcome) string {
-	switch o {
-	case AuthAccepted, AuthRejected, AuthError:
-		return string(o)
-	}
-	return other
+	return project(authOutcomes, o, other)
 }
 
 // Review names one of the two review APIs the proxy calls.
@@ -272,12 +278,10 @@ const (
 	ReviewSAR         Review = "sar"
 )
 
+var reviews = []Review{ReviewTokenReview, ReviewSAR}
+
 func projectReview(r Review) string {
-	switch r {
-	case ReviewTokenReview, ReviewSAR:
-		return string(r)
-	}
-	return other
+	return project(reviews, r, other)
 }
 
 // ReviewOutcome is how one review API call ended, classified from the actual
@@ -318,12 +322,10 @@ func ReviewOutcomeFor(err error, allowed bool) ReviewOutcome {
 	return ReviewError
 }
 
+var reviewOutcomes = []ReviewOutcome{ReviewAllow, ReviewDeny, ReviewTimeout, ReviewCanceled, ReviewError}
+
 func projectReviewOutcome(o ReviewOutcome) string {
-	switch o {
-	case ReviewAllow, ReviewDeny, ReviewTimeout, ReviewCanceled, ReviewError:
-		return string(o)
-	}
-	return other
+	return project(reviewOutcomes, o, other)
 }
 
 // CacheResult is the outcome of one review-cache consultation.
@@ -335,12 +337,10 @@ const (
 	CacheBypass CacheResult = "bypass"
 )
 
+var cacheResults = []CacheResult{CacheHit, CacheMiss, CacheBypass}
+
 func projectCacheResult(r CacheResult) string {
-	switch r {
-	case CacheHit, CacheMiss, CacheBypass:
-		return string(r)
-	}
-	return other
+	return project(cacheResults, r, other)
 }
 
 // AuditOperation names the audit backend operation a failure was observed in.
@@ -351,10 +351,18 @@ const (
 	AuditShutdown AuditOperation = "shutdown"
 )
 
+var auditOperations = []AuditOperation{AuditRun, AuditShutdown}
+
 func projectAuditOperation(o AuditOperation) string {
-	switch o {
-	case AuditRun, AuditShutdown:
-		return string(o)
+	return project(auditOperations, o, other)
+}
+
+// project is the one projection every label goes through: a documented value
+// passes unchanged, anything else collapses onto catchAll. The same slice
+// feeds the catalogue's allowed values, so the two cannot disagree.
+func project[T ~string, C ~string](documented []T, v T, catchAll C) string {
+	if slices.Contains(documented, v) {
+		return string(v)
 	}
-	return other
+	return string(catchAll)
 }

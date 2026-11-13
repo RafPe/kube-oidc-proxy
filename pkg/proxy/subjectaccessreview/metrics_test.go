@@ -31,11 +31,10 @@ func newMetricsRecorder(t *testing.T) *metrics.Recorder {
 
 func TestSARCacheBypassCountsOneAPICallPerRequest(t *testing.T) {
 	rec := newMetricsRecorder(t)
-	s, err := New(fake.New(nil), Config{Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
+	s, err := New(fake.New(nil), Config{Metrics: rec, Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.WithMetrics(rec)
 	requester := &user.DefaultInfo{Name: "alice"}
 	for i := 0; i < 2; i++ {
 		if _, err := s.CheckAuthorizedForImpersonation(impersonateUserRequest("jjackson"), requester); err != nil {
@@ -53,11 +52,10 @@ func TestSARCacheBypassCountsOneAPICallPerRequest(t *testing.T) {
 
 func TestSARCacheHitDoesNotReachTheAPIServer(t *testing.T) {
 	rec := newMetricsRecorder(t)
-	s, err := New(fake.New(nil), Config{Timeout: DefaultTimeout, AllowCacheTTL: 10 * time.Second, DenyCacheTTL: 10 * time.Second, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
+	s, err := New(fake.New(nil), Config{Metrics: rec, Timeout: DefaultTimeout, AllowCacheTTL: 10 * time.Second, DenyCacheTTL: 10 * time.Second, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.WithMetrics(rec)
 	requester := &user.DefaultInfo{Name: "alice"}
 	for i := 0; i < 3; i++ {
 		if _, err := s.CheckAuthorizedForImpersonation(impersonateUserRequest("jjackson"), requester); err != nil {
@@ -98,11 +96,10 @@ func TestCoalescedSARCallersCountOneAPICall(t *testing.T) {
 		// never block a caller, and the flight admits only one caller to
 		// Create anyway.
 		gate := &gateReviewer{entered: make(chan struct{}, 1), release: make(chan struct{})}
-		s, err := New(gate, Config{Timeout: DefaultTimeout, AllowCacheTTL: 10 * time.Second, DenyCacheTTL: 10 * time.Second, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
+		s, err := New(gate, Config{Metrics: rec, Timeout: DefaultTimeout, AllowCacheTTL: 10 * time.Second, DenyCacheTTL: 10 * time.Second, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 		if err != nil {
 			t.Fatal(err)
 		}
-		s.WithMetrics(rec)
 		requester := &user.DefaultInfo{Name: "alice"}
 
 		const callers = 5

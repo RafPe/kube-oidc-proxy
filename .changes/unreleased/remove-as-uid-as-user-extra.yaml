@@ -1,0 +1,3 @@
+kind: Removed
+body: |-
+  `--as-uid` and `--as-user-extra` are no longer accepted. They configured the proxy to impersonate on its own API calls, which is never correct for a proxy that impersonates on the client's behalf.

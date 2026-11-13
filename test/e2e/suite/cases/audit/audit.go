@@ -23,7 +23,7 @@ import (
 	"k8s.io/client-go/tools/remotecommand"
 
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
-	"github.com/rafpe/kube-oidc-proxy/test/util"
+	"github.com/rafpe/kube-oidc-proxy/test/util/idtoken"
 )
 
 const (
@@ -137,17 +137,15 @@ var _ = framework.CasesDescribe("Audit", Label("shard-b"), func() {
 		Expect(execOut.String()).To(ContainSubstring("hello world"),
 			"exec stream carried no output")
 
-		By("Waiting for audit logs to be written")
-		// 5 seconds here is longer than the proxy flush interval.
-		time.Sleep(time.Second * 5)
-
-		By("Copying audit log from proxy locally")
-		logs := readAuditLog(f, "app=kube-oidc-proxy-e2e", auditReaderName, auditLogPath)
-
-		By("Testing for the expected audit stages of the exec request")
 		// The exec request URI carries the command as a query string, so match
 		// on the path prefix.
 		execURI := fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/exec", pod.Namespace, pod.Name)
+
+		By("Waiting for the exec request's ResponseComplete audit event to be written")
+		logs := waitForAuditLog(f, "app=kube-oidc-proxy-e2e", auditReaderName, auditLogPath,
+			hasStage(execURI, auditv1.StageResponseComplete))
+
+		By("Testing for the expected audit stages of the exec request")
 
 		var stages []auditv1.Stage
 		scanner := bufio.NewScanner(bytes.NewReader(logs))
@@ -232,8 +230,8 @@ var _ = framework.CasesDescribe("Audit", Label("shard-b"), func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		By("Watching pods through the proxy")
-		token := util.NewTokenPayload(f.IssuerURL(), f.ClientID(), time.Now().Add(time.Minute*10))
-		signedToken, err := util.SignToken(f.IssuerKeyBundle(), token)
+		token := idtoken.NewPayload(f.IssuerURL(), f.ClientID(), time.Now().Add(time.Minute*10))
+		signedToken, err := idtoken.Sign(f.IssuerKeyBundle(), token)
 		Expect(err).NotTo(HaveOccurred())
 
 		proxyConfig := f.NewProxyRestConfig()
@@ -250,12 +248,9 @@ var _ = framework.CasesDescribe("Audit", Label("shard-b"), func() {
 		Expect(resp.StatusCode).To(Equal(http.StatusOK),
 			"watch through the proxy was not served, so no stream was ever started")
 
-		By("Waiting for audit logs to be written")
-		// 5 seconds here is longer than the proxy flush interval.
-		time.Sleep(time.Second * 5)
-
-		By("Copying audit log from proxy locally")
-		logs := readAuditLog(f, "app=kube-oidc-proxy-e2e", auditReaderName, auditLogPath)
+		By("Waiting for the watch request's ResponseComplete audit event to be written")
+		logs := waitForAuditLog(f, "app=kube-oidc-proxy-e2e", auditReaderName, auditLogPath,
+			hasStage(watchURI, auditv1.StageResponseComplete))
 
 		By("Testing for the expected audit stages of the watch request")
 		var stages []auditv1.Stage

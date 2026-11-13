@@ -2,15 +2,32 @@
 package options
 
 import (
+	"flag"
 	"io"
 	"testing"
 
 	"github.com/spf13/cobra"
 	cliflag "k8s.io/component-base/cli/flag"
 	"k8s.io/component-base/cli/globalflag"
+	"k8s.io/klog/v2"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 )
+
+// keepKlogVerbosity restores klog's -v when t ends. The Global flag set binds
+// klog's process-global flag.Value, so a -v set through it would otherwise
+// carry into every later test in the binary.
+func keepKlogVerbosity(t *testing.T) {
+	t.Helper()
+	var fs flag.FlagSet
+	klog.InitFlags(&fs)
+	before := fs.Lookup("v").Value.String()
+	t.Cleanup(func() {
+		if err := fs.Set("v", before); err != nil {
+			t.Errorf("restoring klog -v to %q: %s", before, err)
+		}
+	})
+}
 
 func TestLoggingOptionsDefaultsAndValidation(t *testing.T) {
 	nfs := new(cliflag.NamedFlagSets)
@@ -28,6 +45,7 @@ func TestLoggingOptionsDefaultsAndValidation(t *testing.T) {
 }
 
 func TestLoggingOptionsReadsVerbosityFromGlobalFlags(t *testing.T) {
+	keepKlogVerbosity(t)
 	nfs := new(cliflag.NamedFlagSets)
 	globalflag.AddGlobalFlags(nfs.FlagSet(GlobalFlagSet), "test")
 	o := NewLoggingOptions(nfs)
@@ -45,6 +63,7 @@ func TestLoggingOptionsReadsVerbosityFromGlobalFlags(t *testing.T) {
 // in isolation, which would not notice --logging-format binding to a flag
 // registered by some other set.
 func TestLoggingFlagsReachOptionsThroughTheCommand(t *testing.T) {
+	keepKlogVerbosity(t)
 	o := New()
 	cmd := &cobra.Command{Use: "test"}
 	o.AddFlags(cmd)

@@ -108,5 +108,47 @@ Two independent triggers, in the order they usually happen:
    - Bump the `k8s.io/*` modules in `go.mod` to the matching `v0.<minor>`.
      `go test ./test/e2e/versions/` fails until manifest and go.mod agree —
      that is the point: compatibility is verified, not assumed, before either
-     lands alone.
+     lands alone. The same test fails if the `k8s.io` staging modules (every
+     `k8s.io/*` module versioned `v0.<minor>.<patch>`, direct or indirect) are
+     not all at one version; Dependabot's `kubernetes` group in
+     `.github/dependabot.yml` proposes them as a single PR for that reason.
    - Run the full matrix before merging: `gh workflow run e2e.yaml --ref <branch>`.
+
+## Test doubles
+
+Two package suffixes, two meanings, each following the library it mirrors:
+
+- **`fake`** (e.g. `pkg/authn/tokenreview/fake`,
+  `pkg/proxy/subjectaccessreview/fake`) holds an in-memory implementation of a
+  client-go interface the parent package depends on, as client-go's own
+  `kubernetes/fake` does. Use it where production code would take a real
+  client.
+- **`<pkg>test`** (e.g. `pkg/logging/logtest`, `pkg/metrics/metricstest`,
+  `pkg/authn/authntest`) holds helpers for testing code that *uses* `<pkg>`:
+  capture sinks, assertions and generated mocks, as `net/http/httptest` does
+  for `net/http`.
+
+A new double goes in whichever of the two matches what it stands in for; do
+not add a third naming scheme. Helpers shared only by the e2e suite and the
+metrics demo live under `test/util/`, one purpose-named package each
+(`keybundle`, `idtoken`, `promtext`, `port`), never a catch-all `util`.
+
+## Dependencies worth knowing about
+
+**The apiserver library is the heaviest one, deliberately.** The proxy imports
+`k8s.io/apiserver/pkg/server` and its options for secure serving with dynamic
+certificate reload, the audit backends and policy, and CEL-based
+authentication configuration. Those packages pull etcd, gRPC, OpenTelemetry
+and cel-go into the binary even though no proxy code calls them directly.
+Reimplementing the audit and serving pieces would cost more code than it
+saves, so a Dependabot bump of one of those transitive trees is apiserver's
+baggage, not a sign that the proxy started using it. Revisit only if upstream
+splits audit and serving into a lighter module.
+
+**The e2e harness shares the module.** `sigs.k8s.io/kind`, Ginkgo and Gomega
+are direct requirements because `test/` and `hack/metrics-demo` live in the
+same module; `go list -deps ./cmd` contains none of them, so they never reach
+the binary. A separate test module with a `go.work` would shrink `go.sum` and
+the govulncheck surface, at the cost of a more complicated `go test ./...` and
+Makefile. Split only if that noise becomes a real maintenance cost.
+
