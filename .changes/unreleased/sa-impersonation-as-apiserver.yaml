@@ -1,0 +1,3 @@
+kind: Security
+body: |-
+  Impersonating a service account (`Impersonate-User: system:serviceaccount:<ns>:<name>`) is now authorized as kube-apiserver authorizes it: `impersonate` on `serviceaccounts/<name>` in `<ns>`, not on `users`. A grant on `users` alone no longer lets a client impersonate a service account through the proxy, where the proxy's own credentials would otherwise have carried it. Without `Impersonate-Group`, the service account now also carries `system:serviceaccounts` and `system:serviceaccounts:<ns>`, as it does against the API server; previously RBAC bound to those groups did not apply through the proxy. An impersonated `system:anonymous` carries `system:unauthenticated`, not `system:authenticated`.

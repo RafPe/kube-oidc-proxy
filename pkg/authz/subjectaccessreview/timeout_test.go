@@ -15,21 +15,21 @@ import (
 	"k8s.io/apiserver/pkg/authentication/user"
 	clientazv1 "k8s.io/client-go/kubernetes/typed/authorization/v1"
 
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview/fake"
+	"github.com/rafpe/kube-oidc-proxy/pkg/authz/subjectaccessreview/fake"
 )
 
 // countingFakeReviewer counts submitted reviews while delegating the decision
 // itself to the shared fake, so the cap tests can prove that a refused request
 // never submits a SubjectAccessReview at all.
 type countingFakeReviewer struct {
-	*fake.FakeReviewer
+	*fake.Reviewer
 
 	calls atomic.Int32
 }
 
 func (c *countingFakeReviewer) Create(ctx context.Context, req *v1.SubjectAccessReview, co metav1.CreateOptions) (*v1.SubjectAccessReview, error) {
 	c.calls.Add(1)
-	return c.FakeReviewer.Create(ctx, req, co)
+	return c.Reviewer.Create(ctx, req, co)
 }
 
 // blockingReviewer is a local test double implementing
@@ -68,10 +68,7 @@ type sarResult struct {
 // sequence with context.Canceled and does not run further checks.
 func TestCheckAuthorizedForImpersonationCanceled(t *testing.T) {
 	reviewer := &blockingReviewer{entered: make(chan struct{}, 1)}
-	sar, err := New(reviewer, Config{Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
+	sar := New(reviewer, Config{Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 
 	ctx, cancel := context.WithCancel(testRequestContext())
 	defer cancel()
@@ -116,10 +113,7 @@ func TestCheckAuthorizedForImpersonationCanceled(t *testing.T) {
 // context.DeadlineExceeded and runs at most the first check.
 func TestCheckAuthorizedForImpersonationDeadlineExceeded(t *testing.T) {
 	reviewer := &blockingReviewer{entered: make(chan struct{}, 1)}
-	sar, err := New(reviewer, Config{Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
+	sar := New(reviewer, Config{Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 
 	ctx, cancel := context.WithTimeout(testRequestContext(), 50*time.Millisecond)
 	defer cancel()
@@ -157,10 +151,7 @@ func TestCheckAuthorizedForImpersonationDeadlineExceeded(t *testing.T) {
 // budget distinguishable from a longer one that would only expire much later.
 func TestCheckAuthorizedForImpersonationConfiguredTimeout(t *testing.T) {
 	reviewer := &blockingReviewer{entered: make(chan struct{}, 1)}
-	sar, err := New(reviewer, Config{Timeout: 50 * time.Millisecond, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
+	sar := New(reviewer, Config{Timeout: 50 * time.Millisecond, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 
 	// context.Background() has no deadline, so only the configured timeout can
 	// abort the blocked SAR call.

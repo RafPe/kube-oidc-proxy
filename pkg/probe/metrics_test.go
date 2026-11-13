@@ -24,18 +24,15 @@ func newMetricsRecorder(t *testing.T) *metrics.Recorder {
 }
 
 func TestProbePublishesIssuerAndReadyGauges(t *testing.T) {
-	issuerA := IssuerReadiness{IssuerURL: "https://a.example.com/realm", FakeJWT: "jwt-a"}
-	issuerB := IssuerReadiness{IssuerURL: "https://b.example.com", FakeJWT: "jwt-b"}
+	issuerA := "https://a.example.com/realm"
+	issuerB := "https://b.example.com"
 	rec := newMetricsRecorder(t)
 
-	s, err := NewServer(Config{
-		Issuers:       []IssuerReadiness{issuerA, issuerB},
-		Authenticator: &fakeAuthenticator{notInit: map[string]bool{"jwt-b": true}},
+	s := NewServer(Config{
+		IssuerURLs:    []string{issuerA, issuerB},
+		Authenticator: &fakeAuthenticator{notInit: map[string]bool{issuerB: true}},
 		Metrics:       rec,
 	}, slog.New(slog.DiscardHandler))
-	if err != nil {
-		t.Fatal(err)
-	}
 	g := rec.Gatherer()
 
 	// Every configured issuer has a series from construction, at 0.
@@ -63,7 +60,7 @@ func TestProbePublishesIssuerAndReadyGauges(t *testing.T) {
 	}
 	// The label is the host, never the raw URL.
 	for _, v := range metricstest.LabelValues(t, g, metricIssuerInitialized, "issuer_name") {
-		if v == issuerA.IssuerURL || v == issuerB.IssuerURL {
+		if v == issuerA || v == issuerB {
 			t.Fatalf("issuer_name leaked a full URL: %q", v)
 		}
 	}

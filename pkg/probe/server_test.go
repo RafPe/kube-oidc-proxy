@@ -4,10 +4,12 @@ package probe
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -23,20 +25,19 @@ import (
 // process can take the port in between.
 func newListenerServer(t *testing.T, addr string, root *slog.Logger) *Server {
 	t.Helper()
-	s, err := NewServer(Config{Addr: addr, Authenticator: &fakeAuthenticator{}}, root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return s
+	return NewServer(Config{Addr: addr, Authenticator: &fakeAuthenticator{}}, root)
 }
 
-// TestNewServerRequiresALogger pins the constructor contract the proxy's
-// other constructors share: a nil logger fails at construction rather than
-// panicking on the first readiness check.
-func TestNewServerRequiresALogger(t *testing.T) {
-	if _, err := NewServer(Config{Authenticator: &fakeAuthenticator{}}, nil); err == nil {
-		t.Fatal("NewServer with a nil logger returned no error")
-	}
+// TestNewServerPanicsWithoutALogger pins the constructor contract the proxy's
+// other constructors share: a nil logger panics at construction, naming the
+// package, rather than on the first readiness check.
+func TestNewServerPanicsWithoutALogger(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil || !strings.HasPrefix(fmt.Sprint(r), "probe: ") {
+			t.Fatalf("NewServer with a nil logger: recovered %v, want a panic naming the package", r)
+		}
+	}()
+	NewServer(Config{Authenticator: &fakeAuthenticator{}}, nil)
 }
 
 // TestCheckTimeoutFitsTheWriteTimeout pins that a check which runs out its
@@ -261,8 +262,8 @@ func TestReadinessServerWaitReturnsTheShutdownError(t *testing.T) {
 
 // TestReadinessServerWaitBlocksUntilShutdownCompletes pins that Wait reports
 // the end of the drain, not the end of Serve. Shutdown makes Serve return at
-// once, so a Wait that keys on Serve alone lets cmd/app run the pre-shutdown
-// hooks while the readiness port is still held by an in-flight request.
+// once, so a Wait that keys on Serve alone lets cmd/app flush the audit
+// backend while the readiness port is still held by an in-flight request.
 func TestReadinessServerWaitBlocksUntilShutdownCompletes(t *testing.T) {
 	root, cap := logtest.New(t, 0)
 	defer logtest.AssertRegistered(t, cap)

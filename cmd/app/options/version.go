@@ -32,37 +32,37 @@ var (
 // NewVersionOptions registers the Version flag set on nfs and returns the
 // options that report the build information stamped into the binary.
 func NewVersionOptions(nfs *cliflag.NamedFlagSets) *VersionOptions {
-	m := &VersionOptions{}
-	return m.AddFlags(nfs.FlagSet("Version"))
+	v := &VersionOptions{}
+	return v.AddFlags(nfs.FlagSet("Version"))
 }
 
-// AddFlags binds --version to fs and returns m for chaining.
-func (m *VersionOptions) AddFlags(fs *pflag.FlagSet) *VersionOptions {
+// AddFlags binds --version to fs and returns v for chaining.
+func (v *VersionOptions) AddFlags(fs *pflag.FlagSet) *VersionOptions {
 	fs.Bool("version", false, "Print version information and quit")
-	return m
+	return v
 }
 
 // Requested reports whether --version was given on the command line.
-func (m *VersionOptions) Requested(cmd *cobra.Command) bool {
+func (v *VersionOptions) Requested(cmd *cobra.Command) bool {
 	return cmd.Flag("version").Value.String() == "true"
 }
 
 // Version returns the build version this binary reports, for the startup
 // record that fixes what an operator is actually running.
-func (m *VersionOptions) Version() string {
+func (v *VersionOptions) Version() string {
 	return gitVersion
 }
 
 // Commit returns the git commit this binary was built from, for the build
 // information the metrics endpoint reports.
-func (m *VersionOptions) Commit() string {
+func (v *VersionOptions) Commit() string {
 	return gitCommit
 }
 
 // PrintVersionAndExit prints the build information and ends the process. It
 // is the --version flag's whole job, so the command calls it before anything
 // else is validated or built.
-func (m *VersionOptions) PrintVersionAndExit() {
+func (v *VersionOptions) PrintVersionAndExit() {
 	fmt.Printf("%s version: %#v\n", AppName,
 		apimachineryversion.Info{
 			Major:        gitMajor,

@@ -3,6 +3,7 @@ package impersonation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -205,33 +206,21 @@ func tryImpersonationClient(ctx context.Context, f *framework.Framework, impConf
 	client, err := kubernetes.NewForConfig(config)
 	Expect(err).NotTo(HaveOccurred())
 
-	var resp string
-	var respCode int
-
+	respCode, resp := http.StatusOK, ""
 	_, err = client.CoreV1().Pods(f.Namespace.Name).List(ctx, metav1.ListOptions{})
 	if err != nil {
-		kErr, ok := err.(*k8sErrors.StatusError)
-		if !ok {
-			Expect(err).NotTo(HaveOccurred())
+		var statusErr *k8sErrors.StatusError
+		if !errors.As(err, &statusErr) {
+			Expect(fmt.Errorf("expected a status error from the proxy, got=%s", err)).NotTo(HaveOccurred())
 		}
-		respCode = int(kErr.ErrStatus.Code)
-		fmt.Printf("http status code %d\n", respCode)
-		if respCode != http.StatusOK {
-			if len(kErr.Status().Details.Causes) > 0 {
-				resp = kErr.Status().Details.Causes[0].Message
-			} else {
-				resp = kErr.Error()
-			}
-		} else {
-			resp = ""
+		respCode = int(statusErr.ErrStatus.Code)
+		// A body the proxy wrote itself is not a Status object, so the client
+		// carries it as an unexpected-response cause rather than in the message.
+		resp = statusErr.Error()
+		if details := statusErr.Status().Details; details != nil && len(details.Causes) > 0 {
+			resp = details.Causes[0].Message
 		}
-
-	} else {
-		respCode = http.StatusOK
 	}
-
-	// check body and status code the token was rejected
-	//if int(kErr.Status().Code) != http.StatusForbidden ||
 
 	if respCode != expectedCode {
 		Expect(fmt.Errorf("expected status code=%d, got=%d resp=%s", expectedCode, respCode, resp)).NotTo(HaveOccurred())
@@ -240,10 +229,4 @@ func tryImpersonationClient(ctx context.Context, f *framework.Framework, impConf
 	if resp != expRespBody {
 		Expect(fmt.Errorf("expected response=%s, got=%s", expRespBody, resp)).NotTo(HaveOccurred())
 	}
-
-	/*if int(kErr.Status().Code) != expectedCode ||
-		resp != expRespBody {
-		Expect(fmt.Errorf("expected status code %d with body \"%s\", got code=%d, body=\"%s\"",
-			http.StatusForbidden, expRespBody, int(kErr.Status().Code), resp)).NotTo(HaveOccurred())
-	}*/
 }

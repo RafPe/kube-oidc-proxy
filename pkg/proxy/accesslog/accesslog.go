@@ -20,11 +20,11 @@ import (
 	"k8s.io/apiserver/pkg/authentication/user"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/authz/subjectaccessreview"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/clientip"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 )
 
 // The two values of the record's event field, the one the request.access.decided

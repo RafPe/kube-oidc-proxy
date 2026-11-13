@@ -119,7 +119,7 @@ Two independent triggers, in the order they usually happen:
 Two package suffixes, two meanings, each following the library it mirrors:
 
 - **`fake`** (e.g. `pkg/authn/tokenreview/fake`,
-  `pkg/proxy/subjectaccessreview/fake`) holds an in-memory implementation of a
+  `pkg/authz/subjectaccessreview/fake`) holds an in-memory implementation of a
   client-go interface the parent package depends on, as client-go's own
   `kubernetes/fake` does. Use it where production code would take a real
   client.

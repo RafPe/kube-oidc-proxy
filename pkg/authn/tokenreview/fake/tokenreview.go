@@ -11,9 +11,12 @@ import (
 	clientauthv1 "k8s.io/client-go/kubernetes/typed/authentication/v1"
 )
 
-var _ clientauthv1.TokenReviewInterface = &FakeReviewer{}
+var _ clientauthv1.TokenReviewInterface = &Reviewer{}
 
-type FakeReviewer struct {
+// Reviewer is a programmable TokenReviewInterface: each test decides what
+// Create returns, either from the review alone (CreateFn) or from the review and
+// its context (CreateCtxFn).
+type Reviewer struct {
 	CreateFn func(*authv1.TokenReview) (*authv1.TokenReview, error)
 
 	// CreateCtxFn, when set, takes precedence over CreateFn and additionally
@@ -22,22 +25,26 @@ type FakeReviewer struct {
 	CreateCtxFn func(context.Context, *authv1.TokenReview) (*authv1.TokenReview, error)
 }
 
-func New() *FakeReviewer {
-	return &FakeReviewer{
+// New returns a Reviewer whose Create returns no review and no error until a
+// test programs it.
+func New() *Reviewer {
+	return &Reviewer{
 		CreateFn: func(*authv1.TokenReview) (*authv1.TokenReview, error) {
 			return nil, nil
 		},
 	}
 }
 
-func (f *FakeReviewer) Create(ctx context.Context, req *authv1.TokenReview, co metav1.CreateOptions) (*authv1.TokenReview, error) {
+// Create implements TokenReviewInterface.
+func (f *Reviewer) Create(ctx context.Context, req *authv1.TokenReview, co metav1.CreateOptions) (*authv1.TokenReview, error) {
 	if f.CreateCtxFn != nil {
 		return f.CreateCtxFn(ctx, req)
 	}
 	return f.CreateFn(req)
 }
 
-func (f *FakeReviewer) WithCreate(req *authv1.TokenReview, err error) *FakeReviewer {
+// WithCreate makes every Create return req and err, and returns f for chaining.
+func (f *Reviewer) WithCreate(req *authv1.TokenReview, err error) *Reviewer {
 	f.CreateFn = func(*authv1.TokenReview) (*authv1.TokenReview, error) {
 		return req, err
 	}

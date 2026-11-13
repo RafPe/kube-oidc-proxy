@@ -1,0 +1,3 @@
+kind: Changed
+body: |-
+  Impersonation targets are reviewed in a fixed order, so a request refused on several targets always reports the same one; an empty `Impersonate-Uid` is ignored, as the API server ignores it.

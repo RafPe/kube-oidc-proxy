@@ -230,10 +230,6 @@ func (k *Kind) collectLogs() error {
 	return nil
 }
 
-func (k *Kind) KubeClient() *kubernetes.Clientset {
-	return k.client
-}
-
 func (k *Kind) KubeConfigPath() string {
 	return filepath.Join(os.TempDir(), "kube-oidc-proxy-e2e")
 }

@@ -211,9 +211,17 @@ exec sleep 60
 	// ends at all, not that it ends in a particular millisecond.
 	const ready = 2 * time.Second
 
+	tun := &tunnel{
+		kubeconfig: "kubeconfig",
+		namespace:  "proxy",
+		target:     "svc/kop",
+		remote:     8443,
+		ready:      ready,
+		ctx:        context.Background(),
+	}
+
 	start := time.Now()
-	_, stop, err := startPortForward(context.Background(), "kubeconfig", "proxy", "svc/kop", 8443,
-		ready, func(error) {})
+	_, stop, err := tun.startPortForward(func(error) {})
 	if err == nil {
 		stop()
 		t.Fatal("startPortForward returned no error for a kubectl that never announced a port")

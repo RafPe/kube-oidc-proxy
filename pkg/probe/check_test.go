@@ -57,7 +57,7 @@ func (c *concurrentAuthenticator) maxConcurrent() int {
 // second Check would block at entry and the two would serialize (max=1),
 // causing the barrier read below to time out.
 func TestCheckDoesNotHoldLockDuringAuth(t *testing.T) {
-	issuerA := IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"}
+	issuerA := "https://a.example.com"
 	authn := &concurrentAuthenticator{
 		entered: make(chan struct{}, 2),
 		release: make(chan struct{}),
@@ -102,7 +102,7 @@ func TestIssuerPendingEmittedOnStateChangeWithReason(t *testing.T) {
 	root, cap := logtest.New(t, 0)
 	defer logtest.AssertRegistered(t, cap)
 	hc := newTestServerWithLogger(t, root, true, map[string]bool{"https://a": true},
-		IssuerReadiness{IssuerURL: "https://a", FakeJWT: "jwt-a"})
+		"https://a")
 	hc.SetServing()
 	_ = hc.check()
 	_ = hc.check()
@@ -121,7 +121,7 @@ func TestIssuerPendingEmittedOnStateChangeWithReason(t *testing.T) {
 func TestReadyTransitionIsInfo(t *testing.T) {
 	root, cap := logtest.New(t, 0)
 	defer logtest.AssertRegistered(t, cap)
-	hc := newTestServerWithLogger(t, root, false, nil, IssuerReadiness{IssuerURL: "https://a", FakeJWT: "jwt-a"})
+	hc := newTestServerWithLogger(t, root, false, nil, "https://a")
 	hc.SetServing()
 	if err := hc.check(); err != nil {
 		t.Fatal(err)
@@ -141,7 +141,7 @@ func TestStalePendingResultIsDroppedOnceInitialized(t *testing.T) {
 	root, cap := logtest.New(t, 0)
 	defer logtest.AssertRegistered(t, cap)
 	hc := newTestServerWithLogger(t, root, true, nil,
-		IssuerReadiness{IssuerURL: "https://a", FakeJWT: "jwt-a"})
+		"https://a")
 
 	hc.mu.Lock()
 	hc.initialized["https://a"] = true

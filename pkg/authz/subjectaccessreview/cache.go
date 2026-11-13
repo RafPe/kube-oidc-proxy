@@ -41,8 +41,8 @@ const (
 // decisionCache caches definitive SubjectAccessReview decisions (allow/deny)
 // with split TTLs, mirroring the response cache of the upstream webhook
 // authorizer (k8s.io/apiserver/plugin/pkg/authorizer/webhook). Only decisions
-// are cached; errors never are. A nil *decisionCache is valid and disables
-// caching entirely — all methods are nil-safe.
+// are cached; errors never are. A switched-off cache is not constructed at
+// all: the Authorizer holds nil and never consults it.
 type decisionCache struct {
 	lru *utilcache.LRUExpireCache
 
@@ -56,7 +56,7 @@ type decisionCache struct {
 }
 
 // newDecisionCache returns a bounded decision cache with the given TTLs, or
-// nil (caching fully disabled) when neither TTL is positive.
+// nil, the cache switched off, when neither TTL is positive.
 func newDecisionCache(allowTTL, denyTTL time.Duration, size int, clock utilcache.Clock) *decisionCache {
 	if allowTTL <= 0 && denyTTL <= 0 {
 		return nil
@@ -75,11 +75,8 @@ func newDecisionCache(allowTTL, denyTTL time.Duration, size int, clock utilcache
 // distinct authorization questions can never collide the way naive string
 // concatenation could, and any field that influences the SAR outcome is
 // automatically part of the key. It reports ok=false when the decision must
-// not be cached (cache disabled, marshal failure, or oversized spec).
+// not be cached (marshal failure or oversized spec).
 func (c *decisionCache) key(spec *v1.SubjectAccessReviewSpec) (string, bool) {
-	if c == nil {
-		return "", false
-	}
 	b, err := json.Marshal(spec)
 	if err != nil || len(b) > maxCacheKeySize {
 		return "", false
@@ -90,9 +87,6 @@ func (c *decisionCache) key(spec *v1.SubjectAccessReviewSpec) (string, bool) {
 // get returns a cached decision for key and whether one was present and
 // unexpired.
 func (c *decisionCache) get(key string) (allowed, ok bool) {
-	if c == nil {
-		return false, false
-	}
 	v, ok := c.lru.Get(key)
 	if !ok {
 		return false, false
@@ -104,9 +98,6 @@ func (c *decisionCache) get(key string) (allowed, ok bool) {
 // whose TTL is not positive is never cached. Errors must not reach put — the
 // caller only stores decisions from successful reviews.
 func (c *decisionCache) put(key string, allowed bool) {
-	if c == nil {
-		return
-	}
 	ttl := c.denyTTL
 	if allowed {
 		ttl = c.allowTTL

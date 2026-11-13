@@ -43,7 +43,7 @@ func (c *capturingRT) RoundTrip(req *http.Request) (*http.Response, error) {
 // handler builds is the source, and the headers the impersonating round
 // tripper generates from it are what leaves the process: inspecting the
 // inbound request headers instead would assert nothing at all, because the
-// Impersonate-* headers do not exist until RoundTrip builds them.
+// Impersonate-* headers do not exist until roundTrip builds them.
 //
 // The authenticator is wrapped exactly as run.go wraps it, so the whole path
 // under test is the production one — a wrapper that put the name into
@@ -89,8 +89,8 @@ func TestIssuerNameNeverReachesImpersonationHeaders(t *testing.T) {
 			}
 		}
 
-		if _, err := p.RoundTrip(req); err != nil {
-			t.Fatalf("RoundTrip: %s", err)
+		if _, err := p.roundTrip(req); err != nil {
+			t.Fatalf("roundTrip: %s", err)
 		}
 	})))
 

@@ -17,13 +17,14 @@ import (
 	azv1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
+	"k8s.io/apiserver/pkg/authentication/serviceaccount"
 	authuser "k8s.io/apiserver/pkg/authentication/user"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/authz/subjectaccessreview"
+	fakesubjectaccessreview "github.com/rafpe/kube-oidc-proxy/pkg/authz/subjectaccessreview/fake"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
-	fakesubjectaccessreview "github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview/fake"
 )
 
 // TestWithImpersonateRequestDoesNotMutateAuthenticatorUser is the regression
@@ -151,11 +152,8 @@ func TestImpersonationAppliedLogsHeaderNamesOnly(t *testing.T) {
 // than the configured cap is answered with 431 before any SubjectAccessReview
 // is submitted, and never reaches the inner handler.
 func TestOverCapImpersonationRejectedBeforeSubjectAccessReview(t *testing.T) {
-	reviewer := &countingReviewer{FakeReviewer: fakesubjectaccessreview.New(nil)}
-	sar, err := subjectaccessreview.New(reviewer, subjectaccessreview.Config{MaxHeaderValues: 2}, slog.New(slog.DiscardHandler))
-	if err != nil {
-		t.Fatalf("creating subject access reviewer: %s", err)
-	}
+	reviewer := &countingReviewer{Reviewer: fakesubjectaccessreview.New(nil)}
+	sar := subjectaccessreview.New(reviewer, subjectaccessreview.Config{MaxHeaderValues: 2}, slog.New(slog.DiscardHandler))
 	p := newTestProxy(t, withSubjectAccessReviewer(sar))
 
 	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(
@@ -164,7 +162,7 @@ func TestOverCapImpersonationRejectedBeforeSubjectAccessReview(t *testing.T) {
 		}, true, nil))
 
 	var served bool
-	handler := p.withHandlers(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	handler := p.withFilterChain(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		served = true
 	}))
 
@@ -197,7 +195,7 @@ func TestOverCapImpersonationRejectedBeforeSubjectAccessReview(t *testing.T) {
 // specRecordingReviewer records the requester groups of every review it is
 // asked, and allows them all.
 type specRecordingReviewer struct {
-	*fakesubjectaccessreview.FakeReviewer
+	*fakesubjectaccessreview.Reviewer
 
 	mu     sync.Mutex
 	groups [][]string
@@ -224,11 +222,8 @@ func TestSubjectAccessReviewRequesterIsAuthenticated(t *testing.T) {
 		"no token groups":         nil,
 	} {
 		t.Run(name, func(t *testing.T) {
-			reviewer := &specRecordingReviewer{FakeReviewer: fakesubjectaccessreview.New(nil)}
-			sar, err := subjectaccessreview.New(reviewer, subjectaccessreview.Config{MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
-			if err != nil {
-				t.Fatalf("creating subject access reviewer: %s", err)
-			}
+			reviewer := &specRecordingReviewer{Reviewer: fakesubjectaccessreview.New(nil)}
+			sar := subjectaccessreview.New(reviewer, subjectaccessreview.Config{MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 			p := newTestProxy(t, withSubjectAccessReviewer(sar))
 
 			inbound := &authuser.DefaultInfo{Name: "alice", Groups: slices.Clone(groups)}
@@ -263,7 +258,7 @@ func TestSubjectAccessReviewRequesterIsAuthenticated(t *testing.T) {
 // attributeRecordingReviewer allows every review and records what each one
 // asked about, so a test can check the client's request was still authorized.
 type attributeRecordingReviewer struct {
-	*fakesubjectaccessreview.FakeReviewer
+	*fakesubjectaccessreview.Reviewer
 
 	mu    sync.Mutex
 	asked []azv1.ResourceAttributes
@@ -393,11 +388,8 @@ func TestClientCannotAssertProxyWrittenExtras(t *testing.T) {
 func impersonateBob(t *testing.T, cfg Config, inbound authuser.Info, extras map[string]string) (*reqctx.ImpersonationRecord, *attributeRecordingReviewer) {
 	t.Helper()
 
-	reviewer := &attributeRecordingReviewer{FakeReviewer: fakesubjectaccessreview.New(nil)}
-	sar, err := subjectaccessreview.New(reviewer, subjectaccessreview.Config{MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
-	if err != nil {
-		t.Fatalf("creating subject access reviewer: %s", err)
-	}
+	reviewer := &attributeRecordingReviewer{Reviewer: fakesubjectaccessreview.New(nil)}
+	sar := subjectaccessreview.New(reviewer, subjectaccessreview.Config{MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 	p := newTestProxy(t, withSubjectAccessReviewer(sar))
 	p.config = &cfg
 
@@ -427,5 +419,46 @@ func assertExtraAuthorized(t *testing.T, reviewer *attributeRecordingReviewer, k
 		return a.Resource == "userextras" && a.Subresource == key && a.Name == value
 	}) {
 		t.Errorf("the client's %s extra was not authorized: reviews = %+v", key, reviewer.asked)
+	}
+}
+
+// TestOutboundGroupsMirrorTheAPIServer pins the groups the forwarded identity
+// carries to the ones kube-apiserver's impersonation filter would give it, so
+// impersonating through the proxy and impersonating directly agree. The
+// resolved groups, such as a service account's, are forwarded as they are.
+func TestOutboundGroupsMirrorTheAPIServer(t *testing.T) {
+	inbound := &authuser.DefaultInfo{Name: "alice", Groups: []string{"devs"}}
+
+	tests := map[string]struct {
+		target authuser.Info
+		want   []string
+	}{
+		"no impersonation": {nil, []string{"devs", authuser.AllAuthenticated}},
+		"user": {&authuser.DefaultInfo{Name: "bob", Groups: []string{"ops"}},
+			[]string{"ops", authuser.AllAuthenticated}},
+		"user already authenticated": {&authuser.DefaultInfo{Name: "bob", Groups: []string{authuser.AllAuthenticated}},
+			[]string{authuser.AllAuthenticated}},
+		"user asking for unauthenticated": {&authuser.DefaultInfo{Name: "bob", Groups: []string{authuser.AllUnauthenticated}},
+			[]string{authuser.AllUnauthenticated}},
+		"anonymous": {&authuser.DefaultInfo{Name: authuser.Anonymous},
+			[]string{authuser.AllUnauthenticated}},
+		"anonymous with unauthenticated": {&authuser.DefaultInfo{Name: authuser.Anonymous, Groups: []string{authuser.AllUnauthenticated}},
+			[]string{authuser.AllUnauthenticated}},
+		"service account": {&authuser.DefaultInfo{Name: "system:serviceaccount:ns:sa",
+			Groups: []string{serviceaccount.AllServiceAccountsGroup, "system:serviceaccounts:ns"}},
+			[]string{serviceaccount.AllServiceAccountsGroup, "system:serviceaccounts:ns", authuser.AllAuthenticated}},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			p := newTestProxy(t)
+			out, err := p.outboundIdentity(newFakeR(), inbound, tc.target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(out.Groups, tc.want) {
+				t.Errorf("groups = %q, want %q", out.Groups, tc.want)
+			}
+		})
 	}
 }

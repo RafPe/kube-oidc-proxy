@@ -4,6 +4,7 @@ package audit
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -382,8 +383,8 @@ func TestRunReturnsBackendFailure(t *testing.T) {
 	a := newTestAuditWithBackend(t, root, &fakeBackend{runErr: errors.New("webhook unreachable")})
 
 	err := a.Start(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "webhook unreachable") {
-		t.Fatalf("Start() = %v, want the backend's start error", err)
+	if err == nil || !strings.Contains(err.Error(), "webhook unreachable") || !strings.HasPrefix(err.Error(), "audit: ") {
+		t.Fatalf("Start() = %v, want the backend's start error under the audit: prefix", err)
 	}
 	if len(cap.Records()) != 0 {
 		t.Fatalf("a failed start was logged by the auditor as well as returned: %s", cap.Raw())
@@ -407,10 +408,13 @@ func TestRunWithoutBackendIsSilent(t *testing.T) {
 	}
 }
 
-// TestNewRequiresLogger pins that the logger is a required collaborator: a nil
-// one fails at construction rather than on the first record.
-func TestNewRequiresLogger(t *testing.T) {
-	if _, err := New(Config{ExternalAddress: "0.0.0.0:1234", SecureServing: new(server.SecureServingInfo)}, nil); err == nil {
-		t.Fatal("New(nil logger) error = nil, want an error")
-	}
+// TestNewPanicsOnNilLogger pins that a nil logger is a wiring bug caught at
+// construction, naming the package, rather than a silent auditor.
+func TestNewPanicsOnNilLogger(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil || !strings.Contains(fmt.Sprint(r), "audit:") {
+			t.Fatalf("New(nil logger) recovered %v, want a panic naming the audit package", r)
+		}
+	}()
+	_, _ = New(Config{ExternalAddress: "0.0.0.0:1234", SecureServing: new(server.SecureServingInfo)}, nil)
 }

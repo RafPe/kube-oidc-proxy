@@ -89,3 +89,43 @@ func TestLimiterKeepsKeysApart(t *testing.T) {
 		t.Fatalf("warning_reason = %q, want headers_dropped", rec.String("warning_reason"))
 	}
 }
+
+// TestLimiterRunFlushesOnItsOwnCadenceAndOnShutdown covers both halves of
+// Run: a summary every summaryEvery while it runs, and a final one when ctx
+// ends, so a burst suppressed just before shutdown is still accounted for.
+func TestLimiterRunFlushesOnItsOwnCadenceAndOnShutdown(t *testing.T) {
+	now := time.Unix(0, 0)
+	l := logging.NewLimiter(1, 1, 10*time.Millisecond, func() time.Time { return now })
+	root, cap := logtest.New(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		l.Run(ctx, root)
+	}()
+
+	l.Allow(reservedIdentityKey)
+	l.Allow(reservedIdentityKey)
+	deadline := time.Now().Add(5 * time.Second)
+	for len(cap.ByEvent(logging.EventLogWarningSuppressed)) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("Run emitted no summary within 5s of a 10ms cadence")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	l.Allow(reservedIdentityKey)
+	cancel()
+	<-done
+
+	recs := cap.ByEvent(logging.EventLogWarningSuppressed)
+	if len(recs) != 2 {
+		t.Fatalf("summaries = %d, want 2 (one on the tick, one on shutdown): %s", len(recs), cap.Raw())
+	}
+	for _, rec := range recs {
+		if n, _ := rec.Int("suppressed_count"); n != 1 {
+			t.Errorf("suppressed_count = %d, want 1: %v", n, rec)
+		}
+	}
+}

@@ -105,18 +105,34 @@ func logConfigLoaded(l *slog.Logger, summary configSummary) {
 		slog.String("readiness_mode", string(summary.readinessMode)))
 }
 
+// metricsListener is the started metrics listener and the cancel that stops
+// it. A nil *metricsListener is the disabled listener: Stop has nothing to do.
+type metricsListener struct {
+	server *metrics.Server
+	cancel context.CancelFunc
+}
+
+// Stop stops the listener and waits for its drain, returning the drain's
+// terminal error.
+func (m *metricsListener) Stop() error {
+	if m == nil {
+		return nil
+	}
+	m.cancel()
+	return m.server.Wait()
+}
+
 // startMetrics builds the recorder and starts the metrics listener when
-// metrics are enabled, returning the recorder and the shutdown step that stops
-// the listener. With metrics disabled the recorder is nil, which every
-// collaborator treats as a no-op, and the step is noStep.
+// metrics are enabled. With metrics disabled both are nil: every collaborator
+// treats a nil recorder as a no-op, and a nil listener stops as a no-op.
 //
 // The listener has a context of its own rather than the one the stop signal
-// cancels: it must outlive the readiness listener and the pre-shutdown hooks,
-// which report their own failures through the recorder, so a scrape landing
-// in the drain window can still see them. Only the returned step stops it.
-func startMetrics(opts *options.Options, root *slog.Logger) (*metrics.Recorder, func() error, error) {
+// cancels: it must outlive the readiness listener and the audit flush, which
+// report their own failures through the recorder, so a scrape landing in the
+// drain window can still see them. Only Stop stops it.
+func startMetrics(opts *options.Options, root *slog.Logger) (*metrics.Recorder, *metricsListener, error) {
 	if !opts.Metrics.Enabled() {
-		return nil, noStep, nil
+		return nil, nil, nil
 	}
 	recorder, err := metrics.New(metrics.BuildInfo{
 		Version:   opts.Version.Version(),
@@ -124,22 +140,19 @@ func startMetrics(opts *options.Options, root *slog.Logger) (*metrics.Recorder, 
 		GoVersion: runtime.Version(),
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("building the metrics recorder: %w", err)
+		return nil, nil, err
 	}
-	server, err := metrics.NewServer(metrics.ServerConfig{
+	server := metrics.NewServer(metrics.ServerConfig{
 		Addr:     opts.Metrics.BindAddress,
 		Recorder: recorder,
 	}, logging.ForComponent(root, logging.ComponentMetrics))
-	if err != nil {
-		return nil, nil, err
-	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	if err := server.Start(ctx); err != nil {
 		cancel()
 		return nil, nil, err
 	}
-	return recorder, func() error { cancel(); return server.Wait() }, nil
+	return recorder, &metricsListener{server: server, cancel: cancel}, nil
 }
 
 // buildRESTConfig selects the API server client configuration: the explicit
@@ -170,15 +183,15 @@ func buildRESTConfig(opts *options.Options, cmd *cobra.Command) (*rest.Config, e
 // reviewer when passthrough is disabled. The reviewer is fronted by a token
 // result cache so repeated reviews of the same token (e.g. request storms
 // during an OIDC issuer outage) do not each cost an API server round trip.
-func buildTokenReviewer(opts *options.Options, kubeclient kubernetes.Interface, recorder *metrics.Recorder, root *slog.Logger) (authenticator.Token, error) {
+func buildTokenReviewer(opts *options.Options, kubeclient kubernetes.Interface, recorder *metrics.Recorder, root *slog.Logger) authenticator.Token {
 	if !opts.App.TokenPassthrough.Enabled {
-		return nil, nil
+		return nil
 	}
 	return tokenreview.New(kubeclient.AuthenticationV1().TokenReviews(), tokenreview.Config{
 		Audiences:       opts.App.TokenPassthrough.Audiences,
-		Timeout:         opts.App.TokenPassthrough.RequestTimeout,
-		CacheSuccessTTL: opts.App.TokenPassthrough.CacheSuccessTTL,
-		CacheFailureTTL: opts.App.TokenPassthrough.CacheFailureTTL,
+		Timeout:         opts.App.TokenPassthrough.Timeout,
+		SuccessCacheTTL: opts.App.TokenPassthrough.SuccessCacheTTL,
+		FailureCacheTTL: opts.App.TokenPassthrough.FailureCacheTTL,
 		Metrics:         recorder,
 	}, logging.ForComponent(root, logging.ComponentTokenReview))
 }
@@ -198,20 +211,6 @@ func proxyConfig(opts *options.Options) *proxy.Config {
 
 		AllowedReservedGroups: opts.App.AllowedReservedGroups,
 	}
-}
-
-// issuerProbes pairs every configured issuer with the fake JWT the readiness
-// probe sends it.
-func issuerProbes(issuerURLs []string) ([]probe.IssuerReadiness, error) {
-	probes := make([]probe.IssuerReadiness, 0, len(issuerURLs))
-	for _, issuerURL := range issuerURLs {
-		readiness, err := probe.NewIssuerReadiness(issuerURL)
-		if err != nil {
-			return nil, fmt.Errorf("building the readiness probe for %q: %w", issuerURL, err)
-		}
-		probes = append(probes, readiness)
-	}
-	return probes, nil
 }
 
 // authenticatorConfig maps the parsed flags onto the authenticator package's

@@ -75,7 +75,7 @@ func runHandlersCases(t *testing.T, tests map[string]handlersCase) {
 
 			var handler http.Handler
 			handler = http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-				_, err := p.RoundTrip(req)
+				_, err := p.roundTrip(req)
 				if err != nil {
 					t.Errorf("unexpected error: %s", err)
 					t.FailNow()
@@ -96,7 +96,7 @@ func runHandlersCases(t *testing.T, tests map[string]handlersCase) {
 				test.req.Header = make(http.Header)
 			}
 
-			handler = p.withHandlers(handler)
+			handler = p.withFilterChain(handler)
 			handler.ServeHTTP(w, test.req)
 
 			resp := w.Result()

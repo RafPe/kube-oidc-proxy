@@ -80,11 +80,11 @@ func failWith(err error) func(*azv1.SubjectAccessReview) (*azv1.SubjectAccessRev
 
 // newCachedSAR builds a SubjectAccessReview whose decision cache runs on the
 // supplied clock, bypassing New only to inject deterministic time.
-func newCachedSAR(r clientazv1.SubjectAccessReviewInterface, allowTTL, denyTTL time.Duration, clk utilcache.Clock) *SubjectAccessReview {
-	return &SubjectAccessReview{
+func newCachedSAR(r clientazv1.SubjectAccessReviewInterface, allowTTL, denyTTL time.Duration, clk utilcache.Clock) *Authorizer {
+	return &Authorizer{
 		logger:          slog.New(slog.DiscardHandler),
-		reviewer:        r,
-		sarTimeout:      DefaultTimeout,
+		client:          r,
+		timeout:         DefaultTimeout,
 		maxHeaderValues: DefaultMaxHeaderValues,
 		cache:           newDecisionCache(allowTTL, denyTTL, decisionCacheSize, clk),
 	}
@@ -253,10 +253,7 @@ func TestErrorsNeverCached(t *testing.T) {
 func TestCacheDisabled(t *testing.T) {
 	reviewer := &fnReviewer{}
 	reviewer.set(allowAll)
-	sar, err := New(reviewer, Config{Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
+	sar := New(reviewer, Config{Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
 	if sar.cache != nil {
 		t.Fatal("cache is non-nil with both TTLs zero, want fully disabled")
 	}

@@ -188,10 +188,10 @@ func strs[T ~string](values []T) []string {
 }
 
 // allowedCodes is every value CodeFor can render: the statuses Go's registry
-// knows, plus "none" for a request that ended without one and the catch-all.
+// knows, plus codeNone for a request that ended without one and the catch-all.
 // Derived from CodeFor rather than listed, so the two cannot drift.
 func allowedCodes() []string {
-	out := []string{"none", other}
+	out := []string{codeNone, other}
 	for status := 100; status < 600; status++ {
 		if code := CodeFor(status); code != other {
 			out = append(out, code)

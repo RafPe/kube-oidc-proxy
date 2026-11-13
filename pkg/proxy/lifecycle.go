@@ -136,7 +136,8 @@ func isAbortHandler(panicked any) bool {
 
 // withRequestLifecycle writes the terminal record for every request: what the
 // client was answered, how long it took, and how the exchange ended. It runs
-// directly inside withRequestID so the record exists whatever the rest of the
+// just inside withRequestID and the auditor's WithRequestInfo, so the record
+// carries the request's id and verb, and it exists whatever the rest of the
 // chain does — including a handler that panics, which is recorded and then
 // re-panicked for the server's own recovery to deal with.
 //
@@ -150,8 +151,10 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 		req = reqctx.WithDecisionHolder(req)
 		ctx := req.Context()
 
-		// The verb and scope labels come from the RequestInfo the audit filter
-		// resolved ahead of this one; both projections collapse anything
+		// The verb and scope labels come from the RequestInfo the auditor's
+		// WithRequestInfo resolved ahead of this filter, and the long-running
+		// rule is the audit package's own, so this record and the audit event
+		// agree on a watch or an exec. Both projections collapse anything
 		// outside the documented sets, so a client cannot mint a series.
 		info, _ := genericapirequest.RequestInfoFrom(ctx)
 		verb, scope := metrics.VerbFor(info), metrics.ScopeFor(info)

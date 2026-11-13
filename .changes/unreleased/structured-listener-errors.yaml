@@ -1,0 +1,3 @@
+kind: Changed
+body: |-
+  Upstream body-copy errors from the reverse proxy and server errors from the readiness and metrics listeners are structured records (WARN on `component=upstream`, ERROR on the listener's component) instead of plain text.

@@ -30,6 +30,9 @@ const Namespace = "kube_oidc_proxy"
 // value therefore passes through one of the projections below.
 const other = "other"
 
+// codeNone is the code label of a request that ended without a status.
+const codeNone = "none"
+
 // Verb is the Kubernetes verb a request resolved to, projected onto a closed
 // lowercase set. Resource requests carry the resolver's verb (create, get,
 // list, watch, update, patch, delete, deletecollection, proxy), except that a
@@ -80,7 +83,7 @@ func VerbFor(info *genericapirequest.RequestInfo) Verb {
 	if isConnectSubresource(info.Subresource) {
 		return VerbConnect
 	}
-	return Verb(projectVerb(Verb(info.Verb)))
+	return project(verbs, Verb(info.Verb), VerbOther)
 }
 
 // verbs is the documented verb set, in catalogue order. VerbOther is the
@@ -91,7 +94,7 @@ var verbs = []Verb{
 }
 
 func projectVerb(v Verb) string {
-	return project(verbs, v, VerbOther)
+	return string(project(verbs, v, VerbOther))
 }
 
 // Scope is how much of the API a request addressed, mirroring kube-apiserver's
@@ -125,16 +128,16 @@ func ScopeFor(info *genericapirequest.RequestInfo) Scope {
 var scopes = []Scope{ScopeCluster, ScopeNamespace, ScopeResource, ScopeNone}
 
 func projectScope(s Scope) string {
-	return project(scopes, s, ScopeNone)
+	return string(project(scopes, s, ScopeNone))
 }
 
 // CodeFor renders an HTTP status for the code label. The domain is the IANA
 // registry as Go knows it, so a status the proxy or the API server never
 // sends cannot create a series; a request that ended without a status (a
-// hijacked connection, a dropped one) is "none".
+// hijacked connection, a dropped one) is codeNone.
 func CodeFor(status int) string {
 	if status == 0 {
-		return "none"
+		return codeNone
 	}
 	if http.StatusText(status) == "" {
 		return other
@@ -165,7 +168,7 @@ var terminations = []Termination{
 }
 
 func projectTermination(t Termination) string {
-	return project(terminations, t, other)
+	return string(project(terminations, t, other))
 }
 
 // AuthMethod is how a request authenticated, as the access record's
@@ -185,7 +188,7 @@ const (
 var authMethods = []AuthMethod{AuthMethodOIDC, AuthMethodTokenReview, AuthMethodNone}
 
 func projectAuthMethod(m AuthMethod) string {
-	return project(authMethods, m, other)
+	return string(project(authMethods, m, other))
 }
 
 // Decision is the outcome of a request's single access decision.
@@ -251,7 +254,7 @@ var reasons = []Reason{
 }
 
 func projectReason(r Reason) string {
-	return project(reasons, r, other)
+	return string(project(reasons, r, other))
 }
 
 // AuthOutcome is how one authentication attempt ended, before the identity
@@ -267,7 +270,7 @@ const (
 var authOutcomes = []AuthOutcome{AuthAccepted, AuthRejected, AuthError}
 
 func projectAuthOutcome(o AuthOutcome) string {
-	return project(authOutcomes, o, other)
+	return string(project(authOutcomes, o, other))
 }
 
 // Review names one of the two review APIs the proxy calls.
@@ -281,7 +284,7 @@ const (
 var reviews = []Review{ReviewTokenReview, ReviewSAR}
 
 func projectReview(r Review) string {
-	return project(reviews, r, other)
+	return string(project(reviews, r, other))
 }
 
 // ReviewOutcome is how one review API call ended, classified from the actual
@@ -325,7 +328,7 @@ func ReviewOutcomeFor(err error, allowed bool) ReviewOutcome {
 var reviewOutcomes = []ReviewOutcome{ReviewAllow, ReviewDeny, ReviewTimeout, ReviewCanceled, ReviewError}
 
 func projectReviewOutcome(o ReviewOutcome) string {
-	return project(reviewOutcomes, o, other)
+	return string(project(reviewOutcomes, o, other))
 }
 
 // CacheResult is the outcome of one review-cache consultation.
@@ -340,7 +343,7 @@ const (
 var cacheResults = []CacheResult{CacheHit, CacheMiss, CacheBypass}
 
 func projectCacheResult(r CacheResult) string {
-	return project(cacheResults, r, other)
+	return string(project(cacheResults, r, other))
 }
 
 // AuditOperation names the audit backend operation a failure was observed in.
@@ -353,15 +356,17 @@ const AuditRun AuditOperation = "run"
 var auditOperations = []AuditOperation{AuditRun}
 
 func projectAuditOperation(o AuditOperation) string {
-	return project(auditOperations, o, other)
+	return string(project(auditOperations, o, other))
 }
 
 // project is the one projection every label goes through: a documented value
-// passes unchanged, anything else collapses onto catchAll. The same slice
-// feeds the catalogue's allowed values, so the two cannot disagree.
-func project[T ~string, C ~string](documented []T, v T, catchAll C) string {
+// passes unchanged, anything else collapses onto catchAll, and the result
+// keeps the vocabulary type. The project* wrappers render it as the label
+// value. The same slice feeds the catalogue's allowed values, so the two
+// cannot disagree.
+func project[T ~string](documented []T, v, catchAll T) T {
 	if slices.Contains(documented, v) {
-		return string(v)
+		return v
 	}
-	return string(catchAll)
+	return catchAll
 }

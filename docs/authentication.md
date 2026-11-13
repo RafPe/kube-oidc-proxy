@@ -129,9 +129,15 @@ which is what a grant has to name:
 | Header | Authorized as `impersonate` on |
 | --- | --- |
 | `Impersonate-User` | `users`, core API group |
+| `Impersonate-User: system:serviceaccount:<ns>:<name>` | `serviceaccounts/<name>` in namespace `<ns>`, core API group. With no `Impersonate-Group`, the impersonated identity gets the groups `system:serviceaccounts` and `system:serviceaccounts:<ns>`, as the API server gives it |
 | `Impersonate-Group` | `groups`, core API group |
 | `Impersonate-Uid` | `uids`, `authentication.k8s.io` |
-| `Impersonate-Extra-<key>` | `userextras/<key>`, `authentication.k8s.io`; the key is lowercased first |
+| `Impersonate-Extra-<key>` | `userextras/<key>`, `authentication.k8s.io`; the key is lowercased and then percent-decoded, as the API server does (`Impersonate-Extra-Example.com%2Fscope` names `example.com/scope`). A key the proxy cannot forward unchanged, such as one that decodes to upper case (`%41bc` decodes to `Abc`, which the API server would receive as `abc`), is refused with `400` and `reason=malformed_impersonation` before any review |
+
+The forwarded identity gets the same implicit group the API server's own
+impersonation filter would add: `system:unauthenticated` when the target is
+`system:anonymous`, and `system:authenticated` for any other target unless its
+groups already hold one of the two.
 
 kubectl sends only the headers you ask for, so `--as=<user>` alone sends one
 user header and needs only a `users` rule; `--as-group` adds a `groups` check

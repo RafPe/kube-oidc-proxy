@@ -46,17 +46,17 @@ func TestProxyFlagsReachOptionsThroughTheCommand(t *testing.T) {
 		"ReadinessProbePort":                               {app.ReadinessProbePort, 9090},
 		"ReadinessRequireAllIssuers":                       {app.ReadinessRequireAllIssuers, true},
 		"FlushInterval":                                    {app.FlushInterval, 25 * time.Millisecond},
-		"SubjectAccessReviewTimeout":                       {app.SubjectAccessReviewTimeout, 7 * time.Second},
-		"SubjectAccessReviewAllowCacheTTL":                 {app.SubjectAccessReviewAllowCacheTTL, time.Minute},
-		"SubjectAccessReviewDenyCacheTTL":                  {app.SubjectAccessReviewDenyCacheTTL, 2 * time.Minute},
+		"SubjectAccessReview.Timeout":                      {app.SubjectAccessReview.Timeout, 7 * time.Second},
+		"SubjectAccessReview.AllowCacheTTL":                {app.SubjectAccessReview.AllowCacheTTL, time.Minute},
+		"SubjectAccessReview.DenyCacheTTL":                 {app.SubjectAccessReview.DenyCacheTTL, 2 * time.Minute},
 		"MaxImpersonationHeaderValues":                     {app.MaxImpersonationHeaderValues, 8},
 		"TrustedProxies":                                   {app.TrustedProxies, []string{"10.0.0.0/8", "192.168.0.0/16"}},
 		"AllowedReservedGroups":                            {app.AllowedReservedGroups, []string{"system:nodes"}},
 		"TokenPassthrough.Enabled":                         {app.TokenPassthrough.Enabled, true},
 		"TokenPassthrough.Audiences":                       {app.TokenPassthrough.Audiences, []string{"aud1", "aud2"}},
-		"TokenPassthrough.RequestTimeout":                  {app.TokenPassthrough.RequestTimeout, 3 * time.Second},
-		"TokenPassthrough.CacheSuccessTTL":                 {app.TokenPassthrough.CacheSuccessTTL, 4 * time.Second},
-		"TokenPassthrough.CacheFailureTTL":                 {app.TokenPassthrough.CacheFailureTTL, 5 * time.Second},
+		"TokenPassthrough.Timeout":                         {app.TokenPassthrough.Timeout, 3 * time.Second},
+		"TokenPassthrough.SuccessCacheTTL":                 {app.TokenPassthrough.SuccessCacheTTL, 4 * time.Second},
+		"TokenPassthrough.FailureCacheTTL":                 {app.TokenPassthrough.FailureCacheTTL, 5 * time.Second},
 		"ExtraHeaderOptions.EnableClientIPExtraUserHeader": {app.ExtraHeaderOptions.EnableClientIPExtraUserHeader, true},
 		"ExtraHeaderOptions.ExtraUserHeaders": {app.ExtraHeaderOptions.ExtraUserHeaders,
 			map[string][]string{"team": {"platform", "infra"}, "region": {"eu"}}},
@@ -86,7 +86,7 @@ func TestProxyFlagDefaults(t *testing.T) {
 	if o.App.TokenPassthrough.Enabled {
 		t.Error("token passthrough is enabled by default")
 	}
-	if o.App.TokenPassthrough.RequestTimeout != 10*time.Second {
-		t.Errorf("TokenPassthrough.RequestTimeout = %s, want 10s", o.App.TokenPassthrough.RequestTimeout)
+	if o.App.TokenPassthrough.Timeout != 10*time.Second {
+		t.Errorf("TokenPassthrough.Timeout = %s, want 10s", o.App.TokenPassthrough.Timeout)
 	}
 }

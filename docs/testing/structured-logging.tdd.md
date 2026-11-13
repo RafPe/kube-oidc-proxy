@@ -196,11 +196,11 @@ callers outside `pkg/logging`.
   wraps `k8s.io/apimachinery/pkg/util/cache.LRUExpireCache`, which exposes no
   eviction callback. An entry dropped by size pressure or TTL expiry produces no
   record; the next lookup is simply a miss.
-- **`audit.flush.failed` only fires when the backend exposes an error.** The
-  upstream `audit.Backend` interface declares `Shutdown()` with no return value.
-  `pkg/proxy/audit` emits `audit.flush.failed` only for a backend that also
-  implements `ShutdownErr() error`; a backend that drops events silently is
-  reported as `audit.flush.completed`.
+- **A lost audit flush has no event of its own.** The upstream `audit.Backend`
+  interface declares `Shutdown()` with no return value, so `audit.flush.failed`
+  is [retired](../logging.md#retired). `audit.flush.completed` records that the
+  flush finished, not that it succeeded; a lost flush appears only as the
+  backend's own bridged `component=k8s` ERROR record.
 - **`termination` is single-valued.** The terminal record carries one
   `termination` chosen by precedence (`panic`, then `hijacked`, then
   `client_cancel`, then a classified upstream reason, else `normal`). A request

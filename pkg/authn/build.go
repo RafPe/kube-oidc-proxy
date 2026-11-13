@@ -4,7 +4,6 @@ package authn
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -77,15 +76,18 @@ type Config struct {
 // Build constructs the token authenticator for cfg and returns the issuer
 // URLs backing it, in configuration order. oidcLogger carries the per-issuer
 // configuration records and startupLogger the configuration failures a CA
-// file can raise later; both are required. Every per-issuer authenticator is
-// wrapped by AttributeToIssuer, so a request names the issuer that accepted
-// its token.
+// file can raise later; Build panics when either is nil. Every per-issuer
+// authenticator is wrapped by AttributeToIssuer, so a request names the issuer
+// that accepted its token.
+//
+// The errors Build builds itself name an issuer by IssuerName and by its
+// position in the configuration, never by its full URL.
 func Build(cfg Config, oidcLogger, startupLogger *slog.Logger) (authenticator.Token, []string, error) {
 	if oidcLogger == nil {
-		return nil, nil, errors.New("authn: oidc logger is required")
+		panic("authn: nil oidc logger")
 	}
 	if startupLogger == nil {
-		return nil, nil, errors.New("authn: startup logger is required")
+		panic("authn: nil startup logger")
 	}
 
 	// One CEL compiler shared by document validation and every authenticator:
@@ -197,14 +199,14 @@ func buildIssuers(issuers []issuer, compiler authenticationcel.Compiler, cfg Con
 		issuerURLs = append(issuerURLs, iss.jwt.Issuer.URL)
 	}
 	if name, first, other, dup := duplicateIssuerName(issuerURLs); dup {
-		return nil, nil, fmt.Errorf("two configured issuers share the name %q (%q and %q); issuers must differ by host", name, first, other)
+		return nil, nil, fmt.Errorf("issuers jwt[%d] and jwt[%d] share the name %q; issuers must differ by host", first, other, name)
 	}
 
 	authenticators := make([]authenticator.Token, 0, len(issuers))
 	for _, iss := range issuers {
 		authn, err := newIssuerAuthenticator(iss, compiler, cfg, startupLogger)
 		if err != nil {
-			return nil, nil, fmt.Errorf("building authenticator for issuer %q: %w", iss.jwt.Issuer.URL, err)
+			return nil, nil, fmt.Errorf("building authenticator for issuer %q: %w", IssuerName(iss.jwt.Issuer.URL), err)
 		}
 		authenticators = append(authenticators, AttributeToIssuer(IssuerName(iss.jwt.Issuer.URL), authn))
 	}

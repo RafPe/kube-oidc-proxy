@@ -80,8 +80,9 @@ clean: ## clean up created files
 	rm -rf \
 		$(BINDIR) \
 		$(CURDIR)/pkg/authn/authntest/authenticator.go \
-		$(CURDIR)/test/e2e/framework/issuer/bin \
-		$(CURDIR)/test/e2e/framework/fake-apiserver/bin
+		$(CURDIR)/test/tools/issuer/bin \
+		$(CURDIR)/test/tools/fake-apiserver/bin \
+		$(CURDIR)/test/tools/audit-webhook/bin
 
 # generate first so pkg/authn/authntest/authenticator.go exists before
 # go_vet ./... and go_lint compile the packages that reference it.
@@ -112,7 +113,7 @@ verify_metricdoc:
 # first package path as the pattern and skips testing that package.
 test: generate verify ## run all go tests
 	mkdir -p $(ARTIFACTS)
-	go test -race -tags logcheck -v -bench=. -benchtime=1x $$(go list ./pkg/... ./cmd/... ./hack/... ./test/tools/... ./test/util/... ./test/e2e/framework/... ./test/e2e/versions/... | grep -v pkg/e2e) | tee $(ARTIFACTS)/go-test.stdout
+	go test -race -tags logcheck -v -bench=. -benchtime=1x $$(go list ./pkg/... ./cmd/... ./hack/... ./test/tools/... ./test/util/... ./test/e2e/framework/... ./test/e2e/versions/...) | tee $(ARTIFACTS)/go-test.stdout
 
 # Name of the kind cluster the e2e suite creates (must match the const in
 # test/kind/kind.go). Used by e2e-clean for the failure/interrupt safety net.

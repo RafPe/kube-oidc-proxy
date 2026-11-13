@@ -207,29 +207,11 @@ func TestProxyConfigMapsEveryProxyFlag(t *testing.T) {
 func TestBuildTokenReviewerOnlyWithPassthrough(t *testing.T) {
 	client := fake.NewSimpleClientset()
 
-	if r, err := buildTokenReviewer(parsedOptions(t), client, nil, discard); err != nil || r != nil {
-		t.Fatalf("passthrough disabled: reviewer %T, error %v; want neither", r, err)
+	if r := buildTokenReviewer(parsedOptions(t), client, nil, discard); r != nil {
+		t.Fatalf("passthrough disabled: reviewer %T, want none", r)
 	}
-	if r, err := buildTokenReviewer(parsedOptions(t, "--token-passthrough"), client, nil, discard); err != nil || r == nil {
-		t.Fatalf("passthrough enabled: reviewer %T, error %v; want a reviewer", r, err)
-	}
-}
-
-// TestIssuerProbesCoverEveryIssuer pins one readiness entry per issuer, in
-// configuration order.
-func TestIssuerProbesCoverEveryIssuer(t *testing.T) {
-	urls := []string{"https://a.example.com", "https://b.example.com"}
-	probes, err := issuerProbes(urls)
-	if err != nil {
-		t.Fatalf("issuerProbes: %v", err)
-	}
-	if len(probes) != len(urls) {
-		t.Fatalf("got %d probes, want %d", len(probes), len(urls))
-	}
-	for i, p := range probes {
-		if p.IssuerURL != urls[i] || p.FakeJWT == "" {
-			t.Fatalf("probe %d = %+v, want issuer %q with a token", i, p, urls[i])
-		}
+	if r := buildTokenReviewer(parsedOptions(t, "--token-passthrough"), client, nil, discard); r == nil {
+		t.Fatal("passthrough enabled: no reviewer, want one")
 	}
 }
 

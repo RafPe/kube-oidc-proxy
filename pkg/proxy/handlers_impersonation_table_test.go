@@ -302,8 +302,8 @@ func TestHandlersImpersonation(t *testing.T) {
 			expAuthMethod: metrics.AuthMethodOIDC,
 			req: &http.Request{
 				Header: http.Header{
-					"Authorization":      []string{"bearer fake-token"},
-					"Impersonate-Groups": []string{"bar"},
+					"Authorization":     []string{"bearer fake-token"},
+					"Impersonate-Group": []string{"bar"},
 				},
 			},
 			expAuthToken: "fake-token",

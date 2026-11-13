@@ -22,20 +22,16 @@ import (
 
 // newLoggingSAR builds a reviewer that logs through root as the sar component,
 // so the records a check emits are observable with the given cache TTLs.
-func newLoggingSAR(t *testing.T, root *slog.Logger, r clientazv1.SubjectAccessReviewInterface, sarTimeout, allowTTL, denyTTL time.Duration) *SubjectAccessReview {
+func newLoggingSAR(t *testing.T, root *slog.Logger, r clientazv1.SubjectAccessReviewInterface, sarTimeout, allowTTL, denyTTL time.Duration) *Authorizer {
 	t.Helper()
 
-	s, err := New(r, Config{Timeout: sarTimeout, AllowCacheTTL: allowTTL, DenyCacheTTL: denyTTL, MaxHeaderValues: DefaultMaxHeaderValues}, logging.ForComponent(root, logging.ComponentSAR))
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	return s
+	return New(r, Config{Timeout: sarTimeout, AllowCacheTTL: allowTTL, DenyCacheTTL: denyTTL, MaxHeaderValues: DefaultMaxHeaderValues}, logging.ForComponent(root, logging.ComponentSAR))
 }
 
 // newSARWithFakeReviewer builds a logging reviewer that answers every review
 // with decide. Both cache TTLs are non-zero so the decision cache is live and
 // hit/miss lookups are observable.
-func newSARWithFakeReviewer(t *testing.T, root *slog.Logger, decide func(*v1.SubjectAccessReview) (*v1.SubjectAccessReview, error)) *SubjectAccessReview {
+func newSARWithFakeReviewer(t *testing.T, root *slog.Logger, decide func(*v1.SubjectAccessReview) (*v1.SubjectAccessReview, error)) *Authorizer {
 	t.Helper()
 
 	return newLoggingSAR(t, root, &fnReviewer{fn: decide}, DefaultTimeout, DefaultAllowCacheTTL, DefaultDenyCacheTTL)
@@ -84,58 +80,61 @@ func TestCacheHitAndLiveCheckEvents(t *testing.T) {
 	}
 }
 
-// TestCacheBypassEvents covers the two ways a decision is never cacheable: the
-// cache is switched off entirely, and the serialized spec is over the key-size
-// cap. Both report cache_result=bypass and still complete a live review.
+// TestCacheBypassEvents pins that a spec over the key-size cap is never
+// cached: each lookup reports cache_result=bypass and still completes a live
+// review.
 func TestCacheBypassEvents(t *testing.T) {
-	tests := map[string]struct {
-		allowTTL, denyTTL time.Duration
-		name              string
-	}{
-		"a disabled cache bypasses every lookup": {
-			allowTTL: 0,
-			denyTTL:  0,
-			name:     "bob",
-		},
-		"a spec over the key-size cap bypasses the cache": {
-			allowTTL: DefaultAllowCacheTTL,
-			denyTTL:  DefaultDenyCacheTTL,
-			name:     strings.Repeat("a", maxCacheKeySize+1),
-		},
+	root, cap := logtest.New(t, 2)
+	defer logtest.AssertRegistered(t, cap)
+	s := newLoggingSAR(t, root, &fnReviewer{fn: allowAll}, DefaultTimeout, DefaultAllowCacheTTL, DefaultDenyCacheTTL)
+	ctx := logging.WithRequestID(context.Background(), "r1")
+	name := strings.Repeat("a", maxCacheKeySize+1)
+
+	for i := range 2 {
+		if _, err := s.cachedCheck(directCall(ctx, loggingTestRequester()), userImpersonation(name)); err != nil {
+			t.Fatalf("check %d: %v", i, err)
+		}
 	}
 
-	for name, tc := range tests {
-		t.Run(name, func(t *testing.T) {
-			root, cap := logtest.New(t, 2)
-			defer logtest.AssertRegistered(t, cap)
-			s := newLoggingSAR(t, root, &fnReviewer{fn: allowAll}, DefaultTimeout, tc.allowTTL, tc.denyTTL)
-			ctx := logging.WithRequestID(context.Background(), "r1")
+	lookups := cap.ByEvent(logging.EventCacheSARLookup)
+	if len(lookups) != 2 {
+		t.Fatalf("want 2 cache lookups, got %d: %v", len(lookups), lookups)
+	}
+	for i, rec := range lookups {
+		if rec.String("cache_result") != "bypass" {
+			t.Errorf("lookup %d: cache_result = %q, want bypass", i, rec.String("cache_result"))
+		}
+		if rec.String("decision") != "" {
+			t.Errorf("lookup %d: bypass must not carry a decision, got %q", i, rec.String("decision"))
+		}
+	}
 
-			for i := range 2 {
-				if _, err := s.cachedCheck(directCall(ctx, loggingTestRequester()), userImpersonation(tc.name)); err != nil {
-					t.Fatalf("check %d: %v", i, err)
-				}
-			}
+	// Nothing was cached, so both checks reached the API server.
+	if live := cap.ByEvent(logging.EventAuthzSARCompleted); len(live) != 2 {
+		t.Fatalf("want 2 completed reviews, got %d: %v", len(live), live)
+	}
+}
 
-			lookups := cap.ByEvent(logging.EventCacheSARLookup)
-			if len(lookups) != 2 {
-				t.Fatalf("want 2 cache lookups, got %d: %v", len(lookups), lookups)
-			}
-			for i, rec := range lookups {
-				if rec.String("cache_result") != "bypass" {
-					t.Errorf("lookup %d: cache_result = %q, want bypass", i, rec.String("cache_result"))
-				}
-				if rec.String("decision") != "" {
-					t.Errorf("lookup %d: bypass must not carry a decision, got %q", i, rec.String("decision"))
-				}
-			}
+// TestSwitchedOffCacheRecordsNoLookup pins that with both TTLs zero the cache
+// is not consulted at all, exactly like the TokenReview cache: no lookup
+// record, and every check is a completed live review.
+func TestSwitchedOffCacheRecordsNoLookup(t *testing.T) {
+	root, cap := logtest.New(t, 2)
+	defer logtest.AssertRegistered(t, cap)
+	s := newLoggingSAR(t, root, &fnReviewer{fn: allowAll}, DefaultTimeout, 0, 0)
+	ctx := logging.WithRequestID(context.Background(), "r1")
 
-			// Nothing was cached, so both checks reached the API server.
-			live := cap.ByEvent(logging.EventAuthzSARCompleted)
-			if len(live) != 2 {
-				t.Fatalf("want 2 completed reviews, got %d: %v", len(live), live)
-			}
-		})
+	for i := range 2 {
+		if _, err := s.cachedCheck(directCall(ctx, loggingTestRequester()), userImpersonation("bob")); err != nil {
+			t.Fatalf("check %d: %v", i, err)
+		}
+	}
+
+	if lookups := cap.ByEvent(logging.EventCacheSARLookup); len(lookups) != 0 {
+		t.Fatalf("want no cache lookups with the cache switched off, got %v", lookups)
+	}
+	if live := cap.ByEvent(logging.EventAuthzSARCompleted); len(live) != 2 {
+		t.Fatalf("want 2 completed reviews, got %d: %v", len(live), live)
 	}
 }
 

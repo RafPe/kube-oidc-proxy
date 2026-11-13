@@ -82,15 +82,26 @@ func TestNewIssuerAuthenticator_Construction(t *testing.T) {
 	}
 }
 
-// TestBuildRequiresLoggers pins that both loggers are refused at construction
-// when missing, like every other error-returning constructor in the module.
-func TestBuildRequiresLoggers(t *testing.T) {
+// TestBuildPanicsOnNilLoggers pins that a missing logger is a wiring mistake
+// that fails at construction, naming the package and the logger.
+func TestBuildPanicsOnNilLoggers(t *testing.T) {
 	cfg := Config{Issuer: IssuerConfig{URL: "https://vault.example.com", ClientID: "my-client", UsernameClaim: "sub"}}
-	if _, _, err := Build(cfg, nil, discardLogger()); err == nil {
-		t.Error("Build(nil oidc logger) error = nil, want an error")
+	tests := map[string]struct {
+		oidcLogger, startupLogger *slog.Logger
+		want                      string
+	}{
+		"nil oidc logger":    {nil, discardLogger(), "authn: nil oidc logger"},
+		"nil startup logger": {discardLogger(), nil, "authn: nil startup logger"},
 	}
-	if _, _, err := Build(cfg, discardLogger(), nil); err == nil {
-		t.Error("Build(nil startup logger) error = nil, want an error")
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if got := recover(); got != tc.want {
+					t.Fatalf("Build panic = %v, want %q", got, tc.want)
+				}
+			}()
+			_, _, _ = Build(cfg, tc.oidcLogger, tc.startupLogger)
+		})
 	}
 }
 
@@ -255,8 +266,8 @@ func TestBuildTokenAuthenticator_AuthConfig_InvalidFile(t *testing.T) {
 }
 
 // TestLogIssuersConfigured pins one record per configured issuer, each naming
-// the issuer and the size of the set it belongs to. The previous behaviour was
-// a single line with an interpolated slice, which no query can decompose.
+// the issuer and the size of the set it belongs to, so a query lists the
+// issuers without decomposing an interpolated slice.
 func TestLogIssuersConfigured(t *testing.T) {
 	root, cap := logtest.New(t, 0)
 
@@ -328,15 +339,14 @@ jwt:
 		t.Fatal(err)
 	}
 	_, _, err := Build(Config{ConfigFile: config}, slog.New(slog.DiscardHandler), slog.New(slog.DiscardHandler))
-	if err == nil || !strings.Contains(err.Error(), "share the name \"idp.example.com\"") {
-		t.Fatalf("Build = %v, want the shared-host refusal", err)
-	}
 	// The name alone does not say which two entries have to be changed, so
-	// both colliding URLs belong in the refusal.
-	for _, want := range []string{"https://idp.example.com/realms/a", "https://idp.example.com/realms/b"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("Build = %v, want it to name %q", err, want)
-		}
+	// the refusal names both by position; the full URLs are never in it.
+	want := `issuers jwt[0] and jwt[1] share the name "idp.example.com"; issuers must differ by host`
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Build = %v, want the shared-host refusal %q", err, want)
+	}
+	if strings.Contains(err.Error(), "/realms/") {
+		t.Fatalf("Build = %v, want no full issuer URL in the refusal", err)
 	}
 }
 
@@ -344,37 +354,54 @@ func TestDuplicateIssuerNameIsRefused(t *testing.T) {
 	tests := map[string]struct {
 		urls      []string
 		wantDup   string
-		wantFirst string
-		wantOther string
+		wantFirst int
+		wantOther int
 	}{
 		"distinct hosts": {urls: []string{"https://a.example.com", "https://b.example.com"}},
 		"same host, other paths": {
 			urls:      []string{"https://idp.example.com/realms/a", "https://idp.example.com/realms/b"},
 			wantDup:   "idp.example.com",
-			wantFirst: "https://idp.example.com/realms/a",
-			wantOther: "https://idp.example.com/realms/b",
+			wantFirst: 0,
+			wantOther: 1,
 		},
 		"single issuer": {urls: []string{"https://idp.example.com/realms/a"}},
-		"the first URL under the name is the one reported": {
+		"the first entry under the name is the one reported": {
 			urls:      []string{"https://a.example.com", "https://idp.example.com/realms/a", "https://idp.example.com/realms/b"},
 			wantDup:   "idp.example.com",
-			wantFirst: "https://idp.example.com/realms/a",
-			wantOther: "https://idp.example.com/realms/b",
+			wantFirst: 1,
+			wantOther: 2,
 		},
 		"two unparsable": {
 			urls:      []string{"::", "::"},
 			wantDup:   "unknown",
-			wantFirst: "::",
-			wantOther: "::",
+			wantFirst: 0,
+			wantOther: 1,
 		},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			dup, first, other, ok := duplicateIssuerName(tc.urls)
 			if ok != (tc.wantDup != "") || dup != tc.wantDup || first != tc.wantFirst || other != tc.wantOther {
-				t.Fatalf("duplicateIssuerName(%v) = %q, %q, %q, %v; want %q, %q, %q",
+				t.Fatalf("duplicateIssuerName(%v) = %q, %d, %d, %v; want %q, %d, %d",
 					tc.urls, dup, first, other, ok, tc.wantDup, tc.wantFirst, tc.wantOther)
 			}
 		})
+	}
+}
+
+// TestBuildErrorNamesIssuerByHost pins that a failure to build one issuer's
+// authenticator names the issuer by IssuerName, never by its full URL.
+func TestBuildErrorNamesIssuerByHost(t *testing.T) {
+	cfg := Config{
+		Issuer:            IssuerConfig{URL: "https://idp.example.com/realms/secret", ClientID: "my-client", UsernameClaim: "sub"},
+		TLSClientCertFile: filepath.Join(t.TempDir(), "missing.crt"),
+		TLSClientKeyFile:  filepath.Join(t.TempDir(), "missing.key"),
+	}
+	_, _, err := Build(cfg, discardLogger(), discardLogger())
+	if err == nil || !strings.Contains(err.Error(), `building authenticator for issuer "idp.example.com"`) {
+		t.Fatalf("Build = %v, want the failure attributed to idp.example.com", err)
+	}
+	if strings.Contains(err.Error(), "/realms/secret") {
+		t.Fatalf("Build = %v, want no full issuer URL", err)
 	}
 }

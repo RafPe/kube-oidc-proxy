@@ -28,9 +28,14 @@ for key in github.com/actor github.com/run-id example.com/team; do
   n=$(grep -c -- "\"userextras/${key}\"" <<<"$out" || true)
   [ "$n" = "1" ] || { echo "userextras/${key}: rendered ${n} times, expected 1" >&2; exit 1; }
 done
-# The grant carries the impersonate verb and nothing broader.
+# The grant carries the impersonate verb, and no rule pairs it with create:
+# each resource the proxy touches sees exactly one verb, so a rule listing two
+# grants the cross-product. test/e2e/framework/helper/chartrbac_test.go pins the
+# full set of grants.
 grep -A20 'userextras/example.com/team' <<<"$out" | grep -q -- '- "impersonate"' \
   || { echo "extra userextras rule lacks the impersonate verb" >&2; exit 1; }
+n=$(yq '[.rules[] | select((.verbs | length) != 1)] | length' <<<"$out")
+[ "$n" = "0" ] || { echo "${n} ClusterRole rules carry more than one verb" >&2; exit 1; }
 
 # A key declared both in the config and in rbac.userExtras is granted once.
 out=$(render -f "$CHART/ci/multi-issuer-values.yaml" --set 'rbac.userExtras={github.com/actor}')
