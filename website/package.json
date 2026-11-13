@@ -28,7 +28,7 @@
     "starlight-github-alerts": "0.5.0"
   },
   "devDependencies": {
-    "puppeteer-core": "25.15.0"
+    "puppeteer-core": "25.17.0"
   },
   "overrides": {
     "katex": "0.18.11",
