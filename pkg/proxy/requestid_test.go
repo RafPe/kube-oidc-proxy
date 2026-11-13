@@ -119,8 +119,8 @@ func TestWithRequestIDPutsTheIDOnTheContext(t *testing.T) {
 	var minted string
 	h := p.withRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		minted = reqctx.RequestID(r)
-		if got := logging.RequestIDFrom(r.Context()); got != minted {
-			t.Errorf("logging.RequestIDFrom = %q, want the minted id %q", got, minted)
+		if got := logging.RequestID(r.Context()); got != minted {
+			t.Errorf("logging.RequestID = %q, want the minted id %q", got, minted)
 		}
 		logging.Emit(r.Context(), p.requestLogger,
 			logging.EventRequestImpersonationSkipped, slog.String("skip_reason", "test"))

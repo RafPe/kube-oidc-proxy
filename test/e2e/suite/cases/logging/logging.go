@@ -37,8 +37,8 @@ const (
 var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 	f := framework.NewDefaultFramework("logging")
 
-	It("emits every record as one JSON object per line with schema_version and component", func() {
-		recs, raw := records(f)
+	It("emits every record as one JSON object per line with schema_version and component", func(ctx SpecContext) {
+		recs, raw := records(ctx, f)
 		Expect(recs).NotTo(BeEmpty(), raw)
 		for _, r := range recs {
 			Expect(r).To(HaveKeyWithValue("schema_version", float64(1)))
@@ -57,8 +57,8 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 		}
 	})
 
-	It("records startup configuration and every configured issuer", func() {
-		recs, _ := records(f)
+	It("records startup configuration and every configured issuer", func(ctx SpecContext) {
+		recs, _ := records(ctx, f)
 		Expect(sharedtests.ByEvent(recs, "proxy.config.loaded")).To(HaveLen(1))
 
 		// One record per configured issuer, not merely one record: the
@@ -79,8 +79,8 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 		Expect(sharedtests.ByEvent(recs, "readiness.proxy.ready")).To(HaveLen(1))
 	})
 
-	It("correlates a successful request across the access record, the terminal record and the response header", func() {
-		grantPodList(f, defaultUsername)
+	It("correlates a successful request across the access record, the terminal record and the response header", func(ctx SpecContext) {
+		grantPodList(ctx, f, defaultUsername)
 
 		resp := doRequest(f, f.SignedTokenFor(defaultUsername, []string{"group-1"}), nil)
 		Expect(resp.StatusCode).To(Equal(http.StatusOK))
@@ -88,10 +88,10 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 		Expect(id).To(MatchRegexp(`^[0-9a-f-]{36}$`))
 
 		Eventually(func() []map[string]any {
-			recs, _ := records(f)
+			recs, _ := records(ctx, f)
 			return sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)
 		}, 20*time.Second, time.Second).Should(HaveLen(1))
-		recs, _ := records(f)
+		recs, _ := records(ctx, f)
 		dec := sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)[0]
 		Expect(dec).To(HaveKeyWithValue("event", "AuSuccess"))
 		Expect(dec).To(HaveKeyWithValue("auth_method", "oidc"))
@@ -103,23 +103,23 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 		Expect(done[0]).To(HaveKeyWithValue("termination", "normal"))
 	})
 
-	It("does not adopt a client-supplied Audit-ID", func() {
+	It("does not adopt a client-supplied Audit-ID", func(ctx SpecContext) {
 		resp := doRequest(f, f.SignedTokenFor(defaultUsername, []string{"group-1"}), map[string]string{"Audit-ID": "client-chosen"})
 		Expect(resp.Header.Get("Audit-ID")).NotTo(Equal("client-chosen"))
-		recs, _ := records(f)
+		recs, _ := records(ctx, f)
 		Expect(sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.access.decided"), "client-chosen")).To(BeEmpty())
 	})
 
-	It("records a rejected token with a reason and never the token itself", func() {
+	It("records a rejected token with a reason and never the token itself", func(ctx SpecContext) {
 		tok := "eyJ.invalid.token"
 		resp := doRequest(f, tok, nil)
 		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
 		id := resp.Header.Get("Audit-ID")
 		Eventually(func() []map[string]any {
-			recs, _ := records(f)
+			recs, _ := records(ctx, f)
 			return sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)
 		}, 20*time.Second, time.Second).Should(HaveLen(1))
-		recs, raw := records(f)
+		recs, raw := records(ctx, f)
 		Expect(sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)[0]).To(HaveKeyWithValue("reason", "unauthorized"))
 		Expect(raw).NotTo(ContainSubstring(tok))
 		// The stream is checked for an unmasked credential rather than for the
@@ -129,7 +129,7 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 		Expect(raw).NotTo(MatchRegexp(`(?i)bearer\s+[A-Za-z0-9._-]{20,}`))
 	})
 
-	It("records an impersonation denial with reason and target", func() {
+	It("records an impersonation denial with reason and target", func(ctx SpecContext) {
 		// The impersonation target is a user the e2e RBAC does allow, paired
 		// with a group it does not: a group header on its own never reaches a
 		// SubjectAccessReview, so the denial being asserted here would not
@@ -141,29 +141,29 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 		Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
 		id := resp.Header.Get("Audit-ID")
 		Eventually(func() []map[string]any {
-			recs, _ := records(f)
+			recs, _ := records(ctx, f)
 			return sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)
 		}, 20*time.Second, time.Second).Should(HaveLen(1))
-		recs, _ := records(f)
+		recs, _ := records(ctx, f)
 		dec := sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)[0]
 		Expect(dec).To(HaveKeyWithValue("event", "AuFail"))
 		Expect(dec).To(HaveKeyWithValue("reason", "impersonation_denied"))
 		Expect(dec).To(HaveKeyWithValue("target_kind", "group"))
 	})
 
-	It("drops forwarded headers from an untrusted client and says so at WARN", func() {
+	It("drops forwarded headers from an untrusted client and says so at WARN", func(ctx SpecContext) {
 		resp := doRequest(f, f.SignedTokenFor(defaultUsername, []string{"group-1"}), map[string]string{"X-Forwarded-For": "9.9.9.9"})
 		id := resp.Header.Get("Audit-ID")
 		Eventually(func() []map[string]any {
-			recs, _ := records(f)
+			recs, _ := records(ctx, f)
 			return sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.headers.dropped"), id)
 		}, 20*time.Second, time.Second).Should(HaveLen(1))
-		recs, _ := records(f)
+		recs, _ := records(ctx, f)
 		Expect(sharedtests.ByRequestID(sharedtests.ByEvent(recs, "request.access.decided"), id)[0]).NotTo(HaveKeyWithValue("src_ip", "9.9.9.9"))
 	})
 
-	It("bridges client-go output as component=k8s without event_type", func() {
-		recs, _ := records(f) // suite runs at --v=10, so client-go transport debug lines exist
+	It("bridges client-go output as component=k8s without event_type", func(ctx SpecContext) {
+		recs, _ := records(ctx, f) // suite runs at --v=10, so client-go transport debug lines exist
 		k8s := sharedtests.ByComponent(recs, "k8s")
 		Expect(k8s).NotTo(BeEmpty())
 		for _, r := range k8s {
@@ -171,10 +171,10 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 		}
 	})
 
-	It("forwards the request id to the upstream API server", func() {
-		extraOIDCVolumes, fakeAPIServerURL, err := f.Helper().DeployFakeAPIServer(f.Namespace.Name)
+	It("forwards the request id to the upstream API server", func(ctx SpecContext) {
+		extraOIDCVolumes, fakeAPIServerURL, err := f.Helper().DeployFakeAPIServer(ctx, f.Namespace.Name)
 		Expect(err).NotTo(HaveOccurred())
-		f.DeployProxyWith(extraOIDCVolumes, fmt.Sprintf("--server=%s", fakeAPIServerURL), "--certificate-authority=/fake-apiserver/ca.pem")
+		f.DeployProxyWith(ctx, extraOIDCVolumes, fmt.Sprintf("--server=%s", fakeAPIServerURL), "--certificate-authority=/fake-apiserver/ca.pem")
 		resp := doRequest(f, f.SignedTokenFor(defaultUsername, []string{"group-1"}), nil)
 		id := resp.Header.Get("Audit-ID")
 
@@ -185,14 +185,14 @@ var _ = framework.CasesDescribe("Logging", Label("shard-b"), func() {
 		// upstream received it.
 		Expect(resp.Header.Values("Audit-ID")).To(ContainElements(id, id),
 			"the upstream did not echo back the request id the proxy minted")
-		Eventually(func() string { return fakeAPIServerLogs(f) }, 20*time.Second, time.Second).
+		Eventually(func() string { return fakeAPIServerLogs(ctx, f) }, 20*time.Second, time.Second).
 			Should(ContainSubstring("Audit-Id"))
 	})
 })
 
 // records returns the proxy's decoded records and the raw log text.
-func records(f *framework.Framework) ([]map[string]any, string) {
-	recs, raw, err := f.Helper().ProxyLogRecords(f.Namespace.Name, proxySelector)
+func records(ctx context.Context, f *framework.Framework) ([]map[string]any, string) {
+	recs, raw, err := f.Helper().ProxyLogRecords(ctx, f.Namespace.Name, proxySelector)
 	Expect(err).NotTo(HaveOccurred())
 
 	return recs, raw
@@ -200,8 +200,8 @@ func records(f *framework.Framework) ([]map[string]any, string) {
 
 // fakeAPIServerLogs returns the raw logs of the fake API server the proxy is
 // pointed at.
-func fakeAPIServerLogs(f *framework.Framework) string {
-	logs, err := f.Helper().PodLogs(f.Namespace.Name, fakeAPIServerSelector)
+func fakeAPIServerLogs(ctx context.Context, f *framework.Framework) string {
+	logs, err := f.Helper().PodLogs(ctx, f.Namespace.Name, fakeAPIServerSelector)
 	Expect(err).NotTo(HaveOccurred())
 
 	return logs
@@ -258,8 +258,8 @@ func doRequest(f *framework.Framework, token string, headers map[string]string) 
 // grantPodList gives username permission to list pods in the test namespace,
 // so a request that is meant to be authorized end to end is not refused by the
 // API server after the proxy has allowed it.
-func grantPodList(f *framework.Framework, username string) {
-	role, err := f.Helper().KubeClient.RbacV1().Roles(f.Namespace.Name).Create(context.TODO(), &rbacv1.Role{
+func grantPodList(ctx context.Context, f *framework.Framework, username string) {
+	role, err := f.Helper().KubeClient.RbacV1().Roles(f.Namespace.Name).Create(ctx, &rbacv1.Role{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "logging-pods-",
 		},
@@ -269,7 +269,7 @@ func grantPodList(f *framework.Framework, username string) {
 	}, metav1.CreateOptions{})
 	Expect(err).NotTo(HaveOccurred())
 
-	_, err = f.Helper().KubeClient.RbacV1().RoleBindings(f.Namespace.Name).Create(context.TODO(),
+	_, err = f.Helper().KubeClient.RbacV1().RoleBindings(f.Namespace.Name).Create(ctx,
 		&rbacv1.RoleBinding{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "logging-pods-",

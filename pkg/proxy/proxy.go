@@ -49,6 +49,12 @@ var (
 	errNoName                = errors.New("no name in OIDC info")
 	errNoImpersonationConfig = errors.New("no impersonation configuration in context")
 
+	// errTokenReviewUnavailable classifies a TokenReview the API server could
+	// not answer: a dependency failure, not a verdict on the token. The
+	// request is still refused as unauthenticated (fail closed), but the
+	// access record says why.
+	errTokenReviewUnavailable = errors.New("token review unavailable")
+
 	// errReservedIdentity classifies an authenticated identity whose username or
 	// groups carry the Kubernetes-reserved "system:" prefix. Such an identity may
 	// never originate from a token claim; see checkReservedIdentity.
@@ -69,14 +75,13 @@ type Proxy struct {
 	config *Config
 
 	// requestLogger is the request-component logger every request-path record
-	// is emitted through, and the logger the request filter puts on the
-	// request context.
+	// is emitted through, the access record included.
 	//
 	// oidcLogger, tokenReviewLogger and upstreamLogger are the component
-	// loggers for the records registered to those components. The
-	// request-scoped logger on the context carries component=request, so it
-	// must not be used for them: a record's component is part of its contract,
-	// not of where it happens to be emitted from.
+	// loggers for the records registered to those components. requestLogger
+	// carries component=request, so it must not be used for them: a record's
+	// component is part of its contract, not of where it happens to be emitted
+	// from.
 	//
 	// None of the four is ever nil: New derives all of them from the required
 	// root logger.
@@ -93,11 +98,6 @@ type Proxy struct {
 	// allowedReservedGroups is the set form of config.AllowedReservedGroups,
 	// resolved once at construction so the request path does no allocation.
 	allowedReservedGroups sets.Set[string]
-
-	// access writes the access record; recordDecision keeps it to one per
-	// request. Injected rather than a package global so the destination is
-	// fixed at construction.
-	access *accesslog.Logger
 
 	// warnLimiter token-buckets the only two records a client can produce
 	// without bound, request.anomaly.detected and request.headers.dropped, and
@@ -124,8 +124,9 @@ type Proxy struct {
 // the ExtraUserHeaders map, so later mutation of the caller's Config does not
 // change proxy behavior). The remaining pointers are collaborators the Proxy
 // borrows for its lifetime; it does not close or mutate them. That includes the
-// auditor: the caller starts its backend before Start and flushes it once the
-// proxy has stopped serving.
+// auditor: the proxy only wraps requests in its audit chains, while the caller
+// starts the backend before Start and flushes it once the proxy has stopped
+// serving.
 type Dependencies struct {
 	// Logger is the process root logger. New derives one component logger per
 	// collaborator from it; there is no package-level fallback, so it is
@@ -229,15 +230,10 @@ func New(deps Dependencies) (*Proxy, error) {
 		}
 	}
 
-	// One request-component logger serves both the access record and every
-	// other record the request path emits, so they share a destination and a
-	// component without a package global.
-	requestLogger := logging.ForComponent(deps.Logger, logging.ComponentRequest)
-
 	return &Proxy{
 		metrics:                  deps.Metrics,
 		restConfig:               deps.RestConfig,
-		requestLogger:            requestLogger,
+		requestLogger:            logging.ForComponent(deps.Logger, logging.ComponentRequest),
 		oidcLogger:               logging.ForComponent(deps.Logger, logging.ComponentOIDC),
 		tokenReviewLogger:        logging.ForComponent(deps.Logger, logging.ComponentTokenReview),
 		upstreamLogger:           logging.ForComponent(deps.Logger, logging.ComponentUpstream),
@@ -251,14 +247,13 @@ func New(deps Dependencies) (*Proxy, error) {
 		allowedReservedGroups:    allowedReservedGroups,
 		oidcRequestAuthenticator: bearertoken.New(deps.OIDCTokenAuthenticator),
 		auditor:                  deps.Auditor,
-		access:                   accesslog.New(requestLogger),
 		warnLimiter:              logging.NewLimiter(warnLimiterRate, warnLimiterBurst, warnLimiterInterval, nil),
 	}, nil
 }
 
-// Start wires up the reverse-proxy handler chain, starts the audit backend and
-// starts serving until ctx is cancelled. It returns once the listener is
-// serving; Wait blocks until it has stopped.
+// Start wires up the reverse-proxy handler chain and serves until ctx is
+// cancelled. It returns once the listener is serving; Wait blocks until it has
+// stopped. The caller has already started the auditor's backend.
 func (p *Proxy) Start(ctx context.Context) error {
 	upstream, err := url.Parse(p.restConfig.Host)
 	if err != nil {
@@ -313,7 +308,7 @@ func (p *Proxy) flushWarnLimiter(ctx context.Context) {
 // RoundTrip is the reverse proxy's transport: it forwards an admitted request
 // to the API server the way the filter chain decided.
 func (p *Proxy) RoundTrip(req *http.Request) (*http.Response, error) {
-	imp := reqctx.ImpersonationOf(req)
+	imp := reqctx.Impersonation(req)
 	if imp == nil {
 		return nil, errNoImpersonationConfig
 	}
@@ -327,50 +322,63 @@ func (p *Proxy) RoundTrip(req *http.Request) (*http.Response, error) {
 		Impersonated: imp.ImpersonatedUser,
 	})
 
-	// With impersonation disabled or the token passed through, the request is
-	// forwarded with no credentials of the proxy's own. The passthrough path
-	// left the client's bearer token in place, so the API server
-	// authenticates it; on the disabled path OIDC authentication consumed the
-	// token, so the request arrives anonymous.
-	if imp.Outbound == nil {
-		return p.noAuthClientTransport.RoundTrip(req)
+	if imp.Mode == reqctx.ForwardImpersonating {
+		return transport.NewImpersonatingRoundTripper(*imp.Outbound, p.clientTransport).RoundTrip(req)
 	}
 
-	return transport.NewImpersonatingRoundTripper(*imp.Outbound, p.clientTransport).RoundTrip(req)
+	// The other modes forward with no credentials of the proxy's own. The
+	// passthrough path left the client's bearer token in place, so the API
+	// server authenticates it; on the disabled path OIDC authentication
+	// consumed the token, so the request arrives anonymous.
+	return p.noAuthClientTransport.RoundTrip(req)
 }
 
-// reviewToken reports whether the API server's TokenReview accepts the
-// request's bearer token, recording the attempt.
-func (p *Proxy) reviewToken(req *http.Request) bool {
+// reviewToken asks the API server's TokenReview whether it accepts the
+// request's bearer token, recording the attempt. It returns nil when the token
+// is accepted, errUnauthorized when it is missing or rejected, and
+// errTokenReviewUnavailable when the reviewer could not answer.
+func (p *Proxy) reviewToken(req *http.Request) error {
 	ctx := req.Context()
 
 	bearer, found := bearerToken(req)
 	if !found {
 		logging.Emit(ctx, p.tokenReviewLogger, logging.EventAuthnTokenMissing)
 		p.metrics.AuthenticationAttempt(metrics.AuthMethodTokenReview, metrics.AuthRejected)
-		return false
+		return errUnauthorized
 	}
 
 	_, ok, err := p.tokenReviewer.AuthenticateToken(ctx, bearer)
 	if err != nil {
-		// The reviewer could not answer. That is a dependency failure, not a
-		// verdict on the token: the caller fails closed.
-		logging.Emit(ctx, p.tokenReviewLogger, logging.EventAuthnTokenReviewFailed,
-			slog.String("reason", string(metrics.ReasonAuthenticationDependencyError)), logging.ErrAttr(err))
+		// As for authz.sar.failed: a review that failed because the client
+		// itself went away is a per-request condition at DEBUG, so a client
+		// cannot drive the ERROR stream by hanging up mid-request.
+		reason, level := metrics.ReasonAuthenticationDependencyError, slog.LevelError
+		if clientGone(ctx, err) {
+			reason, level = metrics.ReasonClientCanceled, slog.LevelDebug
+		}
+		logging.EmitLevel(ctx, p.tokenReviewLogger, logging.EventAuthnTokenReviewFailed, level,
+			slog.String("reason", string(reason)), logging.ErrAttr(err))
 		p.metrics.AuthenticationAttempt(metrics.AuthMethodTokenReview, metrics.AuthError)
-		return false
+		return fmt.Errorf("%w: %w", errTokenReviewUnavailable, err)
 	}
 
 	// The reviewer answered, and it has already recorded the outcome: a live
 	// TokenReview emits authn.tokenreview.completed with its duration, a cache
 	// hit emits cache.tokenreview.lookup with the cached verdict. A rejection
 	// is such an answer, not a failure, so nothing more is recorded here.
-	if ok {
-		p.metrics.AuthenticationAttempt(metrics.AuthMethodTokenReview, metrics.AuthAccepted)
-	} else {
+	if !ok {
 		p.metrics.AuthenticationAttempt(metrics.AuthMethodTokenReview, metrics.AuthRejected)
+		return errUnauthorized
 	}
-	return ok
+	p.metrics.AuthenticationAttempt(metrics.AuthMethodTokenReview, metrics.AuthAccepted)
+	return nil
+}
+
+// clientGone reports whether err is a context error caused by the request's
+// own context ending -- the client hung up, or its deadline passed -- rather
+// than by a dependency running out of the proxy's budget.
+func clientGone(ctx context.Context, err error) bool {
+	return ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
 }
 
 // recordDecision writes the one access record a request produces and counts
@@ -383,7 +391,7 @@ func (p *Proxy) recordDecision(req *http.Request, d accesslog.Decision) {
 	if reqctx.DecisionRecorded(req) {
 		return
 	}
-	p.access.LogDecision(req, d)
+	accesslog.LogDecision(p.requestLogger, req, d)
 	reqctx.MarkDecisionRecorded(req)
 	p.metrics.AccessDecision(d.AuthMethod, d.Allowed, d.Reason)
 }
@@ -396,7 +404,7 @@ func roundTripperForRestConfig(config *rest.Config) (http.RoundTripper, error) {
 	configCopy.NextProtos = []string{"http/1.1"}
 	clientRT, err := rest.TransportFor(configCopy)
 	if err != nil {
-		return nil, fmt.Errorf("building API server transport: %w", err)
+		return nil, fmt.Errorf("proxy: building API server transport: %w", err)
 	}
 
 	return clientRT, nil

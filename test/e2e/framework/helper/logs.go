@@ -14,8 +14,8 @@ import (
 // PodLogs returns the logs of the single pod matching selector in ns. A pod
 // with more than one container is read through the container named by its app
 // label, which is how deployApp names both.
-func (h *Helper) PodLogs(ns, selector string) (string, error) {
-	pods, err := h.KubeClient.CoreV1().Pods(ns).List(context.TODO(),
+func (h *Helper) PodLogs(ctx context.Context, ns, selector string) (string, error) {
+	pods, err := h.KubeClient.CoreV1().Pods(ns).List(ctx,
 		metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
 		return "", err
@@ -30,7 +30,7 @@ func (h *Helper) PodLogs(ns, selector string) (string, error) {
 		opts.Container = pod.Labels["app"]
 	}
 
-	logs, err := h.KubeClient.CoreV1().Pods(ns).GetLogs(pod.Name, opts).DoRaw(context.TODO())
+	logs, err := h.KubeClient.CoreV1().Pods(ns).GetLogs(pod.Name, opts).DoRaw(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -44,8 +44,8 @@ func (h *Helper) PodLogs(ns, selector string) (string, error) {
 // so a failing expectation can report the output it was matched against. The
 // raw text is returned even on a decode error, so the caller can report the
 // stream the error came from.
-func (h *Helper) ProxyLogRecords(ns, selector string) ([]map[string]any, string, error) {
-	raw, err := h.PodLogs(ns, selector)
+func (h *Helper) ProxyLogRecords(ctx context.Context, ns, selector string) ([]map[string]any, string, error) {
+	raw, err := h.PodLogs(ctx, ns, selector)
 	if err != nil {
 		return nil, "", err
 	}

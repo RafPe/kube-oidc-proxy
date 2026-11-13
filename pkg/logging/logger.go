@@ -97,9 +97,9 @@ func WithRequestID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, requestIDKey{}, id)
 }
 
-// RequestIDFrom returns the request id carried by the context, or "" when
-// there is none.
-func RequestIDFrom(ctx context.Context) string {
+// RequestID returns the request id carried by the context, or "" when there
+// is none.
+func RequestID(ctx context.Context) string {
 	id, _ := ctx.Value(requestIDKey{}).(string)
 	return id
 }
@@ -137,7 +137,7 @@ func withContextRequestID(ctx context.Context, spec EventSpec, attrs []slog.Attr
 	if !slices.Contains(spec.Required, attrRequestID) || hasAttr(attrs, attrRequestID) {
 		return attrs
 	}
-	id := RequestIDFrom(ctx)
+	id := RequestID(ctx)
 	if id == "" {
 		return attrs
 	}

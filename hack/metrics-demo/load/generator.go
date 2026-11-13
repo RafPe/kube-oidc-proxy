@@ -4,7 +4,6 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -177,10 +176,7 @@ func newGenerator(logger *slog.Logger, st *state, namespace string, tun *tunnel)
 
 // token mints an OIDC token for an identity the demo issuer will vouch for.
 func (g *generator) token(username string, groups []string, exp time.Time) (string, error) {
-	payload, err := idtoken.NewPayloadForIdentity(g.st.issuerURL, demoClientID, username, groups, exp)
-	if err != nil {
-		return "", err
-	}
+	payload := idtoken.NewPayloadForIdentity(g.st.issuerURL, demoClientID, username, groups, exp)
 
 	return idtoken.Sign(g.st.issuerBundle, payload)
 }
@@ -190,21 +186,9 @@ func (g *generator) validToken() (string, error) {
 }
 
 // tokenWithoutUsername mints a token the demo issuer signs and the proxy
-// accepts, whose username claim is empty. idtoken.NewPayloadForIdentity
-// always writes an "email", so the payload is built here instead.
+// accepts, whose username claim is present but empty.
 func (g *generator) tokenWithoutUsername(exp time.Time) (string, error) {
-	payload, err := json.Marshal(map[string]interface{}{
-		"iss":    g.st.issuerURL.String(),
-		"aud":    []string{demoClientID, "aud-2"},
-		"email":  "",
-		"groups": []string{"demo"},
-		"exp":    exp.Unix(),
-	})
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal the token payload: %w", err)
-	}
-
-	return idtoken.Sign(g.st.issuerBundle, payload)
+	return g.token("", []string{"demo"}, exp)
 }
 
 // restConfig points client-go at the proxy with a bearer token, verifying the

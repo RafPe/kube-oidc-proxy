@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -14,7 +15,35 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
+	"github.com/rafpe/kube-oidc-proxy/pkg/util/httpserve"
 )
+
+// newTestServer builds a Server on addr exposing a fresh recorder.
+func newTestServer(t *testing.T, addr string, logger *slog.Logger) *Server {
+	t.Helper()
+	s, err := NewServer(ServerConfig{Addr: addr, Recorder: newTestRecorder(t)}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// TestNewServerRequiresALogger pins the constructor contract the proxy's
+// other constructors share: a nil logger fails at construction, not as a
+// panic on the first failed scrape.
+func TestNewServerRequiresALogger(t *testing.T) {
+	if _, err := NewServer(ServerConfig{Addr: "127.0.0.1:0", Recorder: newTestRecorder(t)}, nil); err == nil {
+		t.Fatal("NewServer with a nil logger returned no error")
+	}
+}
+
+// TestScrapeTimeoutFitsTheWriteTimeout pins the invariant the 503 on a slow
+// gather depends on: the scrape gives up before the listener stops writing.
+func TestScrapeTimeoutFitsTheWriteTimeout(t *testing.T) {
+	if scrapeTimeout >= httpserve.WriteTimeout {
+		t.Fatalf("scrapeTimeout %v must be below the listener's WriteTimeout %v", scrapeTimeout, httpserve.WriteTimeout)
+	}
+}
 
 func TestServerStartReturnsBindError(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -24,7 +53,7 @@ func TestServerStartReturnsBindError(t *testing.T) {
 	defer ln.Close()
 
 	root, logs := logtest.New(t, 0)
-	s := NewServer(ServerConfig{Addr: ln.Addr().String(), Recorder: newTestRecorder(t)}, logging.ForComponent(root, logging.ComponentMetrics))
+	s := newTestServer(t, ln.Addr().String(), logging.ForComponent(root, logging.ComponentMetrics))
 	err = s.Start(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "metrics") {
 		t.Fatalf("Start on a busy port = %v, want an error naming the metrics listener", err)
@@ -38,7 +67,7 @@ func TestServerServesMetricsAndShutsDownOnContextCancel(t *testing.T) {
 	root, logs := logtest.New(t, 0)
 	// Bind :0 and read the port back, rather than reserving and releasing a
 	// port first, so no other process can take it in between.
-	s := NewServer(ServerConfig{Addr: "127.0.0.1:0", Recorder: newTestRecorder(t)}, logging.ForComponent(root, logging.ComponentMetrics))
+	s := newTestServer(t, "127.0.0.1:0", logging.ForComponent(root, logging.ComponentMetrics))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	if err := s.Start(ctx); err != nil {
@@ -75,7 +104,7 @@ func TestServerWaitReportsServeFailure(t *testing.T) {
 	// Closing the listener out from under Serve makes it return a non-
 	// ErrServerClosed error, which Wait must surface and the server must log.
 	root, logs := logtest.New(t, 0)
-	s := NewServer(ServerConfig{Addr: "127.0.0.1:0", Recorder: newTestRecorder(t)}, logging.ForComponent(root, logging.ComponentMetrics))
+	s := newTestServer(t, "127.0.0.1:0", logging.ForComponent(root, logging.ComponentMetrics))
 	if err := s.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +137,7 @@ func (h *blockingRecorderHandler) ServeHTTP(w http.ResponseWriter, _ *http.Reque
 // scrape completes before the process moves on.
 func TestServerWaitDrainsAnActiveScrape(t *testing.T) {
 	root, _ := logtest.New(t, 0)
-	s := NewServer(ServerConfig{Addr: "127.0.0.1:0", Recorder: newTestRecorder(t)}, logging.ForComponent(root, logging.ComponentMetrics))
+	s := newTestServer(t, "127.0.0.1:0", logging.ForComponent(root, logging.ComponentMetrics))
 	h := &blockingRecorderHandler{entered: make(chan struct{}, 1), release: make(chan struct{})}
 	s.srv.Handler = h
 
@@ -156,7 +185,7 @@ func TestServerWaitDrainsAnActiveScrape(t *testing.T) {
 // swallowed.
 func TestServerWaitReportsShutdownTimeout(t *testing.T) {
 	root, logs := logtest.New(t, 0)
-	s := NewServer(ServerConfig{Addr: "127.0.0.1:0", Recorder: newTestRecorder(t)}, logging.ForComponent(root, logging.ComponentMetrics))
+	s := newTestServer(t, "127.0.0.1:0", logging.ForComponent(root, logging.ComponentMetrics))
 	s.shutdownTimeout = 50 * time.Millisecond
 	h := &blockingRecorderHandler{entered: make(chan struct{}, 1), release: make(chan struct{})}
 	s.srv.Handler = h

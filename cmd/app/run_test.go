@@ -156,7 +156,7 @@ func TestMetricsBindFailureIsReportedAtStartup(t *testing.T) {
 		t.Fatalf("no proxy.startup.failed record:\n%s", out.String())
 	}
 	msg, _ := failure["error_message"].(string)
-	if !strings.Contains(msg, "metrics listener") || strings.Contains(msg, "missing-kubeconfig") {
+	if !strings.Contains(msg, "metrics: listening on") || strings.Contains(msg, "missing-kubeconfig") {
 		t.Fatalf("error_message = %q, want the metrics bind failure, reported before the kubeconfig is read", msg)
 	}
 }
@@ -274,7 +274,7 @@ func TestRunServesUntilStoppedThenShutsDownCleanly(t *testing.T) {
 			t.Errorf("%s records = %d, want 1", want, seen[want])
 		}
 	}
-	if seen[logging.EventProxyStartupFailed] != 0 || seen[logging.EventProxyHookFailed] != 0 {
+	if seen[logging.EventProxyStartupFailed] != 0 {
 		t.Errorf("unexpected failure records:\n%s", out.String())
 	}
 }

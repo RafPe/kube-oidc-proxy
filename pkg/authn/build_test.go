@@ -9,10 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	utilnet "k8s.io/apimachinery/pkg/util/net"
 	apiserverapi "k8s.io/apiserver/pkg/apis/apiserver"
 	authenticationcel "k8s.io/apiserver/pkg/authentication/cel"
-	"k8s.io/client-go/util/cert"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
@@ -37,76 +35,62 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
 }
 
-func TestOIDCAuthenticatorFromJWT_Construction(t *testing.T) {
+// documentIssuer is a configuration-document issuer as LoadConfiguration
+// returns it, with an inline CA when ca is not empty.
+func documentIssuer(ca string) issuer {
 	emptyPrefix := ""
-	entry := apiserverapi.JWTAuthenticator{
-		Issuer: apiserverapi.Issuer{
-			URL:       "https://vault.example.com/v1/identity/oidc",
-			Audiences: []string{"my-client"},
-		},
-		ClaimMappings: apiserverapi.ClaimMappings{
-			Username: apiserverapi.PrefixedClaimOrExpression{
-				Claim:  "email",
-				Prefix: &emptyPrefix,
+	return issuer{
+		jwt: apiserverapi.JWTAuthenticator{
+			Issuer: apiserverapi.Issuer{
+				URL:                  "https://vault.example.com/v1/identity/oidc",
+				Audiences:            []string{"my-client"},
+				CertificateAuthority: ca,
 			},
-			Groups: apiserverapi.PrefixedClaimOrExpression{
-				Claim:  "groups",
-				Prefix: &emptyPrefix,
+			ClaimMappings: apiserverapi.ClaimMappings{
+				Username: apiserverapi.PrefixedClaimOrExpression{
+					Claim:  "email",
+					Prefix: &emptyPrefix,
+				},
+				Groups: apiserverapi.PrefixedClaimOrExpression{
+					Claim:  "groups",
+					Prefix: &emptyPrefix,
+				},
+			},
+			UserValidationRules: []apiserverapi.UserValidationRule{
+				{Expression: "!user.username.startsWith('system:')", Message: "no system: prefix"},
 			},
 		},
-		UserValidationRules: []apiserverapi.UserValidationRule{
-			{Expression: "!user.username.startsWith('system:')", Message: "no system: prefix"},
-		},
-	}
-
-	authn, err := oidcAuthenticatorFromJWT(
-		entry,
-		authenticationcel.NewDefaultCompiler(),
-		[]string{"RS256"},
-		Config{},
-	)
-	if err != nil {
-		t.Fatalf("oidcAuthenticatorFromJWT() unexpected error: %v", err)
-	}
-	if authn == nil {
-		t.Error("oidcAuthenticatorFromJWT() returned nil authenticator")
+		signingAlgs: []string{"RS256"},
 	}
 }
 
-func TestOIDCHTTPClientPresentsAReloadingClientCertificate(t *testing.T) {
-	certFile := filepath.Join(t.TempDir(), "client.crt")
-	keyFile := filepath.Join(filepath.Dir(certFile), "client.key")
-	certData, keyData, err := cert.GenerateSelfSignedCertKey("client", nil, nil)
-	if err != nil {
-		t.Fatalf("GenerateSelfSignedCertKey() error = %v", err)
+func TestNewIssuerAuthenticator_Construction(t *testing.T) {
+	tests := map[string]string{
+		"system roots":                "",
+		"inline certificateAuthority": string(selfSignedCA(t)),
 	}
-	writeClientKeyPair(t, certFile, keyFile, certData, keyData)
-
-	client, err := oidcHTTPClient("", nil, certFile, keyFile)
-	if err != nil {
-		t.Fatalf("oidcHTTPClient(%q, %q) error = %v", certFile, keyFile, err)
-	}
-	tlsConfig, err := utilnet.TLSClientConfig(client.Transport)
-	if err != nil {
-		t.Fatalf("TLSClientConfig() error = %v", err)
-	}
-	// client-go reloads the files behind this callback; the rotation itself
-	// is pinned where the proxy's own transport is built, in pkg/proxy.
-	if tlsConfig == nil || tlsConfig.GetClientCertificate == nil {
-		t.Fatal("oidcHTTPClient() transport has no dynamic client-certificate callback")
-	}
-	if client.Timeout != oidcHTTPTimeout {
-		t.Fatalf("client timeout = %s, want %s", client.Timeout, oidcHTTPTimeout)
+	for name, ca := range tests {
+		t.Run(name, func(t *testing.T) {
+			authn, err := newIssuerAuthenticator(documentIssuer(ca), authenticationcel.NewDefaultCompiler(), Config{}, discardLogger())
+			if err != nil {
+				t.Fatalf("newIssuerAuthenticator() unexpected error: %v", err)
+			}
+			if authn == nil {
+				t.Error("newIssuerAuthenticator() returned nil authenticator")
+			}
+		})
 	}
 }
 
-func writeClientKeyPair(t *testing.T, certFile, keyFile string, certData, keyData []byte) {
-	t.Helper()
-	if err := os.WriteFile(certFile, certData, 0600); err != nil {
-		t.Fatalf("os.WriteFile(%q) error = %v", certFile, err)
+// TestBuildRequiresLoggers pins that both loggers are refused at construction
+// when missing, like every other error-returning constructor in the module.
+func TestBuildRequiresLoggers(t *testing.T) {
+	cfg := Config{Issuer: IssuerConfig{URL: "https://vault.example.com", ClientID: "my-client", UsernameClaim: "sub"}}
+	if _, _, err := Build(cfg, nil, discardLogger()); err == nil {
+		t.Error("Build(nil oidc logger) error = nil, want an error")
 	}
-	if err := os.WriteFile(keyFile, keyData, 0600); err != nil {
-		t.Fatalf("os.WriteFile(%q) error = %v", keyFile, err)
+	if _, _, err := Build(cfg, discardLogger(), nil); err == nil {
+		t.Error("Build(nil startup logger) error = nil, want an error")
 	}
 }
 
@@ -312,17 +296,6 @@ func TestLogIssuersConfiguredNoIssuers(t *testing.T) {
 
 	if raw := cap.Raw(); raw != "" {
 		t.Fatalf("records emitted with no issuers configured: %s", raw)
-	}
-}
-
-// TestIssuerNamesDerivesFromURLs pins the never-log-a-full-
-// issuer-URL constraint: the names handed to the record are hosts, and a value
-// with no host degrades to the placeholder rather than to the URL itself.
-func TestIssuerNamesDerivesFromURLs(t *testing.T) {
-	got := issuerNames([]string{"https://idp.example.com/realms/corp", "not-a-url"})
-	want := []string{"idp.example.com", "unknown"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("issuerNames = %v, want %v", got, want)
 	}
 }
 

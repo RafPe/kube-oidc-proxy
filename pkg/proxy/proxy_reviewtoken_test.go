@@ -28,11 +28,11 @@ func TestReviewToken(t *testing.T) {
 		// the reviewer must not be called at all.
 		reviewerResult func(m *authntest.MockToken)
 
-		expPassthrough bool
+		expErr error
 	}{
 		"no bearer token denies without calling the reviewer": {
-			authHeader:     "",
-			expPassthrough: false,
+			authHeader: "",
+			expErr:     errUnauthorized,
 		},
 
 		"a reviewer error denies (fail closed)": {
@@ -41,7 +41,7 @@ func TestReviewToken(t *testing.T) {
 				m.EXPECT().AuthenticateToken(gomock.Any(), bearer).
 					Return(nil, false, errors.New("apiserver unreachable"))
 			},
-			expPassthrough: false,
+			expErr: errTokenReviewUnavailable,
 		},
 
 		"an unauthenticated result denies": {
@@ -50,7 +50,7 @@ func TestReviewToken(t *testing.T) {
 				m.EXPECT().AuthenticateToken(gomock.Any(), bearer).
 					Return(nil, false, nil)
 			},
-			expPassthrough: false,
+			expErr: errUnauthorized,
 		},
 
 		"an authenticated result passes through": {
@@ -59,7 +59,6 @@ func TestReviewToken(t *testing.T) {
 				m.EXPECT().AuthenticateToken(gomock.Any(), bearer).
 					Return(&authenticator.Response{User: &user.DefaultInfo{Name: "user-a"}}, true, nil)
 			},
-			expPassthrough: true,
 		},
 	}
 
@@ -75,8 +74,8 @@ func TestReviewToken(t *testing.T) {
 				req.Header.Set("Authorization", test.authHeader)
 			}
 
-			if got := p.reviewToken(req); got != test.expPassthrough {
-				t.Errorf("unexpected passthrough decision, exp=%t got=%t", test.expPassthrough, got)
+			if got := p.reviewToken(req); !errors.Is(got, test.expErr) {
+				t.Errorf("reviewToken = %v, want %v", got, test.expErr)
 			}
 		})
 	}

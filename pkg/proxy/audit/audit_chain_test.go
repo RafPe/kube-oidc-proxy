@@ -13,10 +13,64 @@ import (
 	"testing"
 
 	authuser "k8s.io/apiserver/pkg/authentication/user"
-	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
+	"k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/server"
 	apiserveroptions "k8s.io/apiserver/pkg/server/options"
 )
+
+// TestWithRequestInfoResolvesCoreGroupAsResourceRequest pins
+// LegacyAPIGroupPrefixes. Without it every /api request parses as a
+// non-resource request whose verb is the lowercased HTTP method, which would
+// silently collapse the k8s_verb metric label to "other" and the scope label
+// to "none" for the whole core group.
+func TestWithRequestInfoResolvesCoreGroupAsResourceRequest(t *testing.T) {
+	a, err := New(Config{ExternalAddress: "0.0.0.0:1234", SecureServing: new(server.SecureServingInfo)}, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := map[string]struct {
+		method, path      string
+		wantVerb, wantRes string
+		wantNamespace     string
+		wantResource      bool
+	}{
+		"core group list in a namespace": {
+			method: http.MethodGet, path: "/api/v1/namespaces/team-a/pods",
+			wantVerb: "list", wantRes: "pods", wantNamespace: "team-a", wantResource: true,
+		},
+		"core group watch": {
+			method: http.MethodGet, path: "/api/v1/pods?watch=true",
+			wantVerb: "watch", wantRes: "pods", wantResource: true,
+		},
+		"named group create": {
+			method: http.MethodPost, path: "/apis/apps/v1/namespaces/team-a/deployments",
+			wantVerb: "create", wantRes: "deployments", wantNamespace: "team-a", wantResource: true,
+		},
+		"non-resource path keeps the raw method": {
+			method: http.MethodPost, path: "/healthz",
+			wantVerb: "post", wantResource: false,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			var got *request.RequestInfo
+			h := a.WithRequestInfo(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				got, _ = request.RequestInfoFrom(r.Context())
+			}))
+			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(tc.method, tc.path, nil))
+			if got == nil {
+				t.Fatal("no RequestInfo on the context")
+			}
+			if got.IsResourceRequest != tc.wantResource || got.Verb != tc.wantVerb ||
+				got.Resource != tc.wantRes || got.Namespace != tc.wantNamespace {
+				t.Fatalf("got %+v, want resource=%v verb=%q resource=%q namespace=%q",
+					got, tc.wantResource, tc.wantVerb, tc.wantRes, tc.wantNamespace)
+			}
+		})
+	}
+}
 
 // forbiddenAuditEvent is the subset of an audit.k8s.io/v1 Event this test
 // asserts on. Decoding into a local struct keeps the assertions independent of
@@ -79,9 +133,7 @@ func newForbiddenTestAudit(t *testing.T) (*Audit, string) {
 func readForbiddenAuditEvents(t *testing.T, a *Audit, path string) []forbiddenAuditEvent {
 	t.Helper()
 
-	if err := a.Shutdown(); err != nil {
-		t.Fatalf("shutting down audit backend: %s", err)
-	}
+	a.Shutdown()
 
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -103,9 +155,9 @@ func readForbiddenAuditEvents(t *testing.T, a *Audit, path string) []forbiddenAu
 	return events
 }
 
-// TestNewDeniedHandlerAuditsAuthenticatedIdentity is the regression guard
-// against wiring the forbidden handler through WithFailedAuthenticationAudit
-// (i.e. reverting it to NewUnauthenticatedHandler). The request authenticated
+// TestWithRequestAuditsAuthenticatedIdentity is the regression guard against
+// auditing a refusal of an authenticated request through the
+// failed-authentication chain. The request authenticated
 // successfully and was then refused by the proxy, so the audit record must name
 // the identity that was presented and must not read as an authentication
 // failure.
@@ -119,19 +171,19 @@ func readForbiddenAuditEvents(t *testing.T, a *Audit, path string) []forbiddenAu
 // given the legacy API group prefixes, which turns it into a resource request
 // (verb "list", objectRef present). Assert on those only against the resolver
 // this package actually builds.
-func TestNewDeniedHandlerAuditsAuthenticatedIdentity(t *testing.T) {
+func TestWithRequestAuditsAuthenticatedIdentity(t *testing.T) {
 	a, logPath := newForbiddenTestAudit(t)
 
-	handler := NewDeniedHandler(a, func(rw http.ResponseWriter, r *http.Request) {
+	handler := a.WithRequestInfo(a.WithRequest(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "forbidden", http.StatusForbidden)
-	})
+	})))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/default/pods", nil)
-	// A bearer token is present so that, were the handler wired through
-	// WithFailedAuthenticationAudit, the event would carry its
+	// A bearer token is present so that, were the refusal audited through
+	// WithFailedAuthentication, the event would carry its
 	// "Authentication failed, attempted: bearer" message.
 	req.Header.Set("Authorization", "bearer fake-token")
-	req = req.WithContext(genericapirequest.WithUser(req.Context(), &authuser.DefaultInfo{
+	req = req.WithContext(request.WithUser(req.Context(), &authuser.DefaultInfo{
 		Name:   "alice",
 		Groups: []string{"system:masters"},
 	}))
@@ -174,8 +226,8 @@ func TestNewDeniedHandlerAuditsAuthenticatedIdentity(t *testing.T) {
 	}
 }
 
-// TestNewUnauthenticatedHandlerAuditsFailedAuthentication is the regression
-// guard for the missing WithAuditInit in the WithUnauthorized chain
+// TestWithFailedAuthenticationAuditsFailedAuthentication is the regression
+// guard for the missing WithAuditInit in the failed-authentication chain
 // (TremoloSecurity/kube-oidc-proxy#92). Without an initialised audit context
 // the failed-authentication filter finds auditing disabled and a rejected
 // request leaves no trace in the audit log at all — the exact case an audit
@@ -186,12 +238,12 @@ func TestNewDeniedHandlerAuditsAuthenticatedIdentity(t *testing.T) {
 // response writer records on WriteHeader), carrying the 401 and the
 // authentication-failure message, with no authenticated identity. Verb and
 // objectRef are the RequestInfo resolver's decision and are covered elsewhere.
-func TestNewUnauthenticatedHandlerAuditsFailedAuthentication(t *testing.T) {
+func TestWithFailedAuthenticationAuditsFailedAuthentication(t *testing.T) {
 	a, logPath := newForbiddenTestAudit(t)
 
-	handler := NewUnauthenticatedHandler(a, func(rw http.ResponseWriter, r *http.Request) {
+	handler := a.WithRequestInfo(a.WithFailedAuthentication(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		rw.WriteHeader(http.StatusUnauthorized)
-	})
+	})))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/kube-system/pods", nil)
 	req.Header.Set("Authorization", "bearer some-invalid-token")

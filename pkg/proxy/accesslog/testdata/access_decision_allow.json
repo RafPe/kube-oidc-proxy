@@ -6,12 +6,7 @@
   "event_type": "request.access.decided",
   "forwarded_for_untrusted": "203.0.113.7",
   "http_method": "GET",
-  "inbound_extra": {
-    "Remote-Client-IP": [
-      "1.2.3.4"
-    ]
-  },
-  "inbound_extra_omitted": 1,
+  "inbound_extra_omitted": 2,
   "inbound_groups": [
     "dev"
   ],
@@ -19,12 +14,7 @@
   "inbound_user": "alice",
   "level": "INFO",
   "msg": "access decision",
-  "outbound_extra": {
-    "originaluser.jetstack.io-user": [
-      "alice"
-    ]
-  },
-  "outbound_extra_omitted": 1,
+  "outbound_extra_omitted": 2,
   "outbound_groups": [
     "dev"
   ],

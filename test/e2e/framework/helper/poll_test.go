@@ -46,7 +46,7 @@ func TestWaitForDeploymentReadyTimeoutDumpsPodsAndEvents(t *testing.T) {
 	h := NewHelper(&config.Config{Kubectl: kubectl, KubeConfigPath: "kubeconfig"})
 	h.KubeClient = fake.NewSimpleClientset(deploy)
 
-	err := h.WaitForDeploymentReady("ns", deploy.Name, 10*time.Millisecond)
+	err := h.WaitForDeploymentReady(context.Background(), "ns", deploy.Name, 10*time.Millisecond)
 	if err == nil {
 		t.Fatal("expected a timeout error, got nil")
 	}

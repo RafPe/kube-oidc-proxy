@@ -191,57 +191,12 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 		defer func() {
 			panicked := recover()
 			classified := reqctx.Termination(req)
+			term := classifyTermination(panicked, rec.hijacked, ctx.Err(), classified)
+			status := wireStatus(rec, panicked)
+			duration := time.Since(start)
 
-			term := metrics.TerminationNormal
-			switch {
-			// An http.ErrAbortHandler panic is not a fault: it is how
-			// httputil.ReverseProxy reports a response copy that failed after
-			// the headers went out. Whether the client went away or the
-			// upstream connection broke is then decided exactly as it is for a
-			// request that never panicked, so the two cases below classify it.
-			case panicked != nil && !isAbortHandler(panicked):
-				term = metrics.TerminationPanic
-			case rec.hijacked:
-				term = metrics.TerminationHijacked
-			case ctx.Err() != nil:
-				term = metrics.TerminationClientCancel
-			case panicked != nil:
-				// Aborted with the client still attached: the stream broke on
-				// the upstream side.
-				term = metrics.TerminationUpstreamReset
-			case classified.Kind != "":
-				// Set by the error handler for an upstream failure.
-				term = classified.Kind
-			}
-
-			// A handler that returned without writing anything is answered
-			// with a 200 by net/http itself, so that is the status on the wire.
-			// Zero is kept only where no response went out: a hijacked
-			// connection, or a panic that made the server drop the connection.
-			status := rec.status
-			if !rec.wrote && !rec.hijacked && panicked == nil {
-				status = http.StatusOK
-			}
-
-			attrs := []slog.Attr{
-				slog.Int("http_status", status),
-				slog.Int64("duration_ms", time.Since(start).Milliseconds()),
-				slog.String("termination", string(term)),
-			}
-			// A hijacked connection is no longer described by the recorder: the
-			// handler wrote to the socket directly, so a byte count of zero
-			// would be a claim rather than a measurement.
-			if !rec.hijacked {
-				attrs = append(attrs, slog.Int64("response_bytes", rec.bytes))
-			}
-			// The classified reason travels with its termination, so a query on
-			// the terminal record alone can tell an upstream failure from an
-			// ordinary completion.
-			if term == classified.Kind && classified.Reason != "" {
-				attrs = append(attrs, slog.String("reason", string(classified.Reason)))
-			}
-
-			logging.Emit(ctx, p.requestLogger, logging.EventRequestResponseCompleted, attrs...)
+			logging.Emit(ctx, p.requestLogger, logging.EventRequestResponseCompleted,
+				completionAttrs(rec, status, term, classified, duration)...)
 
 			// One request, one record, one observation: the metric carries the
 			// same status and termination the record does, by construction.
@@ -250,7 +205,7 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 				Scope:       scope,
 				Status:      status,
 				Termination: term,
-				Duration:    time.Since(start),
+				Duration:    duration,
 				LongRunning: longRunning,
 				Established: established,
 				Hijacked:    rec.hijacked,
@@ -263,4 +218,65 @@ func (p *Proxy) withRequestLifecycle(next http.Handler) http.Handler {
 
 		next.ServeHTTP(rec, req)
 	})
+}
+
+// classifyTermination decides how a request ended from what the lifecycle
+// filter can observe once the handler is done: a recovered panic, a hijacked
+// connection, the request context's error, and the termination a handler
+// deeper in the chain classified.
+func classifyTermination(panicked any, hijacked bool, ctxErr error, classified reqctx.TerminationRecord) metrics.Termination {
+	switch {
+	// An http.ErrAbortHandler panic is not a fault: it is how
+	// httputil.ReverseProxy reports a response copy that failed after the
+	// headers went out. Whether the client went away or the upstream
+	// connection broke is then decided exactly as it is for a request that
+	// never panicked, so the two cases below classify it.
+	case panicked != nil && !isAbortHandler(panicked):
+		return metrics.TerminationPanic
+	case hijacked:
+		return metrics.TerminationHijacked
+	case ctxErr != nil:
+		return metrics.TerminationClientCancel
+	case panicked != nil:
+		// Aborted with the client still attached: the stream broke on the
+		// upstream side.
+		return metrics.TerminationUpstreamReset
+	case classified.Kind != "":
+		// Set by handleUpstreamError for an upstream failure.
+		return classified.Kind
+	}
+	return metrics.TerminationNormal
+}
+
+// wireStatus is the status the client was actually answered with. A handler
+// that returned without writing anything is answered with a 200 by net/http
+// itself. Zero is kept only where no response went out: a hijacked connection,
+// or a panic that made the server drop the connection.
+func wireStatus(rec *responseRecorder, panicked any) int {
+	if !rec.wrote && !rec.hijacked && panicked == nil {
+		return http.StatusOK
+	}
+	return rec.status
+}
+
+// completionAttrs builds the request.response.completed record.
+func completionAttrs(rec *responseRecorder, status int, term metrics.Termination, classified reqctx.TerminationRecord, duration time.Duration) []slog.Attr {
+	attrs := []slog.Attr{
+		slog.Int("http_status", status),
+		slog.Int64("duration_ms", duration.Milliseconds()),
+		slog.String("termination", string(term)),
+	}
+	// A hijacked connection is no longer described by the recorder: the
+	// handler wrote to the socket directly, so a byte count of zero would be a
+	// claim rather than a measurement.
+	if !rec.hijacked {
+		attrs = append(attrs, slog.Int64("response_bytes", rec.bytes))
+	}
+	// The classified reason travels with its termination, so a query on the
+	// terminal record alone can tell an upstream failure from an ordinary
+	// completion.
+	if term == classified.Kind && classified.Reason != "" {
+		attrs = append(attrs, slog.String("reason", string(classified.Reason)))
+	}
+	return attrs
 }

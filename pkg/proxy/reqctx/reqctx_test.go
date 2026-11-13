@@ -9,6 +9,10 @@ import (
 	"testing"
 
 	utilnet "k8s.io/apimachinery/pkg/util/net"
+	"k8s.io/apiserver/pkg/authentication/user"
+	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
+
+	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 )
 
 // mustCIDRs parses CIDR strings into networks, failing the test on error.
@@ -23,131 +27,6 @@ func mustCIDRs(t *testing.T, cidrs ...string) []*net.IPNet {
 		nets = append(nets, n)
 	}
 	return nets
-}
-
-func TestResolveClientIP(t *testing.T) {
-	t.Parallel()
-
-	tests := map[string]struct {
-		remoteAddr string
-		xff        string
-		trusted    []*net.IPNet
-		want       string
-	}{
-		// Security core: the default (no trusted proxies) never honours XFF, so a
-		// client cannot spoof its resolved IP.
-		"default trusts nothing, ignores XFF": {
-			remoteAddr: "203.0.113.7:5555",
-			xff:        "1.2.3.4",
-			trusted:    nil,
-			want:       "203.0.113.7",
-		},
-		"untrusted peer cannot spoof via XFF": {
-			remoteAddr: "203.0.113.7:5555",
-			xff:        "1.2.3.4",
-			trusted:    mustCIDRs(t, "10.0.0.0/8"),
-			want:       "203.0.113.7",
-		},
-		"untrusted peer, multi-hop XFF ignored": {
-			remoteAddr: "203.0.113.7:5555",
-			xff:        "1.2.3.4, 5.6.7.8, 9.10.11.12",
-			trusted:    mustCIDRs(t, "10.0.0.0/8"),
-			want:       "203.0.113.7",
-		},
-
-		// Trusted peer: XFF is honoured.
-		"trusted peer, single hop honoured": {
-			remoteAddr: "10.0.0.1:5555",
-			xff:        "203.0.113.7",
-			trusted:    mustCIDRs(t, "10.0.0.0/8"),
-			want:       "203.0.113.7",
-		},
-		"trusted peer, multi-hop returns first untrusted from right": {
-			remoteAddr: "10.0.0.1:5555",
-			xff:        "203.0.113.7, 10.0.0.9, 10.0.0.8",
-			trusted:    mustCIDRs(t, "10.0.0.0/8"),
-			want:       "203.0.113.7",
-		},
-		"trusted peer, untrusted hop nearest proxy wins": {
-			remoteAddr: "10.0.0.1:5555",
-			xff:        "9.9.9.9, 8.8.8.8, 203.0.113.7",
-			trusted:    mustCIDRs(t, "10.0.0.0/8"),
-			want:       "203.0.113.7",
-		},
-		"trusted peer, whole chain trusted falls back to peer": {
-			remoteAddr: "10.0.0.1:5555",
-			xff:        "10.0.0.2, 10.0.0.3",
-			trusted:    mustCIDRs(t, "10.0.0.0/8"),
-			want:       "10.0.0.1",
-		},
-		"trusted peer, empty XFF returns peer": {
-			remoteAddr: "10.0.0.1:5555",
-			xff:        "",
-			trusted:    mustCIDRs(t, "10.0.0.0/8"),
-			want:       "10.0.0.1",
-		},
-
-		// Malformed values: a malformed hop stops the walk and falls back to peer,
-		// so garbage cannot be promoted to a client IP.
-		"trusted peer, malformed hop falls back to peer": {
-			remoteAddr: "10.0.0.1:5555",
-			xff:        "not-an-ip",
-			trusted:    mustCIDRs(t, "10.0.0.0/8"),
-			want:       "10.0.0.1",
-		},
-		"trusted peer, malformed hop between trusted stops walk": {
-			remoteAddr: "10.0.0.1:5555",
-			xff:        "203.0.113.7, garbage, 10.0.0.9",
-			trusted:    mustCIDRs(t, "10.0.0.0/8"),
-			want:       "10.0.0.1",
-		},
-
-		// IPv6.
-		"IPv6 trusted peer honours IPv6 XFF": {
-			remoteAddr: "[fd00::1]:5555",
-			xff:        "2001:db8::42",
-			trusted:    mustCIDRs(t, "fd00::/8"),
-			want:       "2001:db8::42",
-		},
-		"IPv6 untrusted peer ignores XFF": {
-			remoteAddr: "[2001:db8::99]:5555",
-			xff:        "2001:db8::42",
-			trusted:    mustCIDRs(t, "fd00::/8"),
-			want:       "2001:db8::99",
-		},
-		"IPv6 trusted peer, mixed chain returns first untrusted from right": {
-			remoteAddr: "[fd00::1]:5555",
-			xff:        "203.0.113.7, fd00::2",
-			trusted:    mustCIDRs(t, "fd00::/8"),
-			want:       "203.0.113.7",
-		},
-
-		// Peer address edge cases.
-		"peer without port falls through to raw value": {
-			remoteAddr: "203.0.113.7",
-			xff:        "1.2.3.4",
-			trusted:    mustCIDRs(t, "10.0.0.0/8"),
-			want:       "203.0.113.7",
-		},
-		"empty remote addr yields empty": {
-			remoteAddr: "",
-			xff:        "",
-			trusted:    nil,
-			want:       "",
-		},
-	}
-
-	for name, tc := range tests {
-		tc := tc
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			got := ResolveClientIP(tc.remoteAddr, tc.xff, tc.trusted)
-			if got != tc.want {
-				t.Errorf("ResolveClientIP(%q, %q) = %q, want %q",
-					tc.remoteAddr, tc.xff, got, tc.want)
-			}
-		})
-	}
 }
 
 // TestClientIP_DefaultTrustsNothing verifies the request-level entry point
@@ -165,8 +44,7 @@ func TestClientIP_DefaultTrustsNothing(t *testing.T) {
 
 // TestClientIP_TrustedPeerHonoursXFF verifies XFF is honoured when the peer is
 // a configured trusted proxy. The returned value is exactly what handlers.go
-// writes into extra[UserHeaderClientIPKey] (the Remote-Client-IP impersonation
-// extra), so this also pins the impersonation-extra client IP.
+// writes into the Remote-Client-IP impersonation extra, so this also pins the impersonation-extra client IP.
 func TestClientIP_TrustedPeerHonoursXFF(t *testing.T) {
 	req := &http.Request{
 		RemoteAddr: "10.0.0.1:5555",
@@ -343,17 +221,90 @@ func TestRequestScopedIDAccessors(t *testing.T) {
 	}
 }
 
-func TestPeerHost(t *testing.T) {
-	tests := map[string]struct{ in, exp string }{
-		"ipv4 host port":    {"1.2.3.4:8080", "1.2.3.4"},
-		"ipv6 host port":    {"[::1]:8080", "::1"},
-		"bare ipv4 no port": {"1.2.3.4", "1.2.3.4"},
-		"empty":             {"", ""},
+// TestHoldersAreSharedWithDerivedRequests pins the holder contract the
+// lifecycle filter relies on: a holder installed on a request is written
+// through a request derived from it further down the chain, and the write is
+// visible on the request that installed it.
+func TestHoldersAreSharedWithDerivedRequests(t *testing.T) {
+	parent := WithDecisionHolder(WithTerminationHolder(httptest.NewRequest(http.MethodGet, "/", nil)))
+	child := parent.WithContext(genericapirequest.WithUser(parent.Context(), &user.DefaultInfo{Name: "alice"}))
+
+	MarkDecisionRecorded(child)
+	MarkTermination(child, metrics.TerminationUpstreamReset, metrics.ReasonUpstreamError)
+
+	if !DecisionRecorded(parent) {
+		t.Error("a decision marked on a derived request is not visible on the parent")
 	}
+	want := TerminationRecord{Kind: metrics.TerminationUpstreamReset, Reason: metrics.ReasonUpstreamError}
+	if got := Termination(parent); got != want {
+		t.Errorf("Termination(parent) = %+v, want %+v", got, want)
+	}
+}
+
+// TestHolderlessRequestsAreSafe pins the other half of the holder contract: a
+// request that never passed the lifecycle filter can be marked without a
+// panic, and reads back the zero values, so its decision is still recorded.
+func TestHolderlessRequestsAreSafe(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+
+	MarkDecisionRecorded(req)
+	MarkTermination(req, metrics.TerminationUpstreamReset, metrics.ReasonUpstreamError)
+
+	if DecisionRecorded(req) {
+		t.Error("DecisionRecorded = true on a request with no holder")
+	}
+	if got := Termination(req); got != (TerminationRecord{}) {
+		t.Errorf("Termination = %+v on a request with no holder, want the zero value", got)
+	}
+	if got := AuthMethod(req); got != metrics.AuthMethodNone {
+		t.Errorf("AuthMethod = %q on a request that never authenticated, want %q", got, metrics.AuthMethodNone)
+	}
+	if got := Impersonation(req); got != nil {
+		t.Errorf("Impersonation = %+v before any filter decided it, want nil", got)
+	}
+}
+
+func TestAuthMethodRoundTrip(t *testing.T) {
+	req := WithAuthMethod(httptest.NewRequest(http.MethodGet, "/", nil), metrics.AuthMethodOIDC)
+	if got := AuthMethod(req); got != metrics.AuthMethodOIDC {
+		t.Errorf("AuthMethod = %q, want %q", got, metrics.AuthMethodOIDC)
+	}
+}
+
+// TestWithImpersonationSetsUserOnlyWhenImpersonating pins that the
+// impersonated identity replaces the request's user, which is what the audit
+// chain records, while a request forwarded as itself keeps its own.
+func TestWithImpersonationSetsUserOnlyWhenImpersonating(t *testing.T) {
+	alice := &user.DefaultInfo{Name: "alice"}
+	bob := &user.DefaultInfo{Name: "bob"}
+
+	tests := map[string]struct {
+		rec      *ImpersonationRecord
+		wantUser string
+	}{
+		"impersonating someone": {
+			rec:      &ImpersonationRecord{Mode: ForwardImpersonating, InboundUser: alice, ImpersonatedUser: bob},
+			wantUser: "bob",
+		},
+		"forwarded as itself": {
+			rec:      &ImpersonationRecord{Mode: ForwardImpersonating, InboundUser: alice},
+			wantUser: "alice",
+		},
+	}
+
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			if got := PeerHost(tc.in); got != tc.exp {
-				t.Errorf("PeerHost(%q) = %q, want %q", tc.in, got, tc.exp)
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req = req.WithContext(genericapirequest.WithUser(req.Context(), alice))
+
+			req = WithImpersonation(req, tc.rec)
+
+			if got := Impersonation(req); got != tc.rec {
+				t.Errorf("Impersonation = %+v, want the record that was set", got)
+			}
+			u, _ := genericapirequest.UserFrom(req.Context())
+			if u.GetName() != tc.wantUser {
+				t.Errorf("request user = %q, want %q", u.GetName(), tc.wantUser)
 			}
 		})
 	}

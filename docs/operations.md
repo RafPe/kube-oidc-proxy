@@ -155,8 +155,7 @@ here to read):
  "path":"/api/v1/namespaces/default/pods","forwarded_for_untrusted":"10.42.0.5","http_method":"GET",
  "auth_method":"oidc","issuer_name":"corp","k8s_verb":"list","k8s_api_group":"","k8s_resource":"pods",
  "k8s_namespace":"default","decision":"allow","inbound_user":"alice@example.com",
- "inbound_groups":["platform-admins","system:authenticated"],
- "inbound_extra":{"Remote-Client-IP":["10.42.1.3"]},"inbound_extra_omitted":1}
+ "inbound_groups":["platform-admins","system:authenticated"],"inbound_extra_omitted":1}
 ```
 
 When impersonation headers are present, the `outbound_*` fields report the
@@ -221,9 +220,8 @@ fine and was then refused — `inbound_user` is real and worth investigating.
 | `auth_method` | `oidc`, `tokenreview` (passthrough) or `none` (no token presented). |
 | `issuer_name` | Which configured issuer accepted the token, in a multi-issuer setup. Never the full issuer URL. |
 | `inbound_user`, `inbound_groups`, `inbound_uid` | The identity the OIDC token authenticated as. `inbound_uid` appears only when the authenticator supplied one. |
-| `inbound_extra` | The impersonation extras the proxy sets itself, from a fixed allowlist. Arbitrary claim data from the token is never logged. |
-| `inbound_extra_omitted` | How many extra keys were dropped because they are not on that allowlist, so you can tell data was withheld rather than absent. |
-| `outbound_user`, `outbound_groups`, `outbound_uid`, `outbound_extra`, `outbound_extra_omitted` | The same fields for the impersonated identity, present only when the request carried impersonation headers. Compare these with the `inbound_*` fields to see who acted as whom. |
+| `inbound_extra_omitted` | How many extras the identity carried. Extras are never logged, only counted, so you can tell data was withheld rather than absent. |
+| `outbound_user`, `outbound_groups`, `outbound_uid`, `outbound_extra_omitted` | The same fields for the impersonated identity, present only when the request carried impersonation headers. Compare these with the `inbound_*` fields to see who acted as whom. |
 | `target_kind`, `target_name` | On an impersonation denial, what was refused — so a denial never has to be recovered by parsing error text. |
 
 Bearer tokens, `Authorization` and `Cookie` values, request and response bodies,

@@ -23,17 +23,17 @@ func TestRequesterExtrasPartitionCache(t *testing.T) {
 	requesterA := &user.DefaultInfo{Name: "mmosley", Groups: []string{"group1"}, Extra: map[string][]string{"project": {"a"}}}
 	requesterB := &user.DefaultInfo{Name: "mmosley", Groups: []string{"group1"}, Extra: map[string][]string{"project": {"b"}}}
 
-	if _, err := sar.CheckAuthorizedForImpersonation(impersonateUserRequest("bob"), requesterA); err != nil {
+	if _, err := sar.ResolveImpersonation(impersonateUserRequest("bob"), requesterA); err != nil {
 		t.Fatalf("requester A: unexpected error: %v", err)
 	}
-	if _, err := sar.CheckAuthorizedForImpersonation(impersonateUserRequest("bob"), requesterA); err != nil {
+	if _, err := sar.ResolveImpersonation(impersonateUserRequest("bob"), requesterA); err != nil {
 		t.Fatalf("requester A repeat: unexpected error: %v", err)
 	}
 	if got := reviewer.calls.Load(); got != 1 {
 		t.Fatalf("SAR Create ran %d times for requester A, want 1 (cache hit)", got)
 	}
 
-	if _, err := sar.CheckAuthorizedForImpersonation(impersonateUserRequest("bob"), requesterB); err != nil {
+	if _, err := sar.ResolveImpersonation(impersonateUserRequest("bob"), requesterB); err != nil {
 		t.Fatalf("requester B: unexpected error: %v", err)
 	}
 	if got := reviewer.calls.Load(); got != 2 {
@@ -58,13 +58,13 @@ func TestCachedAllowNotLeakedAcrossNaiveCollision(t *testing.T) {
 	// Naive requester+resource+name concatenation renders both checks as
 	// "aliceusers" + "users" + "bob" == "alice" + "users" + "usersbob".
 	privileged := &user.DefaultInfo{Name: "aliceusers"}
-	target, err := sar.CheckAuthorizedForImpersonation(impersonateUserRequest("bob"), privileged)
+	target, err := sar.ResolveImpersonation(impersonateUserRequest("bob"), privileged)
 	if err != nil || target == nil {
 		t.Fatalf("privileged requester: target = %+v, err = %v, want allow", target, err)
 	}
 
 	attacker := &user.DefaultInfo{Name: "alice"}
-	target, err = sar.CheckAuthorizedForImpersonation(impersonateUserRequest("usersbob"), attacker)
+	target, err = sar.ResolveImpersonation(impersonateUserRequest("usersbob"), attacker)
 	if target != nil || !errors.Is(err, ErrImpersonationNotAllowed) {
 		t.Fatalf("colliding requester: target = %+v, err = %v, want denial (must not inherit cached allow)", target, err)
 	}
@@ -89,14 +89,14 @@ func TestCachedAllowNotInheritedAcrossUID(t *testing.T) {
 	sar := newCachedSAR(reviewer, 10*time.Second, 30*time.Second, clk)
 
 	privileged := &user.DefaultInfo{Name: "mmosley", UID: "uid-allowed", Groups: []string{"group1"}}
-	target, err := sar.CheckAuthorizedForImpersonation(impersonateUserRequest("bob"), privileged)
+	target, err := sar.ResolveImpersonation(impersonateUserRequest("bob"), privileged)
 	if err != nil || target == nil || target.GetName() != "bob" {
 		t.Fatalf("privileged principal: target = %+v, err = %v, want allow", target, err)
 	}
 
 	// Same name, groups, and extras — only the UID differs.
 	imposter := &user.DefaultInfo{Name: "mmosley", UID: "uid-other", Groups: []string{"group1"}}
-	target, err = sar.CheckAuthorizedForImpersonation(impersonateUserRequest("bob"), imposter)
+	target, err = sar.ResolveImpersonation(impersonateUserRequest("bob"), imposter)
 	if target != nil || !errors.Is(err, ErrImpersonationNotAllowed) {
 		t.Fatalf("differing-UID principal: target = %+v, err = %v, want denial (must not inherit cached allow)", target, err)
 	}

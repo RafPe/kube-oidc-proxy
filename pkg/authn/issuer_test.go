@@ -1,7 +1,10 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
 package authn
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 // TestIssuerNameNeverEmitsRawInput pins the binding constraint that a full
 // issuer URL never reaches the log stream. A value the URL parser cannot turn
@@ -33,5 +36,16 @@ func TestIssuerNameNeverEmitsRawInput(t *testing.T) {
 				t.Fatalf("IssuerName(%q) returned its own input", tc.issuerURL)
 			}
 		})
+	}
+}
+
+// TestIssuerNamesDerivesFromURLs pins the never-log-a-full-
+// issuer-URL constraint: the names handed to the record are hosts, and a value
+// with no host degrades to the placeholder rather than to the URL itself.
+func TestIssuerNamesDerivesFromURLs(t *testing.T) {
+	got := issuerNames([]string{"https://idp.example.com/realms/corp", "not-a-url"})
+	want := []string{"idp.example.com", "unknown"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("issuerNames = %v, want %v", got, want)
 	}
 }

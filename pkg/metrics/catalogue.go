@@ -7,16 +7,37 @@ package metrics
 // the two cannot drift.
 type Spec struct {
 	Name      string
-	Type      string // counter, gauge or histogram
+	Type      Type
 	Labels    []string
-	Stability string // STABLE or ALPHA
+	Stability Stability
 	Help      string // without the stability prefix; help() adds it
 }
+
+// Type is the Prometheus type of a catalogue family. Its constants are the
+// closed set the collectors are built as; the value is what docs/metrics.md
+// prints.
+type Type string
+
+const (
+	TypeCounter   Type = "counter"
+	TypeGauge     Type = "gauge"
+	TypeHistogram Type = "histogram"
+)
+
+// Stability is a family's stability level, the marker kube-apiserver's
+// metrics put in front of their help. STABLE families keep their name, type
+// and labels; ALPHA ones may still change.
+type Stability string
+
+const (
+	StabilityStable Stability = "STABLE"
+	StabilityAlpha  Stability = "ALPHA"
+)
 
 // help renders the help string as exported, with the stability marker in
 // front, the convention kube-apiserver's metrics use.
 func (s Spec) help() string {
-	return "[" + s.Stability + "] " + s.Help
+	return "[" + string(s.Stability) + "] " + s.Help
 }
 
 // Names of every first-party family, so a collector and the docs share one
@@ -43,32 +64,32 @@ const (
 // label set or type is never changed in place.
 func Catalogue() []Spec {
 	return []Spec{
-		{Name: nameBuildInfo, Type: "gauge", Labels: []string{"version", "revision", "go_version"}, Stability: "STABLE",
+		{Name: nameBuildInfo, Type: TypeGauge, Labels: []string{"version", "revision", "go_version"}, Stability: StabilityStable,
 			Help: "Build information; always 1."},
-		{Name: nameRequestsTotal, Type: "counter", Labels: []string{"k8s_verb", "scope", "code", "termination"}, Stability: "STABLE",
+		{Name: nameRequestsTotal, Type: TypeCounter, Labels: []string{"k8s_verb", "scope", "code", "termination"}, Stability: StabilityStable,
 			Help: "Completed requests by Kubernetes verb, scope, HTTP status code and how the exchange ended."},
-		{Name: nameRequestDuration, Type: "histogram", Labels: []string{"k8s_verb", "scope"}, Stability: "STABLE",
+		{Name: nameRequestDuration, Type: TypeHistogram, Labels: []string{"k8s_verb", "scope"}, Stability: StabilityStable,
 			Help: "Latency of completed requests in seconds, excluding long-running (watch, exec, attach, portforward, logs, proxy) and hijacked requests."},
-		{Name: nameRequestsInFlight, Type: "gauge", Labels: nil, Stability: "STABLE",
+		{Name: nameRequestsInFlight, Type: TypeGauge, Labels: nil, Stability: StabilityStable,
 			Help: "Requests currently inside the handler chain."},
-		{Name: nameLongRunningRequests, Type: "gauge", Labels: []string{"k8s_verb", "scope"}, Stability: "STABLE",
+		{Name: nameLongRunningRequests, Type: TypeGauge, Labels: []string{"k8s_verb", "scope"}, Stability: StabilityStable,
 			Help: "Long-running requests whose response has started (headers written or connection hijacked) and not yet ended."},
-		{Name: nameAuthnAttempts, Type: "counter", Labels: []string{"auth_method", "outcome"}, Stability: "STABLE",
+		{Name: nameAuthnAttempts, Type: TypeCounter, Labels: []string{"auth_method", "outcome"}, Stability: StabilityStable,
 			Help: "Authentication attempts by method and outcome, before the identity and authorization checks that follow."},
-		{Name: nameAccessDecisions, Type: "counter", Labels: []string{"auth_method", "decision", "reason"}, Stability: "STABLE",
+		{Name: nameAccessDecisions, Type: TypeCounter, Labels: []string{"auth_method", "decision", "reason"}, Stability: StabilityStable,
 			Help: "Final access decisions; reason is empty on allow."},
-		{Name: nameReviewRequests, Type: "counter", Labels: []string{"review", "outcome"}, Stability: "STABLE",
+		{Name: nameReviewRequests, Type: TypeCounter, Labels: []string{"review", "outcome"}, Stability: StabilityStable,
 			Help: "TokenReview and SubjectAccessReview API calls actually issued to the API server, by outcome."},
-		{Name: nameReviewDuration, Type: "histogram", Labels: []string{"review", "outcome"}, Stability: "STABLE",
+		{Name: nameReviewDuration, Type: TypeHistogram, Labels: []string{"review", "outcome"}, Stability: StabilityStable,
 			Help: "Latency of review API calls in seconds."},
-		{Name: nameCacheLookups, Type: "counter", Labels: []string{"cache", "result"}, Stability: "STABLE",
+		{Name: nameCacheLookups, Type: TypeCounter, Labels: []string{"cache", "result"}, Stability: StabilityStable,
 			Help: "Review cache lookups by cache and result."},
-		{Name: nameIssuerInitialized, Type: "gauge", Labels: []string{"issuer_name"}, Stability: "STABLE",
+		{Name: nameIssuerInitialized, Type: TypeGauge, Labels: []string{"issuer_name"}, Stability: StabilityStable,
 			Help: "1 once the issuer's authenticator has fetched its JWKS. Reports initialization, not ongoing issuer availability."},
-		{Name: nameReady, Type: "gauge", Labels: nil, Stability: "STABLE",
+		{Name: nameReady, Type: TypeGauge, Labels: nil, Stability: StabilityStable,
 			Help: "1 once the proxy is serving and readiness has latched."},
-		{Name: nameAuditBackendFailures, Type: "counter", Labels: []string{"operation"}, Stability: "ALPHA",
-			Help: "Audit backend failures observable at start and shutdown. Asynchronous delivery failures are not included."},
+		{Name: nameAuditBackendFailures, Type: TypeCounter, Labels: []string{"operation"}, Stability: StabilityAlpha,
+			Help: "Audit backend failures observable at start. Asynchronous delivery failures and lost flushes at shutdown are not included."},
 	}
 }
 

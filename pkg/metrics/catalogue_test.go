@@ -60,7 +60,7 @@ func TestEveryCollectorIsInTheCatalogue(t *testing.T) {
 		if f.GetHelp() != s.help() {
 			t.Errorf("%s help = %q, catalogue says %q", name, f.GetHelp(), s.help())
 		}
-		wantType := map[string]dto.MetricType{"counter": dto.MetricType_COUNTER, "gauge": dto.MetricType_GAUGE, "histogram": dto.MetricType_HISTOGRAM}[s.Type]
+		wantType := map[Type]dto.MetricType{TypeCounter: dto.MetricType_COUNTER, TypeGauge: dto.MetricType_GAUGE, TypeHistogram: dto.MetricType_HISTOGRAM}[s.Type]
 		if f.GetType() != wantType {
 			t.Errorf("%s type = %v, catalogue says %s", name, f.GetType(), s.Type)
 		}

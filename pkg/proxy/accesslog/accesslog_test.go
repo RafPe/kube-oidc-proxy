@@ -3,6 +3,7 @@ package accesslog
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -24,16 +25,16 @@ func TestLogDecisionSanitizesThePath(t *testing.T) {
 	req := reqctx.WithRequestID(httptest.NewRequest(http.MethodGet, "/a?token=secret", nil), "id")
 	req.URL.Path = "/a\nb"
 
-	a.LogDecision(req, Decision{Allowed: true, AuthMethod: "oidc"})
+	LogDecision(a, req, Decision{Allowed: true, AuthMethod: "oidc"})
 
 	if got := cap.Only(t, logging.EventRequestAccessDecided).String("path"); got != "/a b" {
 		t.Errorf("path = %q, want %q", got, "/a b")
 	}
 }
 
-func newAccess(t *testing.T) (*Logger, *logtest.Capture) {
+func newAccess(t *testing.T) (*slog.Logger, *logtest.Capture) {
 	root, cap := logtest.New(t, 0)
-	return New(logging.ForComponent(root, logging.ComponentRequest)), cap
+	return logging.ForComponent(root, logging.ComponentRequest), cap
 }
 
 func TestLogDecisionDeniedCarriesReasonAndRequestID(t *testing.T) {
@@ -42,7 +43,7 @@ func TestLogDecisionDeniedCarriesReasonAndRequestID(t *testing.T) {
 	req.RemoteAddr = "1.2.3.4:5555"
 	req = reqctx.WithRequestID(req, "7c1e")
 
-	a.LogDecision(req, Decision{Allowed: false, Reason: "impersonation_denied", AuthMethod: "oidc",
+	LogDecision(a, req, Decision{Allowed: false, Reason: "impersonation_denied", AuthMethod: "oidc",
 		Inbound: &user.DefaultInfo{Name: "alice"}, TargetKind: "group", TargetName: "system:masters"})
 
 	rec := cap.Only(t, logging.EventRequestAccessDecided)
@@ -60,7 +61,7 @@ func TestLogDecisionDeniedCarriesReasonAndRequestID(t *testing.T) {
 func TestLogDecisionAllowedIsAuSuccessWithoutReason(t *testing.T) {
 	a, cap := newAccess(t)
 	req := reqctx.WithRequestID(httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil), "id")
-	a.LogDecision(req, Decision{Allowed: true, AuthMethod: "tokenreview", Inbound: &user.DefaultInfo{Name: "sa"}})
+	LogDecision(a, req, Decision{Allowed: true, AuthMethod: "tokenreview", Inbound: &user.DefaultInfo{Name: "sa"}})
 	rec := cap.Only(t, logging.EventRequestAccessDecided)
 	if rec.String("event") != "AuSuccess" || rec.String("decision") != "allow" {
 		t.Fatalf("%v", rec)
@@ -77,7 +78,7 @@ func TestLogDecisionCarriesKubernetesDimensions(t *testing.T) {
 		Subresource: "log", Namespace: "team-a", Name: "web-1"}
 	req = req.WithContext(genericapirequest.WithRequestInfo(req.Context(), info))
 	req = reqctx.WithRequestID(req, "id")
-	a.LogDecision(req, Decision{Allowed: true, AuthMethod: "oidc", Inbound: &user.DefaultInfo{Name: "alice"}})
+	LogDecision(a, req, Decision{Allowed: true, AuthMethod: "oidc", Inbound: &user.DefaultInfo{Name: "alice"}})
 	rec := cap.Only(t, logging.EventRequestAccessDecided)
 	if rec.String("k8s_verb") != "get" || rec.String("k8s_resource") != "pods" || rec.String("k8s_subresource") != "log" ||
 		rec.String("k8s_namespace") != "team-a" || rec.String("k8s_name") != "web-1" {
@@ -92,7 +93,7 @@ func TestGroupsAreCapped(t *testing.T) {
 		groups[i] = fmt.Sprintf("g%d", i)
 	}
 	req := reqctx.WithRequestID(httptest.NewRequest(http.MethodGet, "/", nil), "id")
-	a.LogDecision(req, Decision{Allowed: true, AuthMethod: "oidc", Inbound: &user.DefaultInfo{Name: "a", Groups: groups}})
+	LogDecision(a, req, Decision{Allowed: true, AuthMethod: "oidc", Inbound: &user.DefaultInfo{Name: "a", Groups: groups}})
 	rec := cap.Only(t, logging.EventRequestAccessDecided)
 	if n, _ := rec.Int("inbound_groups_omitted"); n != 8 {
 		t.Fatalf("inbound_groups_omitted = %d, want 8", n)
@@ -107,7 +108,7 @@ func TestNonResourceRequestHasNoKubernetesDimensions(t *testing.T) {
 	req := reqctx.WithRequestID(httptest.NewRequest(http.MethodGet, "/healthz", nil), "id")
 	req = req.WithContext(genericapirequest.WithRequestInfo(req.Context(),
 		&genericapirequest.RequestInfo{IsResourceRequest: false, Path: "/healthz", Verb: "get"}))
-	a.LogDecision(req, Decision{Allowed: true, AuthMethod: "none"})
+	LogDecision(a, req, Decision{Allowed: true, AuthMethod: "none"})
 	rec := cap.Only(t, logging.EventRequestAccessDecided)
 	for _, key := range []string{"k8s_verb", "k8s_api_group", "k8s_resource", "k8s_namespace", "k8s_name"} {
 		if _, has := rec[key]; has {
@@ -126,7 +127,7 @@ func TestLogDecisionCarriesRequestCorrelation(t *testing.T) {
 	req = reqctx.WithClientRequestID(req, "from-client")
 	req = reqctx.WithIssuerName(req, "corp")
 
-	a.LogDecision(req, Decision{Allowed: true, AuthMethod: "oidc", Inbound: &user.DefaultInfo{Name: "alice"}})
+	LogDecision(a, req, Decision{Allowed: true, AuthMethod: "oidc", Inbound: &user.DefaultInfo{Name: "alice"}})
 
 	rec := cap.Only(t, logging.EventRequestAccessDecided)
 	if rec.String("request_id") != "minted" || rec.String("client_request_id") != "from-client" ||
@@ -137,8 +138,9 @@ func TestLogDecisionCarriesRequestCorrelation(t *testing.T) {
 
 // TestLogDecisionIsSanitizedAndOmitsClaims verifies issue #55 on the new
 // record: output is a single JSON line even with an injection attempt, the
-// query string never appears, and arbitrary identity extras are counted rather
-// than logged.
+// query string never appears, and identity extras are counted rather than
+// logged -- including one whose key matches an extra the proxy sets itself,
+// because on an identity it is still claim data.
 func TestLogDecisionIsSanitizedAndOmitsClaims(t *testing.T) {
 	a, cap := newAccess(t)
 
@@ -151,13 +153,13 @@ func TestLogDecisionIsSanitizedAndOmitsClaims(t *testing.T) {
 		Name:   "evil\nAuSuccess src:[spoofed",
 		Groups: []string{"dev", "bad\ngroup"},
 		Extra: map[string][]string{
-			reqctx.UserHeaderClientIPKey: {"1.2.3.4"},
-			"email":                      {"secret@example.com"},
-			"authorization-bearer-tok":   {"do-not-log"},
+			"Remote-Client-IP":         {"6.6.6.6"},
+			"email":                    {"secret@example.com"},
+			"authorization-bearer-tok": {"do-not-log"},
 		},
 	}
 
-	a.LogDecision(req, Decision{Allowed: true, AuthMethod: "oidc", Inbound: inbound})
+	LogDecision(a, req, Decision{Allowed: true, AuthMethod: "oidc", Inbound: inbound})
 
 	out := strings.TrimRight(cap.Raw(), "\n")
 	if strings.Contains(out, "\n") {
@@ -166,7 +168,7 @@ func TestLogDecisionIsSanitizedAndOmitsClaims(t *testing.T) {
 	if strings.Contains(out, "supersecret") {
 		t.Errorf("query string leaked into log: %s", out)
 	}
-	if strings.Contains(out, "secret@example.com") || strings.Contains(out, "do-not-log") {
+	if strings.Contains(out, "secret@example.com") || strings.Contains(out, "do-not-log") || strings.Contains(out, "6.6.6.6") {
 		t.Errorf("arbitrary extras leaked into log: %s", out)
 	}
 
@@ -180,15 +182,11 @@ func TestLogDecisionIsSanitizedAndOmitsClaims(t *testing.T) {
 	if strings.Contains(rec.String("inbound_user"), "\n") {
 		t.Errorf("inbound_user still contains newline: %q", rec.String("inbound_user"))
 	}
-	if n, _ := rec.Int("inbound_extra_omitted"); n != 2 {
-		t.Errorf("inbound_extra_omitted = %d, want 2", n)
+	if n, _ := rec.Int("inbound_extra_omitted"); n != 3 {
+		t.Errorf("inbound_extra_omitted = %d, want 3", n)
 	}
-	extra, ok := rec["inbound_extra"].(map[string]any)
-	if !ok {
-		t.Fatalf("inbound_extra missing or wrong type: %v", rec["inbound_extra"])
-	}
-	if _, ok := extra[reqctx.UserHeaderClientIPKey]; !ok {
-		t.Errorf("allowlisted extra %q not logged: %v", reqctx.UserHeaderClientIPKey, extra)
+	if _, has := rec["inbound_extra"]; has {
+		t.Errorf("inbound_extra present: identity extras are never logged: %v", rec["inbound_extra"])
 	}
 }
 
@@ -207,15 +205,15 @@ func TestOutboundExtraDoesNotLeakOriginalUserClaims(t *testing.T) {
 		},
 	}
 
-	a.LogDecision(req, Decision{Allowed: true, AuthMethod: "oidc",
+	LogDecision(a, req, Decision{Allowed: true, AuthMethod: "oidc",
 		Inbound: &user.DefaultInfo{Name: "alice"}, Impersonated: outbound})
 
 	if strings.Contains(cap.Raw(), "acme-secret-tenant") {
 		t.Fatalf("original user extras leaked into the access log:\n%s", cap.Raw())
 	}
 	rec := cap.Only(t, logging.EventRequestAccessDecided)
-	if n, _ := rec.Int("outbound_extra_omitted"); n != 1 {
-		t.Fatalf("outbound_extra_omitted = %d, want 1", n)
+	if n, _ := rec.Int("outbound_extra_omitted"); n != 2 {
+		t.Fatalf("outbound_extra_omitted = %d, want 2", n)
 	}
 }
 
@@ -230,7 +228,7 @@ func TestUIDsAreBounded(t *testing.T) {
 	req.RemoteAddr = "1.2.3.4:5555"
 	req = reqctx.WithRequestID(req, "id")
 
-	a.LogDecision(req, Decision{Allowed: true, AuthMethod: "oidc",
+	LogDecision(a, req, Decision{Allowed: true, AuthMethod: "oidc",
 		Inbound:      &user.DefaultInfo{Name: "alice", UID: long},
 		Impersonated: &user.DefaultInfo{Name: "alice", UID: long},
 	})
@@ -240,42 +238,5 @@ func TestUIDsAreBounded(t *testing.T) {
 		if got := len([]rune(rec.String(key))); got != logging.MaxIdentity {
 			t.Errorf("%s is %d runes, want %d", key, got, logging.MaxIdentity)
 		}
-	}
-}
-
-// TestAllowlistedExtraValuesAreNotTruncated pins that the group cap applies to
-// groups only. The allowlisted extra arrays are part of the frozen record shape
-// and carry no cap, so nothing may silently drop values from them.
-func TestAllowlistedExtraValuesAreNotTruncated(t *testing.T) {
-	a, cap := newAccess(t)
-
-	values := make([]string, 40)
-	for i := range values {
-		values[i] = fmt.Sprintf("v%d", i)
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil)
-	req.RemoteAddr = "1.2.3.4:5555"
-	req = reqctx.WithRequestID(req, "id")
-
-	a.LogDecision(req, Decision{Allowed: true, AuthMethod: "oidc", Inbound: &user.DefaultInfo{
-		Name:  "alice",
-		Extra: map[string][]string{"originaluser.jetstack.io-groups": values},
-	}})
-
-	rec := cap.Only(t, logging.EventRequestAccessDecided)
-	extra, ok := rec["inbound_extra"].(map[string]any)
-	if !ok {
-		t.Fatalf("inbound_extra missing or wrong type: %v", rec["inbound_extra"])
-	}
-	vals, ok := extra["originaluser.jetstack.io-groups"].([]any)
-	if !ok {
-		t.Fatalf("allowlisted extra missing or wrong type: %v", extra)
-	}
-	if len(vals) != 40 {
-		t.Errorf("allowlisted extra has %d values, want 40", len(vals))
-	}
-	if _, has := rec["inbound_groups_omitted"]; has {
-		t.Errorf("inbound_groups_omitted present when no group was dropped: %v", rec)
 	}
 }

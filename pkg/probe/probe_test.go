@@ -20,8 +20,6 @@ import (
 	"testing"
 
 	"k8s.io/apiserver/pkg/authentication/authenticator"
-
-	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 )
 
 // fakeAuthenticator simulates the union authenticator: tokens listed in notInit
@@ -66,28 +64,34 @@ func (f *fakeAuthenticator) callCount(token string) int {
 	return f.calls[token]
 }
 
-func newTestHealthCheckWithAuthenticator(requireAll bool, authn authenticator.Token, issuers ...IssuerReadiness) *healthCheck {
-	// Discarding loggers by default: NewServer never leaves either nil, and a
-	// test that asserts on records replaces them via newTestHealthCheckWithLogger.
-	return &healthCheck{
-		readinessLogger:   slog.New(slog.DiscardHandler),
-		oidcLogger:        slog.New(slog.DiscardHandler),
-		oidcAuthenticator: authn,
-		issuers:           issuers,
-		requireAll:        requireAll,
-		initialized:       make(map[string]bool),
+// newTestServerWithAuthenticator builds an unstarted Server probing issuers
+// through authn. It reports through a discarding logger; a test that asserts
+// on records uses newTestServerWithLogger. An unstarted server needs no
+// address: check is driven directly.
+func newTestServerWithAuthenticator(t testing.TB, requireAll bool, authn authenticator.Token, issuers ...IssuerReadiness) *Server {
+	t.Helper()
+	return newTestServerWithRoot(t, slog.New(slog.DiscardHandler), requireAll, authn, issuers...)
+}
+
+func newTestServerWithRoot(t testing.TB, root *slog.Logger, requireAll bool, authn authenticator.Token, issuers ...IssuerReadiness) *Server {
+	t.Helper()
+	s, err := NewServer(Config{Issuers: issuers, RequireAllIssuers: requireAll, Authenticator: authn}, root)
+	if err != nil {
+		t.Fatal(err)
 	}
+	return s
 }
 
-func newTestHealthCheck(requireAll bool, notInit map[string]bool, issuers ...IssuerReadiness) *healthCheck {
-	return newTestHealthCheckWithAuthenticator(requireAll, &fakeAuthenticator{notInit: notInit}, issuers...)
+func newTestServer(t testing.TB, requireAll bool, notInit map[string]bool, issuers ...IssuerReadiness) *Server {
+	t.Helper()
+	return newTestServerWithAuthenticator(t, requireAll, &fakeAuthenticator{notInit: notInit}, issuers...)
 }
 
-// newTestHealthCheckWithLogger builds a healthCheck reporting through root.
+// newTestServerWithLogger builds a Server reporting through root.
 // notInit is keyed by issuer URL rather than by fake JWT, which is what a test
 // asserting on records cares about; the translation to the token keying
 // fakeAuthenticator uses happens here.
-func newTestHealthCheckWithLogger(t testing.TB, root *slog.Logger, requireAll bool, notInit map[string]bool, issuers ...IssuerReadiness) *healthCheck {
+func newTestServerWithLogger(t testing.TB, root *slog.Logger, requireAll bool, notInit map[string]bool, issuers ...IssuerReadiness) *Server {
 	t.Helper()
 
 	notInitByToken := make(map[string]bool, len(notInit))
@@ -96,11 +100,7 @@ func newTestHealthCheckWithLogger(t testing.TB, root *slog.Logger, requireAll bo
 			notInitByToken[issuer.FakeJWT] = true
 		}
 	}
-
-	h := newTestHealthCheckWithAuthenticator(requireAll, &fakeAuthenticator{notInit: notInitByToken}, issuers...)
-	h.readinessLogger = logging.ForComponent(root, logging.ComponentReadiness)
-	h.oidcLogger = logging.ForComponent(root, logging.ComponentOIDC)
-	return h
+	return newTestServerWithRoot(t, root, requireAll, &fakeAuthenticator{notInit: notInitByToken}, issuers...)
 }
 
 func TestCheckReadiness(t *testing.T) {
@@ -141,10 +141,10 @@ func TestCheckReadiness(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			h := newTestHealthCheck(tc.requireAll, tc.notInit, issuerA, issuerB)
+			h := newTestServer(t, tc.requireAll, tc.notInit, issuerA, issuerB)
 			// This table covers issuer readiness, so open the serving gate;
 			// TestCheckNotReadyBeforeServing covers the gate itself.
-			h.setServing()
+			h.SetServing()
 			err := h.check()
 			if tc.wantReady && err != nil {
 				t.Fatalf("expected ready, got error: %v", err)
@@ -162,7 +162,7 @@ func TestCheckReadiness(t *testing.T) {
 // requests is not readiness.
 func TestCheckNotReadyBeforeServing(t *testing.T) {
 	issuerA := IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"}
-	h := newTestHealthCheck(true, nil, issuerA)
+	h := newTestServer(t, true, nil, issuerA)
 
 	err := h.check()
 	if err == nil {
@@ -181,13 +181,13 @@ func TestCheckNotReadyBeforeServing(t *testing.T) {
 // called, so the gate delays readiness rather than blocking it permanently.
 func TestCheckReadyAfterServing(t *testing.T) {
 	issuerA := IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"}
-	h := newTestHealthCheck(true, nil, issuerA)
+	h := newTestServer(t, true, nil, issuerA)
 
 	if err := h.check(); err == nil {
 		t.Fatal("expected not-ready before the proxy is serving, got nil")
 	}
 
-	h.setServing()
+	h.SetServing()
 	if err := h.check(); err != nil {
 		t.Fatalf("expected ready once serving with the issuer initialized, got: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestCheckReadyAfterServing(t *testing.T) {
 // /ready answers 503 and names the serving condition, so an operator reading
 // the probe response can tell why the pod is held back.
 func TestReadyEndpointReportsNotServing(t *testing.T) {
-	h := newTestHealthCheck(false, nil,
+	h := newTestServer(t, false, nil,
 		IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"})
 	handler := h.handler()
 
@@ -219,7 +219,7 @@ func TestReadyEndpointReportsNotServing(t *testing.T) {
 	}
 
 	// Once serving, the same endpoint reports ready.
-	h.setServing()
+	h.SetServing()
 	readyRec := httptest.NewRecorder()
 	handler.ServeHTTP(readyRec, httptest.NewRequest(http.MethodGet, "/ready", nil))
 	if readyRec.Code != http.StatusOK {
@@ -230,8 +230,8 @@ func TestReadyEndpointReportsNotServing(t *testing.T) {
 func TestCheckReadinessIsSticky(t *testing.T) {
 	issuerA := IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"}
 	notInit := map[string]bool{}
-	h := newTestHealthCheck(false, notInit, issuerA)
-	h.setServing()
+	h := newTestServer(t, false, notInit, issuerA)
+	h.SetServing()
 
 	if err := h.check(); err != nil {
 		t.Fatalf("expected ready, got: %v", err)
@@ -254,8 +254,8 @@ func TestCheckContinuesProbingPendingAfterLatch(t *testing.T) {
 	issuerB := IssuerReadiness{IssuerURL: "https://b.example.com", FakeJWT: "jwt-b"}
 
 	notInit := map[string]bool{"jwt-b": true}
-	h := newTestHealthCheck(false, notInit, issuerA, issuerB)
-	h.setServing()
+	h := newTestServer(t, false, notInit, issuerA, issuerB)
+	h.SetServing()
 	fake := h.oidcAuthenticator.(*fakeAuthenticator)
 
 	if err := h.check(); err != nil {
@@ -313,8 +313,8 @@ func TestCheckAlternatePhrasingKeepsPending(t *testing.T) {
 			"jwt-a": errors.New("oidc: authenticator for issuer is not initialized"),
 		},
 	}
-	h := newTestHealthCheckWithAuthenticator(true, authn, issuerA)
-	h.setServing()
+	h := newTestServerWithAuthenticator(t, true, authn, issuerA)
+	h.SetServing()
 
 	if err := h.check(); err == nil {
 		t.Fatal("expected not-ready for alternate 'is not initialized' phrasing, got nil")
@@ -345,8 +345,8 @@ func TestCheckTransientErrorDoesNotLatch(t *testing.T) {
 	for name, retErr := range tests {
 		t.Run(name, func(t *testing.T) {
 			authn := &fakeAuthenticator{override: map[string]error{"jwt-a": retErr}}
-			h := newTestHealthCheckWithAuthenticator(true, authn, issuerA)
-			h.setServing()
+			h := newTestServerWithAuthenticator(t, true, authn, issuerA)
+			h.SetServing()
 
 			if err := h.check(); err == nil {
 				t.Fatal("expected not-ready for transient error, got nil")
@@ -364,10 +364,10 @@ func TestCheckTransientErrorDoesNotLatch(t *testing.T) {
 // TestHandlerRejectsNonGET verifies the readiness/liveness endpoints answer GET
 // but reject other methods with 405, preserving the previous handler's contract.
 func TestHandlerRejectsNonGET(t *testing.T) {
-	h := newTestHealthCheck(false, nil,
+	h := newTestServer(t, false, nil,
 		IssuerReadiness{IssuerURL: "https://a.example.com", FakeJWT: "jwt-a"})
 	// Serving, so GET /ready exercises the readiness path rather than the gate.
-	h.setServing()
+	h.SetServing()
 	handler := h.handler()
 
 	for _, path := range []string{"/live", "/ready"} {

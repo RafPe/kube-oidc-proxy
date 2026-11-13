@@ -13,10 +13,10 @@ import (
 // ns/name, minted through the TokenRequest API. Every supported Kubernetes
 // version is 1.24 or later, where ServiceAccounts no longer get a long-lived
 // token Secret, so TokenRequest is the only source.
-func (h *Helper) GetServiceAccountToken(ns, name string) (string, error) {
+func (h *Helper) GetServiceAccountToken(ctx context.Context, ns, name string) (string, error) {
 	expirationSeconds := int64(600)
 
-	tr, err := h.KubeClient.CoreV1().ServiceAccounts(ns).CreateToken(context.TODO(), name, &authnv1.TokenRequest{
+	tr, err := h.KubeClient.CoreV1().ServiceAccounts(ns).CreateToken(ctx, name, &authnv1.TokenRequest{
 		Spec: authnv1.TokenRequestSpec{
 			Audiences:         []string{"https://kubernetes.default.svc.cluster.local"},
 			ExpirationSeconds: &expirationSeconds,

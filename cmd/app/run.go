@@ -83,6 +83,13 @@ func run(cmd *cobra.Command, opts *options.Options, out io.Writer, notifyStop fu
 	if err != nil {
 		return err
 	}
+
+	// Also make root the process default. This binary's own code never reads
+	// slog.Default; the reason is the standard log package, which SetDefault
+	// redirects into root's handler. net/http writes there for a listener
+	// whose ErrorLog is nil -- the readiness and metrics listeners -- so a
+	// recovered handler panic or an accept error would otherwise be an
+	// unstructured line on stderr beside the JSON stream.
 	slog.SetDefault(root)
 
 	// From here on every failure is a record on the configured stream, and the
@@ -121,7 +128,7 @@ func run(cmd *cobra.Command, opts *options.Options, out io.Writer, notifyStop fu
 		return fail(err)
 	}
 
-	p, probeServer, auditor, err := startup(ctx, cmd, opts, root, recorder)
+	started, err := startup(ctx, cmd, opts, root, recorder)
 	if err != nil {
 		// A listener that overran its drain is reported as
 		// metrics.server.failed by the server itself, and the exit status
@@ -130,41 +137,55 @@ func run(cmd *cobra.Command, opts *options.Options, out io.Writer, notifyStop fu
 		return fail(err)
 	}
 
-	serve(root, opts, p, probeServer)
+	serve(root, opts, started)
 
 	// Each failure was already reported on the stream by its owner.
-	if err := shutdown(root, probeServer.Wait, flushAuditStep(auditor, root), stopMetrics); err != nil {
+	if err := shutdown(root, started.probe.Wait, flushAuditStep(started.auditor, root), stopMetrics); err != nil {
 		return fmt.Errorf("%w: %w", ErrReported, err)
 	}
 	return nil
 }
 
+// running is what startup hands to serve and shutdown: the started proxy and
+// readiness listener, and the auditor shutdown flushes once the proxy has
+// stopped serving.
+type running struct {
+	proxy   *proxy.Proxy
+	probe   *probe.Server
+	auditor *audit.Audit
+}
+
 // startup builds the proxy and its collaborators from the flags, reports the
 // effective configuration, and starts the audit backend and the readiness and
 // proxy listeners, all of which stop when ctx is cancelled. Neither listener
-// reports ready yet: serve does that. The auditor is returned so shutdown can
-// flush it once the proxy has stopped serving.
-func startup(ctx context.Context, cmd *cobra.Command, opts *options.Options, root *slog.Logger, recorder *metrics.Recorder) (*proxy.Proxy, *probe.Server, *audit.Audit, error) {
+// reports ready yet: serve does that.
+//
+// A constructor from this repository names its own package in the errors it
+// returns ("audit: ...", "probe: ..."), so those are returned as they are
+// unless the call site knows something the callee does not, such as which
+// issuer. A third-party failure, such as building the client, is wrapped here
+// with what was being built.
+func startup(ctx context.Context, cmd *cobra.Command, opts *options.Options, root *slog.Logger, recorder *metrics.Recorder) (*running, error) {
 	startupLogger := logging.ForComponent(root, logging.ComponentStartup)
 
 	if err := checkReservedIdentityPrefixes(opts); err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 
 	restConfig, err := buildRESTConfig(opts, cmd)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 
 	// One client serves both reviewers' API calls.
 	kubeclient, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("building the API server client: %w", err)
+		return nil, fmt.Errorf("building the API server client: %w", err)
 	}
 
 	secureServingInfo := new(server.SecureServingInfo)
 	if err := opts.SecureServing.ApplyTo(&secureServingInfo); err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 
 	subjectAccessReviewer, err := subjectaccessreview.New(
@@ -179,13 +200,13 @@ func startup(ctx context.Context, cmd *cobra.Command, opts *options.Options, roo
 		logging.ForComponent(root, logging.ComponentSAR),
 	)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 
 	tokenAuthenticator, issuerURLs, err := authn.Build(authenticatorConfig(opts),
 		logging.ForComponent(root, logging.ComponentOIDC), startupLogger)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 
 	auditor, err := audit.New(audit.Config{
@@ -195,7 +216,12 @@ func startup(ctx context.Context, cmd *cobra.Command, opts *options.Options, roo
 		Metrics:         recorder,
 	}, logging.ForComponent(root, logging.ComponentAudit))
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
+	}
+
+	tokenReviewer, err := buildTokenReviewer(opts, kubeclient, recorder, root)
+	if err != nil {
+		return nil, err
 	}
 
 	p, err := proxy.New(proxy.Dependencies{
@@ -203,14 +229,14 @@ func startup(ctx context.Context, cmd *cobra.Command, opts *options.Options, roo
 		RestConfig:             restConfig,
 		OIDCTokenAuthenticator: tokenAuthenticator,
 		Auditor:                auditor,
-		TokenReviewer:          buildTokenReviewer(opts, kubeclient, recorder, root),
+		TokenReviewer:          tokenReviewer,
 		SubjectAccessReviewer:  subjectAccessReviewer,
 		SecureServingInfo:      secureServingInfo,
 		Config:                 proxyConfig(opts),
 		Metrics:                recorder,
 	})
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 
 	logConfigLoaded(startupLogger, configSummary{
@@ -222,10 +248,10 @@ func startup(ctx context.Context, cmd *cobra.Command, opts *options.Options, roo
 
 	probes, err := issuerProbes(issuerURLs)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 
-	probeServer := probe.NewServer(probe.Config{
+	probeServer, err := probe.NewServer(probe.Config{
 		// The kubelet probes the pod IP, so the listener binds every
 		// interface.
 		Addr:              net.JoinHostPort("0.0.0.0", strconv.Itoa(opts.App.ReadinessProbePort)),
@@ -234,22 +260,31 @@ func startup(ctx context.Context, cmd *cobra.Command, opts *options.Options, roo
 		Authenticator:     tokenAuthenticator,
 		Metrics:           recorder,
 	}, root)
+	if err != nil {
+		return nil, err
+	}
 	if err := probeServer.Start(ctx); err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 
 	if err := auditor.Start(ctx); err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 	if err := p.Start(ctx); err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
-	return p, probeServer, auditor, nil
+	return &running{proxy: p, probe: probeServer, auditor: auditor}, nil
 }
 
 // serve reports the proxy as serving, lets readiness pass, and blocks until
 // the proxy has stopped serving.
-func serve(root *slog.Logger, opts *options.Options, p *proxy.Proxy, probeServer *probe.Server) {
+//
+// proxy.server.started is the one started record cmd/app owns. Every other
+// listener's Start reports its own bind (metrics.server.started,
+// audit.backend.started), but the proxy's port is bound by apiserver's
+// SecureServingInfo during startup and served by apiserver's machinery, so
+// proxy.Start never sees a bind of its own to report.
+func serve(root *slog.Logger, opts *options.Options, r *running) {
 	servingSince := time.Now()
 	serverLogger := logging.ForComponent(root, logging.ComponentServer)
 	logging.Emit(context.Background(), serverLogger, logging.EventProxyServerStarted,
@@ -261,9 +296,9 @@ func serve(root *slog.Logger, opts *options.Options, p *proxy.Proxy, probeServer
 	// bound since SecureServing.ApplyTo, so before this point a client connect
 	// succeeds and then sits in the backlog unanswered, and a failure in Start
 	// would leave it that way.
-	probeServer.SetServing()
+	r.probe.SetServing()
 
-	p.Wait()
+	r.proxy.Wait()
 
 	logging.Emit(context.Background(), serverLogger, logging.EventProxyServerStopped,
 		slog.Int64("duration_ms", time.Since(servingSince).Milliseconds()))

@@ -2,7 +2,6 @@
 package app
 
 import (
-	"log/slog"
 	"reflect"
 	"testing"
 	"time"
@@ -153,6 +152,27 @@ func TestAuthenticatorConfigMapsEveryOIDCFlag(t *testing.T) {
 	}
 }
 
+// TestAuthenticatorConfigPassesPrefixesThroughVerbatim pins the prefix
+// semantics this proxy has always had, which differ from kube-apiserver's
+// flags of the same name: no issuer-URL default when the prefix is empty, and
+// no '-' opt-out. Translating either would rename every user on an existing
+// deployment and break its RBAC bindings.
+func TestAuthenticatorConfigPassesPrefixesThroughVerbatim(t *testing.T) {
+	for _, prefix := range []string{"", "-", "oidc:"} {
+		opts := parsedOptions(t,
+			"--oidc-issuer-url=https://issuer.example.com",
+			"--oidc-username-claim=email",
+			"--oidc-username-prefix="+prefix,
+			"--oidc-groups-prefix="+prefix,
+		)
+		got := authenticatorConfig(opts).Issuer
+		if got.UsernamePrefix != prefix || got.GroupsPrefix != prefix {
+			t.Errorf("prefix %q mapped to username %q, groups %q; want it unchanged",
+				prefix, got.UsernamePrefix, got.GroupsPrefix)
+		}
+	}
+}
+
 // TestProxyConfigMapsEveryProxyFlag pins the flag-to-config mapping for the
 // proxy itself.
 func TestProxyConfigMapsEveryProxyFlag(t *testing.T) {
@@ -186,13 +206,12 @@ func TestProxyConfigMapsEveryProxyFlag(t *testing.T) {
 // to skip the TokenReview fallback.
 func TestBuildTokenReviewerOnlyWithPassthrough(t *testing.T) {
 	client := fake.NewSimpleClientset()
-	discard := slog.New(slog.DiscardHandler)
 
-	if r := buildTokenReviewer(parsedOptions(t), client, nil, discard); r != nil {
-		t.Fatalf("reviewer built with passthrough disabled: %T", r)
+	if r, err := buildTokenReviewer(parsedOptions(t), client, nil, discard); err != nil || r != nil {
+		t.Fatalf("passthrough disabled: reviewer %T, error %v; want neither", r, err)
 	}
-	if r := buildTokenReviewer(parsedOptions(t, "--token-passthrough"), client, nil, discard); r == nil {
-		t.Fatal("no reviewer built with passthrough enabled")
+	if r, err := buildTokenReviewer(parsedOptions(t, "--token-passthrough"), client, nil, discard); err != nil || r == nil {
+		t.Fatalf("passthrough enabled: reviewer %T, error %v; want a reviewer", r, err)
 	}
 }
 
@@ -243,5 +262,27 @@ func TestConfigHash(t *testing.T) {
 	}
 	if secret := hash("--issuer=https://a", "--token=t0k3n", "--password=pw"); secret != base {
 		t.Fatalf("hash depends on a secret flag: %q vs %q", secret, base)
+	}
+}
+
+// TestConfigHashIsStableForMapFlags pins the digest across repeated
+// computation when a map-valued flag holds several keys. Go randomises map
+// iteration, so a flag whose String() walked its map unsorted fingerprinted
+// identical pods differently.
+func TestConfigHashIsStableForMapFlags(t *testing.T) {
+	opts := options.New()
+	cmd := &cobra.Command{Use: "test"}
+	opts.AddFlags(cmd)
+	if err := cmd.ParseFlags([]string{
+		"--extra-user-headers=team=a,region=eu,tier=gold,zone=b,owner=ops,team=c",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	want := configHash(cmd.Flags())
+	for range 50 {
+		if got := configHash(cmd.Flags()); got != want {
+			t.Fatalf("config hash changed between computations: %q then %q", want, got)
+		}
 	}
 }

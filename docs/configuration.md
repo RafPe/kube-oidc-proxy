@@ -50,9 +50,9 @@ it does not render the issuer-specific `oidc.*` values while
 | `--oidc-client-id` | — | Client ID expected in the token audience. |
 | `--oidc-ca-file` | — | CA that verifies the issuer's TLS; falls back to the host root CAs. |
 | `--oidc-username-claim` | `sub` | Token claim used as the username. |
-| `--oidc-username-prefix` | — | Prefix prepended to usernames (`-` to disable prefixing). |
+| `--oidc-username-prefix` | _(empty)_ | Prefix prepended verbatim to usernames; empty means no prefix. Unlike kube-apiserver's flag, there is no issuer-URL default and `-` is not special (it yields `-alice`). |
 | `--oidc-groups-claim` | — | Token claim carrying the user's groups. |
-| `--oidc-groups-prefix` | — | Prefix prepended to group names. |
+| `--oidc-groups-prefix` | _(empty)_ | Prefix prepended verbatim to group names; empty means no prefix. |
 | `--oidc-signing-algs` | `RS256` | Comma-separated allowed JOSE signing algorithms. |
 | `--oidc-required-claim` | — | Repeatable `key=value` claim that must be present with a matching value. |
 

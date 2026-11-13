@@ -15,6 +15,7 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
+	"github.com/rafpe/kube-oidc-proxy/pkg/metrics/metricstest"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 )
 
@@ -34,7 +35,7 @@ func newFakeRW() *fakeRW {
 }
 
 func tryError(t *testing.T, expCode int, err error) (*fakeRW, *logtest.Capture) {
-	return tryHandler(t, expCode, err, (*Proxy).handleError)
+	return tryHandler(t, expCode, err, (*Proxy).refuse)
 }
 
 // tryHandler serves err through one of the proxy's two error handlers and
@@ -121,7 +122,7 @@ func TestErrorHandlerInternalFailureEmitsHandlerFailed(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			p := newTestProxy(t)
 
-			p.handleError(newFakeRW(), newFakeR(), test.err)
+			p.refuse(newFakeRW(), newFakeR(), test.err)
 
 			rec := p.logs.Only(t, logging.EventRequestHandlerFailed)
 			if got := rec.String("level"); got != "ERROR" {
@@ -169,6 +170,10 @@ func TestErrorClassifiesEveryReason(t *testing.T) {
 		expReason metrics.Reason
 	}{
 		"unauthorized": {errUnauthorized, http.StatusUnauthorized, metrics.ReasonUnauthorized},
+		// The proxy fails closed, so the client sees the 401 a rejected token
+		// gets; only the reason says the reviewer could not answer.
+		"token review unavailable": {fmt.Errorf("%w: %w", errTokenReviewUnavailable, errors.New("apiserver unreachable")),
+			http.StatusUnauthorized, metrics.ReasonAuthenticationDependencyError},
 		"reserved identity": {fmt.Errorf("%w: username %q", errReservedIdentity, "system:masters"),
 			http.StatusForbidden, metrics.ReasonReservedIdentity},
 		"no username claim": {errNoName, http.StatusForbidden, metrics.ReasonNoUsernameClaim},
@@ -183,7 +188,7 @@ func TestErrorClassifiesEveryReason(t *testing.T) {
 		// upstream hop, so it is a 500 and never a 502.
 		"subjectaccessreview unavailable": {fmt.Errorf("%w: %w", subjectaccessreview.ErrCreateSubjectAccessReview,
 			&net.OpError{Op: "dial", Err: errors.New("connection refused")}),
-			http.StatusInternalServerError, metrics.ReasonInternalError},
+			http.StatusInternalServerError, metrics.ReasonAuthorizationDependencyError},
 		// Refused by shape, like its unknown-header sibling, so the same 400.
 		"no impersonation user": {subjectaccessreview.ErrNoImpersonationUser, http.StatusBadRequest, metrics.ReasonMalformedImpersonation},
 		"unknown impersonation header": {fmt.Errorf("%w: %q", subjectaccessreview.ErrUnknownImpersonationHeader, "Impersonate-Foo"),
@@ -240,7 +245,7 @@ func TestErrorCanceledIsRecordedWithoutAResponse(t *testing.T) {
 	p := newTestProxy(t)
 
 	frw := newFakeRW()
-	p.handleError(frw, newFakeR(), fmt.Errorf("%w: %w", subjectaccessreview.ErrCreateSubjectAccessReview, stdcontext.Canceled))
+	p.refuse(frw, newFakeR(), fmt.Errorf("%w: %w", subjectaccessreview.ErrCreateSubjectAccessReview, stdcontext.Canceled))
 
 	if got := frw.header.Get("StatusCode"); got != "" {
 		t.Errorf("a status code was written for a canceled request: %q", got)
@@ -249,6 +254,58 @@ func TestErrorCanceledIsRecordedWithoutAResponse(t *testing.T) {
 	if got := p.logs.ByEvent(logging.EventUpstreamRequestCanceled); len(got) != 0 {
 		t.Fatalf("a cancel before any upstream call was reported as an upstream cancel: %s", p.logs.Raw())
 	}
+}
+
+// TestDependencyFailureIsNotAHandlerFailure pins that a TokenReview or
+// SubjectAccessReview the API server could not answer is reported once, by
+// the reviewer that saw it, and not again as request.handler.failed: the
+// failure is the dependency's, not the proxy's own. The access-decision
+// metric carries the same dependency reason the record does.
+func TestDependencyFailureIsNotAHandlerFailure(t *testing.T) {
+	tests := map[string]struct {
+		err        error
+		wantReason metrics.Reason
+	}{
+		"token review": {fmt.Errorf("%w: %w", errTokenReviewUnavailable, errors.New("apiserver unreachable")),
+			metrics.ReasonAuthenticationDependencyError},
+		"subject access review": {fmt.Errorf("%w: %w", subjectaccessreview.ErrCreateSubjectAccessReview,
+			stdcontext.DeadlineExceeded), metrics.ReasonAuthorizationDependencyError},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			p := newTestProxy(t)
+			p.refuse(newFakeRW(), newFakeR(), test.err)
+			if got := p.logs.ByEvent(logging.EventRequestHandlerFailed); len(got) != 0 {
+				t.Fatalf("a dependency failure was also reported as the proxy's own: %s", p.logs.Raw())
+			}
+			if v, _ := metricstest.Value(t, p.metrics.Gatherer(), metricAccessDecisions,
+				map[string]string{"decision": "deny", "reason": string(test.wantReason)}); v != 1 {
+				t.Errorf("decisions{deny,%s} = %v, want 1", test.wantReason, v)
+			}
+		})
+	}
+}
+
+// TestErrorRequesterDeadlineIsClientCanceled pins the SubjectAccessReview
+// classification for a request whose own context ended: the review failed
+// because the client went away, not because the API server did not answer,
+// so the access record agrees with authz.sar.failed's client_canceled.
+func TestErrorRequesterDeadlineIsClientCanceled(t *testing.T) {
+	p := newTestProxy(t)
+
+	ctx, cancel := stdcontext.WithCancel(stdcontext.Background())
+	cancel()
+	req := newFakeR()
+	req = req.WithContext(ctx)
+
+	frw := newFakeRW()
+	p.refuse(frw, withTestRequestID(req), fmt.Errorf("%w: %w", subjectaccessreview.ErrCreateSubjectAccessReview, stdcontext.DeadlineExceeded))
+
+	if got := frw.header.Get("StatusCode"); got != "" {
+		t.Errorf("a status code was written for a request whose client went away: %q", got)
+	}
+	assertDeniedReason(t, p.logs, metrics.ReasonClientCanceled)
 }
 
 // TestErrorImpersonationDenialNamesTheTarget pins that the refused target is

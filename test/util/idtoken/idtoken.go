@@ -39,6 +39,16 @@ func Sign(issuerBundle *keybundle.Bundle, payload []byte) (string, error) {
 	return signedToken, nil
 }
 
+// DefaultUsername is the identity of the suite's standard token: the user
+// the e2e cases bind RBAC to and expect in audit events.
+const DefaultUsername = "user@example.com"
+
+// DefaultGroups returns the groups of the suite's standard token. A function
+// rather than a variable so no caller can change what another one mints.
+func DefaultGroups() []string {
+	return []string{"group-1", "group-2"}
+}
+
 // NewPayloadForIdentity returns a token payload for an arbitrary identity, for
 // cases that need claims NewPayload's fixed ones cannot express. The username
 // goes in the "email" claim and the groups in the "groups" claim, matching the
@@ -46,30 +56,23 @@ func Sign(issuerBundle *keybundle.Bundle, payload []byte) (string, error) {
 // Marshalled rather than formatted so a value containing a quote or a
 // backslash cannot produce a malformed (or a differently shaped) token.
 func NewPayloadForIdentity(issuerURL *url.URL, clientID, username string,
-	groups []string, exp time.Time) ([]byte, error) {
+	groups []string, exp time.Time) []byte {
 
-	payload, err := json.Marshal(map[string]any{
+	// json.Marshal only fails on unsupported types and values, and strings, a
+	// string slice and an int64 are none of them.
+	payload, _ := json.Marshal(map[string]any{
 		"iss":    issuerURL.String(),
 		"aud":    []string{clientID, "aud-2"},
 		"email":  username,
 		"groups": groups,
 		"exp":    exp.Unix(),
 	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal token payload: %w", err)
-	}
 
-	return payload, nil
+	return payload
 }
 
-// NewPayload returns the suite's standard token payload: the fixed
-// user@example.com identity in group-1 and group-2, valid until exp.
+// NewPayload returns the suite's standard token payload: DefaultUsername in
+// DefaultGroups, valid until exp.
 func NewPayload(issuerURL *url.URL, clientID string, exp time.Time) []byte {
-	return []byte(fmt.Sprintf(`{
-	"iss":"%s",
-	"aud":["%s","aud-2"],
-	"email":"user@example.com",
-	"groups":["group-1","group-2"],
-	"exp":%d
-	}`, issuerURL, clientID, exp.Unix()))
+	return NewPayloadForIdentity(issuerURL, clientID, DefaultUsername, DefaultGroups(), exp)
 }

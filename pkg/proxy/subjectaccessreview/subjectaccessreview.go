@@ -30,7 +30,7 @@ var (
 	// Impersonate-Group, -Uid or -Extra-* headers but no Impersonate-User: the
 	// other kinds refine a user, so without one there is nothing to
 	// impersonate. The message is client-facing and stable.
-	ErrNoImpersonationUser = errors.New("no Impersonation-User header found for request")
+	ErrNoImpersonationUser = errors.New("no Impersonate-User header found for request")
 
 	// ErrUnknownImpersonationHeader is the sentinel for a request carrying an
 	// Impersonate- prefixed header of a kind this proxy does not know. It is
@@ -47,7 +47,7 @@ var (
 
 	// ErrImpersonationNotAllowed is the sentinel that classifies an authorization
 	// denial: the requester is not permitted to impersonate a requested resource.
-	// Every denial returned by CheckAuthorizedForImpersonation is an
+	// Every denial returned by ResolveImpersonation is an
 	// *ImpersonationAuthError, which matches this sentinel via errors.Is. HTTP
 	// handlers select a 403 with errors.Is(err, ErrImpersonationNotAllowed)
 	// instead of matching on message text.
@@ -126,7 +126,8 @@ func (e *ImpersonationAuthError) Is(target error) bool {
 // rest.Config.Timeout, which defaults to zero).
 const DefaultTimeout = 5 * time.Second
 
-// DefaultMaxHeaderValues is the default cap on the total number of
+// DefaultMaxHeaderValues is the default cap, and what a zero
+// Config.MaxHeaderValues means, on the total number of
 // impersonation header values accepted per request (one Impersonate-User plus
 // every Impersonate-Group, Impersonate-Uid and Impersonate-Extra-* value).
 // Each value costs one serial SubjectAccessReview round trip to the API
@@ -189,7 +190,7 @@ type Config struct {
 	DenyCacheTTL  time.Duration
 
 	// MaxHeaderValues caps the impersonation header values one request may
-	// carry. See DefaultMaxHeaderValues.
+	// carry; zero or negative means DefaultMaxHeaderValues.
 	MaxHeaderValues int
 
 	// Metrics receives the API-call and cache observations. Optional: nil
@@ -200,8 +201,9 @@ type Config struct {
 // New returns a SubjectAccessReview that authorizes impersonation via reviewer,
 // bounding the whole sequence of checks for a single request by cfg.Timeout and
 // refusing requests that carry more than cfg.MaxHeaderValues impersonation
-// header values. MaxHeaderValues must be greater than zero: every SAR costs a
-// round trip, so an unbounded value count must not be constructible.
+// header values. Both follow one rule: zero or negative means the package
+// default, settled here, so neither an expired budget nor an unbounded value
+// count is constructible.
 //
 // cfg.AllowCacheTTL and cfg.DenyCacheTTL bound how long a definitive allowed
 // or denied decision is served from an in-memory cache before being re-checked
@@ -215,16 +217,18 @@ func New(reviewer clientazv1.SubjectAccessReviewInterface, cfg Config, logger *s
 	if logger == nil {
 		return nil, errors.New("subjectaccessreview: logger is required")
 	}
-	if cfg.MaxHeaderValues <= 0 {
-		return nil, fmt.Errorf("maxHeaderValues must be greater than 0, got %d", cfg.MaxHeaderValues)
-	}
 
 	// A zero budget would hand every review an already expired context and
-	// deny every impersonating request, so it is settled here, at
-	// construction, the way tokenreview.New settles its own.
+	// deny every impersonating request, and a zero cap would refuse every
+	// impersonating request, so both are settled here, at construction, the
+	// way tokenreview.New settles its timeout.
 	timeout := cfg.Timeout
 	if timeout <= 0 {
 		timeout = DefaultTimeout
+	}
+	maxHeaderValues := cfg.MaxHeaderValues
+	if maxHeaderValues <= 0 {
+		maxHeaderValues = DefaultMaxHeaderValues
 	}
 
 	return &SubjectAccessReview{
@@ -232,7 +236,7 @@ func New(reviewer clientazv1.SubjectAccessReviewInterface, cfg Config, logger *s
 		metrics:         cfg.Metrics,
 		reviewer:        reviewer,
 		sarTimeout:      timeout,
-		maxHeaderValues: cfg.MaxHeaderValues,
+		maxHeaderValues: maxHeaderValues,
 		cache:           newDecisionCache(cfg.AllowCacheTTL, cfg.DenyCacheTTL, decisionCacheSize, clock.RealClock{}),
 	}, nil
 }
@@ -290,7 +294,7 @@ func (t impersonationTarget) denial(requester user.Info) error {
 	}
 }
 
-// CheckAuthorizedForImpersonation inspects the request's impersonation headers,
+// ResolveImpersonation inspects the request's impersonation headers,
 // verifies via SubjectAccessReview that requester is allowed to impersonate
 // each requested target, and returns the resulting impersonated user. It
 // returns a nil user.Info when the request carries no impersonation headers. An
@@ -302,7 +306,7 @@ func (t impersonationTarget) denial(requester user.Info) error {
 // impersonating round tripper sees it: that round tripper leaves a request
 // that already carries Impersonate-User untouched, which would forward the
 // client's raw headers under the proxy's own credentials.
-func (s *SubjectAccessReview) CheckAuthorizedForImpersonation(req *http.Request, requester user.Info) (user.Info, error) {
+func (s *SubjectAccessReview) ResolveImpersonation(req *http.Request, requester user.Info) (user.Info, error) {
 	// Refuse over-wide requests before spending anything: every impersonation
 	// header value below costs one serial SAR round trip, and the value count
 	// is entirely client-controlled. Counting mirrors the consumption loop
@@ -335,7 +339,7 @@ func (s *SubjectAccessReview) CheckAuthorizedForImpersonation(req *http.Request,
 	// server cannot stall the request indefinitely.
 	budget, cancel := context.WithTimeout(req.Context(), s.sarTimeout)
 	defer cancel()
-	call := reviewCall{ctx: budget, request: req.Context(), requester: requester}
+	call := reviewCall{ctx: budget, requestCtx: req.Context(), requester: requester}
 
 	targetUser := &user.DefaultInfo{
 		Groups: make([]string, 0),

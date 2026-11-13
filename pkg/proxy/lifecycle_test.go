@@ -17,6 +17,7 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 )
 
 // serveWith runs a handler through the two filters that own a request's
@@ -176,11 +177,11 @@ func TestChainResolvesRequestInfoBeforeLifecycle(t *testing.T) {
 	}
 }
 
-// TestChainResolvesRequestInfoBeforeTheErrorHandler is the other half: the
-// error handler runs outside the audit chain, so a denial would otherwise be
-// recorded with no k8s_* fields and a query on k8s_resource would see only the
-// requests that were allowed through.
-func TestChainResolvesRequestInfoBeforeTheErrorHandler(t *testing.T) {
+// TestChainResolvesRequestInfoBeforeTheRefusalPath is the other half: a
+// refusal is recorded before the main audit chain is reached, so a denial
+// would otherwise be recorded with no k8s_* fields and a query on
+// k8s_resource would see only the requests that were allowed through.
+func TestChainResolvesRequestInfoBeforeTheRefusalPath(t *testing.T) {
 	p := newTestProxy(t)
 
 	serveChain(t, p, watchRequest(), noopHandler)
@@ -196,7 +197,7 @@ func TestChainResolvesRequestInfoBeforeTheErrorHandler(t *testing.T) {
 
 // TestUpstreamFailureReachesTheTerminalRecord pins the one piece of plumbing
 // neither the lifecycle tests nor the classification test can see on its own.
-// The error handler runs several filters below withRequestLifecycle, on a
+// handleUpstreamError runs several filters below withRequestLifecycle, on a
 // request derived from the one the filter holds, so the termination it
 // classifies reaches the terminal record only through the shared holder on the
 // request context.
@@ -401,5 +402,38 @@ func TestSwitchingProtocolsIsLatched(t *testing.T) {
 	}))).ServeHTTP(rw, httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil))
 	if s, _ := p.logs.Only(t, logging.EventRequestResponseCompleted).Int("http_status"); s != http.StatusSwitchingProtocols {
 		t.Fatalf("http_status = %d, want 101", s)
+	}
+}
+
+// TestClassifyTerminationPrecedence pins the order classifyTermination
+// applies its observations in: a real panic outranks everything, a hijack
+// outranks a gone client, an aborted copy with the client still attached is
+// an upstream reset, and a handler's own classification applies only when
+// nothing the filter saw says otherwise.
+func TestClassifyTerminationPrecedence(t *testing.T) {
+	upstream := reqctx.TerminationRecord{Kind: metrics.TerminationUpstreamTimeout, Reason: metrics.ReasonUpstreamError}
+
+	tests := map[string]struct {
+		panicked   any
+		hijacked   bool
+		ctxErr     error
+		classified reqctx.TerminationRecord
+		want       metrics.Termination
+	}{
+		"nothing observed":            {want: metrics.TerminationNormal},
+		"handler classified":          {classified: upstream, want: metrics.TerminationUpstreamTimeout},
+		"client gone":                 {ctxErr: context.Canceled, classified: upstream, want: metrics.TerminationClientCancel},
+		"hijacked then client gone":   {hijacked: true, ctxErr: context.Canceled, want: metrics.TerminationHijacked},
+		"panic outranks a hijack":     {panicked: "boom", hijacked: true, want: metrics.TerminationPanic},
+		"abort with client attached":  {panicked: http.ErrAbortHandler, classified: upstream, want: metrics.TerminationUpstreamReset},
+		"abort after the client left": {panicked: http.ErrAbortHandler, ctxErr: context.Canceled, want: metrics.TerminationClientCancel},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := classifyTermination(tc.panicked, tc.hijacked, tc.ctxErr, tc.classified); got != tc.want {
+				t.Errorf("classifyTermination = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

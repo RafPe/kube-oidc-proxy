@@ -14,23 +14,32 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/accesslog"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/audit"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 )
 
-// handleError writes the response for a request the proxy refused or failed
-// to serve before forwarding it, and records the decision. The filters call
+// refuse answers a request the proxy will not forward -- refused, or failed
+// before it could be forwarded -- by classifying err, recording the access
+// decision, auditing the refusal and writing the response. The filters call
 // it; a failure of the forwarded request itself goes to handleUpstreamError.
-func (p *Proxy) handleError(rw http.ResponseWriter, r *http.Request, err error) {
+func (p *Proxy) refuse(rw http.ResponseWriter, r *http.Request, err error) {
 	// Every refusal of a request that did authenticate is audited through the
 	// ordinary request chain rather than the failed-authentication one: the
 	// caller has already put the identity in the request context, so the
 	// event names who was refused.
 	deny := func(status int, body string) {
-		audit.NewDeniedHandler(p.auditor, func(rw http.ResponseWriter, _ *http.Request) {
+		p.auditor.WithRequest(http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
 			http.Error(rw, body, status)
-		}).ServeHTTP(rw, r)
+		})).ServeHTTP(rw, r)
+	}
+
+	// A request that did not authenticate is audited as a failed
+	// authentication, against the anonymous user, because no identity was
+	// established.
+	unauthenticated := func() {
+		p.auditor.WithFailedAuthentication(http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+			http.Error(rw, "Unauthorized", http.StatusUnauthorized)
+		})).ServeHTTP(rw, r)
 	}
 
 	if err == nil {
@@ -46,13 +55,28 @@ func (p *Proxy) handleError(rw http.ResponseWriter, r *http.Request, err error) 
 	// The access record carries the classified reason, so every branch below
 	// records why the request was refused before it writes the response.
 	switch {
-	// Failed authentication: audited against the anonymous user, because no
-	// identity was established.
+	// The client went away while its credential or its impersonation was
+	// being reviewed: cancelled, or its own deadline passed. Nothing is
+	// written back; the connection is already going away. No upstream call
+	// was made, so there is no upstream record either: the review that saw it
+	// reported authn.tokenreview.failed or authz.sar.failed with
+	// reason=client_canceled, and the access record carries the same reason.
+	// Checked first, because the review failure wraps the cancellation.
+	case errors.Is(err, context.Canceled),
+		(errors.Is(err, errTokenReviewUnavailable) || errors.Is(err, subjectaccessreview.ErrCreateSubjectAccessReview)) &&
+			r.Context().Err() != nil:
+		p.logDenied(r, metrics.ReasonClientCanceled, err)
+
 	case errors.Is(err, errUnauthorized):
 		p.logDenied(r, metrics.ReasonUnauthorized, err)
-		audit.NewUnauthenticatedHandler(p.auditor, func(rw http.ResponseWriter, _ *http.Request) {
-			http.Error(rw, "Unauthorized", http.StatusUnauthorized)
-		}).ServeHTTP(rw, r)
+		unauthenticated()
+
+	// The TokenReview could not be answered. The proxy fails closed, so the
+	// client sees the same 401 as for a rejected token, but the access record
+	// carries the dependency failure authn.tokenreview.failed reported.
+	case errors.Is(err, errTokenReviewUnavailable):
+		p.logDenied(r, metrics.ReasonAuthenticationDependencyError, err)
+		unauthenticated()
 
 	// Authenticated, but the identity is one a token must never mint: an
 	// exploit attempt or a badly broken claim mapping, not an ordinary denial.
@@ -96,17 +120,15 @@ func (p *Proxy) handleError(rw http.ResponseWriter, r *http.Request, err error) 
 		p.logDenied(r, metrics.ReasonImpersonationDenied, err)
 		deny(http.StatusForbidden, err.Error())
 
-	// The client went away while its impersonation was being authorized.
-	// Nothing is written back; the connection is already going away. No
-	// upstream call was made, so there is no upstream record either: the
-	// SubjectAccessReview that saw the cancellation reported it as
-	// authz.sar.failed with reason=client_canceled, and the access record
-	// carries the same reason.
-	case errors.Is(err, context.Canceled):
-		p.logDenied(r, metrics.ReasonClientCanceled, err)
+	// The SubjectAccessReview could not be submitted, or the API server did
+	// not answer within the proxy's budget. authz.sar.failed has already
+	// reported it at ERROR, so this is not a request.handler.failed of the
+	// proxy's own: the access record carries the dependency reason instead.
+	case errors.Is(err, subjectaccessreview.ErrCreateSubjectAccessReview):
+		p.logDenied(r, metrics.ReasonAuthorizationDependencyError, err)
+		deny(http.StatusInternalServerError, "")
 
-	// Server or unknown error, including a SubjectAccessReview the proxy
-	// could not submit.
+	// Server or unknown error.
 	default:
 		p.failInternal(rw, r, err)
 	}
@@ -189,7 +211,7 @@ func (p *Proxy) failInternal(rw http.ResponseWriter, r *http.Request, err error)
 // reason, because a client can produce these without bound; the access record,
 // which is never sampled, still carries the outcome.
 func (p *Proxy) logAnomaly(r *http.Request, reason metrics.Reason) {
-	if !p.warnLimiter.Allow(string(reason)) {
+	if !p.warnLimiter.Allow(logging.WarningKey{Event: logging.EventRequestAnomalyDetected, Reason: string(reason)}) {
 		return
 	}
 

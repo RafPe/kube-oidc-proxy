@@ -172,9 +172,11 @@ than infer. All three carry `request_id`, so they join the request's
 - `bypass` — the cache was not consulted at all: the TTL is `0`, or the SAR
   spec was too large to key. A live review follows.
 
-`request_coalesced=true` on `authz.sar.completed` means singleflight shared one
-in-flight review between concurrent requests rather than issuing a second one,
-which is how a request storm for the same identity stays a single round trip.
+`request_coalesced=true` on `authz.sar.completed` means this request joined a
+review another request already had in flight, rather than issuing a second
+one; the request that ran the review reports `false`. That is how a request
+storm for the same identity stays a single round trip: one `false` and the
+rest `true`.
 `duration_ms` is the live call duration and is absent on a cache hit.
 
 Neither cache key, the token, nor the serialized `SubjectAccessReview` spec is

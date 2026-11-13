@@ -62,9 +62,9 @@ func TestCheckDoesNotHoldLockDuringAuth(t *testing.T) {
 		entered: make(chan struct{}, 2),
 		release: make(chan struct{}),
 	}
-	h := newTestHealthCheckWithAuthenticator(true, authn, issuerA)
+	h := newTestServerWithAuthenticator(t, true, authn, issuerA)
 	// Check returns before reaching the authenticator unless it is serving.
-	h.setServing()
+	h.SetServing()
 
 	var wg sync.WaitGroup
 	for i := 0; i < 2; i++ {
@@ -101,9 +101,9 @@ func TestCheckDoesNotHoldLockDuringAuth(t *testing.T) {
 func TestIssuerPendingEmittedOnStateChangeWithReason(t *testing.T) {
 	root, cap := logtest.New(t, 0)
 	defer logtest.AssertRegistered(t, cap)
-	hc := newTestHealthCheckWithLogger(t, root, true, map[string]bool{"https://a": true},
+	hc := newTestServerWithLogger(t, root, true, map[string]bool{"https://a": true},
 		IssuerReadiness{IssuerURL: "https://a", FakeJWT: "jwt-a"})
-	hc.setServing()
+	hc.SetServing()
 	_ = hc.check()
 	_ = hc.check()
 	recs := cap.ByEvent(logging.EventOIDCIssuerPending)
@@ -121,8 +121,8 @@ func TestIssuerPendingEmittedOnStateChangeWithReason(t *testing.T) {
 func TestReadyTransitionIsInfo(t *testing.T) {
 	root, cap := logtest.New(t, 0)
 	defer logtest.AssertRegistered(t, cap)
-	hc := newTestHealthCheckWithLogger(t, root, false, nil, IssuerReadiness{IssuerURL: "https://a", FakeJWT: "jwt-a"})
-	hc.setServing()
+	hc := newTestServerWithLogger(t, root, false, nil, IssuerReadiness{IssuerURL: "https://a", FakeJWT: "jwt-a"})
+	hc.SetServing()
 	if err := hc.check(); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestReadyTransitionIsInfo(t *testing.T) {
 func TestStalePendingResultIsDroppedOnceInitialized(t *testing.T) {
 	root, cap := logtest.New(t, 0)
 	defer logtest.AssertRegistered(t, cap)
-	hc := newTestHealthCheckWithLogger(t, root, true, nil,
+	hc := newTestServerWithLogger(t, root, true, nil,
 		IssuerReadiness{IssuerURL: "https://a", FakeJWT: "jwt-a"})
 
 	hc.mu.Lock()

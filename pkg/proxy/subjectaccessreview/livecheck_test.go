@@ -271,7 +271,7 @@ func TestLiveCheckFailureEvents(t *testing.T) {
 
 		done := make(chan error, 1)
 		go func() {
-			_, err := s.CheckAuthorizedForImpersonation(req, loggingTestRequester())
+			_, err := s.ResolveImpersonation(req, loggingTestRequester())
 			done <- err
 		}()
 
@@ -318,7 +318,7 @@ func TestLiveCheckFailureEvents(t *testing.T) {
 
 		done := make(chan error, 1)
 		go func() {
-			_, err := s.CheckAuthorizedForImpersonation(req, loggingTestRequester())
+			_, err := s.ResolveImpersonation(req, loggingTestRequester())
 			done <- err
 		}()
 
@@ -351,10 +351,12 @@ func TestLiveCheckFailureEvents(t *testing.T) {
 	})
 }
 
-// TestCoalescedLiveCheckEvent pins request_coalesced=true: two callers asking
-// the identical authorization question share one SubjectAccessReview, and each
-// reports its own completion record so the sharing is queryable per request.
-// It runs in a synctest bubble for the reason given in singleflight_test.go.
+// TestCoalescedLiveCheckEvent pins request_coalesced: two callers asking the
+// identical authorization question share one SubjectAccessReview, and each
+// reports its own completion record. Only the caller that joined the other's
+// flight is coalesced; the leader ran the review itself, even though
+// singleflight marks its result Shared too once anyone joined. It runs in a
+// synctest bubble for the reason given in singleflight_test.go.
 func TestCoalescedLiveCheckEvent(t *testing.T) {
 	root, cap := logtest.New(t, 2)
 	defer logtest.AssertRegistered(t, cap)
@@ -362,26 +364,34 @@ func TestCoalescedLiveCheckEvent(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		reviewer := &gateReviewer{entered: make(chan struct{}, 1), release: make(chan struct{})}
 		s := newLoggingSAR(t, root, reviewer, DefaultTimeout, DefaultAllowCacheTTL, DefaultDenyCacheTTL)
-		ctx := logging.WithRequestID(context.Background(), "r1")
 
 		var wg sync.WaitGroup
-		errs := make([]error, 2)
-		for i := range errs {
+		errs := make(map[string]error, 2)
+		var mu sync.Mutex
+		check := func(requestID string) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				_, errs[i] = s.cachedCheck(directCall(ctx, loggingTestRequester()), userImpersonation("bob"))
+				ctx := logging.WithRequestID(context.Background(), requestID)
+				_, err := s.cachedCheck(directCall(ctx, loggingTestRequester()), userImpersonation("bob"))
+				mu.Lock()
+				errs[requestID] = err
+				mu.Unlock()
 			}()
 		}
 
-		// One caller is blocked in Create, the other on its flight.
+		// The leader is blocked in Create before the joiner starts, so which
+		// caller leads is fixed rather than left to the scheduler.
+		check("leader")
+		synctest.Wait()
+		check("joiner")
 		synctest.Wait()
 		close(reviewer.release)
 		wg.Wait()
 
-		for i, err := range errs {
+		for id, err := range errs {
 			if err != nil {
-				t.Fatalf("caller %d: %v", i, err)
+				t.Fatalf("%s: %v", id, err)
 			}
 		}
 		if got := reviewer.calls.Load(); got != 1 {
@@ -393,12 +403,19 @@ func TestCoalescedLiveCheckEvent(t *testing.T) {
 	if len(live) != 2 {
 		t.Fatalf("want one completion record per caller, got %d: %v", len(live), live)
 	}
-	for i, rec := range live {
-		if rec["request_coalesced"] != true {
-			t.Errorf("record %d: request_coalesced = %v, want true", i, rec["request_coalesced"])
+	want := map[string]bool{"leader": false, "joiner": true}
+	for _, rec := range live {
+		id := rec.String("request_id")
+		coalesced, ok := want[id]
+		if !ok {
+			t.Fatalf("unexpected completion record %v", rec)
+		}
+		delete(want, id)
+		if rec["request_coalesced"] != coalesced {
+			t.Errorf("%s: request_coalesced = %v, want %t", id, rec["request_coalesced"], coalesced)
 		}
 		if rec.String("decision") != "allow" || rec.String("target_kind") != "user" {
-			t.Errorf("record %d: %v", i, rec)
+			t.Errorf("%s: %v", id, rec)
 		}
 	}
 }
@@ -414,9 +431,9 @@ func TestImpersonationResolvedEvent(t *testing.T) {
 	h.Set("Impersonate-User", "bob")
 	req := (&http.Request{Header: h}).WithContext(logging.WithRequestID(context.Background(), "r1"))
 
-	target, err := s.CheckAuthorizedForImpersonation(req, loggingTestRequester())
+	target, err := s.ResolveImpersonation(req, loggingTestRequester())
 	if err != nil {
-		t.Fatalf("CheckAuthorizedForImpersonation() error = %v", err)
+		t.Fatalf("ResolveImpersonation() error = %v", err)
 	}
 	if target == nil || target.GetName() != "bob" {
 		t.Fatalf("target = %v, want the impersonated user bob", target)
@@ -443,5 +460,5 @@ func TestImpersonationResolvedEvent(t *testing.T) {
 // review runs on the request's own context, so the requester's deadline and
 // the review's are the same one.
 func directCall(ctx context.Context, requester user.Info) reviewCall {
-	return reviewCall{ctx: ctx, request: ctx, requester: requester}
+	return reviewCall{ctx: ctx, requestCtx: ctx, requester: requester}
 }

@@ -4,19 +4,17 @@ package helper
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	"github.com/rafpe/kube-oidc-proxy/test/kind"
+	"github.com/rafpe/kube-oidc-proxy/test/util/appdeploy"
 	"github.com/rafpe/kube-oidc-proxy/test/util/keybundle"
 )
 
@@ -33,12 +31,12 @@ type ProxyExtras struct {
 	Ports []corev1.ContainerPort
 }
 
-func (h *Helper) DeployProxy(ns *corev1.Namespace, issuerURL *url.URL, clientID string,
+func (h *Helper) DeployProxy(ctx context.Context, ns *corev1.Namespace, issuerURL *url.URL, clientID string,
 	oidcKeyBundle *keybundle.Bundle, extraVolumes []corev1.Volume, extraArgs ...string) (*keybundle.Bundle, *url.URL, error) {
-	return h.DeployProxyWithExtras(ns, issuerURL, clientID, oidcKeyBundle, extraVolumes, nil, extraArgs...)
+	return h.DeployProxyWithExtras(ctx, ns, issuerURL, clientID, oidcKeyBundle, extraVolumes, nil, extraArgs...)
 }
 
-func (h *Helper) DeployProxyWithExtras(ns *corev1.Namespace, issuerURL *url.URL, clientID string,
+func (h *Helper) DeployProxyWithExtras(ctx context.Context, ns *corev1.Namespace, issuerURL *url.URL, clientID string,
 	oidcKeyBundle *keybundle.Bundle, extraVolumes []corev1.Volume, extras *ProxyExtras, extraArgs ...string) (*keybundle.Bundle, *url.URL, error) {
 	authConfig := false
 	for _, a := range extraArgs {
@@ -148,12 +146,23 @@ func (h *Helper) DeployProxyWithExtras(ns *corev1.Namespace, issuerURL *url.URL,
 			},
 		}
 
-		if _, err := h.KubeClient.CoreV1().Secrets(ns.Name).Create(context.TODO(), sec, metav1.CreateOptions{}); err != nil {
+		if _, err := h.KubeClient.CoreV1().Secrets(ns.Name).Create(ctx, sec, metav1.CreateOptions{}); err != nil {
 			return nil, nil, err
 		}
 	}
 
-	bundle, appURL, err := h.deployApp(ns.Name, kind.ProxyImageName, corev1.ServiceTypeNodePort, containers, volumes...)
+	// Pin the NodePort so it lines up with the kind node's extraPortMappings
+	// entry, making the proxy reachable at https://127.0.0.1:<ProxyNodePort>
+	// from the host. Only one proxy exists at a time (AfterEach deletes it) so
+	// there is no NodePort collision.
+	bundle, appURL, err := h.deployApp(ctx, appdeploy.App{
+		Namespace:   ns.Name,
+		Name:        kind.ProxyImageName,
+		ServiceType: corev1.ServiceTypeNodePort,
+		NodePort:    kind.ProxyNodePort,
+		Containers:  containers,
+		Volumes:     volumes,
+	})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -170,7 +179,7 @@ func (h *Helper) DeployProxyWithExtras(ns *corev1.Namespace, issuerURL *url.URL,
 		return nil, nil, err
 	}
 
-	crole, err := h.KubeClient.RbacV1().ClusterRoles().Create(context.TODO(), &rbacv1.ClusterRole{
+	crole, err := h.KubeClient.RbacV1().ClusterRoles().Create(ctx, &rbacv1.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: kind.ProxyImageName + "-",
 			OwnerReferences: []metav1.OwnerReference{
@@ -191,7 +200,7 @@ func (h *Helper) DeployProxyWithExtras(ns *corev1.Namespace, issuerURL *url.URL,
 	}
 
 	// Create a role that will allow a user to impersonate another user
-	croleImpersonate, err := h.KubeClient.RbacV1().ClusterRoles().Create(context.TODO(), &rbacv1.ClusterRole{
+	croleImpersonate, err := h.KubeClient.RbacV1().ClusterRoles().Create(ctx, &rbacv1.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: kind.ProxyImageName + "-impersonate-",
 			OwnerReferences: []metav1.OwnerReference{
@@ -232,7 +241,7 @@ func (h *Helper) DeployProxyWithExtras(ns *corev1.Namespace, issuerURL *url.URL,
 
 	// Create a ClusterRoleBinding so the user can impersonate test users
 
-	_, err = h.KubeClient.RbacV1().ClusterRoleBindings().Create(context.TODO(),
+	_, err = h.KubeClient.RbacV1().ClusterRoleBindings().Create(ctx,
 		&rbacv1.ClusterRoleBinding{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: kind.ProxyImageName + "-impersonate-",
@@ -258,7 +267,7 @@ func (h *Helper) DeployProxyWithExtras(ns *corev1.Namespace, issuerURL *url.URL,
 		return nil, nil, err
 	}
 
-	_, err = h.KubeClient.RbacV1().ClusterRoleBindings().Create(context.TODO(),
+	_, err = h.KubeClient.RbacV1().ClusterRoleBindings().Create(ctx,
 		&rbacv1.ClusterRoleBinding{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: kind.ProxyImageName + "-",
@@ -287,177 +296,25 @@ func (h *Helper) DeployProxyWithExtras(ns *corev1.Namespace, issuerURL *url.URL,
 	return bundle, appURL, nil
 }
 
-func (h *Helper) DeployIssuer(ns string) (*keybundle.Bundle, *url.URL, error) {
-	return h.DeployNamedIssuer(ns, kind.IssuerImageName)
+func (h *Helper) DeployIssuer(ctx context.Context, ns string) (*keybundle.Bundle, *url.URL, error) {
+	return h.DeployNamedIssuer(ctx, ns, kind.IssuerImageName)
 }
 
-func (h *Helper) DeployNamedIssuer(ns, name string) (*keybundle.Bundle, *url.URL, error) {
-	cnt := corev1.Container{
-		Name:            kind.IssuerImageName,
-		Image:           kind.IssuerImageName,
-		ImagePullPolicy: corev1.PullNever,
-		Args: []string{
-			"oidc-issuer",
-			"--secure-port=6443",
-			fmt.Sprintf("--issuer-url=https://%s.%s.svc.cluster.local:6443", name, ns),
-			"--tls-cert-file=/tls/cert.pem",
-			"--tls-private-key-file=/tls/key.pem",
-		},
-		VolumeMounts: []corev1.VolumeMount{
-			{
-				MountPath: "/tls",
-				Name:      "tls",
-				ReadOnly:  true,
-			},
-		},
-		Ports: []corev1.ContainerPort{
-			{
-				ContainerPort: 6443,
-			},
-		},
-	}
-
-	bundle, appURL, err := h.deployApp(ns, name, corev1.ServiceTypeClusterIP, []corev1.Container{cnt})
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return bundle, appURL, nil
+func (h *Helper) DeployNamedIssuer(ctx context.Context, ns, name string) (*keybundle.Bundle, *url.URL, error) {
+	return h.deployApp(ctx, appdeploy.Issuer(ns, name, kind.IssuerImageName))
 }
 
-func (h *Helper) deployApp(ns, name string, serviceType corev1.ServiceType, containers []corev1.Container, volumes ...corev1.Volume) (*keybundle.Bundle, *url.URL, error) {
-	host, appURL := h.appURL(ns, name, "6443")
-
-	var netIPs []net.IP
-	if serviceType == corev1.ServiceTypeNodePort {
-		// The proxy is reached from the host at https://127.0.0.1:<ProxyNodePort>
-		// (the kind node maps that NodePort to the host loopback). Include
-		// 127.0.0.1 in the serving cert SANs so the client's TLS verification of
-		// that host succeeds.
-		netIPs = append(netIPs, net.ParseIP("127.0.0.1"))
-	}
-
-	keyBundle, err := keybundle.NewSelfSigned(host, netIPs, nil)
+// deployApp deploys app and waits until it serves where the suite reaches it.
+// A failed wait describes the Deployment, so the diagnostics land in the
+// failure.
+func (h *Helper) deployApp(ctx context.Context, app appdeploy.App) (*keybundle.Bundle, *url.URL, error) {
+	keyBundle, appURL, err := appdeploy.Create(ctx, h.KubeClient, app)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	svc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: ns,
-		},
-		Spec: corev1.ServiceSpec{
-			Ports: []corev1.ServicePort{
-				{
-					Port:       6443,
-					Protocol:   "TCP",
-					TargetPort: intstr.FromInt(6443),
-					// Pin the NodePort so it lines up with the kind node's
-					// extraPortMappings entry, making the proxy reachable at
-					// https://127.0.0.1:<ProxyNodePort> from the host. Only one
-					// proxy exists at a time (AfterEach deletes it) so there is no
-					// NodePort collision.
-					NodePort: nodePortFor(serviceType),
-				},
-			},
-			Type: serviceType,
-			Selector: map[string]string{
-				"app": name,
-			},
-		},
-	}
-
-	sec := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: ns,
-		},
-		Data: map[string][]byte{
-			"cert.pem": keyBundle.CertBytes,
-			"key.pem":  keyBundle.KeyBytes,
-		},
-	}
-
-	sa := &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: ns,
-		},
-	}
-
-	deploy := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: ns,
-			Labels: map[string]string{
-				"app": name,
-			},
-		},
-		Spec: appsv1.DeploymentSpec{
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"app": name,
-				},
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app": name,
-					},
-				},
-
-				Spec: corev1.PodSpec{
-					ServiceAccountName: name,
-					Containers:         containers,
-					Volumes: append(volumes,
-						corev1.Volume{
-							Name: "tls",
-							VolumeSource: corev1.VolumeSource{
-								Secret: &corev1.SecretVolumeSource{
-									SecretName: name,
-								},
-							},
-						},
-					),
-				},
-			},
-		},
-	}
-
-	svc, err = h.KubeClient.CoreV1().Services(ns).Create(context.TODO(), svc, metav1.CreateOptions{})
-	if err != nil {
+	if err := h.WaitForDeploymentReady(ctx, app.Namespace, app.Name, h.deployReadyTimeout()); err != nil {
 		return nil, nil, err
-	}
-
-	if len(netIPs) > 0 {
-		appURL = fmt.Sprintf("https://%s:%s", netIPs[0],
-			strconv.FormatUint(uint64(svc.Spec.Ports[0].NodePort), 10))
-	}
-
-	_, err = h.KubeClient.CoreV1().Secrets(ns).Create(context.TODO(), sec, metav1.CreateOptions{})
-	if err != nil {
-		return nil, nil, err
-	}
-
-	_, err = h.KubeClient.CoreV1().ServiceAccounts(ns).Create(context.TODO(), sa, metav1.CreateOptions{})
-	if err != nil {
-		return nil, nil, err
-	}
-
-	_, err = h.KubeClient.AppsV1().Deployments(ns).Create(context.TODO(), deploy, metav1.CreateOptions{})
-	if err != nil {
-		return nil, nil, err
-	}
-
-	if err := h.WaitForDeploymentReady(ns, name, h.deployReadyTimeout()); err != nil {
-		return nil, nil, err
-	}
-
-	appNetURL, err := url.Parse(appURL)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to parse app url %q: %w",
-			appURL, err)
 	}
 
 	// The callers reach the app through its Service straight away, so wait
@@ -466,28 +323,14 @@ func (h *Helper) deployApp(ns, name string, serviceType corev1.ServiceType, cont
 	// is the last thing observable from here. A NodePort app is reached from
 	// the host, through kube-proxy rules programmed after the endpoint turns
 	// ready, so for it wait until a TLS handshake through that path succeeds.
-	if err := h.WaitForServiceEndpoints(ns, svc.Name, time.Second*30); err != nil {
+	if err := h.WaitForServiceEndpoints(ctx, app.Namespace, app.Name, time.Second*30); err != nil {
 		return nil, nil, err
 	}
-	if serviceType == corev1.ServiceTypeNodePort {
-		if err := h.WaitForTLSHandshake(appNetURL, keyBundle.CertBytes, time.Second*30); err != nil {
+	if app.ServiceType == corev1.ServiceTypeNodePort {
+		if err := h.WaitForTLSHandshake(ctx, appURL, keyBundle.CertBytes, time.Second*30); err != nil {
 			return nil, nil, err
 		}
 	}
 
-	return keyBundle, appNetURL, nil
-}
-
-func (h *Helper) appURL(ns, serviceName, port string) (string, string) {
-	host := fmt.Sprintf("%s.%s.svc.cluster.local", serviceName, ns)
-	return host, fmt.Sprintf("https://%s:%s", host, port)
-}
-
-// nodePortFor returns the fixed NodePort for NodePort services (only the proxy
-// is deployed as a NodePort), or 0 to let Kubernetes allocate one otherwise.
-func nodePortFor(serviceType corev1.ServiceType) int32 {
-	if serviceType == corev1.ServiceTypeNodePort {
-		return kind.ProxyNodePort
-	}
-	return 0
+	return keyBundle, appURL, nil
 }

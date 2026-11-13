@@ -73,15 +73,15 @@ var _ = framework.CasesDescribe("Reserved identity", Label("shard-c"), func() {
 	Describe("refused", Ordered, ContinueOnFailure, func() {
 		f := framework.NewOrderedDefaultFramework("reserved-identity")
 
-		BeforeAll(func() {
+		BeforeAll(func(ctx SpecContext) {
 			By("Granting pod list to the impersonation target and to the token's own user")
-			grantPodList(f, impersonationTarget)
-			grantPodList(f, defaultUsername)
+			grantPodList(ctx, f, impersonationTarget)
+			grantPodList(ctx, f, defaultUsername)
 		})
 
-		It("should refuse a token whose groups claim contains system:masters, without reaching the SubjectAccessReview", func() {
+		It("should refuse a token whose groups claim contains system:masters, without reaching the SubjectAccessReview", func(ctx SpecContext) {
 			By("Listing pods with a system:masters group claim and an Impersonate-User header")
-			code, body := listPods(f, f.SignedTokenFor(defaultUsername, []string{reservedGroup}), impersonationTarget)
+			code, body := listPods(ctx, f, f.SignedTokenFor(defaultUsername, []string{reservedGroup}), impersonationTarget)
 
 			Expect(code).To(Equal(http.StatusForbidden), body)
 			Expect(body).To(ContainSubstring(forbiddenBody))
@@ -97,7 +97,7 @@ var _ = framework.CasesDescribe("Reserved identity", Label("shard-c"), func() {
 			var raw string
 			Eventually(func() []map[string]any {
 				var recs []map[string]any
-				recs, raw = proxyLogs(f)
+				recs, raw = proxyLogs(ctx, f)
 				return sharedtests.ByEvent(recs, "request.anomaly.detected")
 			}, time.Second*15, time.Second).ShouldNot(BeEmpty(),
 				"the proxy refused a reserved identity without recording request.anomaly.detected")
@@ -108,21 +108,21 @@ var _ = framework.CasesDescribe("Reserved identity", Label("shard-c"), func() {
 					"which builds its review from the requester's own (forged) groups")
 		})
 
-		It("should refuse a token whose username claim has the reserved system: prefix", func() {
+		It("should refuse a token whose username claim has the reserved system: prefix", func(ctx SpecContext) {
 			By("Listing pods as a service account username, with no impersonation")
-			code, body := listPods(f, f.SignedTokenFor(reservedUsername, []string{"group-1"}), "")
+			code, body := listPods(ctx, f, f.SignedTokenFor(reservedUsername, []string{"group-1"}), "")
 
 			Expect(code).To(Equal(http.StatusForbidden), body)
 			Expect(body).To(ContainSubstring(forbiddenBody))
 		})
 
-		It("should accept a token whose groups claim contains system:authenticated", func() {
+		It("should accept a token whose groups claim contains system:authenticated", func(ctx SpecContext) {
 			// The one exception on the group side: the proxy appends
 			// system:authenticated to every request itself, so an issuer that
 			// also emits it must not be refused. The username rule has no such
 			// exception, which the spec above covers.
 			By("Listing pods with a system:authenticated group claim")
-			code, body := listPods(f, f.SignedTokenFor(defaultUsername, []string{"system:authenticated", "group-1"}), "")
+			code, body := listPods(ctx, f, f.SignedTokenFor(defaultUsername, []string{"system:authenticated", "group-1"}), "")
 
 			Expect(code).To(Equal(http.StatusOK), body)
 		})
@@ -136,15 +136,15 @@ var _ = framework.CasesDescribe("Reserved identity", Label("shard-c"), func() {
 	Describe("allowed by --allow-reserved-groups", func() {
 		f := framework.NewDefaultFramework("reserved-identity-allowlist")
 
-		It("should let a system:masters group claim authorize an impersonation it otherwise could not", func() {
+		It("should let a system:masters group claim authorize an impersonation it otherwise could not", func(ctx SpecContext) {
 			By("Redeploying the proxy with the group allowlisted")
-			f.DeployProxyWith(nil, "--allow-reserved-groups="+reservedGroup)
+			f.DeployProxyWith(ctx, nil, "--allow-reserved-groups="+reservedGroup)
 
 			By("Granting pod list to the impersonation target")
-			grantPodList(f, impersonationTarget)
+			grantPodList(ctx, f, impersonationTarget)
 
 			By("Listing pods with a system:masters group claim and an Impersonate-User header")
-			code, body := listPods(f, f.SignedTokenFor(defaultUsername, []string{reservedGroup}), impersonationTarget)
+			code, body := listPods(ctx, f, f.SignedTokenFor(defaultUsername, []string{reservedGroup}), impersonationTarget)
 
 			// 200 only because the SubjectAccessReview authorizing the
 			// impersonation was built with the token's forged system:masters
@@ -153,7 +153,7 @@ var _ = framework.CasesDescribe("Reserved identity", Label("shard-c"), func() {
 
 			By("Checking the SubjectAccessReview did reach the API server")
 			Eventually(func() string {
-				_, raw := proxyLogs(f)
+				_, raw := proxyLogs(ctx, f)
 				return raw
 			}, time.Second*15, time.Second).
 				Should(ContainSubstring(sarRequestPath),
@@ -164,8 +164,8 @@ var _ = framework.CasesDescribe("Reserved identity", Label("shard-c"), func() {
 })
 
 // grantPodList gives username permission to list pods in the test namespace.
-func grantPodList(f *framework.Framework, username string) {
-	role, err := f.Helper().KubeClient.RbacV1().Roles(f.Namespace.Name).Create(context.TODO(), &rbacv1.Role{
+func grantPodList(ctx context.Context, f *framework.Framework, username string) {
+	role, err := f.Helper().KubeClient.RbacV1().Roles(f.Namespace.Name).Create(ctx, &rbacv1.Role{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "reserved-identity-pods-",
 		},
@@ -175,7 +175,7 @@ func grantPodList(f *framework.Framework, username string) {
 	}, metav1.CreateOptions{})
 	Expect(err).NotTo(HaveOccurred())
 
-	_, err = f.Helper().KubeClient.RbacV1().RoleBindings(f.Namespace.Name).Create(context.TODO(),
+	_, err = f.Helper().KubeClient.RbacV1().RoleBindings(f.Namespace.Name).Create(ctx,
 		&rbacv1.RoleBinding{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "reserved-identity-pods-",
@@ -189,7 +189,7 @@ func grantPodList(f *framework.Framework, username string) {
 // listPods lists pods in the test namespace through the proxy with the given
 // token, impersonating impersonateUser when it is non-empty. It returns the
 // response status code and, for a failure, the message the proxy wrote.
-func listPods(f *framework.Framework, signedToken, impersonateUser string) (int, string) {
+func listPods(ctx context.Context, f *framework.Framework, signedToken, impersonateUser string) (int, string) {
 	config := f.NewProxyRestConfig()
 	config.BearerToken = signedToken
 	if impersonateUser != "" {
@@ -199,7 +199,7 @@ func listPods(f *framework.Framework, signedToken, impersonateUser string) (int,
 	client, err := kubernetes.NewForConfig(config)
 	Expect(err).NotTo(HaveOccurred())
 
-	_, err = client.CoreV1().Pods(f.Namespace.Name).List(context.TODO(), metav1.ListOptions{})
+	_, err = client.CoreV1().Pods(f.Namespace.Name).List(ctx, metav1.ListOptions{})
 	if err == nil {
 		return http.StatusOK, ""
 	}
@@ -224,8 +224,8 @@ func listPods(f *framework.Framework, signedToken, impersonateUser string) (int,
 // SubjectAccessReview assertions match the raw text: the path appears inside a
 // bridged client-go message, so it is a substring of the JSON line rather than
 // a field of its own.
-func proxyLogs(f *framework.Framework) ([]map[string]any, string) {
-	recs, raw, err := f.Helper().ProxyLogRecords(f.Namespace.Name, "app="+kind.ProxyImageName)
+func proxyLogs(ctx context.Context, f *framework.Framework) ([]map[string]any, string) {
+	recs, raw, err := f.Helper().ProxyLogRecords(ctx, f.Namespace.Name, "app="+kind.ProxyImageName)
 	Expect(err).NotTo(HaveOccurred())
 
 	return recs, raw

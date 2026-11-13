@@ -346,12 +346,11 @@ func projectCacheResult(r CacheResult) string {
 // AuditOperation names the audit backend operation a failure was observed in.
 type AuditOperation string
 
-const (
-	AuditRun      AuditOperation = "run"
-	AuditShutdown AuditOperation = "shutdown"
-)
+// AuditRun is the only operation a failure can be observed in: the upstream
+// audit backends' Shutdown returns nothing, so a lost flush has no value here.
+const AuditRun AuditOperation = "run"
 
-var auditOperations = []AuditOperation{AuditRun, AuditShutdown}
+var auditOperations = []AuditOperation{AuditRun}
 
 func projectAuditOperation(o AuditOperation) string {
 	return project(auditOperations, o, other)

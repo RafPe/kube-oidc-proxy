@@ -23,14 +23,23 @@ import (
 // expired: the requester's, when the client went away, or the proxy's budget,
 // when the API server did not answer in time.
 type reviewCall struct {
-	ctx       context.Context
-	request   context.Context
-	requester user.Info
+	ctx        context.Context
+	requestCtx context.Context
+	requester  user.Info
 }
 
 // requesterGone reports whether the inbound request itself has finished.
 func (c reviewCall) requesterGone() bool {
-	return c.request.Err() != nil
+	return c.requestCtx.Err() != nil
+}
+
+// liveResult is how one caller's live check ended: the decision or the
+// dependency error, and whether the caller joined another request's flight
+// rather than running the review itself.
+type liveResult struct {
+	allowed   bool
+	err       error
+	coalesced bool
 }
 
 // cachedCheck answers whether the caller may impersonate target. The
@@ -46,7 +55,7 @@ func (s *SubjectAccessReview) cachedCheck(call reviewCall, target impersonationT
 	key, cacheable := s.cache.key(&spec)
 	if !cacheable {
 		s.recordCacheLookup(call.ctx, metrics.CacheBypass)
-		return s.timedLiveCheck(call, target, false, &spec)
+		return s.timedLiveCheck(call, target, &spec)
 	}
 
 	if allowed, ok := s.cache.get(key); ok {
@@ -67,14 +76,14 @@ func (s *SubjectAccessReview) recordCacheLookup(ctx context.Context, result metr
 	s.metrics.CacheLookup(metrics.ReviewSAR, result)
 }
 
-// timedLiveCheck runs one live check and records its outcome: a completed
-// review carrying how long the caller waited and whether it shared another
-// request's call, or a failure carrying the dependency error. Exactly one
-// terminal record is emitted per authorization question a caller asks.
-func (s *SubjectAccessReview) timedLiveCheck(call reviewCall, target impersonationTarget, coalesced bool, spec *v1.SubjectAccessReviewSpec) (bool, error) {
+// timedLiveCheck runs one live check of the caller's own and records its
+// outcome: a completed review carrying how long the caller waited, or a
+// failure carrying the dependency error. Exactly one terminal record is
+// emitted per authorization question a caller asks.
+func (s *SubjectAccessReview) timedLiveCheck(call reviewCall, target impersonationTarget, spec *v1.SubjectAccessReviewSpec) (bool, error) {
 	start := time.Now()
 	allowed, err := s.liveCheck(call.ctx, spec)
-	s.observeLiveCheck(call, target, start, coalesced, allowed, err)
+	s.observeLiveCheck(call, target, start, liveResult{allowed: allowed, err: err})
 	return allowed, err
 }
 
@@ -87,10 +96,10 @@ func (s *SubjectAccessReview) timedLiveCheck(call reviewCall, target impersonati
 // hanging up mid-request. When the requester is still waiting, the deadline
 // that expired is the proxy's budget, which means the API server did not
 // answer in time: that is a dependency failure and stays an ERROR.
-func (s *SubjectAccessReview) observeLiveCheck(call reviewCall, target impersonationTarget, start time.Time, coalesced, allowed bool, err error) {
-	if err != nil {
+func (s *SubjectAccessReview) observeLiveCheck(call reviewCall, target impersonationTarget, start time.Time, res liveResult) {
+	if err := res.err; err != nil {
 		reason, level, logged := metrics.ReasonAuthorizationDependencyError, slog.LevelError, err
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if isContextError(err) {
 			if call.requesterGone() {
 				reason, level = metrics.ReasonClientCanceled, slog.LevelDebug
 			} else {
@@ -103,22 +112,32 @@ func (s *SubjectAccessReview) observeLiveCheck(call reviewCall, target impersona
 		return
 	}
 	logging.Emit(call.ctx, s.logger, logging.EventAuthzSARCompleted,
-		slog.String("decision", string(metrics.DecisionFor(allowed))),
+		slog.String("decision", string(metrics.DecisionFor(res.allowed))),
 		slog.Int64("duration_ms", time.Since(start).Milliseconds()),
-		slog.Bool("request_coalesced", coalesced),
+		slog.Bool("request_coalesced", res.coalesced),
 		slog.String("target_kind", string(target.kind)))
 }
 
 // sharedLiveCheck performs a live check deduplicated across concurrent callers
 // asking the identical authorization question, caching the resulting decision.
-// The winning caller's context governs the shared call, so a waiter whose
-// flight fails with a context error not its own retries with a direct check
-// rather than inheriting another request's cancellation.
+//
+// Exactly one caller leads a flight: its closure runs the review on its own
+// context. Every other caller joins and is reported as coalesced. The leader
+// is told apart by having run the closure, not by singleflight's Result.Shared,
+// which is set on every caller's result, the leader's included, whenever
+// anyone joined. A joiner whose flight fails with a context error not its own
+// retries with a check of its own rather than inheriting another request's
+// cancellation; the leader's context error is its own and is reported as is.
 func (s *SubjectAccessReview) sharedLiveCheck(call reviewCall, target impersonationTarget, key string, spec *v1.SubjectAccessReviewSpec) (bool, error) {
 	ctx := call.ctx
 	start := time.Now()
 
-	ch := s.flight.DoChan(key, func() (interface{}, error) {
+	// led is written by the closure, which only the leader's flight runs, and
+	// read only after the flight's result is received: singleflight sends the
+	// result after the closure returns, so the receive orders the two.
+	led := false
+	ch := s.flight.DoChan(key, func() (any, error) {
+		led = true
 		allowed, err := s.liveCheck(ctx, spec)
 		if err != nil {
 			return false, err
@@ -131,23 +150,29 @@ func (s *SubjectAccessReview) sharedLiveCheck(call reviewCall, target impersonat
 	case <-ctx.Done():
 		// Our own request is done; do not wait on the shared flight.
 		err := fmt.Errorf("%w: %w", ErrCreateSubjectAccessReview, ctx.Err())
-		s.observeLiveCheck(call, target, start, false, false, err)
+		s.observeLiveCheck(call, target, start, liveResult{err: err})
 		return false, err
 	case res := <-ch:
+		coalesced := !led
 		if res.Err != nil {
-			if res.Shared && ctx.Err() == nil &&
-				(errors.Is(res.Err, context.Canceled) || errors.Is(res.Err, context.DeadlineExceeded)) {
-				// The foreign flight's failure was not ours to report; the retry
-				// below emits this caller's one terminal record.
-				return s.timedLiveCheck(call, target, false, spec)
+			if coalesced && ctx.Err() == nil && isContextError(res.Err) {
+				// The leader's failure was not ours to report; the retry below
+				// emits this caller's one terminal record.
+				return s.timedLiveCheck(call, target, spec)
 			}
-			s.observeLiveCheck(call, target, start, res.Shared, false, res.Err)
+			s.observeLiveCheck(call, target, start, liveResult{err: res.Err, coalesced: coalesced})
 			return false, res.Err
 		}
 		allowed := res.Val.(bool)
-		s.observeLiveCheck(call, target, start, res.Shared, allowed, nil)
+		s.observeLiveCheck(call, target, start, liveResult{allowed: allowed, coalesced: coalesced})
 		return allowed, nil
 	}
+}
+
+// isContextError reports whether err is a cancellation or an expired deadline,
+// the failures whose owner has to be worked out before they are reported.
+func isContextError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // liveCheck submits spec to the API server as a SubjectAccessReview and

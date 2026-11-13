@@ -28,11 +28,14 @@ func TestProbePublishesIssuerAndReadyGauges(t *testing.T) {
 	issuerB := IssuerReadiness{IssuerURL: "https://b.example.com", FakeJWT: "jwt-b"}
 	rec := newMetricsRecorder(t)
 
-	s := NewServer(Config{
+	s, err := NewServer(Config{
 		Issuers:       []IssuerReadiness{issuerA, issuerB},
 		Authenticator: &fakeAuthenticator{notInit: map[string]bool{"jwt-b": true}},
 		Metrics:       rec,
 	}, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
 	g := rec.Gatherer()
 
 	// Every configured issuer has a series from construction, at 0.
@@ -46,7 +49,7 @@ func TestProbePublishesIssuerAndReadyGauges(t *testing.T) {
 	}
 
 	s.SetServing()
-	if err := s.hc.check(); err != nil {
+	if err := s.check(); err != nil {
 		t.Fatalf("Check: %v", err)
 	}
 	if v, _ := metricstest.Value(t, g, metricIssuerInitialized, map[string]string{"issuer_name": "a.example.com"}); v != 1 {

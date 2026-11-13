@@ -37,7 +37,7 @@ func TestSARCacheBypassCountsOneAPICallPerRequest(t *testing.T) {
 	}
 	requester := &user.DefaultInfo{Name: "alice"}
 	for i := 0; i < 2; i++ {
-		if _, err := s.CheckAuthorizedForImpersonation(impersonateUserRequest("jjackson"), requester); err != nil {
+		if _, err := s.ResolveImpersonation(impersonateUserRequest("jjackson"), requester); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -58,7 +58,7 @@ func TestSARCacheHitDoesNotReachTheAPIServer(t *testing.T) {
 	}
 	requester := &user.DefaultInfo{Name: "alice"}
 	for i := 0; i < 3; i++ {
-		if _, err := s.CheckAuthorizedForImpersonation(impersonateUserRequest("jjackson"), requester); err != nil {
+		if _, err := s.ResolveImpersonation(impersonateUserRequest("jjackson"), requester); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -72,7 +72,7 @@ func TestSARCacheHitDoesNotReachTheAPIServer(t *testing.T) {
 	if v, _ := metricstest.Value(t, g, metricReviewRequests, map[string]string{"review": "sar", "outcome": "allow"}); v != 1 {
 		t.Fatalf("API calls = %v, want 1", v)
 	}
-	if _, err := s.CheckAuthorizedForImpersonation(impersonateUserRequest("mallory"), requester); err == nil {
+	if _, err := s.ResolveImpersonation(impersonateUserRequest("mallory"), requester); err == nil {
 		t.Fatal("expected a denial for mallory")
 	}
 	if v, _ := metricstest.Value(t, g, metricReviewRequests, map[string]string{"review": "sar", "outcome": "deny"}); v != 1 {
@@ -109,7 +109,7 @@ func TestCoalescedSARCallersCountOneAPICall(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				_, err := s.CheckAuthorizedForImpersonation(impersonateUserRequest("jjackson"), requester)
+				_, err := s.ResolveImpersonation(impersonateUserRequest("jjackson"), requester)
 				errs <- err
 			}()
 		}

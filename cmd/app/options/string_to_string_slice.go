@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"encoding/csv"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/spf13/pflag"
@@ -18,7 +20,8 @@ type stringToStringSliceValue struct {
 
 var _ pflag.Value = &stringToStringSliceValue{}
 
-// newStringToStringSliceValue returns a pflag.Value that parses into p.
+// newStringToStringSliceValue returns a pflag.Value that parses into p, which
+// must not be nil: it is the field the parsed values are delivered to.
 func newStringToStringSliceValue(p *map[string][]string) pflag.Value {
 	return &stringToStringSliceValue{
 		values: p,
@@ -29,10 +32,6 @@ func newStringToStringSliceValue(p *map[string][]string) pflag.Value {
 // A key may repeat; its values accumulate in order, across repeated flags
 // too. A malformed value is rejected without changing what earlier flags set.
 func (s *stringToStringSliceValue) Set(val string) error {
-	// A value built without the constructor still ends up with a map to read.
-	if s.values == nil {
-		s.values = new(map[string][]string)
-	}
 	if *s.values == nil {
 		*s.values = make(map[string][]string)
 	}
@@ -64,10 +63,13 @@ func (s *stringToStringSliceValue) Type() string {
 	return "stringToStringSlice"
 }
 
+// String renders the pairs with keys sorted, so the rendering is a function
+// of the configuration alone: config_hash folds it into the digest operators
+// compare between pods. Each key's values keep the order they were given in.
 func (s *stringToStringSliceValue) String() string {
 	var records []string
-	for k, vs := range *s.values {
-		for _, v := range vs {
+	for _, k := range slices.Sorted(maps.Keys(*s.values)) {
+		for _, v := range (*s.values)[k] {
 			records = append(records, k+"="+v)
 		}
 	}

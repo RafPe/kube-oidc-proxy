@@ -50,7 +50,7 @@ var _ = framework.CasesDescribe("Metrics", Label("shard-a"), func() {
 	// dedicated Service down to the named targetPort, so the suite scrapes
 	// what an operator installs. Only the selector differs: the harness pods
 	// carry the harness's own labels.
-	f.BeforeProxyDeploy = func() {
+	f.BeforeProxyDeploy = func(ctx context.Context) {
 		var err error
 		surface, err = helper.ChartMetricsSurfaceFor(f.Helper().RepoRoot())
 		Expect(err).NotTo(HaveOccurred())
@@ -66,8 +66,8 @@ var _ = framework.CasesDescribe("Metrics", Label("shard-a"), func() {
 	// JustBeforeEach (framework.go: `JustBeforeEach(f.BeforeEach)`), so this
 	// must be a JustBeforeEach declared after it, not a BeforeEach, or
 	// f.Namespace is still nil here.
-	JustBeforeEach(func() {
-		_, err := f.Helper().KubeClient.CoreV1().Services(f.Namespace.Name).Create(context.TODO(), &corev1.Service{
+	JustBeforeEach(func(ctx SpecContext) {
+		_, err := f.Helper().KubeClient.CoreV1().Services(f.Namespace.Name).Create(ctx, &corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{Name: metricsServiceName()},
 			Spec: corev1.ServiceSpec{
 				Selector: map[string]string{"app": kind.ProxyImageName},
@@ -84,15 +84,15 @@ var _ = framework.CasesDescribe("Metrics", Label("shard-a"), func() {
 		// Creating a Service does not publish its endpoints synchronously;
 		// wait until the first scrape through it succeeds.
 		Eventually(func() error {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
 			_, err := scrapeRaw(ctx, f, surface)
 			return err
 		}, 30*time.Second, time.Second).Should(Succeed())
 	})
 
-	It("serves build information and the runtime collectors", func() {
-		samples := mustSamples(f, surface)
+	It("serves build information and the runtime collectors", func(ctx SpecContext) {
+		samples := mustSamples(ctx, f, surface)
 		v, ok := promtext.SampleValue(samples, metricBuildInfo, nil)
 		Expect(ok).To(BeTrue(), "build_info missing")
 		Expect(v).To(Equal(1.0))
@@ -100,8 +100,8 @@ var _ = framework.CasesDescribe("Metrics", Label("shard-a"), func() {
 		Expect(ok).To(BeTrue(), "go collector missing")
 	})
 
-	It("reports the configured issuer as initialized and the proxy as ready", func() {
-		samples := mustSamples(f, surface)
+	It("reports the configured issuer as initialized and the proxy as ready", func(ctx SpecContext) {
+		samples := mustSamples(ctx, f, surface)
 		v, ok := promtext.SampleValue(samples, metricIssuerInit, map[string]string{"issuer_name": f.IssuerURL().Host})
 		Expect(ok).To(BeTrue(), "issuer gauge missing for %s", f.IssuerURL().Host)
 		Expect(v).To(Equal(1.0))
@@ -109,8 +109,8 @@ var _ = framework.CasesDescribe("Metrics", Label("shard-a"), func() {
 		Expect(v).To(Equal(1.0))
 	})
 
-	It("counts an allowed list and a rejected token with closed-set labels", func() {
-		grantPods(f, defaultUsername, "get", "list", "watch")
+	It("counts an allowed list and a rejected token with closed-set labels", func(ctx SpecContext) {
+		grantPods(ctx, f, defaultUsername, "get", "list", "watch")
 		// Built before the poll: SignedTokenFor and NewProxyRestConfig both assert,
 		// and an assertion inside the callback would fail the spec on the first
 		// attempt instead of being retried.
@@ -126,11 +126,11 @@ var _ = framework.CasesDescribe("Metrics", Label("shard-a"), func() {
 		Expect(code).To(Equal(http.StatusUnauthorized))
 
 		Eventually(func() (float64, error) {
-			return sampleValue(f, surface, metricRequestsTotal,
+			return sampleValue(ctx, f, surface, metricRequestsTotal,
 				map[string]string{"k8s_verb": "list", "scope": "namespace", "code": "200", "termination": "normal"})
 		}, 20*time.Second, time.Second).Should(BeNumerically(">=", 1))
 
-		samples := mustSamples(f, surface)
+		samples := mustSamples(ctx, f, surface)
 		v, _ := promtext.SampleValue(samples, metricAuthnAttempts, map[string]string{"auth_method": "oidc", "outcome": "rejected"})
 		Expect(v).To(BeNumerically(">=", 1))
 		v, _ = promtext.SampleValue(samples, metricDecisions, map[string]string{"auth_method": "none", "decision": "deny", "reason": "unauthorized"})
@@ -139,8 +139,8 @@ var _ = framework.CasesDescribe("Metrics", Label("shard-a"), func() {
 		Expect(v).To(BeNumerically(">=", 1))
 	})
 
-	It("gauges an open watch and releases it, without timing it", func() {
-		grantPods(f, defaultUsername, "get", "list", "watch")
+	It("gauges an open watch and releases it, without timing it", func(ctx SpecContext) {
+		grantPods(ctx, f, defaultUsername, "get", "list", "watch")
 		token, config := f.SignedTokenFor(defaultUsername, []string{"group-1"}), f.NewProxyRestConfig()
 		// RBAC propagation is not synchronous either: open the watch only
 		// once a list with the same grant succeeds.
@@ -148,24 +148,24 @@ var _ = framework.CasesDescribe("Metrics", Label("shard-a"), func() {
 			return listPods(f, token, config)
 		}, 20*time.Second, time.Second).Should(Equal(http.StatusOK))
 
-		w, err := f.ProxyClient.CoreV1().Pods(f.Namespace.Name).Watch(context.TODO(), metav1.ListOptions{})
+		w, err := f.ProxyClient.CoreV1().Pods(f.Namespace.Name).Watch(ctx, metav1.ListOptions{})
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(w.Stop)
 
 		Eventually(func() (float64, error) {
-			return sampleValue(f, surface, metricLongRunning, map[string]string{"k8s_verb": "watch", "scope": "namespace"})
+			return sampleValue(ctx, f, surface, metricLongRunning, map[string]string{"k8s_verb": "watch", "scope": "namespace"})
 		}, 20*time.Second, time.Second).Should(Equal(1.0))
 
 		w.Stop()
 		Eventually(func() (float64, error) {
-			return sampleValue(f, surface, metricLongRunning, map[string]string{"k8s_verb": "watch", "scope": "namespace"})
+			return sampleValue(ctx, f, surface, metricLongRunning, map[string]string{"k8s_verb": "watch", "scope": "namespace"})
 		}, 30*time.Second, time.Second).Should(Equal(0.0))
 
-		_, timed := promtext.SampleValue(mustSamples(f, surface), metricDurationCount, map[string]string{"k8s_verb": "watch"})
+		_, timed := promtext.SampleValue(mustSamples(ctx, f, surface), metricDurationCount, map[string]string{"k8s_verb": "watch"})
 		Expect(timed).To(BeFalse(), "a watch must never enter the latency histogram")
 	})
 
-	It("keeps every label inside its documented set under arbitrary requests", func() {
+	It("keeps every label inside its documented set under arbitrary requests", func(ctx SpecContext) {
 		config := f.NewProxyRestConfig()
 		client := &http.Client{Transport: config.Transport}
 		for i := 0; i < 30; i++ {
@@ -177,14 +177,14 @@ var _ = framework.CasesDescribe("Metrics", Label("shard-a"), func() {
 			resp.Body.Close()
 		}
 		Eventually(func() (int, error) {
-			ss, err := samples(f, surface)
+			ss, err := samples(ctx, f, surface)
 			if err != nil {
 				return 0, err
 			}
 			return len(promtext.LabelValuesOf(ss, metricRequestsTotal, "k8s_verb")), nil
 		}, 20*time.Second, time.Second).Should(BeNumerically(">=", 1))
 
-		samples := mustSamples(f, surface)
+		samples := mustSamples(ctx, f, surface)
 
 		// Every first-party family carries exactly the documented label
 		// names, and every bounded label carries only documented values. The
@@ -278,8 +278,8 @@ func scrapeRaw(ctx context.Context, f *framework.Framework, s helper.ChartMetric
 }
 
 // samples scrapes and parses; errors are returned for Eventually to retry on.
-func samples(f *framework.Framework, s helper.ChartMetricsSurface) ([]promtext.Sample, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func samples(ctx context.Context, f *framework.Framework, s helper.ChartMetricsSurface) ([]promtext.Sample, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	raw, err := scrapeRaw(ctx, f, s)
 	if err != nil {
@@ -289,16 +289,16 @@ func samples(f *framework.Framework, s helper.ChartMetricsSurface) ([]promtext.S
 }
 
 // mustSamples is samples for a direct assertion outside Eventually.
-func mustSamples(f *framework.Framework, s helper.ChartMetricsSurface) []promtext.Sample {
-	ss, err := samples(f, s)
+func mustSamples(ctx context.Context, f *framework.Framework, s helper.ChartMetricsSurface) []promtext.Sample {
+	ss, err := samples(ctx, f, s)
 	Expect(err).NotTo(HaveOccurred(), "scraping through the Service proxy")
 	return ss
 }
 
 // sampleValue is the polled form: a scrape error fails the attempt, an
 // absent sample reads as 0.
-func sampleValue(f *framework.Framework, s helper.ChartMetricsSurface, name string, labels map[string]string) (float64, error) {
-	ss, err := samples(f, s)
+func sampleValue(ctx context.Context, f *framework.Framework, s helper.ChartMetricsSurface, name string, labels map[string]string) (float64, error) {
+	ss, err := samples(ctx, f, s)
 	if err != nil {
 		return 0, err
 	}
@@ -328,13 +328,13 @@ func listPods(f *framework.Framework, token string, config *rest.Config) (int, e
 	return resp.StatusCode, nil
 }
 
-func grantPods(f *framework.Framework, username string, verbs ...string) {
-	role, err := f.Helper().KubeClient.RbacV1().Roles(f.Namespace.Name).Create(context.TODO(), &rbacv1.Role{
+func grantPods(ctx context.Context, f *framework.Framework, username string, verbs ...string) {
+	role, err := f.Helper().KubeClient.RbacV1().Roles(f.Namespace.Name).Create(ctx, &rbacv1.Role{
 		ObjectMeta: metav1.ObjectMeta{GenerateName: "metrics-pods-"},
 		Rules:      []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: verbs}},
 	}, metav1.CreateOptions{})
 	Expect(err).NotTo(HaveOccurred())
-	_, err = f.Helper().KubeClient.RbacV1().RoleBindings(f.Namespace.Name).Create(context.TODO(), &rbacv1.RoleBinding{
+	_, err = f.Helper().KubeClient.RbacV1().RoleBindings(f.Namespace.Name).Create(ctx, &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{GenerateName: "metrics-pods-"},
 		Subjects:   []rbacv1.Subject{{Name: username, Kind: "User"}},
 		RoleRef:    rbacv1.RoleRef{Name: role.Name, Kind: "Role"},

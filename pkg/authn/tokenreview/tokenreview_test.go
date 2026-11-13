@@ -40,7 +40,7 @@ func TestAuthenticateToken(t *testing.T) {
 			reviewResp: nil,
 			errResp:    errors.New("create error response"),
 			expOK:      false,
-			expErr:     "create error response",
+			expErr:     "create TokenReview: create error response",
 		},
 
 		"if an error exists in the status of the response pass error back": {
@@ -50,7 +50,7 @@ func TestAuthenticateToken(t *testing.T) {
 				},
 			},
 			expOK:  false,
-			expErr: "error authenticating using token review: status error",
+			expErr: "create TokenReview: status error: status error",
 		},
 
 		"if the response returns unauthenticated, return not ok with no error": {
@@ -96,6 +96,10 @@ func TestAuthenticateToken(t *testing.T) {
 			}
 			if test.expErr != gotErr {
 				t.Errorf("got unexpected error, exp=%q got=%q", test.expErr, gotErr)
+			}
+			// Every failure is a dependency failure the caller can classify.
+			if err != nil && !errors.Is(err, ErrCreateTokenReview) {
+				t.Errorf("error = %v, want errors.Is(ErrCreateTokenReview)", err)
 			}
 
 			if test.expOK != ok {
@@ -150,5 +154,42 @@ func authenticatedReview() *authv1.TokenReview {
 func unauthenticatedReview() *authv1.TokenReview {
 	return &authv1.TokenReview{
 		Status: authv1.TokenReviewStatus{Authenticated: false},
+	}
+}
+
+// TestNewRejectsNilLogger pins that a missing logger is refused at
+// construction rather than panicking on the first passthrough request.
+func TestNewRejectsNilLogger(t *testing.T) {
+	if _, err := New(fake.New(), Config{}, nil); err == nil {
+		t.Fatal("New() with a nil logger succeeded, want an error")
+	}
+	if _, err := New(fake.New(), Config{}, discardLogger); err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+}
+
+// TestFailedReviewKeepsTheContextErrorMatchable pins that wrapping a failure
+// in ErrCreateTokenReview does not hide its cause: a caller deciding whether
+// the client hung up still finds context.Canceled through the cache layer.
+func TestFailedReviewKeepsTheContextErrorMatchable(t *testing.T) {
+	client := &fake.FakeReviewer{
+		CreateCtxFn: func(ctx context.Context, _ *authv1.TokenReview) (*authv1.TokenReview, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	tr, err := New(client, Config{CacheSuccessTTL: DefaultCacheSuccessTTL, CacheFailureTTL: DefaultCacheFailureTTL}, discardLogger)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(testRequestContext())
+	cancel()
+	_, ok, err := tr.AuthenticateToken(ctx, "test-token")
+	if ok {
+		t.Fatal("a canceled review must not authenticate")
+	}
+	if !errors.Is(err, ErrCreateTokenReview) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want both ErrCreateTokenReview and context.Canceled", err)
 	}
 }

@@ -4,8 +4,8 @@
 // request.access.decided per request, carrying the authentication,
 // authorization and admission outcome.
 //
-// The record's src_ip is the client IP the reqctx package resolved
-// under the trusted-proxy contract (see that package's documentation); this
+// The record's src_ip is the client IP resolved under the trusted-proxy
+// contract (see package clientip) and carried on the request by reqctx; this
 // package does not resolve addresses itself, so the access record, the audit
 // log and the Remote-Client-IP impersonation extra can never disagree. The raw
 // forwarded chain is still emitted for observability under the
@@ -22,6 +22,7 @@ import (
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/clientip"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/subjectaccessreview"
 )
@@ -32,31 +33,6 @@ const (
 	eventSuccess = "AuSuccess"
 	eventFail    = "AuFail"
 )
-
-// loggableExtraKeys is the allowlist of impersonation-extra keys that the proxy
-// sets itself and are safe to log. Everything else is authenticator-supplied
-// claim data and is counted, not logged, so arbitrary claims and credentials
-// never reach the log stream. reqctx.ExtraKeyOriginalExtra is deliberately absent: it
-// carries the original identity's whole extra map, which is claim data.
-var loggableExtraKeys = map[string]struct{}{
-	reqctx.UserHeaderClientIPKey:  {},
-	reqctx.ExtraKeyOriginalUser:   {},
-	reqctx.ExtraKeyOriginalGroups: {},
-	reqctx.ExtraKeyOriginalUID:    {},
-}
-
-// Logger writes the access record. It is an injected collaborator rather than
-// a package global so that the destination and the component are decided once
-// at construction and a test can hold its own.
-type Logger struct {
-	logger *slog.Logger
-}
-
-// New returns a Logger emitting through logger, which the caller has already
-// bound to the request component. logger is required.
-func New(logger *slog.Logger) *Logger {
-	return &Logger{logger: logger}
-}
 
 // Decision is the outcome the access record reports. Reason, TargetKind and
 // TargetName describe a denial and are ignored when Allowed is true: an allow
@@ -86,12 +62,13 @@ type Decision struct {
 	TargetName string
 }
 
-// LogDecision emits the request.access.decided record for a request. It is
-// called as soon as authentication, authorization and proxy admission are
-// decided, so a watch or exec that runs for hours is recorded immediately.
-// Keeping it to one record per request is the caller's job: this writes
-// whatever it is handed.
-func (a *Logger) LogDecision(req *http.Request, d Decision) {
+// LogDecision emits the request.access.decided record for a request through
+// logger, which the caller has bound to the request component. It is called
+// as soon as authentication, authorization and proxy admission are decided,
+// so a watch or exec that runs for hours is recorded immediately. Keeping it
+// to one record per request is the caller's job: this writes whatever it is
+// handed.
+func LogDecision(logger *slog.Logger, req *http.Request, d Decision) {
 	event := eventFail
 	if d.Allowed {
 		event = eventSuccess
@@ -143,7 +120,7 @@ func (a *Logger) LogDecision(req *http.Request, d Decision) {
 		attrs = append(attrs, userAttrs("outbound", d.Impersonated)...)
 	}
 
-	logging.Emit(req.Context(), a.logger, logging.EventRequestAccessDecided, attrs...)
+	logging.Emit(req.Context(), logger, logging.EventRequestAccessDecided, attrs...)
 }
 
 // untrustedForwardedFor returns the raw forwarded chain the client actually
@@ -154,7 +131,7 @@ func (a *Logger) LogDecision(req *http.Request, d Decision) {
 func untrustedForwardedFor(req *http.Request) string {
 	raw := reqctx.OriginalForwardedFor(req)
 	if raw == "" {
-		raw = req.Header.Get(reqctx.HeaderForwardedFor)
+		raw = req.Header.Get(clientip.HeaderForwardedFor)
 	}
 	return logging.Sanitize(raw)
 }
@@ -188,9 +165,14 @@ func kubernetesAttrs(req *http.Request) []slog.Attr {
 }
 
 // userAttrs renders a user.Info as sanitized, structured fields under the given
-// prefix. Groups are capped and the drop is reported rather than hidden; only
-// allowlisted extras are logged, and the number of omitted claim keys is
-// reported so operators can tell data was dropped.
+// prefix. Groups are capped and the drop is reported rather than hidden.
+//
+// Extras are never logged, only counted. An identity's extras are whatever its
+// authenticator put there, which is claim data: arbitrary, and possibly
+// credentials. The extras the proxy adds on the forwarded request are not part
+// of either identity, and the record already carries what they say: src_ip is
+// Remote-Client-IP, and the inbound_* fields are the originaluser.jetstack.io-*
+// extras.
 func userAttrs(prefix string, u user.Info) []slog.Attr {
 	groups, groupsOmitted := logging.BoundedList(u.GetGroups(), logging.MaxGroups)
 
@@ -204,32 +186,8 @@ func userAttrs(prefix string, u user.Info) []slog.Attr {
 	if uid := u.GetUID(); uid != "" {
 		attrs = append(attrs, slog.String(prefix+"_uid", logging.Bound(uid, logging.MaxIdentity)))
 	}
-	safe, omitted := loggableExtras(u.GetExtra())
-	if len(safe) > 0 {
-		attrs = append(attrs, slog.Any(prefix+"_extra", safe))
-	}
-	if omitted > 0 {
+	if omitted := len(u.GetExtra()); omitted > 0 {
 		attrs = append(attrs, slog.Int(prefix+"_extra_omitted", omitted))
 	}
 	return attrs
-}
-
-// loggableExtras splits an extra map into the allowlisted, sanitized entries
-// safe to log and a count of the omitted (non-allowlisted) keys. The kept
-// values carry no cap: they are part of the frozen record shape and the group
-// cap does not apply to them.
-func loggableExtras(extra map[string][]string) (map[string][]string, int) {
-	if len(extra) == 0 {
-		return nil, 0
-	}
-	safe := make(map[string][]string)
-	omitted := 0
-	for k, v := range extra {
-		if _, ok := loggableExtraKeys[k]; ok {
-			safe[logging.Sanitize(k)] = logging.SanitizeList(v)
-			continue
-		}
-		omitted++
-	}
-	return safe, omitted
 }

@@ -18,25 +18,25 @@ const (
 )
 
 // CreateKubeNamespace creates a new Kubernetes Namespace for a test.
-func (f *Framework) CreateKubeNamespace(baseName string) (*corev1.Namespace, error) {
+func (f *Framework) CreateKubeNamespace(ctx context.Context, baseName string) (*corev1.Namespace, error) {
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: fmt.Sprintf("kube-oidc-proxy-e2e-%v-", baseName),
 		},
 	}
 
-	return f.KubeClientSet.CoreV1().Namespaces().Create(context.TODO(), ns, metav1.CreateOptions{})
+	return f.KubeClientSet.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{})
 }
 
 // DeleteKubeNamespace will delete a namespace resource
-func (f *Framework) DeleteKubeNamespace(namespace string) error {
-	return f.KubeClientSet.CoreV1().Namespaces().Delete(context.TODO(), namespace, metav1.DeleteOptions{})
+func (f *Framework) DeleteKubeNamespace(ctx context.Context, namespace string) error {
+	return f.KubeClientSet.CoreV1().Namespaces().Delete(ctx, namespace, metav1.DeleteOptions{})
 }
 
 // WaitForKubeNamespaceNotExist will wait for the namespace with the given name
 // to not exist for up to 2 minutes.
-func (f *Framework) WaitForKubeNamespaceNotExist(namespace string) error {
-	return wait.PollUntilContextTimeout(context.Background(), time.Second*2, time.Minute*2, true,
+func (f *Framework) WaitForKubeNamespaceNotExist(ctx context.Context, namespace string) error {
+	return wait.PollUntilContextTimeout(ctx, time.Second*2, time.Minute*2, true,
 		namespaceNotExist(f.KubeClientSet, namespace))
 }
 

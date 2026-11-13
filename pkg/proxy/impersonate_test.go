@@ -89,8 +89,8 @@ func TestImpersonationSkippedWhenDisabled(t *testing.T) {
 	if got := rec.String("level"); got != "DEBUG" {
 		t.Errorf("level = %q, want DEBUG", got)
 	}
-	if got := rec.String("skip_reason"); got != skipReasonDisabled {
-		t.Errorf("skip_reason = %q, want %q", got, skipReasonDisabled)
+	if got := rec.String("skip_reason"); got != string(reqctx.ForwardDisabled) {
+		t.Errorf("skip_reason = %q, want %q", got, reqctx.ForwardDisabled)
 	}
 	if got := p.logs.ByEvent(logging.EventRequestImpersonationApplied); len(got) != 0 {
 		t.Errorf("impersonation was recorded as applied on the disabled path: %s", p.logs.Raw())
@@ -107,13 +107,13 @@ func TestImpersonationSkippedOnTokenReviewPassthrough(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req = req.WithContext(logging.WithRequestID(req.Context(), "rid-passthrough"))
 	// What withTokenReview leaves on a request it admitted.
-	req = reqctx.WithImpersonation(req, &reqctx.Impersonation{})
+	req = reqctx.WithImpersonation(req, &reqctx.ImpersonationRecord{Mode: reqctx.ForwardPassthrough})
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
 	rec := p.logs.Only(t, logging.EventRequestImpersonationSkipped)
 	assertRecord(t, rec, logging.EventRequestImpersonationSkipped, logging.ComponentRequest, "rid-passthrough")
-	if got := rec.String("skip_reason"); got != skipReasonPassthrough {
-		t.Errorf("skip_reason = %q, want %q", got, skipReasonPassthrough)
+	if got := rec.String("skip_reason"); got != string(reqctx.ForwardPassthrough) {
+		t.Errorf("skip_reason = %q, want %q", got, reqctx.ForwardPassthrough)
 	}
 	if got := p.logs.ByEvent(logging.EventRequestImpersonationApplied); len(got) != 0 {
 		t.Errorf("impersonation was recorded as applied on the passthrough path: %s", p.logs.Raw())
@@ -257,5 +257,175 @@ func TestSubjectAccessReviewRequesterIsAuthenticated(t *testing.T) {
 				t.Errorf("the authenticator's identity was mutated: groups = %q, want %q", inbound.Groups, groups)
 			}
 		})
+	}
+}
+
+// attributeRecordingReviewer allows every review and records what each one
+// asked about, so a test can check the client's request was still authorized.
+type attributeRecordingReviewer struct {
+	*fakesubjectaccessreview.FakeReviewer
+
+	mu    sync.Mutex
+	asked []azv1.ResourceAttributes
+}
+
+func (r *attributeRecordingReviewer) Create(_ context.Context, req *azv1.SubjectAccessReview, _ metav1.CreateOptions) (*azv1.SubjectAccessReview, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.asked = append(r.asked, *req.Spec.ResourceAttributes)
+	req.Status = azv1.SubjectAccessReviewStatus{Allowed: true}
+	return req, nil
+}
+
+// TestClientCannotAssertOriginalUserExtras pins that every
+// originaluser.jetstack.io-* key on the forwarded request is the proxy's own,
+// derived from the identity it authenticated. A client that impersonates one
+// of those keys is still authorized for exactly what it asked -- the
+// SubjectAccessReview runs -- but its value never travels: the key carries
+// the inbound identity's value, or is absent when the inbound has none.
+// Before this, a client allowed to impersonate the key forwarded its own
+// value wherever the inbound identity had none, naming someone else as the
+// original user in the API server's audit log.
+func TestClientCannotAssertOriginalUserExtras(t *testing.T) {
+	const spoof = "mallory"
+
+	full := &authuser.DefaultInfo{Name: "alice", UID: "alice-uid", Groups: []string{"devs"},
+		Extra: map[string][]string{"acme.io/team": {"platform"}}}
+	bare := &authuser.DefaultInfo{Name: "alice"}
+
+	tests := map[string]struct {
+		key     string
+		inbound *authuser.DefaultInfo
+		want    []string // nil: the key must be absent
+	}{
+		"user":                         {ExtraKeyOriginalUser, full, []string{"alice"}},
+		"user, bare inbound":           {ExtraKeyOriginalUser, bare, []string{"alice"}},
+		"groups":                       {ExtraKeyOriginalGroups, full, []string{"devs"}},
+		"groups, inbound has no":       {ExtraKeyOriginalGroups, bare, nil},
+		"uid":                          {ExtraKeyOriginalUID, full, []string{"alice-uid"}},
+		"uid, inbound has no":          {ExtraKeyOriginalUID, bare, nil},
+		"extra":                        {ExtraKeyOriginalExtra, full, []string{`{"acme.io/team":["platform"]}`}},
+		"extra, inbound has no":        {ExtraKeyOriginalExtra, bare, nil},
+		"unknown key under the prefix": {originalUserExtraPrefix + "anything", full, nil},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			imp, reviewer := impersonateBob(t, Config{}, tc.inbound, map[string]string{tc.key: spoof})
+			assertExtraAuthorized(t, reviewer, tc.key, spoof)
+
+			got, present := imp.Outbound.Extra[tc.key]
+			switch {
+			case tc.want == nil && present:
+				t.Errorf("extra %s = %q, want absent", tc.key, got)
+			case tc.want != nil && !reflect.DeepEqual(got, tc.want):
+				t.Errorf("extra %s = %q, want %q", tc.key, got, tc.want)
+			}
+			for k, vs := range imp.Outbound.Extra {
+				if slices.Contains(vs, spoof) {
+					t.Errorf("the client's value reached the forwarded extra %s = %q", k, vs)
+				}
+			}
+		})
+	}
+}
+
+// TestClientCannotAssertProxyWrittenExtras extends the same rule to every
+// other key the proxy writes: the client-IP key while it is enabled, and the
+// operator's configured extras. Keys are compared ignoring case, because the
+// API server receives each as a canonicalised Impersonate-Extra- header, where
+// "remote-client-ip" and "Remote-Client-IP" are one header. A key the proxy
+// does not write remains the client's.
+func TestClientCannotAssertProxyWrittenExtras(t *testing.T) {
+	const spoof = "6.6.6.6"
+	inbound := &authuser.DefaultInfo{Name: "alice"}
+
+	tests := map[string]struct {
+		cfg       Config
+		clientKey string
+		wantKey   string
+		want      []string
+	}{
+		"client IP enabled": {
+			cfg:       Config{ExtraUserHeadersClientIPEnabled: true},
+			clientKey: "Remote-Client-IP", wantKey: ExtraKeyClientIP, want: []string{"192.0.2.1"},
+		},
+		"client IP disabled leaves the key to the client": {
+			cfg:       Config{},
+			clientKey: "Remote-Client-IP", wantKey: "remote-client-ip", want: []string{spoof},
+		},
+		"operator extra": {
+			cfg:       Config{ExtraUserHeaders: map[string][]string{"Tenant": {"acme"}}},
+			clientKey: "tenant", wantKey: "Tenant", want: []string{"acme"},
+		},
+		"key the proxy does not write": {
+			cfg:       Config{ExtraUserHeadersClientIPEnabled: true, ExtraUserHeaders: map[string][]string{"Tenant": {"acme"}}},
+			clientKey: "acme.io/team", wantKey: "acme.io/team", want: []string{spoof},
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			imp, reviewer := impersonateBob(t, tc.cfg, inbound, map[string]string{tc.clientKey: spoof})
+			assertExtraAuthorized(t, reviewer, strings.ToLower(tc.clientKey), spoof)
+
+			// Exactly one key per canonical header, carrying exactly one
+			// source's values.
+			var keys []string
+			for k := range imp.Outbound.Extra {
+				if strings.EqualFold(k, tc.wantKey) {
+					keys = append(keys, k)
+				}
+			}
+			if len(keys) != 1 || keys[0] != tc.wantKey {
+				t.Fatalf("forwarded keys matching %q = %q, want exactly [%q]", tc.wantKey, keys, tc.wantKey)
+			}
+			if got := imp.Outbound.Extra[tc.wantKey]; !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("extra %s = %q, want %q", tc.wantKey, got, tc.want)
+			}
+		})
+	}
+}
+
+// impersonateBob serves a request authenticated as inbound that impersonates
+// bob with the given Impersonate-Extra- headers, every review allowed, and
+// returns how it is forwarded and what the reviews asked.
+func impersonateBob(t *testing.T, cfg Config, inbound authuser.Info, extras map[string]string) (*reqctx.ImpersonationRecord, *attributeRecordingReviewer) {
+	t.Helper()
+
+	reviewer := &attributeRecordingReviewer{FakeReviewer: fakesubjectaccessreview.New(nil)}
+	sar, err := subjectaccessreview.New(reviewer, subjectaccessreview.Config{MaxHeaderValues: subjectaccessreview.DefaultMaxHeaderValues}, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("creating subject access reviewer: %s", err)
+	}
+	p := newTestProxy(t, withSubjectAccessReviewer(sar))
+	p.config = &cfg
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Impersonate-User", "bob")
+	for k, v := range extras {
+		req.Header.Set("Impersonate-Extra-"+k, v)
+	}
+	req = req.WithContext(genericapirequest.WithUser(logging.WithRequestID(req.Context(), "test-request-id"), inbound))
+
+	var imp *reqctx.ImpersonationRecord
+	p.withImpersonateRequest(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		imp = reqctx.Impersonation(r)
+	})).ServeHTTP(httptest.NewRecorder(), req)
+	if imp == nil {
+		t.Fatalf("an allowed impersonation was not served: %s", p.logs.Raw())
+	}
+	return imp, reviewer
+}
+
+// assertExtraAuthorized checks a SubjectAccessReview asked whether the
+// requester may impersonate key=value, so dropping the value from the
+// forwarded request never skipped its authorization.
+func assertExtraAuthorized(t *testing.T, reviewer *attributeRecordingReviewer, key, value string) {
+	t.Helper()
+	if !slices.ContainsFunc(reviewer.asked, func(a azv1.ResourceAttributes) bool {
+		return a.Resource == "userextras" && a.Subresource == key && a.Name == value
+	}) {
+		t.Errorf("the client's %s extra was not authorized: reviews = %+v", key, reviewer.asked)
 	}
 }

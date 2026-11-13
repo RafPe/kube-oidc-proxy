@@ -2,6 +2,7 @@
 package framework
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"time"
@@ -61,7 +62,7 @@ type Framework struct {
 	// needs at startup (e.g. an AuthenticationConfiguration ConfigMap) and to
 	// populate ExtraProxyVolumes / ExtraProxyArgs. Avoids a delete-redeploy
 	// cycle for tests that need non-default proxy flags.
-	BeforeProxyDeploy func()
+	BeforeProxyDeploy func(ctx context.Context)
 	ExtraProxyVolumes []corev1.Volume
 	ExtraProxyArgs    []string
 	// ExtraProxyExtras, if set, adds volumes, mounts, sidecars and ports to
@@ -124,7 +125,10 @@ func newFramework(baseName string, config *config.Config) *Framework {
 	}
 }
 
-func (f *Framework) BeforeEach() {
+// BeforeEach deploys the namespace, issuer and proxy the specs run against.
+// It runs as a setup node, so ctx is that node's: cancelled when the node ends
+// or the suite is interrupted, and never kept beyond it.
+func (f *Framework) BeforeEach(ctx context.Context) {
 	if f.config == nil {
 		f.config = requireDefaultConfig()
 	}
@@ -139,7 +143,7 @@ func (f *Framework) BeforeEach() {
 	Expect(err).NotTo(HaveOccurred())
 
 	By("Building a namespace api object")
-	f.Namespace, err = f.CreateKubeNamespace(f.BaseName)
+	f.Namespace, err = f.CreateKubeNamespace(ctx, f.BaseName)
 	Expect(err).NotTo(HaveOccurred())
 
 	By("Using the namespace " + f.Namespace.Name)
@@ -147,17 +151,17 @@ func (f *Framework) BeforeEach() {
 	f.helper.KubeClient = f.KubeClientSet
 
 	By("Deploying mock OIDC Issuer")
-	issuerKeyBundle, issuerURL, err := f.helper.DeployIssuer(f.Namespace.Name)
+	issuerKeyBundle, issuerURL, err := f.helper.DeployIssuer(ctx, f.Namespace.Name)
 	Expect(err).NotTo(HaveOccurred())
 
 	f.issuerURL, f.issuerKeyBundle = issuerURL, issuerKeyBundle
 
 	if f.BeforeProxyDeploy != nil {
-		f.BeforeProxyDeploy()
+		f.BeforeProxyDeploy(ctx)
 	}
 
 	By("Deploying kube-oidc-proxy")
-	proxyKeyBundle, proxyURL, err := f.helper.DeployProxyWithExtras(f.Namespace,
+	proxyKeyBundle, proxyURL, err := f.helper.DeployProxyWithExtras(ctx, f.Namespace,
 		issuerURL, clientID, issuerKeyBundle, f.ExtraProxyVolumes, f.ExtraProxyExtras, f.ExtraProxyArgs...)
 	Expect(err).NotTo(HaveOccurred())
 
@@ -168,9 +172,9 @@ func (f *Framework) BeforeEach() {
 }
 
 // AfterEach deletes the namespace, after reading its events.
-func (f *Framework) AfterEach() {
+func (f *Framework) AfterEach(ctx context.Context) {
 	f.gatherProxyLogs()
-	f.deleteResources()
+	f.deleteResources(ctx)
 }
 
 // gatherProxyLogs dumps the proxy logs to the test output. It runs after every
@@ -185,36 +189,36 @@ func (f *Framework) gatherProxyLogs() {
 	}
 }
 
-func (f *Framework) deleteResources() {
+func (f *Framework) deleteResources(ctx context.Context) {
 	By("Deleting kube-oidc-proxy deployment")
-	err := f.Helper().DeleteProxy(f.Namespace.Name)
+	err := f.Helper().DeleteProxy(ctx, f.Namespace.Name)
 	Expect(err).NotTo(HaveOccurred())
 
 	By("Deleting mock OIDC issuer")
-	err = f.Helper().DeleteIssuer(f.Namespace.Name)
+	err = f.Helper().DeleteIssuer(ctx, f.Namespace.Name)
 	Expect(err).NotTo(HaveOccurred())
 
 	By("Deleting test namespace")
-	err = f.DeleteKubeNamespace(f.Namespace.Name)
+	err = f.DeleteKubeNamespace(ctx, f.Namespace.Name)
 	Expect(err).NotTo(HaveOccurred())
 }
 
-func (f *Framework) DeployProxyWith(extraVolumes []corev1.Volume, extraArgs ...string) {
-	f.DeployProxyWithExtras(extraVolumes, nil, extraArgs...)
+func (f *Framework) DeployProxyWith(ctx context.Context, extraVolumes []corev1.Volume, extraArgs ...string) {
+	f.DeployProxyWithExtras(ctx, extraVolumes, nil, extraArgs...)
 }
 
 // DeployProxyWithExtras redeploys the proxy with extra volumes, plus writable
 // volumes and sidecar containers that extraVolumes cannot express.
-func (f *Framework) DeployProxyWithExtras(extraVolumes []corev1.Volume, extras *helper.ProxyExtras, extraArgs ...string) {
+func (f *Framework) DeployProxyWithExtras(ctx context.Context, extraVolumes []corev1.Volume, extras *helper.ProxyExtras, extraArgs ...string) {
 	By("Deleting kube-oidc-proxy deployment")
-	err := f.Helper().DeleteProxy(f.Namespace.Name)
+	err := f.Helper().DeleteProxy(ctx, f.Namespace.Name)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = f.Helper().WaitForDeploymentToDelete(f.Namespace.Name, kind.ProxyImageName, time.Second*30)
+	err = f.Helper().WaitForDeploymentToDelete(ctx, f.Namespace.Name, kind.ProxyImageName, time.Second*30)
 	Expect(err).NotTo(HaveOccurred())
 
 	By(fmt.Sprintf("Deploying kube-oidc-proxy with extra args %s", extraArgs))
-	f.proxyKeyBundle, f.proxyURL, err = f.helper.DeployProxyWithExtras(f.Namespace, f.issuerURL,
+	f.proxyKeyBundle, f.proxyURL, err = f.helper.DeployProxyWithExtras(ctx, f.Namespace, f.issuerURL,
 		clientID, f.issuerKeyBundle, extraVolumes, extras, extraArgs...)
 	Expect(err).NotTo(HaveOccurred())
 }
@@ -247,18 +251,24 @@ func (f *Framework) ClientID() string {
 // mock issuer and valid for ten minutes, so the proxy's OIDC authenticator
 // accepts it.
 func (f *Framework) SignedTokenFor(username string, groups []string) string {
-	payload, err := idtoken.NewPayloadForIdentity(f.issuerURL, clientID,
+	payload := idtoken.NewPayloadForIdentity(f.issuerURL, clientID,
 		username, groups, time.Now().Add(10*time.Minute))
-	Expect(err).NotTo(HaveOccurred())
 
 	signed, err := idtoken.Sign(f.issuerKeyBundle, payload)
 	Expect(err).NotTo(HaveOccurred())
 	return signed
 }
 
+// SignedToken is SignedTokenFor the suite's standard identity, the one the
+// cases bind RBAC to and NewProxyRestConfig authenticates as.
+func (f *Framework) SignedToken() string {
+	return f.SignedTokenFor(idtoken.DefaultUsername, idtoken.DefaultGroups())
+}
+
+// NewProxyRestConfig returns a client-go configuration that reaches the proxy
+// as the suite's standard identity, with a freshly signed token.
 func (f *Framework) NewProxyRestConfig() *rest.Config {
-	config, err := f.Helper().NewValidRestConfig(f.issuerKeyBundle, f.proxyKeyBundle,
-		f.issuerURL, f.proxyURL, clientID)
+	config, err := f.Helper().NewValidRestConfig(f.proxyKeyBundle, f.proxyURL, f.SignedToken())
 	Expect(err).NotTo(HaveOccurred())
 
 	return config
@@ -276,6 +286,6 @@ func (f *Framework) NewProxyClient() kubernetes.Interface {
 // CasesDescribe declares a test case container. args is the container body
 // plus any Ginkgo decorators, such as Ordered and ContinueOnFailure for cases
 // that share a single deploy across their specs.
-func CasesDescribe(text string, args ...interface{}) bool {
+func CasesDescribe(text string, args ...any) bool {
 	return Describe("[TEST] "+text, args...)
 }

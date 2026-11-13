@@ -272,7 +272,7 @@ func TestSubjectAccessReview(t *testing.T) {
 
 			expImpersonationHeaders:  true,
 			expAz:                    false,
-			expErr:                   errors.New("no Impersonation-User header found for request"),
+			expErr:                   errors.New("no Impersonate-User header found for request"),
 			expErrorRbac:             nil,
 			extraImpersonationHeader: false,
 		},
@@ -314,7 +314,7 @@ func runTest(t *testing.T, name string, test testT) {
 		}
 	}
 
-	target, err := testReviewer.CheckAuthorizedForImpersonation(
+	target, err := testReviewer.ResolveImpersonation(
 		(&http.Request{
 			Header: headers,
 		}).WithContext(testRequestContext()), test.requester)
@@ -325,10 +325,10 @@ func runTest(t *testing.T, name string, test testT) {
 	// message-only errors that are only comparable by value.
 	if test.expErrorRbac != nil {
 		if !errors.Is(err, ErrCreateSubjectAccessReview) {
-			t.Errorf("CheckAuthorizedForImpersonation() error = %v, want errors.Is(%v)", err, ErrCreateSubjectAccessReview)
+			t.Errorf("ResolveImpersonation() error = %v, want errors.Is(%v)", err, ErrCreateSubjectAccessReview)
 		}
 		if !errors.Is(err, errReview) {
-			t.Errorf("CheckAuthorizedForImpersonation() error = %v, want errors.Is(%v) (underlying error must survive multi-%%w wrap)", err, errReview)
+			t.Errorf("ResolveImpersonation() error = %v, want errors.Is(%v) (underlying error must survive multi-%%w wrap)", err, errReview)
 		}
 	} else if !reflect.DeepEqual(test.expErr, err) {
 		t.Errorf("unexpected error, exp=%t got %t", test.expErr, err)

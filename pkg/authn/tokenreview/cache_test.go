@@ -259,7 +259,7 @@ func TestCachedReviewSeparatesAudienceSets(t *testing.T) {
 	// not. A cross-audience cache collision would surface as a wrong result
 	// or a missing apiserver call.
 	var calls atomic.Int64
-	requester := &fake.FakeReviewer{
+	client := &fake.FakeReviewer{
 		CreateFn: func(review *authv1.TokenReview) (*authv1.TokenReview, error) {
 			calls.Add(1)
 			if reflect.DeepEqual(review.Spec.Audiences, []string{"aud-1"}) {
@@ -269,9 +269,9 @@ func TestCachedReviewSeparatesAudienceSets(t *testing.T) {
 		},
 	}
 
-	cachedAud1 := withCache(newReviewer(requester, Config{Audiences: []string{"aud-1"}}, discardLogger),
+	cachedAud1 := withCache(newReviewer(client, Config{Audiences: []string{"aud-1"}}, discardLogger),
 		10*time.Second, 10*time.Second)
-	cachedAud2 := withCache(newReviewer(requester, Config{Audiences: []string{"aud-2"}}, discardLogger),
+	cachedAud2 := withCache(newReviewer(client, Config{Audiences: []string{"aud-2"}}, discardLogger),
 		10*time.Second, 10*time.Second)
 
 	for i := range 2 {

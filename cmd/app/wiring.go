@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -75,7 +75,7 @@ func configHash(fs *pflag.FlagSet) string {
 		}
 		pairs = append(pairs, f.Name+"="+f.Value.String())
 	})
-	sort.Strings(pairs)
+	slices.Sort(pairs)
 
 	sum := sha256.Sum256([]byte(strings.Join(pairs, "\n")))
 	return hex.EncodeToString(sum[:])[:configHashLength]
@@ -106,7 +106,7 @@ func logConfigLoaded(l *slog.Logger, summary configSummary) {
 }
 
 // startMetrics builds the recorder and starts the metrics listener when
-// metrics are enabled, returning the recorder and the drain step that stops
+// metrics are enabled, returning the recorder and the shutdown step that stops
 // the listener. With metrics disabled the recorder is nil, which every
 // collaborator treats as a no-op, and the step is noStep.
 //
@@ -126,10 +126,13 @@ func startMetrics(opts *options.Options, root *slog.Logger) (*metrics.Recorder, 
 	if err != nil {
 		return nil, nil, fmt.Errorf("building the metrics recorder: %w", err)
 	}
-	server := metrics.NewServer(metrics.ServerConfig{
+	server, err := metrics.NewServer(metrics.ServerConfig{
 		Addr:     opts.Metrics.BindAddress,
 		Recorder: recorder,
 	}, logging.ForComponent(root, logging.ComponentMetrics))
+	if err != nil {
+		return nil, nil, err
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	if err := server.Start(ctx); err != nil {
@@ -163,13 +166,13 @@ func buildRESTConfig(opts *options.Options, cmd *cobra.Command) (*rest.Config, e
 	return restConfig, nil
 }
 
-// buildTokenReviewer builds the token passthrough reviewer, or returns nil
-// when passthrough is disabled. The reviewer is fronted by a token result
-// cache so repeated reviews of the same token (e.g. request storms during an
-// OIDC issuer outage) do not each cost an API server round trip.
-func buildTokenReviewer(opts *options.Options, kubeclient kubernetes.Interface, recorder *metrics.Recorder, root *slog.Logger) authenticator.Token {
+// buildTokenReviewer builds the token passthrough reviewer, or returns a nil
+// reviewer when passthrough is disabled. The reviewer is fronted by a token
+// result cache so repeated reviews of the same token (e.g. request storms
+// during an OIDC issuer outage) do not each cost an API server round trip.
+func buildTokenReviewer(opts *options.Options, kubeclient kubernetes.Interface, recorder *metrics.Recorder, root *slog.Logger) (authenticator.Token, error) {
 	if !opts.App.TokenPassthrough.Enabled {
-		return nil
+		return nil, nil
 	}
 	return tokenreview.New(kubeclient.AuthenticationV1().TokenReviews(), tokenreview.Config{
 		Audiences:       opts.App.TokenPassthrough.Audiences,

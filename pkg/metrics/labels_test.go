@@ -221,7 +221,7 @@ func TestProjectionsNeverPassAnUnknownValue(t *testing.T) {
 			t.Errorf("projectCacheResult(%q) altered a documented value", v)
 		}
 	}
-	for _, v := range []AuditOperation{AuditRun, AuditShutdown} {
+	for _, v := range []AuditOperation{AuditRun} {
 		if projectAuditOperation(v) != string(v) {
 			t.Errorf("projectAuditOperation(%q) altered a documented value", v)
 		}

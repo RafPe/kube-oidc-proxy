@@ -296,9 +296,9 @@ unreserved group has no effect and is almost certainly a typo.
 
 ### Original-user audit headers
 
-Whenever the proxy impersonates, it attaches `Extra` headers identifying the
-**original** authenticated user, so the API server's audit log records who really
-made the request:
+When a client impersonates someone else (for example `kubectl --as`), the
+proxy attaches `Extra` headers identifying the **original** authenticated user,
+so the API server's audit log records who really made the request:
 
 | Extra key | When it is sent | Description |
 | --- | --- | --- |
@@ -306,6 +306,14 @@ made the request:
 | `originaluser.jetstack.io-groups` | When the original user has ≥1 group | The original groups. |
 | `originaluser.jetstack.io-uid` | When the original user has a UID | The original user UID. |
 | `originaluser.jetstack.io-extra` | When the original identity carries extra info | A JSON-encoded map of arrays with all the original `extra` fields. |
+
+The proxy owns every `originaluser.jetstack.io-*` key (see also
+[extra impersonation headers](#extra-impersonation-headers)). Each value comes from
+the identity the proxy authenticated, never from the request: a client's own
+`Impersonate-Extra-originaluser.jetstack.io-*` header is still authorized by a
+`SubjectAccessReview` like any other extra, but its value is dropped before the
+request is forwarded. A key the original user has no value for is left out,
+not filled from the client's header.
 
 > [!IMPORTANT]
 > The `originaluser.jetstack.io-*` keys are a runtime API contract, left
@@ -388,6 +396,17 @@ Proxied requests then carry:
 Impersonate-Extra-Key1: foo,bar
 Impersonate-Extra-Key2: bar
 ```
+
+**The proxy's keys carry only the proxy's values.** A client that
+impersonates someone may send its own `Impersonate-Extra-` headers, and each
+is authorized by a `SubjectAccessReview` as usual. For a key the proxy writes
+itself, though, the client's value is dropped before the request is
+forwarded, so the API server sees one source only: the resolved client IP for
+`Remote-Client-IP` while `--extra-user-header-client-ip` is on, and the
+configured values for each `--extra-user-headers` key. Keys are matched
+ignoring case, because the API server receives them as canonical header
+names, where `remote-client-ip` and `Remote-Client-IP` are the same header.
+Every other extra the client sends is forwarded as the client sent it.
 
 ## Glossary
 

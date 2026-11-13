@@ -21,10 +21,15 @@ import (
 // fixtures under testdata are the contract as an operator's query sees it: a
 // renamed key, a dropped key or a changed value type fails here. Update them
 // only when #129's contract itself changes.
+//
+// inbound_extra and outbound_extra are withdrawn from it: they logged an
+// allowlist of proxy-set keys out of the identities' own extras, where the
+// proxy never puts them, so in production they were only ever filled by a
+// claim that happened to share a name.
 func TestFrozenAccessContract(t *testing.T) {
 	frozen := []string{"event", "src_ip", "path", "forwarded_for_untrusted", "inbound_user", "inbound_groups",
-		"inbound_uid", "inbound_extra", "inbound_extra_omitted", "outbound_user", "outbound_groups", "outbound_uid",
-		"outbound_extra", "outbound_extra_omitted"}
+		"inbound_uid", "inbound_extra_omitted", "outbound_user", "outbound_groups", "outbound_uid",
+		"outbound_extra_omitted"}
 	for _, name := range []string{"allow", "deny"} {
 		want := map[string]any{}
 		raw, err := os.ReadFile(filepath.Join("testdata", "access_decision_"+name+".json"))
@@ -45,6 +50,11 @@ func TestFrozenAccessContract(t *testing.T) {
 		}
 		if got["event"] != want["event"] {
 			t.Errorf("%s: event = %v", name, got["event"])
+		}
+		for _, k := range []string{"inbound_extra", "outbound_extra"} {
+			if _, ok := got[k]; ok {
+				t.Errorf("%s: withdrawn field %s is still emitted: %v", name, k, got[k])
+			}
 		}
 	}
 }
@@ -79,16 +89,15 @@ func TestUpdateFixtures(t *testing.T) {
 	}
 }
 
-// emitFixture emits one access record through a real Logger and returns
-// it decoded. The allow case is alice impersonating bob, each carrying one
-// allowlisted extra and one that must be counted rather than logged; the deny
-// case is the impersonation refusal. Both cases are deterministic so the
+// emitFixture emits one access record through LogDecision and returns it
+// decoded. The allow case is alice impersonating bob, each carrying extras
+// that must be counted rather than logged; the deny case is the impersonation
+// refusal. Both cases are deterministic so the
 // golden file is stable.
 func emitFixture(t *testing.T, name string) map[string]any {
 	t.Helper()
 
 	root, cap := logtest.New(t, 0)
-	a := New(logging.ForComponent(root, logging.ComponentRequest))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/team-a/pods", nil)
 	req.RemoteAddr = "1.2.3.4:5555"
@@ -107,8 +116,8 @@ func emitFixture(t *testing.T, name string) map[string]any {
 			UID:    "alice-uid",
 			Groups: []string{"dev"},
 			Extra: map[string][]string{
-				reqctx.UserHeaderClientIPKey: {"1.2.3.4"},
-				"email":                      {"alice@example.com"},
+				"department": {"platform"},
+				"email":      {"alice@example.com"},
 			},
 		},
 	}
@@ -133,7 +142,7 @@ func emitFixture(t *testing.T, name string) map[string]any {
 		t.Fatalf("unknown fixture %q", name)
 	}
 
-	a.LogDecision(req, d)
+	LogDecision(logging.ForComponent(root, logging.ComponentRequest), req, d)
 
 	return cap.Only(t, logging.EventRequestAccessDecided)
 }

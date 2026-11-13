@@ -6,7 +6,6 @@ package sharedtests
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -25,6 +24,9 @@ import (
 
 // RunTokenValidationTests registers Ginkgo It blocks exercising the proxy's
 // token-validation behaviour against the framework's primary issuer.
+//
+// The invalid tokens are minted here rather than through SignedTokenFor, which
+// only produces tokens the proxy accepts.
 func RunTokenValidationTests(f *framework.Framework) {
 	It("rejects a missing token", func() {
 		expectUnauthorized(f, f.IssuerKeyBundle(), nil)
@@ -51,8 +53,8 @@ func RunTokenValidationTests(f *framework.Framework) {
 			idtoken.NewPayload(f.IssuerURL(), f.ClientID(), time.Now()))
 	})
 
-	It("accepts a valid token from the primary issuer", func() {
-		_, err := f.NewProxyClient().CoreV1().Pods(f.Namespace.Name).List(context.TODO(), metav1.ListOptions{})
+	It("accepts a valid token from the primary issuer", func(ctx SpecContext) {
+		_, err := f.NewProxyClient().CoreV1().Pods(f.Namespace.Name).List(ctx, metav1.ListOptions{})
 		if !k8sErrors.IsForbidden(err) {
 			Expect(err).NotTo(HaveOccurred())
 		}

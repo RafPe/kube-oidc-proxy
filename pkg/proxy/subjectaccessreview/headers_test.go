@@ -90,7 +90,7 @@ func TestCheckAuthorizedForImpersonationHeaderValueCap(t *testing.T) {
 				t.Fatalf("New() error = %v", err)
 			}
 
-			target, err := sar.CheckAuthorizedForImpersonation(
+			target, err := sar.ResolveImpersonation(
 				(&http.Request{Header: tc.headers}).WithContext(testRequestContext()), requester)
 
 			if tc.expOver {
@@ -111,7 +111,7 @@ func TestCheckAuthorizedForImpersonationHeaderValueCap(t *testing.T) {
 				}
 			} else {
 				if err != nil {
-					t.Fatalf("CheckAuthorizedForImpersonation() error = %v, want nil", err)
+					t.Fatalf("ResolveImpersonation() error = %v, want nil", err)
 				}
 				if target == nil {
 					t.Fatal("target = nil, want the impersonated user")
@@ -125,14 +125,26 @@ func TestCheckAuthorizedForImpersonationHeaderValueCap(t *testing.T) {
 	}
 }
 
-// TestNewRejectsNonPositiveMaxHeaderValues pins that the cap cannot be
-// disabled by construction: every SAR costs a round trip, so an unbounded
-// reviewer must not be constructible.
-func TestNewRejectsNonPositiveMaxHeaderValues(t *testing.T) {
-	for _, max := range []int{0, -1} {
-		if _, err := New(fake.New(nil), Config{Timeout: DefaultTimeout, AllowCacheTTL: 0, DenyCacheTTL: 0, MaxHeaderValues: max}, slog.New(slog.DiscardHandler)); err == nil {
-			t.Errorf("New(maxHeaderValues=%d) error = nil, want error", max)
-		}
+// TestNewSettlesTheMaxHeaderValues pins that a zero or negative cap means
+// DefaultMaxHeaderValues, the same rule Timeout follows: the cap cannot be
+// disabled by construction, because every SAR costs a round trip.
+func TestNewSettlesTheMaxHeaderValues(t *testing.T) {
+	for name, test := range map[string]struct {
+		max, exp int
+	}{
+		"zero means the default":     {0, DefaultMaxHeaderValues},
+		"negative means the default": {-1, DefaultMaxHeaderValues},
+		"a positive value is kept":   {3, 3},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, err := New(fake.New(nil), Config{MaxHeaderValues: test.max}, slog.New(slog.DiscardHandler))
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			if s.maxHeaderValues != test.exp {
+				t.Errorf("maxHeaderValues = %d, want %d", s.maxHeaderValues, test.exp)
+			}
+		})
 	}
 }
 
@@ -149,7 +161,7 @@ func impersonationHeaders() http.Header {
 }
 
 // TestHasImpersonationHeaders pins the predicate that decides whether a
-// request is authorized through CheckAuthorizedForImpersonation at all: any
+// request is authorized through ResolveImpersonation at all: any
 // Impersonate- prefixed key, however the client spelled it, counts, including
 // kinds this proxy does not know, so nothing impersonation-shaped is ever
 // forwarded unexamined.
@@ -235,7 +247,7 @@ func TestUnknownImpersonationHeaderIsRefusedBeforeAnyReview(t *testing.T) {
 			"Impersonate-Foo":   {"x"},
 		}}).WithContext(testRequestContext())
 
-		_, err = sar.CheckAuthorizedForImpersonation(req, &user.DefaultInfo{Name: "alice"})
+		_, err = sar.ResolveImpersonation(req, &user.DefaultInfo{Name: "alice"})
 		if !errors.Is(err, ErrUnknownImpersonationHeader) {
 			t.Fatalf("error = %v, want ErrUnknownImpersonationHeader", err)
 		}
