@@ -1,3 +1,0 @@
-kind: Changed
-body: |-
-  Token-passthrough requests are audited and access-logged with the identity the TokenReview returned (previously no user); what is forwarded is unchanged.
