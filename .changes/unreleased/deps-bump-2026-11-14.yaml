@@ -1,0 +1,2 @@
+kind: Dependencies
+body: Bump the k8s.io libraries from 0.37.0 to 0.37.2, github.com/go-jose/go-jose/v4 from 4.1.4 to 4.1.6, go.opentelemetry.io/otel, otel/sdk and otel/trace from 1.45.0 to 1.47.0, github.com/prometheus/common from 0.70.1 to 0.73.1, golang.org/x/mod from 0.41.0 to 0.43.0 and golang.org/x/sync from 0.23.0 to 0.25.0, with golang.org/x/crypto, x/net, x/sys, x/term, x/text and x/tools moved along by `go mod tidy`.
