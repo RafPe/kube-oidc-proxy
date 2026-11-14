@@ -1,3 +1,0 @@
-kind: Fixed
-body: |-
-  `HEAD /live` and `HEAD /ready` answer like `GET` (previously 405); a 405 carries an `Allow` header.
