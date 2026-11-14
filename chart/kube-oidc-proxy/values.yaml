@@ -387,6 +387,16 @@ extraArgs: {}
   #audit-log-path: /audit-log
   #audit-policy-file: /audit/audit.yaml
 
+# Extra environment variables added to the proxy container, as a list of
+# Kubernetes EnvVar entries (value or valueFrom). Useful for HTTP_PROXY,
+# HTTPS_PROXY and NO_PROXY when the proxy reaches the OIDC issuer through an
+# outbound proxy. The OIDC_* names the chart sets itself are refused.
+extraEnv: []
+  #- name: HTTPS_PROXY
+  #  value: http://proxy.example.com:3128
+  #- name: NO_PROXY
+  #  value: .svc,.cluster.local,10.0.0.0/8
+
 # Extra volumeMounts added to the proxy container.
 extraVolumeMounts: {}
   #- name: audit

@@ -1,0 +1,2 @@
+kind: Added
+body: The Helm chart adds `extraEnv`, a list of `EnvVar` entries appended to the proxy container, for settings such as `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`; the `OIDC_*` names the chart sets from `oidc.*` fail the render.

@@ -311,6 +311,7 @@ no `$job` or `$instance` variables and no job/instance matchers.
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `extraArgs` | map | `{}` | Extra CLI flags passed as `--key=value`, for anything without a value of its own, such as the audit flags ([auditing](../../docs/auditing.md#enabling-it-with-the-chart)). Rendered last, so an entry here wins over a flag the chart generates. `metrics-bind-address` is the one exception: when either `metrics.enabled` or `metrics.serviceMonitor.enabled` is true it fails the render, because the container port, the metrics Service and the monitors all follow `metrics.port` and would no longer point at the listener. Set `metrics.port` or `metrics.bindAddress` instead. With both switches false, `extraArgs.metrics-bind-address` remains available for manually managed listeners. |
+| `extraEnv` | list | `[]` | Extra container environment variables, as Kubernetes `EnvVar` entries (`value` or `valueFrom`), appended after the ones the chart generates. For example `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` when the issuer is reached through an outbound proxy. The `OIDC_*` variables the chart sets from `oidc.*` fail the render. |
 | `extraVolumeMounts` | list | `{}` | Extra container volumeMounts. |
 | `extraVolumes` | list | `{}` | Extra pod volumes. |
 

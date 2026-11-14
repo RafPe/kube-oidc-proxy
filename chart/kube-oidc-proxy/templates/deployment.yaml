@@ -42,6 +42,14 @@
 {{- end }}
 {{- end }}
 {{- end }}
+{{- range $env := (.Values.extraEnv | default list) }}
+{{- if not (kindIs "map" $env) }}
+{{- fail "each extraEnv entry must be an EnvVar map with at least a name" }}
+{{- end }}
+{{- if has (toString $env.name) (list "OIDC_CLIENT_ID" "OIDC_ISSUER_URL" "OIDC_USERNAME_CLAIM" "OIDC_USERNAME_PREFIX" "OIDC_GROUPS_CLAIM" "OIDC_GROUPS_PREFIX" "OIDC_SIGNING_ALGS") }}
+{{- fail (printf "extraEnv.%s is set by the chart from the oidc values; configure it through oidc.* (or oidc.existingSecret) instead" $env.name) }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -225,6 +233,9 @@ spec:
             secretKeyRef:
               {{- include "kube-oidc-proxy.oidcSecretRef" (dict "root" . "field" "signingAlgs" "key" "oidc.signing-algs" "required" false) | nindent 14 }}
         {{ end }}
+        {{- with .Values.extraEnv }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
         volumeMounts:
           {{- if or .Values.oidc.caPEM $multiIssuer }}
           - name: kube-oidc-proxy-config
