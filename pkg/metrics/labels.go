@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -16,6 +17,11 @@ import (
 // the published contract and never changes.
 const Namespace = "kube_oidc_proxy"
 
+// The types below are the proxy's closed outcome vocabulary. This file is
+// their single owner: the access record, the error classifier and the request
+// context use these types directly instead of keeping copies, so a label and
+// a log field naming the same outcome cannot drift apart.
+
 // other is the value every projection collapses an undocumented input onto.
 // A label must never carry a client-controlled string: kube-apiserver can
 // label by resource because its labels come from its route table, but this
@@ -23,6 +29,9 @@ const Namespace = "kube_oidc_proxy"
 // one series per request until the process ran out of memory. Every label
 // value therefore passes through one of the projections below.
 const other = "other"
+
+// codeNone is the code label of a request that ended without a status.
+const codeNone = "none"
 
 // Verb is the Kubernetes verb a request resolved to, projected onto a closed
 // lowercase set. Resource requests carry the resolver's verb (create, get,
@@ -74,16 +83,18 @@ func VerbFor(info *genericapirequest.RequestInfo) Verb {
 	if isConnectSubresource(info.Subresource) {
 		return VerbConnect
 	}
-	return Verb(projectVerb(Verb(info.Verb)))
+	return project(verbs, Verb(info.Verb), VerbOther)
+}
+
+// verbs is the documented verb set, in catalogue order. VerbOther is the
+// catch-all and is listed last.
+var verbs = []Verb{
+	VerbGet, VerbList, VerbWatch, VerbCreate, VerbUpdate, VerbPatch,
+	VerbDelete, VerbDeleteCollection, VerbProxy, VerbConnect, VerbOther,
 }
 
 func projectVerb(v Verb) string {
-	switch v {
-	case VerbGet, VerbList, VerbWatch, VerbCreate, VerbUpdate, VerbPatch,
-		VerbDelete, VerbDeleteCollection, VerbProxy, VerbConnect:
-		return string(v)
-	}
-	return string(VerbOther)
+	return string(project(verbs, v, VerbOther))
 }
 
 // Scope is how much of the API a request addressed, mirroring kube-apiserver's
@@ -113,21 +124,20 @@ func ScopeFor(info *genericapirequest.RequestInfo) Scope {
 	return ScopeCluster
 }
 
+// scopes is the documented scope set. ScopeNone doubles as the catch-all.
+var scopes = []Scope{ScopeCluster, ScopeNamespace, ScopeResource, ScopeNone}
+
 func projectScope(s Scope) string {
-	switch s {
-	case ScopeCluster, ScopeNamespace, ScopeResource, ScopeNone:
-		return string(s)
-	}
-	return string(ScopeNone)
+	return string(project(scopes, s, ScopeNone))
 }
 
 // CodeFor renders an HTTP status for the code label. The domain is the IANA
 // registry as Go knows it, so a status the proxy or the API server never
 // sends cannot create a series; a request that ended without a status (a
-// hijacked connection, a dropped one) is "none".
+// hijacked connection, a dropped one) is codeNone.
 func CodeFor(status int) string {
 	if status == 0 {
-		return "none"
+		return codeNone
 	}
 	if http.StatusText(status) == "" {
 		return other
@@ -135,39 +145,116 @@ func CodeFor(status int) string {
 	return strconv.Itoa(status)
 }
 
-// projectTermination projects onto the termination vocabulary of
-// pkg/proxy/lifecycle.go, repeated here rather than imported so this package
-// has no dependency on the proxy.
-func projectTermination(v string) string {
-	switch v {
-	case "normal", "hijacked", "client_cancel", "panic",
-		"upstream_timeout", "upstream_reset", "proxy_error":
-		return v
-	}
-	return other
+// Termination is how a request ended, as the terminal record's termination
+// and the requests counter's label report it. The lifecycle filter decides the
+// first four; the error handler classifies the upstream three.
+type Termination string
+
+const (
+	TerminationNormal       Termination = "normal"
+	TerminationHijacked     Termination = "hijacked"
+	TerminationClientCancel Termination = "client_cancel"
+	TerminationPanic        Termination = "panic"
+
+	TerminationUpstreamTimeout Termination = "upstream_timeout"
+	TerminationUpstreamReset   Termination = "upstream_reset"
+	TerminationProxyError      Termination = "proxy_error"
+)
+
+// terminations is the documented set, in catalogue order.
+var terminations = []Termination{
+	TerminationNormal, TerminationHijacked, TerminationClientCancel, TerminationPanic,
+	TerminationUpstreamTimeout, TerminationUpstreamReset, TerminationProxyError,
 }
 
-// projectAuthMethod projects onto the auth_method vocabulary of
-// pkg/proxy/handlers.go.
-func projectAuthMethod(v string) string {
-	switch v {
-	case "oidc", "tokenreview", "none":
-		return v
-	}
-	return other
+func projectTermination(t Termination) string {
+	return string(project(terminations, t, other))
 }
 
-// projectReason projects onto the access-record reason vocabulary of
-// pkg/proxy/handlers.go. The empty reason is the reason of an allow and
-// passes through.
-func projectReason(v string) string {
-	switch v {
-	case "", "unauthorized", "reserved_identity", "no_username_claim",
-		"impersonation_denied", "too_many_impersonation_values", "client_canceled",
-		"internal_error", "upstream_error", "authentication_dependency_error":
-		return v
+// AuthMethod is how a request authenticated, as the access record's
+// auth_method and the authentication and decision counters report it.
+type AuthMethod string
+
+const (
+	AuthMethodOIDC        AuthMethod = "oidc"
+	AuthMethodTokenReview AuthMethod = "tokenreview"
+
+	// AuthMethodNone is a request refused before any authenticator accepted
+	// its credential.
+	AuthMethodNone AuthMethod = "none"
+)
+
+// authMethods is the documented set, in catalogue order.
+var authMethods = []AuthMethod{AuthMethodOIDC, AuthMethodTokenReview, AuthMethodNone}
+
+func projectAuthMethod(m AuthMethod) string {
+	return string(project(authMethods, m, other))
+}
+
+// Decision is the outcome of a request's single access decision.
+type Decision string
+
+const (
+	DecisionAllow Decision = "allow"
+	DecisionDeny  Decision = "deny"
+)
+
+// DecisionFor renders an allowed/denied outcome as the decision value every
+// record and label uses.
+func DecisionFor(allowed bool) Decision {
+	if allowed {
+		return DecisionAllow
 	}
-	return other
+	return DecisionDeny
+}
+
+// Reason is why a request was refused, as the access record's reason and the
+// decision counter's label report it. An allow has no reason: ReasonNone.
+type Reason string
+
+const (
+	ReasonNone                       Reason = ""
+	ReasonUnauthorized               Reason = "unauthorized"
+	ReasonReservedIdentity           Reason = "reserved_identity"
+	ReasonNoUsernameClaim            Reason = "no_username_claim"
+	ReasonImpersonationDenied        Reason = "impersonation_denied"
+	ReasonTooManyImpersonationValues Reason = "too_many_impersonation_values"
+	ReasonClientCanceled             Reason = "client_canceled"
+	ReasonInternalError              Reason = "internal_error"
+
+	// ReasonUpstreamError classifies a failure of the hop to the API server
+	// itself, as opposed to anything the proxy decided about the request. It
+	// is carried by the upstream record and by the terminal record, never by
+	// an access decision: the request was already admitted.
+	ReasonUpstreamError Reason = "upstream_error"
+
+	// ReasonAuthenticationDependencyError classifies a TokenReview that could
+	// not be answered at all: the API server was unreachable or returned a
+	// status error. It is not a verdict on the credential.
+	ReasonAuthenticationDependencyError Reason = "authentication_dependency_error"
+
+	// ReasonAuthorizationDependencyError classifies a SubjectAccessReview
+	// that could not be answered, the authorization counterpart of
+	// ReasonAuthenticationDependencyError.
+	ReasonAuthorizationDependencyError Reason = "authorization_dependency_error"
+
+	// ReasonMalformedImpersonation classifies a request whose Impersonate-*
+	// headers have a shape the proxy refuses before asking anyone: a kind it
+	// does not know, or groups, uid or extras with no user to refine.
+	ReasonMalformedImpersonation Reason = "malformed_impersonation"
+)
+
+// reasons is the documented set, in catalogue order. ReasonNone is the
+// reason of an allow and passes through.
+var reasons = []Reason{
+	ReasonNone, ReasonUnauthorized, ReasonReservedIdentity, ReasonNoUsernameClaim,
+	ReasonImpersonationDenied, ReasonTooManyImpersonationValues, ReasonClientCanceled,
+	ReasonInternalError, ReasonUpstreamError, ReasonAuthenticationDependencyError,
+	ReasonAuthorizationDependencyError, ReasonMalformedImpersonation,
+}
+
+func projectReason(r Reason) string {
+	return string(project(reasons, r, other))
 }
 
 // AuthOutcome is how one authentication attempt ended, before the identity
@@ -180,12 +267,10 @@ const (
 	AuthError    AuthOutcome = "error"
 )
 
+var authOutcomes = []AuthOutcome{AuthAccepted, AuthRejected, AuthError}
+
 func projectAuthOutcome(o AuthOutcome) string {
-	switch o {
-	case AuthAccepted, AuthRejected, AuthError:
-		return string(o)
-	}
-	return other
+	return string(project(authOutcomes, o, other))
 }
 
 // Review names one of the two review APIs the proxy calls.
@@ -196,12 +281,10 @@ const (
 	ReviewSAR         Review = "sar"
 )
 
+var reviews = []Review{ReviewTokenReview, ReviewSAR}
+
 func projectReview(r Review) string {
-	switch r {
-	case ReviewTokenReview, ReviewSAR:
-		return string(r)
-	}
-	return other
+	return string(project(reviews, r, other))
 }
 
 // ReviewOutcome is how one review API call ended, classified from the actual
@@ -242,12 +325,10 @@ func ReviewOutcomeFor(err error, allowed bool) ReviewOutcome {
 	return ReviewError
 }
 
+var reviewOutcomes = []ReviewOutcome{ReviewAllow, ReviewDeny, ReviewTimeout, ReviewCanceled, ReviewError}
+
 func projectReviewOutcome(o ReviewOutcome) string {
-	switch o {
-	case ReviewAllow, ReviewDeny, ReviewTimeout, ReviewCanceled, ReviewError:
-		return string(o)
-	}
-	return other
+	return string(project(reviewOutcomes, o, other))
 }
 
 // CacheResult is the outcome of one review-cache consultation.
@@ -259,26 +340,33 @@ const (
 	CacheBypass CacheResult = "bypass"
 )
 
+var cacheResults = []CacheResult{CacheHit, CacheMiss, CacheBypass}
+
 func projectCacheResult(r CacheResult) string {
-	switch r {
-	case CacheHit, CacheMiss, CacheBypass:
-		return string(r)
-	}
-	return other
+	return string(project(cacheResults, r, other))
 }
 
 // AuditOperation names the audit backend operation a failure was observed in.
 type AuditOperation string
 
-const (
-	AuditRun      AuditOperation = "run"
-	AuditShutdown AuditOperation = "shutdown"
-)
+// AuditRun is the only operation a failure can be observed in: the upstream
+// audit backends' Shutdown returns nothing, so a lost flush has no value here.
+const AuditRun AuditOperation = "run"
+
+var auditOperations = []AuditOperation{AuditRun}
 
 func projectAuditOperation(o AuditOperation) string {
-	switch o {
-	case AuditRun, AuditShutdown:
-		return string(o)
+	return string(project(auditOperations, o, other))
+}
+
+// project is the one projection every label goes through: a documented value
+// passes unchanged, anything else collapses onto catchAll, and the result
+// keeps the vocabulary type. The project* wrappers render it as the label
+// value. The same slice feeds the catalogue's allowed values, so the two
+// cannot disagree.
+func project[T ~string](documented []T, v, catchAll T) T {
+	if slices.Contains(documented, v) {
+		return v
 	}
-	return other
+	return catchAll
 }

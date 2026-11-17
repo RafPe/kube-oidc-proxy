@@ -4,732 +4,359 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
-	"errors"
+	"encoding/pem"
+	"flag"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
+	"math/big"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"reflect"
-	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	utilnet "k8s.io/apimachinery/pkg/util/net"
-	apiserverapi "k8s.io/apiserver/pkg/apis/apiserver"
-	authenticationcel "k8s.io/apiserver/pkg/authentication/cel"
-	"k8s.io/client-go/util/cert"
+	certutil "k8s.io/client-go/util/cert"
+	"k8s.io/klog/v2"
 
 	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
-	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
-	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 )
 
-func writeTempFile(t *testing.T, content string) string {
+// neverStop is the stop trigger for a run that is expected to fail at startup:
+// the context is only cancelled by run itself, and nothing signals the test
+// process.
+func neverStop(parent context.Context, _ *slog.Logger) (context.Context, context.CancelFunc) {
+	return context.WithCancel(parent)
+}
+
+// restoreRunGlobals undoes what run sets process-wide once t ends: the default
+// slog logger, the log package output slog.SetDefault redirects, and klog's -v,
+// so later tests in the binary see none of them. klog's installed logger is not
+// reset: logging.InstallKlogBridge installs it once per process and only swaps
+// its target, because a Kubernetes library goroutine (the serving certificate
+// reloader) can still log through it after the command has returned.
+func restoreRunGlobals(t *testing.T) {
 	t.Helper()
-	f, err := os.CreateTemp(t.TempDir(), "auth-config-*.yaml")
-	if err != nil {
-		t.Fatalf("creating temp file: %v", err)
-	}
-	if _, err := f.WriteString(content); err != nil {
-		t.Fatalf("writing temp file: %v", err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatalf("closing temp file: %v", err)
-	}
-	return f.Name()
-}
-
-func TestOIDCAutherFromJWT_Construction(t *testing.T) {
-	emptyPrefix := ""
-	entry := apiserverapi.JWTAuthenticator{
-		Issuer: apiserverapi.Issuer{
-			URL:       "https://vault.example.com/v1/identity/oidc",
-			Audiences: []string{"my-client"},
-		},
-		ClaimMappings: apiserverapi.ClaimMappings{
-			Username: apiserverapi.PrefixedClaimOrExpression{
-				Claim:  "email",
-				Prefix: &emptyPrefix,
-			},
-			Groups: apiserverapi.PrefixedClaimOrExpression{
-				Claim:  "groups",
-				Prefix: &emptyPrefix,
-			},
-		},
-		UserValidationRules: []apiserverapi.UserValidationRule{
-			{Expression: "!user.username.startsWith('system:')", Message: "no system: prefix"},
-		},
-	}
-
-	auther, err := oidcAutherFromJWT(
-		entry,
-		authenticationcel.NewDefaultCompiler(),
-		[]string{"RS256"},
-		&options.OIDCAuthenticationOptions{},
-	)
-	if err != nil {
-		t.Fatalf("oidcAutherFromJWT() unexpected error: %v", err)
-	}
-	if auther == nil {
-		t.Error("oidcAutherFromJWT() returned nil authenticator")
-	}
-}
-
-func TestOIDCHTTPClientReloadsClientCertificate(t *testing.T) {
-	certFile := filepath.Join(t.TempDir(), "client.crt")
-	keyFile := filepath.Join(filepath.Dir(certFile), "client.key")
-
-	firstCert, firstKey, err := cert.GenerateSelfSignedCertKey("first-client", nil, nil)
-	if err != nil {
-		t.Fatalf("GenerateSelfSignedCertKey(first-client) error = %v", err)
-	}
-	secondCert, secondKey, err := cert.GenerateSelfSignedCertKey("second-client", nil, nil)
-	if err != nil {
-		t.Fatalf("GenerateSelfSignedCertKey(second-client) error = %v", err)
-	}
-	writeClientKeyPair(t, certFile, keyFile, firstCert, firstKey)
-
-	client, err := oidcHTTPClient("", nil, certFile, keyFile)
-	if err != nil {
-		t.Fatalf("oidcHTTPClient(%q, %q) error = %v", certFile, keyFile, err)
-	}
-	tlsConfig, err := utilnet.TLSClientConfig(client.Transport)
-	if err != nil {
-		t.Fatalf("TLSClientConfig() error = %v", err)
-	}
-	if tlsConfig == nil || tlsConfig.GetClientCertificate == nil {
-		t.Fatal("oidcHTTPClient() transport has no dynamic client-certificate callback")
-	}
-
-	gotFirst, err := tlsConfig.GetClientCertificate(nil)
-	if err != nil {
-		t.Fatalf("GetClientCertificate(first) error = %v", err)
-	}
-	writeClientKeyPair(t, certFile, keyFile, secondCert, secondKey)
-	time.Sleep(1100 * time.Millisecond)
-	gotSecond, err := tlsConfig.GetClientCertificate(nil)
-	if err != nil {
-		t.Fatalf("GetClientCertificate(second) error = %v", err)
-	}
-	if bytes.Equal(gotFirst.Certificate[0], gotSecond.Certificate[0]) {
-		t.Error("GetClientCertificate() returned the original certificate after files rotated")
-	}
-}
-
-func writeClientKeyPair(t *testing.T, certFile, keyFile string, certData, keyData []byte) {
-	t.Helper()
-	if err := os.WriteFile(certFile, certData, 0600); err != nil {
-		t.Fatalf("os.WriteFile(%q) error = %v", certFile, err)
-	}
-	if err := os.WriteFile(keyFile, keyData, 0600); err != nil {
-		t.Fatalf("os.WriteFile(%q) error = %v", keyFile, err)
-	}
-}
-
-func TestJWTAuthenticatorFromOIDCOptions_RequiredClaims(t *testing.T) {
-	t.Run("required claims are mapped into ClaimValidationRules", func(t *testing.T) {
-		o := &options.OIDCAuthenticationOptions{
-			IssuerURL:     "https://vault.example.com",
-			ClientID:      "my-client",
-			UsernameClaim: "email",
-			GroupsClaim:   "groups",
-			SigningAlgs:   []string{"RS256"},
-			RequiredClaims: map[string]string{
-				"hd":   "example.com",
-				"team": "platform",
-			},
-		}
-
-		got := jwtAuthenticatorFromOIDCOptions(o)
-
-		// Sorted by claim name for deterministic construction.
-		want := []apiserverapi.ClaimValidationRule{
-			{Claim: "hd", RequiredValue: "example.com"},
-			{Claim: "team", RequiredValue: "platform"},
-		}
-		if !reflect.DeepEqual(got.ClaimValidationRules, want) {
-			t.Errorf("ClaimValidationRules = %#v, want %#v", got.ClaimValidationRules, want)
-		}
-	})
-
-	t.Run("no required claims yields no rules", func(t *testing.T) {
-		o := &options.OIDCAuthenticationOptions{
-			IssuerURL:     "https://vault.example.com",
-			ClientID:      "my-client",
-			UsernameClaim: "email",
-			GroupsClaim:   "groups",
-			SigningAlgs:   []string{"RS256"},
-		}
-
-		got := jwtAuthenticatorFromOIDCOptions(o)
-		if len(got.ClaimValidationRules) != 0 {
-			t.Errorf("ClaimValidationRules = %#v, want empty", got.ClaimValidationRules)
+	prevDefault := slog.Default()
+	prevLogOutput, prevLogFlags := log.Writer(), log.Flags()
+	var fs flag.FlagSet
+	klog.InitFlags(&fs)
+	prevV := fs.Lookup("v").Value.String()
+	t.Cleanup(func() {
+		slog.SetDefault(prevDefault)
+		log.SetOutput(prevLogOutput)
+		log.SetFlags(prevLogFlags)
+		if err := fs.Set("v", prevV); err != nil {
+			t.Errorf("restoring klog -v to %q: %s", prevV, err)
 		}
 	})
 }
 
-func TestBuildTokenAuther_SingleIssuer(t *testing.T) {
-	opts := &options.Options{
-		OIDCAuthentication: &options.OIDCAuthenticationOptions{
-			IssuerURL:     "https://vault.example.com/v1/identity/oidc",
-			ClientID:      "my-client",
-			UsernameClaim: "email",
-			GroupsClaim:   "groups",
-			SigningAlgs:   []string{"RS256"},
-		},
-		AuthenticationConfig: &options.AuthenticationConfigOptions{},
-	}
-
-	auther, issuerURLs, err := buildTokenAuther(opts, discardLogger(), discardLogger())
-	if err != nil {
-		t.Fatalf("buildTokenAuther() unexpected error: %v", err)
-	}
-	if auther == nil {
-		t.Error("buildTokenAuther() returned nil authenticator")
-	}
-	if want := []string{opts.OIDCAuthentication.IssuerURL}; len(issuerURLs) != len(want) || issuerURLs[0] != want[0] {
-		t.Errorf("buildTokenAuther() issuerURLs = %v, want %v", issuerURLs, want)
-	}
-}
-
-func TestBuildTokenAuther_AuthConfig(t *testing.T) {
-	configContent := `
-apiVersion: apiserver.config.k8s.io/v1beta1
-kind: AuthenticationConfiguration
-jwt:
-  - issuer:
-      url: https://vault.example.com/v1/identity/oidc
-      audiences:
-        - my-client
-    claimMappings:
-      username:
-        claim: email
-        prefix: ""
-      groups:
-        claim: groups
-        prefix: ""
-  - issuer:
-      url: https://issuer2.example.com/v1/identity/oidc
-      audiences:
-        - kubernetes
-    claimMappings:
-      username:
-        claim: email
-        prefix: ""
-      groups:
-        claim: groups
-        prefix: ""
-`
-	configPath := writeTempFile(t, configContent)
-
-	opts := &options.Options{
-		OIDCAuthentication: &options.OIDCAuthenticationOptions{
-			SigningAlgs: []string{"RS256"},
-		},
-		AuthenticationConfig: &options.AuthenticationConfigOptions{
-			ConfigFile: configPath,
-		},
-	}
-
-	auther, issuerURLs, err := buildTokenAuther(opts, discardLogger(), discardLogger())
-	if err != nil {
-		t.Fatalf("buildTokenAuther() unexpected error: %v", err)
-	}
-	if auther == nil {
-		t.Error("buildTokenAuther() returned nil authenticator")
-	}
-	want := []string{
-		"https://vault.example.com/v1/identity/oidc",
-		"https://issuer2.example.com/v1/identity/oidc",
-	}
-	if len(issuerURLs) != len(want) {
-		t.Fatalf("buildTokenAuther() issuerURLs = %v, want %v", issuerURLs, want)
-	}
-	for i := range want {
-		if issuerURLs[i] != want[i] {
-			t.Errorf("buildTokenAuther() issuerURLs[%d] = %q, want %q", i, issuerURLs[i], want[i])
-		}
-	}
-}
-
-func TestBuildUnionAutherFromV1ConfigWithCEL(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "auth.yaml")
-	cfg := `apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: https://issuer1.example.com
-    audiences: ["aud-one"]
-  claimMappings:
-    username:
-      claim: sub
-      prefix: "one:"
-    groups:
-      expression: '["g:" + claims.owner]'
-- issuer:
-    url: https://issuer2.example.com
-    audiences: ["aud-two"]
-  claimMappings:
-    username:
-      claim: sub
-      prefix: "two:"
-`
-	if err := os.WriteFile(path, []byte(cfg), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	opts := options.New()
-	opts.AuthenticationConfig.ConfigFile = path
-
-	auther, issuerURLs, err := buildTokenAuther(opts, discardLogger(), discardLogger())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if auther == nil {
-		t.Fatal("expected a token authenticator, got nil")
-	}
-	want := []string{"https://issuer1.example.com", "https://issuer2.example.com"}
-	if !reflect.DeepEqual(issuerURLs, want) {
-		t.Fatalf("expected issuer URLs %v, got %v", want, issuerURLs)
-	}
-}
-
-func TestBuildTokenAuther_AuthConfig_InvalidFile(t *testing.T) {
-	opts := &options.Options{
-		OIDCAuthentication:   &options.OIDCAuthenticationOptions{SigningAlgs: []string{"RS256"}},
-		AuthenticationConfig: &options.AuthenticationConfigOptions{ConfigFile: "/does/not/exist.yaml"},
-	}
-
-	_, _, err := buildTokenAuther(opts, discardLogger(), discardLogger())
-	if err == nil {
-		t.Error("buildTokenAuther() expected error for missing config file, got nil")
-	}
-}
-
-func TestCheckReservedIdentityPrefixes(t *testing.T) {
-	tests := map[string]struct {
-		usernamePrefix string
-		groupsPrefix   string
-		configFile     string
-		wantErr        bool
-	}{
-		"no prefixes": {},
-		"ordinary prefixes": {
-			usernamePrefix: "oidc:",
-			groupsPrefix:   "oidc:",
-		},
-		"reserved username prefix": {
-			usernamePrefix: "system:",
-			wantErr:        true,
-		},
-		"reserved groups prefix": {
-			groupsPrefix: "system:serviceaccount:",
-			wantErr:      true,
-		},
-		// --oidc-* prefixes are ignored entirely when an authentication
-		// configuration file is in use, so they must not fail startup.
-		"reserved prefix ignored in multi-issuer mode": {
-			usernamePrefix: "system:",
-			configFile:     "/etc/kube-oidc-proxy/authentication.yaml",
-		},
-	}
-
-	for name, test := range tests {
-		t.Run(name, func(t *testing.T) {
-			opts := &options.Options{
-				OIDCAuthentication: &options.OIDCAuthenticationOptions{
-					UsernamePrefix: test.usernamePrefix,
-					GroupsPrefix:   test.groupsPrefix,
-				},
-				AuthenticationConfig: &options.AuthenticationConfigOptions{ConfigFile: test.configFile},
-				App:                  &options.KubeOIDCProxyOptions{},
-			}
-
-			err := checkReservedIdentityPrefixes(opts)
-
-			if test.wantErr && err == nil {
-				t.Error("checkReservedIdentityPrefixes() = nil, want an error")
-			}
-			if !test.wantErr && err != nil {
-				t.Errorf("checkReservedIdentityPrefixes() = %v, want nil", err)
-			}
-		})
-	}
-}
-
-// discardLogger is the logger the buildTokenAuther cases pass: these tests
-// exercise authenticator construction, not the records it emits.
-func discardLogger() *slog.Logger {
-	return slog.New(slog.DiscardHandler)
-}
-
-// TestLogConfigLoaded pins the startup record that fixes what this pod is
-// configured to do. It is the record an operator diffs between two pods, so
-// every field it promises must be present and carry the value it was given.
-func TestLogConfigLoaded(t *testing.T) {
-	root, cap := logtest.New(t, 0)
-
-	logConfigLoaded(logging.ForComponent(root, logging.ComponentStartup), configSummary{
-		version:       "v1.5.0",
-		configHash:    "0123456789abcdef",
-		issuerCount:   2,
-		readinessMode: "all",
-	})
-
-	rec := cap.Only(t, logging.EventProxyConfigLoaded)
-	if rec.String("version") != "v1.5.0" {
-		t.Errorf("version = %q", rec.String("version"))
-	}
-	if rec.String("config_hash") != "0123456789abcdef" {
-		t.Errorf("config_hash = %q", rec.String("config_hash"))
-	}
-	if got, ok := rec.Int("issuer_count"); !ok || got != 2 {
-		t.Errorf("issuer_count = %v", rec["issuer_count"])
-	}
-	if rec.String("readiness_mode") != "all" {
-		t.Errorf("readiness_mode = %q", rec.String("readiness_mode"))
-	}
-	if rec.String("component") != string(logging.ComponentStartup) {
-		t.Errorf("component = %q, want startup", rec.String("component"))
-	}
-}
-
-// TestLogIssuersConfigured pins one record per configured issuer, each naming
-// the issuer and the size of the set it belongs to. The previous behaviour was
-// a single line with an interpolated slice, which no query can decompose.
-func TestLogIssuersConfigured(t *testing.T) {
-	root, cap := logtest.New(t, 0)
-
-	logIssuersConfigured(logging.ForComponent(root, logging.ComponentOIDC),
-		[]string{"idp.example.com", "github.example.com"})
-
-	recs := cap.ByEvent(logging.EventOIDCIssuerConfigured)
-	if len(recs) != 2 {
-		t.Fatalf("got %d issuer records, want 2: %s", len(recs), cap.Raw())
-	}
-
-	var names []string
-	for _, rec := range recs {
-		names = append(names, rec.String("issuer_name"))
-		if got, ok := rec.Int("issuer_count"); !ok || got != 2 {
-			t.Errorf("issuer_count = %v, want 2", rec["issuer_count"])
-		}
-		if rec.String("msg") != "configured OIDC issuers" {
-			t.Errorf("msg = %q, want %q", rec.String("msg"), "configured OIDC issuers")
-		}
-		if rec.String("component") != string(logging.ComponentOIDC) {
-			t.Errorf("component = %q, want oidc", rec.String("component"))
-		}
-	}
-	if want := []string{"idp.example.com", "github.example.com"}; !reflect.DeepEqual(names, want) {
-		t.Fatalf("issuer names = %v, want %v", names, want)
-	}
-}
-
-// TestLogIssuersConfiguredNoIssuers pins the empty case: with no issuers
-// configured there is nothing to announce, and an empty stream is not the same
-// record with a zero count.
-func TestLogIssuersConfiguredNoIssuers(t *testing.T) {
-	root, cap := logtest.New(t, 0)
-
-	logIssuersConfigured(logging.ForComponent(root, logging.ComponentOIDC), nil)
-
-	if raw := cap.Raw(); raw != "" {
-		t.Fatalf("records emitted with no issuers configured: %s", raw)
-	}
-}
-
-// TestIssuerNamesDerivesFromURLs pins the run.go side of the never-log-a-full-
-// issuer-URL constraint: the names handed to the record are hosts, and a value
-// with no host degrades to the placeholder rather than to the URL itself.
-func TestIssuerNamesDerivesFromURLs(t *testing.T) {
-	got := issuerNames([]string{"https://idp.example.com/realms/corp", "not-a-url"})
-	want := []string{"idp.example.com", "unknown"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("issuerNames = %v, want %v", got, want)
-	}
-}
-
-// TestStartupFailureAfterLoggerIsReportedAsARecord pins that an error raised
-// once the root logger exists is emitted as proxy.startup.failed on the
-// configured stream and returned as ErrReported, so main exits non-zero without
-// appending a second, unstructured line to the container log.
-func TestStartupFailureAfterLoggerIsReportedAsARecord(t *testing.T) {
+// TestVersionPrintsAndReturnsWithoutStarting pins that --version is answered on
+// the command's output and returns cleanly, so main owns the exit status: no
+// flag is validated, no logger is built, and no stop trigger is installed.
+func TestVersionPrintsAndReturnsWithoutStarting(t *testing.T) {
 	var out bytes.Buffer
 	opts := options.New()
-	cmd := buildRunCommand(opts, &out)
-	opts.AddFlags(cmd)
-	cmd.SetArgs([]string{
-		"--oidc-issuer-url=https://issuer.example.com",
-		"--oidc-client-id=kube-oidc-proxy",
-		"--kubeconfig=" + filepath.Join(t.TempDir(), "missing-kubeconfig"),
+	cmd := buildRunCommand(opts, &out, func(parent context.Context, _ *slog.Logger) (context.Context, context.CancelFunc) {
+		t.Error("--version installed the stop trigger; it must return before startup")
+		return context.WithCancel(parent)
 	})
+	opts.AddFlags(cmd)
+	// An invalid configuration beside --version shows that nothing is
+	// validated either.
+	cmd.SetArgs([]string{"--version", "--oidc-issuer-url=https://issuer.example.com"})
 	var cmdOut, cmdErr bytes.Buffer
 	cmd.SetOut(&cmdOut)
 	cmd.SetErr(&cmdErr)
 
-	err := cmd.Execute()
-	if !errors.Is(err, ErrReported) {
-		t.Fatalf("Execute() error = %v, want ErrReported", err)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() = %v, want nil", err)
 	}
-	// cobra must not print the error or the usage text: the record is the
-	// only report, and main prints nothing for ErrReported.
-	if cmdOut.Len() != 0 || cmdErr.Len() != 0 {
-		t.Fatalf("command wrote outside the log stream: stdout=%q stderr=%q", cmdOut.String(), cmdErr.String())
+	if !strings.HasPrefix(cmdOut.String(), options.AppName+" version: ") || !strings.Contains(cmdOut.String(), "GitVersion:") {
+		t.Errorf("command output = %q, want the version information", cmdOut.String())
+	}
+	if out.Len() != 0 || cmdErr.Len() != 0 {
+		t.Errorf("--version wrote outside the command output: log=%q stderr=%q", out.String(), cmdErr.String())
+	}
+}
+
+// TestRunServesUntilStoppedThenShutsDownCleanly drives the whole command in
+// process: startup against a fake API server and a fake OIDC issuer, readiness
+// flipping once the proxy serves and the issuer's keys are loaded, and a clean
+// exit with the shutdown records once the stop trigger fires.
+func TestRunServesUntilStoppedThenShutsDownCleanly(t *testing.T) {
+	restoreRunGlobals(t)
+	dir := t.TempDir()
+
+	apiServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(apiServer.Close)
+	issuer := newFakeIssuer(t)
+
+	certFile, keyFile := writeServingCert(t, dir)
+
+	// No port is reserved and then released for the command to bind, which
+	// another process could take in between. The secure listener is bound
+	// here and handed over through SecureServing.Listener, which ApplyTo
+	// serves on as given (--secure-port=0 would turn secure serving off
+	// instead). The readiness listener binds port 0 and the test reads the
+	// port back from readiness.server.started. Only the metrics port is
+	// reserved and released, because --metrics-bind-address refuses port 0:
+	// a scrape target must know its port in advance.
+	secureListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The command owns the listener once started; this only frees it when
+	// the command fails before serving.
+	t.Cleanup(func() { _ = secureListener.Close() })
+	securePort := secureListener.Addr().(*net.TCPAddr).Port
+	metricsPort := freePort(t)
+
+	var out syncBuffer
+	stopCtx, stop := context.WithCancel(context.Background())
+	defer stop()
+	opts := options.New()
+	opts.SecureServing.Listener = secureListener
+	cmd := buildRunCommand(opts, &out, func(parent context.Context, _ *slog.Logger) (context.Context, context.CancelFunc) {
+		// The test's stop trigger stands in for the first signal.
+		ctx, cancel := context.WithCancel(parent)
+		context.AfterFunc(stopCtx, cancel)
+		return ctx, cancel
+	})
+	opts.AddFlags(cmd)
+	cmd.SetArgs([]string{
+		"--oidc-issuer-url=" + issuer.URL,
+		"--oidc-client-id=kube-oidc-proxy",
+		"--oidc-ca-file=" + writeCA(t, dir, "issuer-ca.pem", issuer),
+		"--server=" + apiServer.URL,
+		"--certificate-authority=" + writeCA(t, dir, "api-ca.pem", apiServer),
+		"--bind-address=127.0.0.1",
+		"--tls-cert-file=" + certFile,
+		"--tls-private-key-file=" + keyFile,
+		"--readiness-probe-port=0",
+		"--metrics-bind-address=127.0.0.1:" + strconv.Itoa(metricsPort),
+	})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Execute() }()
+
+	// Keep-alives off so no idle connection holds a listener's drain open.
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			DisableKeepAlives: true,
+			// The proxy's serving certificate is self-signed by the test.
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test-only self-signed serving certificate
+		},
+	}
+	get := func(url string) (int, error) {
+		resp, err := client.Get(url)
+		if err != nil {
+			return 0, err
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return resp.StatusCode, nil
 	}
 
-	// Every line of the whole stream is one JSON record, and the failure is
-	// reported exactly once.
-	var failures []map[string]any
+	deadline := time.Now().Add(30 * time.Second)
+	var readyURL string
+	for {
+		if readyURL == "" {
+			if port, ok := startedPort(t, out.String(), logging.EventReadinessServerStarted); ok {
+				readyURL = "http://127.0.0.1:" + port + "/ready"
+			}
+		}
+		if readyURL != "" {
+			if code, err := get(readyURL); err == nil && code == http.StatusOK {
+				break
+			}
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("command exited before readiness: %v\n%s", err, out.String())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("readiness never reported ready:\n%s", out.String())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// The proxy itself is serving: a request without credentials is refused
+	// by the proxy rather than forwarded.
+	if code, err := get(fmt.Sprintf("https://127.0.0.1:%d/api", securePort)); err != nil || code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated request = %d, %v; want 401", code, err)
+	}
+
+	stop()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Execute() = %v, want a clean exit:\n%s", err, out.String())
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatalf("command did not exit after the stop trigger:\n%s", out.String())
+	}
+
+	seen := map[logging.EventType]int{}
 	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
 		var rec map[string]any
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
 			t.Fatalf("non-JSON line on the log stream: %q", line)
 		}
-		if rec["event_type"] == string(logging.EventProxyStartupFailed) {
-			failures = append(failures, rec)
+		event, _ := rec["event_type"].(string)
+		seen[logging.EventType(event)]++
+	}
+	for _, want := range []logging.EventType{
+		logging.EventProxyServerStarted,
+		logging.EventReadinessProxyReady,
+		logging.EventProxyServerStopped,
+		logging.EventProxyShutdownCompleted,
+	} {
+		if seen[want] != 1 {
+			t.Errorf("%s records = %d, want 1", want, seen[want])
 		}
 	}
-	if len(failures) != 1 {
-		t.Fatalf("want exactly one proxy.startup.failed record, got %d:\n%s", len(failures), out.String())
-	}
-	rec := failures[0]
-	if rec["level"] != "ERROR" || rec["component"] != string(logging.ComponentStartup) {
-		t.Errorf("level/component = %v/%v, want ERROR/startup", rec["level"], rec["component"])
-	}
-	msg, _ := rec["error_message"].(string)
-	if !strings.Contains(msg, "missing-kubeconfig") {
-		t.Errorf("error_message = %q, want the underlying cause", msg)
+	if seen[logging.EventProxyStartupFailed] != 0 {
+		t.Errorf("unexpected failure records:\n%s", out.String())
 	}
 }
 
-// TestMetricsBindFailureIsReportedAtStartup pins two things: the metrics
-// listener binds before anything that needs a cluster, and a port already in
-// use is a startup failure on the log stream rather than a crash later.
-func TestMetricsBindFailureIsReportedAtStartup(t *testing.T) {
+// syncBuffer is a bytes.Buffer safe to write from the command's goroutines
+// while the test reads it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// startedPort returns the port in the address of the first event record on
+// stream, once the listener reporting it has bound.
+func startedPort(t *testing.T, stream string, event logging.EventType) (string, bool) {
+	t.Helper()
+	for _, line := range strings.Split(strings.TrimSpace(stream), "\n") {
+		var rec map[string]any
+		if json.Unmarshal([]byte(line), &rec) != nil || rec["event_type"] != string(event) {
+			continue
+		}
+		address, _ := rec["address"].(string)
+		_, port, err := net.SplitHostPort(address)
+		if err != nil {
+			t.Fatalf("%s address = %q: %v", event, address, err)
+		}
+		return port, true
+	}
+	return "", false
+}
+
+// freePort returns a loopback port that was free a moment ago. The listener
+// is released before the command binds it, a race the one caller accepts for
+// the metrics port only.
+func freePort(t *testing.T) int {
+	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-
-	var out bytes.Buffer
-	opts := options.New()
-	cmd := buildRunCommand(opts, &out)
-	opts.AddFlags(cmd)
-	cmd.SetArgs([]string{
-		"--oidc-issuer-url=https://issuer.example.com",
-		"--oidc-client-id=kube-oidc-proxy",
-		"--metrics-bind-address=" + ln.Addr().String(),
-		"--kubeconfig=" + filepath.Join(t.TempDir(), "missing-kubeconfig"),
-	})
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-
-	if err := cmd.Execute(); !errors.Is(err, ErrReported) {
-		t.Fatalf("Execute() error = %v, want ErrReported", err)
-	}
-
-	var failure map[string]any
-	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
-		var rec map[string]any
-		if err := json.Unmarshal([]byte(line), &rec); err != nil {
-			t.Fatalf("non-JSON line on the log stream: %q", line)
-		}
-		if rec["event_type"] == string(logging.EventProxyStartupFailed) {
-			failure = rec
-		}
-	}
-	if failure == nil {
-		t.Fatalf("no proxy.startup.failed record:\n%s", out.String())
-	}
-	msg, _ := failure["error_message"].(string)
-	if !strings.Contains(msg, "metrics listener") || strings.Contains(msg, "missing-kubeconfig") {
-		t.Fatalf("error_message = %q, want the metrics bind failure, reported before the kubeconfig is read", msg)
-	}
+	return ln.Addr().(*net.TCPAddr).Port
 }
 
-// TestBuildTokenAutherRefusesIssuersSharingAHost pins the placement: the
-// configuration is refused by buildTokenAuther itself, before it constructs
-// any authenticator.
-func TestBuildTokenAutherRefusesIssuersSharingAHost(t *testing.T) {
-	config := filepath.Join(t.TempDir(), "auth.yaml")
-	content := `apiVersion: apiserver.config.k8s.io/v1beta1
-kind: AuthenticationConfiguration
-jwt:
-  - issuer:
-      url: https://idp.example.com/realms/a
-      audiences:
-        - a
-    claimMappings:
-      username:
-        claim: email
-        prefix: ""
-  - issuer:
-      url: https://idp.example.com/realms/b
-      audiences:
-        - b
-    claimMappings:
-      username:
-        claim: email
-        prefix: ""
-`
-	if err := os.WriteFile(config, []byte(content), 0o600); err != nil {
+// writeCA writes srv's certificate to dir/name as a PEM bundle, which is how
+// the command is told to trust it.
+func writeCA(t *testing.T, dir, name string, srv *httptest.Server) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	data := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	opts := options.New()
-	opts.AuthenticationConfig.ConfigFile = config
-	_, _, err := buildTokenAuther(opts, slog.New(slog.DiscardHandler), slog.New(slog.DiscardHandler))
-	if err == nil || !strings.Contains(err.Error(), "share the name \"idp.example.com\"") {
-		t.Fatalf("buildTokenAuther = %v, want the shared-host refusal", err)
-	}
-	// The name alone does not say which two entries have to be changed, so
-	// both colliding URLs belong in the refusal.
-	for _, want := range []string{"https://idp.example.com/realms/a", "https://idp.example.com/realms/b"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("buildTokenAuther = %v, want it to name %q", err, want)
-		}
-	}
+	return path
 }
 
-func TestDuplicateIssuerNameIsRefused(t *testing.T) {
-	tests := map[string]struct {
-		urls      []string
-		wantDup   string
-		wantFirst string
-		wantOther string
-	}{
-		"distinct hosts": {urls: []string{"https://a.example.com", "https://b.example.com"}},
-		"same host, other paths": {
-			urls:      []string{"https://idp.example.com/realms/a", "https://idp.example.com/realms/b"},
-			wantDup:   "idp.example.com",
-			wantFirst: "https://idp.example.com/realms/a",
-			wantOther: "https://idp.example.com/realms/b",
-		},
-		"single issuer": {urls: []string{"https://idp.example.com/realms/a"}},
-		"the first URL under the name is the one reported": {
-			urls:      []string{"https://a.example.com", "https://idp.example.com/realms/a", "https://idp.example.com/realms/b"},
-			wantDup:   "idp.example.com",
-			wantFirst: "https://idp.example.com/realms/a",
-			wantOther: "https://idp.example.com/realms/b",
-		},
-		"two unparsable": {
-			urls:      []string{"::", "::"},
-			wantDup:   "unknown",
-			wantFirst: "::",
-			wantOther: "::",
-		},
+// writeServingCert writes a self-signed loopback certificate and key for the
+// proxy's secure listener.
+func writeServingCert(t *testing.T, dir string) (certFile, keyFile string) {
+	t.Helper()
+	certPEM, keyPEM, err := certutil.GenerateSelfSignedCertKey("127.0.0.1", []net.IP{net.ParseIP("127.0.0.1")}, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for name, tc := range tests {
-		t.Run(name, func(t *testing.T) {
-			dup, first, other, ok := duplicateIssuerName(tc.urls)
-			if ok != (tc.wantDup != "") || dup != tc.wantDup || first != tc.wantFirst || other != tc.wantOther {
-				t.Fatalf("duplicateIssuerName(%v) = %q, %q, %q, %v; want %q, %q, %q",
-					tc.urls, dup, first, other, ok, tc.wantDup, tc.wantFirst, tc.wantOther)
-			}
+	certFile, keyFile = filepath.Join(dir, "serving.crt"), filepath.Join(dir, "serving.key")
+	if err := os.WriteFile(certFile, certPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyFile, keyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return certFile, keyFile
+}
+
+// newFakeIssuer serves the two documents an OIDC authenticator fetches before
+// it can verify tokens: the discovery document naming the server as its own
+// issuer, and a JWKS holding one RSA key. Once both are fetched the issuer
+// counts as initialized, which is what readiness waits for.
+func newFakeIssuer(t *testing.T) *httptest.Server {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwks, err := json.Marshal(map[string]any{"keys": []map[string]string{{
+		"kty": "RSA",
+		"alg": "RS256",
+		"use": "sig",
+		"kid": "test",
+		"n":   base64.RawURLEncoding.EncodeToString(key.N.Bytes()),
+		"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.E)).Bytes()),
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var srv *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"issuer":   srv.URL,
+			"jwks_uri": srv.URL + "/keys",
 		})
-	}
-}
-
-// TestDrainStopsTheMetricsListenerAfterTheHooks pins the shutdown order. The
-// pre-shutdown hooks report their own failures through the recorder -- the
-// audit backend increments the operation="shutdown" counter from inside one --
-// so stopping the metrics listener before they run makes those series
-// unscrapeable for the whole life of the process.
-func TestDrainStopsTheMetricsListenerAfterTheHooks(t *testing.T) {
-	var order []string
-	note := func(step string) func() error {
-		return func() error { order = append(order, step); return nil }
-	}
-
-	err := drain(
-		func() { order = append(order, "stop probe") },
-		note("wait probe"),
-		note("hooks"),
-		note("stop metrics"),
-		note("wait metrics"),
-	)
-	if err != nil {
-		t.Fatalf("drain: %v", err)
-	}
-
-	want := []string{"stop probe", "wait probe", "hooks", "stop metrics", "wait metrics"}
-	if !slices.Equal(order, want) {
-		t.Fatalf("drain order = %v, want %v", order, want)
-	}
-}
-
-// TestDrainJoinsEveryFailure pins that no step is skipped because an earlier
-// one failed and that every failure reaches the exit status.
-func TestDrainJoinsEveryFailure(t *testing.T) {
-	probeErr := errors.New("probe drain overran")
-	hooksErr := errors.New("audit flush failed")
-	metricsErr := errors.New("metrics drain overran")
-
-	ran := 0
-	err := drain(
-		func() {},
-		func() error { ran++; return probeErr },
-		func() error { ran++; return hooksErr },
-		func() error { ran++; return nil },
-		func() error { ran++; return metricsErr },
-	)
-	if ran != 4 {
-		t.Fatalf("ran %d steps, want 4", ran)
-	}
-	for _, want := range []error{probeErr, hooksErr, metricsErr} {
-		if !errors.Is(err, want) {
-			t.Fatalf("drain error = %v, want it to carry %v", err, want)
-		}
-	}
-}
-
-// TestDrainKeepsTheMetricsEndpointUpForTheHooks is the property the order
-// exists for: a scrape that lands while the hooks are running still reaches
-// the listener and sees what a hook just recorded.
-func TestDrainKeepsTheMetricsEndpointUpForTheHooks(t *testing.T) {
-	rec, err := metrics.New(metrics.BuildInfo{Version: "test"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := metrics.NewServer("127.0.0.1:0", rec, slog.New(slog.DiscardHandler))
-	ctx, cancelMetrics := context.WithCancel(context.Background())
-	defer cancelMetrics()
-	if err := srv.Start(ctx); err != nil {
-		t.Fatal(err)
-	}
-	addr := srv.Addr()
-
-	var body string
-	hooks := func() error {
-		// What the audit backend's pre-shutdown hook does.
-		rec.AuditBackendFailure(metrics.AuditShutdown)
-
-		resp, err := http.Get("http://" + addr + "/metrics")
-		if err != nil {
-			return fmt.Errorf("scraping during the drain window: %w", err)
-		}
-		defer resp.Body.Close()
-		raw, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return err
-		}
-		body = string(raw)
-		return nil
-	}
-
-	if err := drain(func() {}, func() error { return nil }, hooks,
-		func() error { cancelMetrics(); return nil }, srv.Wait); err != nil {
-		t.Fatalf("drain: %v", err)
-	}
-
-	if !strings.Contains(body, `kube_oidc_proxy_audit_backend_failures_total{operation="shutdown"} 1`) {
-		t.Fatalf("the shutdown series was not scrapeable during the drain window:\n%s", body)
-	}
+	})
+	mux.HandleFunc("GET /keys", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(jwks)
+	})
+	srv = httptest.NewTLSServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
 }

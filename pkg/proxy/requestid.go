@@ -2,15 +2,13 @@
 package proxy
 
 import (
-	"net"
 	"net/http"
-	"strings"
 	"unicode"
 
 	"k8s.io/apimachinery/pkg/util/uuid"
 
-	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
-	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/context"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/clientip"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 )
 
 const (
@@ -25,38 +23,44 @@ const (
 // the header and overwrites any context value, so the header is the one channel
 // both audit chains and the upstream API server honour.
 //
-// It is also where the request-scoped logger is installed. The id goes on the
-// context (never bound onto a logger with With), so Emit can supply request_id
-// to any event that requires it however deep in the chain the call site sits.
+// The id also goes on the context (never bound onto a logger with With), so
+// Emit can supply request_id to any event that requires it however deep in the
+// chain the call site sits.
 func (p *Proxy) withRequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		inbound := validRequestID(r.Header.Get(headerAuditID))
+		inbound := acceptedRequestID(r.Header.Get(headerAuditID))
 		if inbound == "" {
-			inbound = validRequestID(r.Header.Get(headerRequestID))
+			inbound = acceptedRequestID(r.Header.Get(headerRequestID))
 		}
 
 		id := string(uuid.NewUUID())
 		if inbound != "" {
-			r = context.WithClientRequestID(r, inbound)
-			if peerIsTrusted(r.RemoteAddr, p.trustedProxies) {
+			r = reqctx.WithClientRequestID(r, inbound)
+			// Only a trusted proxy may choose the request's correlation
+			// id; for anyone else the inbound value is kept as
+			// client_request_id and the proxy mints its own.
+			if clientip.PeerTrusted(r.RemoteAddr, p.trustedProxies) {
 				id = inbound
 			}
 		}
 
-		r.Header.Set(headerAuditID, id)
-		r.Header.Del(headerRequestID)
+		// The rewrite goes on a copy of the header map, so the request the
+		// filter received is left exactly as it arrived.
+		h := r.Header.Clone()
+		h.Set(headerAuditID, id)
+		h.Del(headerRequestID)
+		r = reqctx.WithRequestID(r, id)
+		r.Header = h
 		w.Header().Set(headerAuditID, id)
 
-		ctx := logging.WithRequestID(r.Context(), id)
-		r = r.WithContext(logging.NewContext(ctx, p.logger))
-
-		next.ServeHTTP(w, context.WithRequestID(r, id))
+		next.ServeHTTP(w, r)
 	})
 }
 
-// validRequestID accepts printable ASCII without spaces, at most
-// maxRequestIDLen bytes; anything else is treated as absent.
-func validRequestID(v string) string {
+// acceptedRequestID returns v when it is printable ASCII without spaces, at
+// most maxRequestIDLen bytes, and "" otherwise, so a rejected id is treated as
+// absent.
+func acceptedRequestID(v string) string {
 	if v == "" || len(v) > maxRequestIDLen {
 		return ""
 	}
@@ -65,13 +69,5 @@ func validRequestID(v string) string {
 			return ""
 		}
 	}
-	return strings.TrimSpace(v)
-}
-
-// peerIsTrusted reports whether the immediate peer is inside one of the
-// configured trusted-proxy networks. Only such a peer may choose the request's
-// correlation id; for anyone else the inbound value is kept as
-// client_request_id and the proxy mints its own.
-func peerIsTrusted(remoteAddr string, trusted []*net.IPNet) bool {
-	return context.IPInNetworks(context.PeerHost(remoteAddr), trusted)
+	return v
 }

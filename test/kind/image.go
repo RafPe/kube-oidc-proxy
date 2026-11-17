@@ -5,13 +5,13 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 
-	"k8s.io/klog/v2"
 	"sigs.k8s.io/kind/pkg/cluster/nodeutils"
 )
 
@@ -20,6 +20,7 @@ const (
 	IssuerImageName        = "oidc-issuer-e2e"
 	FakeAPIServerImageName = "fake-apiserver-e2e"
 	AuditWebhookImageName  = "audit-webhook-e2e"
+	EchoServerImageName    = "echoserver-e2e"
 )
 
 func (k *Kind) LoadAllImages() error {
@@ -36,6 +37,10 @@ func (k *Kind) LoadAllImages() error {
 	}
 
 	if err := k.LoadAuditWebhook(); err != nil {
+		return err
+	}
+
+	if err := k.LoadEchoServer(); err != nil {
 		return err
 	}
 
@@ -56,30 +61,35 @@ func (k *Kind) LoadKubeOIDCProxy() error {
 
 func (k *Kind) LoadIssuer() error {
 	binPath := filepath.Join(k.rootPath, "./test/tools/issuer/bin/oidc-issuer-linux")
-	dockerfilePath := filepath.Join(k.rootPath, "./test/tools/issuer")
-	mainPath := filepath.Join(dockerfilePath, "cmd")
+	toolDir := filepath.Join(k.rootPath, "./test/tools/issuer")
 
-	return k.loadImage(binPath, mainPath, IssuerImageName, dockerfilePath)
+	return k.loadImage(binPath, toolDir, IssuerImageName, toolDir)
 }
 
 func (k *Kind) LoadFakeAPIServer() error {
 	binPath := filepath.Join(k.rootPath, "./test/tools/fake-apiserver/bin/fake-apiserver-linux")
-	dockerfilePath := filepath.Join(k.rootPath, "./test/tools/fake-apiserver")
-	mainPath := filepath.Join(dockerfilePath, "cmd")
+	toolDir := filepath.Join(k.rootPath, "./test/tools/fake-apiserver")
 
-	return k.loadImage(binPath, mainPath, FakeAPIServerImageName, dockerfilePath)
+	return k.loadImage(binPath, toolDir, FakeAPIServerImageName, toolDir)
 }
 
 func (k *Kind) LoadAuditWebhook() error {
 	binPath := filepath.Join(k.rootPath, "./test/tools/audit-webhook/bin/audit-webhook")
-	dockerfilePath := filepath.Join(k.rootPath, "./test/tools/audit-webhook")
+	toolDir := filepath.Join(k.rootPath, "./test/tools/audit-webhook")
+
+	return k.loadImage(binPath, toolDir, AuditWebhookImageName, toolDir)
+}
+
+func (k *Kind) LoadEchoServer() error {
+	binPath := filepath.Join(k.rootPath, "./test/tools/echoserver/bin/echoserver")
+	dockerfilePath := filepath.Join(k.rootPath, "./test/tools/echoserver")
 	mainPath := filepath.Join(dockerfilePath, "cmd")
 
-	return k.loadImage(binPath, mainPath, AuditWebhookImageName, dockerfilePath)
+	return k.loadImage(binPath, mainPath, EchoServerImageName, dockerfilePath)
 }
 
 func (k *Kind) loadImage(binPath, mainPath, image, dockerfilePath string, extraBuildArgs ...string) error {
-	klog.Infof("kind: building %q", mainPath)
+	slog.Info("kind: building", slog.String("main", mainPath))
 
 	if err := os.MkdirAll(filepath.Dir(binPath), 0755); err != nil {
 		return err
@@ -104,7 +114,7 @@ func (k *Kind) loadImage(binPath, mainPath, image, dockerfilePath string, extraB
 	defer os.RemoveAll(tmpDir)
 
 	imageArchive := filepath.Join(tmpDir, fmt.Sprintf("%s-e2e.tar", image))
-	klog.Infof("kind: saving image to archive %q", imageArchive)
+	slog.Info("kind: saving image to archive", slog.String("archive", imageArchive))
 
 	err = k.runCmd("docker", "save", "--output="+imageArchive, image)
 	if err != nil {
@@ -122,7 +132,7 @@ func (k *Kind) loadImage(binPath, mainPath, image, dockerfilePath string, extraB
 	}
 
 	for _, node := range nodes {
-		klog.Infof("kind: loading image %q to node %q", image, node.String())
+		slog.Info("kind: loading image to node", slog.String("image", image), slog.String("node", node.String()))
 		r := bytes.NewBuffer(b)
 		if err := nodeutils.LoadImageArchive(node, r); err != nil {
 			return err
@@ -130,7 +140,7 @@ func (k *Kind) loadImage(binPath, mainPath, image, dockerfilePath string, extraB
 
 		err := node.Command("mkdir", "-p", "/tmp/kube-oidc-proxy").Run()
 		if err != nil {
-			return fmt.Errorf("failed to create directory %q: %s",
+			return fmt.Errorf("failed to create directory %q: %w",
 				"/tmp/kube-oidc-proxy", err)
 		}
 	}
@@ -143,7 +153,7 @@ func (k *Kind) runCmd(command string, args ...string) error {
 }
 
 func (k *Kind) runCmdWithOut(w io.Writer, command string, args ...string) error {
-	klog.Infof("kind: running command '%s %s'", command, strings.Join(args, " "))
+	slog.Info("kind: running command", slog.String("command", command), slog.String("args", strings.Join(args, " ")))
 	cmd := exec.Command(command, args...)
 
 	cmd.Stderr = os.Stderr

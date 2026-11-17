@@ -4,6 +4,7 @@ package options
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -81,11 +82,40 @@ func TestOIDCAuthenticationOptions_Validate(t *testing.T) {
 				ClientID:  tc.clientID,
 				CAFile:    tc.caFile,
 			}
-			err := o.Validate(tc.authConfigSet)
+			err := o.Validate()
+			if err == nil && !tc.authConfigSet {
+				err = o.ValidateIssuerFlags()
+			}
 			if (err != nil) != tc.wantErr {
 				t.Errorf("Validate() error = %v, wantErr %v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestValidateIssuerFlagsReportsEveryProblem pins that the single-issuer
+// validator does not stop at the first problem: an operator sees the
+// pairing, CA file and prefix mistakes of one command line in one run.
+func TestValidateIssuerFlagsReportsEveryProblem(t *testing.T) {
+	o := &OIDCAuthenticationOptions{
+		IssuerURL:      "https://vault.example.com",
+		CAFile:         "/does/not/exist/ca.pem",
+		UsernamePrefix: "system:",
+		GroupsPrefix:   "system:",
+	}
+	err := o.ValidateIssuerFlags()
+	if err == nil {
+		t.Fatal("ValidateIssuerFlags() = nil, want every problem reported")
+	}
+	for _, want := range []string{
+		"--oidc-issuer-url and --oidc-client-id must be specified together",
+		`--oidc-ca-file "/does/not/exist/ca.pem"`,
+		`--oidc-username-prefix "system:"`,
+		`--oidc-groups-prefix "system:"`,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("ValidateIssuerFlags() = %q, missing %q", err, want)
+		}
 	}
 }
 
@@ -117,9 +147,9 @@ func TestOIDCAuthenticationOptionsValidateTLSClientCredentials(t *testing.T) {
 				TLSClientCertFile: tc.certFile,
 				TLSClientKeyFile:  tc.keyFile,
 			}
-			err := o.Validate(true)
+			err := o.Validate()
 			if gotErr := err != nil; gotErr != tc.wantErr {
-				t.Errorf("Validate(true) error = %v, want error presence = %t", err, tc.wantErr)
+				t.Errorf("Validate() error = %v, want error presence = %t", err, tc.wantErr)
 			}
 		})
 	}

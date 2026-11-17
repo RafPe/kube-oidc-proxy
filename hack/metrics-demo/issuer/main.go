@@ -12,19 +12,22 @@
 // supplies its own Secret through the chart's tls.secretName and keeps the
 // issuing certificate in .state/proxy-ca.pem.
 //
-// Reusing helper.DeployIssuer and util.NewTLSSelfSignedCertKey means the demo
-// authenticates against exactly the issuer, and trusts exactly the kind of
-// certificate, that the e2e suite does.
+// Deploying through appdeploy.Issuer and minting with keybundle.NewSelfSigned
+// means the demo authenticates against exactly the issuer, and trusts exactly
+// the kind of certificate, that the e2e suite does. Both are internal/devkit
+// leaf packages, as is everything the load generator uses, so no demo binary
+// depends on the e2e framework or its kind tooling.
 package main
 
 import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -32,9 +35,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/config"
-	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/helper"
-	"github.com/rafpe/kube-oidc-proxy/test/util"
+	"github.com/rafpe/kube-oidc-proxy/internal/devkit/appdeploy"
+	"github.com/rafpe/kube-oidc-proxy/internal/devkit/keybundle"
 )
 
 func main() {
@@ -44,51 +46,45 @@ func main() {
 	proxyService := flag.String("proxy-service", "kop-kube-oidc-proxy", "name of the proxy Service the serving certificate is issued for")
 	flag.Parse()
 
-	if err := run(*state, *namespace, *tlsSecret, *proxyService); err != nil {
-		log.Fatalf("prepare demo TLS material: %s", err)
+	if err := run(context.Background(), *state, *namespace, *tlsSecret, *proxyService); err != nil {
+		slog.Error("prepare demo TLS material", slog.String("error", err.Error()))
+		os.Exit(1)
 	}
 }
 
-// issuerName is the Deployment the e2e helper creates for the mock issuer.
+// issuerName names both the issuer image up.sh loads into the cluster and the
+// Deployment it runs as, matching what the e2e suite deploys.
 const issuerName = "oidc-issuer-e2e"
 
-func issuerDeployed(client kubernetes.Interface, namespace string) (bool, error) {
-	_, err := client.AppsV1().Deployments(namespace).Get(context.Background(), issuerName, metav1.GetOptions{})
+func issuerDeployed(ctx context.Context, client kubernetes.Interface, namespace string) (bool, error) {
+	_, err := client.AppsV1().Deployments(namespace).Get(ctx, issuerName, metav1.GetOptions{})
 	switch {
 	case err == nil:
 		return true, nil
 	case apierrors.IsNotFound(err):
 		return false, nil
 	default:
-		return false, fmt.Errorf("failed to look up deployment %s/%s: %s", namespace, issuerName, err)
+		return false, fmt.Errorf("failed to look up deployment %s/%s: %w", namespace, issuerName, err)
 	}
 }
 
-func run(state, namespace, tlsSecret, proxyService string) error {
+func run(ctx context.Context, state, namespace, tlsSecret, proxyService string) error {
 	kubeconfig := filepath.Join(state, "kubeconfig")
 
 	restConfig, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
-		return fmt.Errorf("failed to build rest config from %q: %s", kubeconfig, err)
+		return fmt.Errorf("failed to build rest config from %q: %w", kubeconfig, err)
 	}
 
 	client, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
-		return fmt.Errorf("failed to build kubernetes client: %s", err)
+		return fmt.Errorf("failed to build kubernetes client: %w", err)
 	}
-
-	repoRoot, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-
-	h := helper.NewHelper(&config.Config{KubeConfigPath: kubeconfig, RepoRoot: repoRoot})
-	h.KubeClient = client
 
 	// Idempotent, so up.sh can be re-run: the issuer keeps the Deployment and
 	// the key material already in .state, and only the serving certificate
 	// below is (re-)checked.
-	deployed, err := issuerDeployed(client, namespace)
+	deployed, err := issuerDeployed(ctx, client, namespace)
 	if err != nil {
 		return err
 	}
@@ -100,13 +96,13 @@ func run(state, namespace, tlsSecret, proxyService string) error {
 		// wrote itself.
 		url, err := os.ReadFile(filepath.Join(state, "issuer-url"))
 		if err != nil {
-			return fmt.Errorf("issuer %q is deployed but its URL is not in %s; delete it and re-run: %s", issuerName, state, err)
+			return fmt.Errorf("issuer %q is deployed but its URL is not in %s; delete it and re-run: %w", issuerName, state, err)
 		}
-		fmt.Printf("issuer already deployed in %s at %s", namespace, url)
+		slog.Info("issuer already deployed", slog.String("namespace", namespace), slog.String("url", strings.TrimSpace(string(url))))
 	default:
-		bundle, issuerURL, err := h.DeployIssuer(namespace)
+		bundle, issuerURL, err := appdeploy.Deploy(ctx, client, appdeploy.Issuer(namespace, issuerName, issuerName))
 		if err != nil {
-			return fmt.Errorf("failed to deploy issuer into %q: %s", namespace, err)
+			return fmt.Errorf("failed to deploy issuer into %q: %w", namespace, err)
 		}
 
 		// The proxy verifies the issuer's TLS with the certificate; the load
@@ -119,14 +115,14 @@ func run(state, namespace, tlsSecret, proxyService string) error {
 		}
 		for name, data := range files {
 			if err := os.WriteFile(filepath.Join(state, name), data, 0600); err != nil {
-				return fmt.Errorf("failed to write %q: %s", name, err)
+				return fmt.Errorf("failed to write %q: %w", name, err)
 			}
 		}
 
-		fmt.Printf("issuer deployed in %s at %s\n", namespace, issuerURL)
+		slog.Info("issuer deployed", slog.String("namespace", namespace), slog.String("url", issuerURL.String()))
 	}
 
-	return mintProxyCertificate(client, state, namespace, tlsSecret, proxyService)
+	return mintProxyCertificate(ctx, client, state, namespace, tlsSecret, proxyService)
 }
 
 // mintProxyCertificate issues the proxy's serving certificate for its
@@ -135,9 +131,7 @@ func run(state, namespace, tlsSecret, proxyService string) error {
 // Secret the chart is pointed at with tls.secretName. Idempotent: an existing
 // Secret is left alone, because replacing it would invalidate the
 // proxy-ca.pem the demo already trusts.
-func mintProxyCertificate(client kubernetes.Interface, state, namespace, name, service string) error {
-	ctx := context.Background()
-
+func mintProxyCertificate(ctx context.Context, client kubernetes.Interface, state, namespace, name, service string) error {
 	existing, err := client.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err == nil {
 		// Only the certificate is written out; the key never leaves the
@@ -145,23 +139,23 @@ func mintProxyCertificate(client kubernetes.Interface, state, namespace, name, s
 		// refused here rather than surfacing later as an empty trust anchor.
 		cert, err := servingCertFromSecret(existing)
 		if err != nil {
-			return fmt.Errorf("secret %s/%s cannot be reused: %s; delete it to let the demo mint a new one", namespace, name, err)
+			return fmt.Errorf("secret %s/%s cannot be reused: %w; delete it to let the demo mint a new one", namespace, name, err)
 		}
 		if err := os.WriteFile(filepath.Join(state, "proxy-ca.pem"), cert, 0600); err != nil {
-			return fmt.Errorf("failed to write proxy-ca.pem: %s", err)
+			return fmt.Errorf("failed to write proxy-ca.pem: %w", err)
 		}
-		fmt.Printf("proxy serving certificate already minted in %s/%s\n", namespace, name)
+		slog.Info("proxy serving certificate already minted", slog.String("namespace", namespace), slog.String("secret", name))
 
 		return nil
 	}
 	if !apierrors.IsNotFound(err) {
-		return fmt.Errorf("failed to read secret %s/%s: %s", namespace, name, err)
+		return fmt.Errorf("failed to read secret %s/%s: %w", namespace, name, err)
 	}
 
 	host := fmt.Sprintf("%s.%s.svc.cluster.local", service, namespace)
-	bundle, err := util.NewTLSSelfSignedCertKey(host, []net.IP{net.ParseIP("127.0.0.1")}, nil)
+	bundle, err := keybundle.NewSelfSigned(host, []net.IP{net.ParseIP("127.0.0.1")}, nil)
 	if err != nil {
-		return fmt.Errorf("failed to generate a serving certificate for %q: %s", host, err)
+		return fmt.Errorf("failed to generate a serving certificate for %q: %w", host, err)
 	}
 
 	secret := &corev1.Secret{
@@ -173,14 +167,15 @@ func mintProxyCertificate(client kubernetes.Interface, state, namespace, name, s
 		},
 	}
 	if _, err := client.CoreV1().Secrets(namespace).Create(ctx, secret, metav1.CreateOptions{}); err != nil {
-		return fmt.Errorf("failed to create secret %s/%s: %s", namespace, name, err)
+		return fmt.Errorf("failed to create secret %s/%s: %w", namespace, name, err)
 	}
 
 	if err := os.WriteFile(filepath.Join(state, "proxy-ca.pem"), bundle.CertBytes, 0600); err != nil {
-		return fmt.Errorf("failed to write proxy-ca.pem: %s", err)
+		return fmt.Errorf("failed to write proxy-ca.pem: %w", err)
 	}
 
-	fmt.Printf("proxy serving certificate minted for %s and 127.0.0.1 in %s/%s\n", host, namespace, name)
+	slog.Info("proxy serving certificate minted", slog.String("host", host), slog.String("ip", "127.0.0.1"),
+		slog.String("namespace", namespace), slog.String("secret", name))
 
 	return nil
 }

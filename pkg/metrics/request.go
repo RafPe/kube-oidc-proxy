@@ -10,7 +10,7 @@ type RequestObservation struct {
 	Verb        Verb
 	Scope       Scope
 	Status      int
-	Termination string
+	Termination Termination
 	Duration    time.Duration
 
 	// LongRunning marks a request classified long-running (watch, exec,

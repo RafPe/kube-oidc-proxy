@@ -60,7 +60,7 @@ func TestEveryCollectorIsInTheCatalogue(t *testing.T) {
 		if f.GetHelp() != s.help() {
 			t.Errorf("%s help = %q, catalogue says %q", name, f.GetHelp(), s.help())
 		}
-		wantType := map[string]dto.MetricType{"counter": dto.MetricType_COUNTER, "gauge": dto.MetricType_GAUGE, "histogram": dto.MetricType_HISTOGRAM}[s.Type]
+		wantType := map[Type]dto.MetricType{TypeCounter: dto.MetricType_COUNTER, TypeGauge: dto.MetricType_GAUGE, TypeHistogram: dto.MetricType_HISTOGRAM}[s.Type]
 		if f.GetType() != wantType {
 			t.Errorf("%s type = %v, catalogue says %s", name, f.GetType(), s.Type)
 		}
@@ -127,9 +127,9 @@ func TestAllowedValuesCoversEveryBoundedLabel(t *testing.T) {
 				t.Errorf("%s: allowed values for %s is empty", s.Name, label)
 			}
 		}
-		for label := range allowed {
+		for label := range s.Values {
 			if !slices.Contains(s.Labels, label) {
-				t.Errorf("%s: AllowedValues has %s, which is not a label of the family", s.Name, label)
+				t.Errorf("%s: Values has %s, which is not a label of the family", s.Name, label)
 			}
 		}
 	}
@@ -153,10 +153,10 @@ func TestAllowedValuesMatchTheProjections(t *testing.T) {
 	}{
 		{nameRequestsTotal, "k8s_verb", func(v string) string { return projectVerb(Verb(v)) }, other},
 		{nameRequestsTotal, "scope", func(v string) string { return projectScope(Scope(v)) }, string(ScopeNone)},
-		{nameRequestsTotal, "termination", projectTermination, other},
-		{nameAuthnAttempts, "auth_method", projectAuthMethod, other},
+		{nameRequestsTotal, "termination", func(v string) string { return projectTermination(Termination(v)) }, other},
+		{nameAuthnAttempts, "auth_method", func(v string) string { return projectAuthMethod(AuthMethod(v)) }, other},
 		{nameAuthnAttempts, "outcome", func(v string) string { return projectAuthOutcome(AuthOutcome(v)) }, other},
-		{nameAccessDecisions, "reason", projectReason, other},
+		{nameAccessDecisions, "reason", func(v string) string { return projectReason(Reason(v)) }, other},
 		{nameReviewRequests, "review", func(v string) string { return projectReview(Review(v)) }, other},
 		{nameReviewRequests, "outcome", func(v string) string { return projectReviewOutcome(ReviewOutcome(v)) }, other},
 		{nameCacheLookups, "cache", func(v string) string { return projectReview(Review(v)) }, other},

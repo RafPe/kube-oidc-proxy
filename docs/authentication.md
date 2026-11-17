@@ -31,7 +31,7 @@ to conflate because two of them share the word "mode".
 | One issuer, configured with flags | `oidc.clientId`, `oidc.issuerUrl`, `oidc.usernameClaim`, or `oidc.existingSecret` (the `--oidc-*` flags) | Mirrors the API server's own OIDC flags one-to-one. Username and group prefixes, required claims and signing algorithms are flags too. |
 | One or more issuers, with claim expressions and validation rules | `authenticationConfig.content` (`--authentication-config`) | The Kubernetes `AuthenticationConfiguration` format. Worth using for a single issuer as soon as you need CEL: synthesized groups, `extra` for audit, numeric-ID pinning. Mutually exclusive with the flags above. |
 | Bearer tokens that are not OIDC tokens, such as ServiceAccount tokens | `tokenPassthrough` (`--token-passthrough`, alpha) | Tried only after OIDC validation fails; validated with a `TokenReview` and forwarded without impersonation. Independent of the two choices above. |
-| Forward authenticated requests without impersonating | `--disable-impersonation` (alpha) | The API server authenticates the request itself. Rarely wanted; see [No impersonation](#no-impersonation). |
+| Forward authenticated requests without impersonating | `--disable-impersonation` (alpha) | The request reaches the API server anonymous: the proxy consumes the token and adds no credentials. Rarely wanted; see [No impersonation](#no-impersonation). |
 
 The first two are the mutually exclusive pair. The binary refuses to start
 when both `--authentication-config` and issuer-specific `--oidc-*` flags are
@@ -100,14 +100,28 @@ request is authorized twice, and both checks deny by default.
 1. **The proxy asks whether the caller may impersonate.** For every inbound
    `Impersonate-*` header value it sends a `SubjectAccessReview` to the API
    server asking whether the **authenticated** identity, the one the token
-   mapped to, holds the `impersonate` verb on that value. A single refused
+   mapped to, holds the `impersonate` verb on that value. The identity is
+   asked about as the API server itself would see it, with
+   `system:authenticated` among its groups, so a grant bound to that group
+   works through the proxy exactly as it does directly. A single refused
    value fails the whole request with `403` and
    `reason=impersonation_denied`; nothing is forwarded. These are the
    decisions the [SubjectAccessReview cache](./caching.md#subjectaccessreview-decision-cache)
-   remembers.
+   remembers. A request whose headers are malformed is refused before any
+   review is sent, with `reason=malformed_impersonation` and `400`: an
+   `Impersonate-` header of a kind the proxy does not know, or groups, a uid
+   or extras without an `Impersonate-User`.
 2. **The API server authorizes the target.** The request is forwarded
    impersonating the target identity, so RBAC applies to the target, not to
    the caller. A target with no bindings can do nothing.
+
+This is the path where the proxy forwards with its own credentials, so it is
+the only one where the proxy checks and consumes `Impersonate-*` headers: they
+never reach the API server as the client sent them. On the two paths that
+forward without the proxy's credentials, [token passthrough](#token-passthrough)
+and [no impersonation](#no-impersonation), the proxy does not look at the
+headers at all. They travel on, and the API server authorizes them itself,
+against the identity it authenticates: the client's own token, or anonymous.
 
 Each header value is a separate authorization against a separate resource,
 which is what a grant has to name:
@@ -115,9 +129,15 @@ which is what a grant has to name:
 | Header | Authorized as `impersonate` on |
 | --- | --- |
 | `Impersonate-User` | `users`, core API group |
+| `Impersonate-User: system:serviceaccount:<ns>:<name>` | `serviceaccounts/<name>` in namespace `<ns>`, core API group. With no `Impersonate-Group`, the impersonated identity gets the groups `system:serviceaccounts` and `system:serviceaccounts:<ns>`, as the API server gives it |
 | `Impersonate-Group` | `groups`, core API group |
 | `Impersonate-Uid` | `uids`, `authentication.k8s.io` |
-| `Impersonate-Extra-<key>` | `userextras/<key>`, `authentication.k8s.io`; the key is lowercased first |
+| `Impersonate-Extra-<key>` | `userextras/<key>`, `authentication.k8s.io`; the key is lowercased and then percent-decoded, as the API server does (`Impersonate-Extra-Example.com%2Fscope` names `example.com/scope`). A key the proxy cannot forward unchanged, such as one that decodes to upper case (`%41bc` decodes to `Abc`, which the API server would receive as `abc`), is refused with `400` and `reason=malformed_impersonation` before any review |
+
+The forwarded identity gets the same implicit group the API server's own
+impersonation filter would add: `system:unauthenticated` when the target is
+`system:anonymous`, and `system:authenticated` for any other target unless its
+groups already hold one of the two.
 
 kubectl sends only the headers you ask for, so `--as=<user>` alone sends one
 user header and needs only a `users` rule; `--as-group` adds a `groups` check
@@ -282,9 +302,9 @@ unreserved group has no effect and is almost certainly a typo.
 
 ### Original-user audit headers
 
-Whenever the proxy impersonates, it attaches `Extra` headers identifying the
-**original** authenticated user, so the API server's audit log records who really
-made the request:
+When a client impersonates someone else (for example `kubectl --as`), the
+proxy attaches `Extra` headers identifying the **original** authenticated user,
+so the API server's audit log records who really made the request:
 
 | Extra key | When it is sent | Description |
 | --- | --- | --- |
@@ -292,6 +312,14 @@ made the request:
 | `originaluser.jetstack.io-groups` | When the original user has ≥1 group | The original groups. |
 | `originaluser.jetstack.io-uid` | When the original user has a UID | The original user UID. |
 | `originaluser.jetstack.io-extra` | When the original identity carries extra info | A JSON-encoded map of arrays with all the original `extra` fields. |
+
+The proxy owns every `originaluser.jetstack.io-*` key (see also
+[extra impersonation headers](#extra-impersonation-headers)). Each value comes from
+the identity the proxy authenticated, never from the request: a client's own
+`Impersonate-Extra-originaluser.jetstack.io-*` header is still authorized by a
+`SubjectAccessReview` like any other extra, but its value is dropped before the
+request is forwarded. A key the original user has no value for is left out,
+not filled from the client's header.
 
 > [!IMPORTANT]
 > The `originaluser.jetstack.io-*` keys are a runtime API contract, left
@@ -306,6 +334,10 @@ Enable passthrough for tokens that fail OIDC authentication. The proxy then
 performs a [TokenReview](https://kubernetes.io/docs/reference/access-authn-authz/authentication/#webhook-token-authentication)
 against the target backend via the Kubernetes API; if it succeeds, the request
 is forwarded as-is with the token intact and no other authentication applied.
+Any `Impersonate-*` headers the client sent are forwarded too, unchecked by the
+proxy: the API server authorizes them against the token's own identity, as it
+would for a request sent to it directly. The identity the TokenReview returned
+is what the proxy's audit event and access record name as the request's user.
 
 ```text
 --token-passthrough
@@ -330,9 +362,13 @@ documented in [Caching and API-server protection](./caching.md#tokenreview-resul
 ## No impersonation
 
 Disable impersonation entirely: after a request authenticates, it is forwarded
-as-is, with no header changes and no authentication injected by the proxy. The
-OIDC bearer token stays in the request. Useful for fronting endpoints that
-implement no authentication or authorization of their own.
+with no `Impersonate-*` headers added and no credentials of the proxy's own.
+Authentication consumes the OIDC bearer token, so the request reaches the API
+server as `system:anonymous`, carrying any `Impersonate-*` headers the client
+sent untouched and unchecked by the proxy. The API server's anonymous
+authentication and RBAC are then the only controls on what the request may
+do. Useful for fronting endpoints that implement no authentication or
+authorization of their own.
 
 ```text
 --disable-impersonation
@@ -367,6 +403,17 @@ Proxied requests then carry:
 Impersonate-Extra-Key1: foo,bar
 Impersonate-Extra-Key2: bar
 ```
+
+**The proxy's keys carry only the proxy's values.** A client that
+impersonates someone may send its own `Impersonate-Extra-` headers, and each
+is authorized by a `SubjectAccessReview` as usual. For a key the proxy writes
+itself, though, the client's value is dropped before the request is
+forwarded, so the API server sees one source only: the resolved client IP for
+`Remote-Client-IP` while `--extra-user-header-client-ip` is on, and the
+configured values for each `--extra-user-headers` key. Keys are matched
+ignoring case, because the API server receives them as canonical header
+names, where `remote-client-ip` and `Remote-Client-IP` are the same header.
+Every other extra the client sends is forwarded as the client sent it.
 
 ## Glossary
 

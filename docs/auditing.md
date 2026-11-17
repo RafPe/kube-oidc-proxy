@@ -24,8 +24,8 @@ Every request that passes through the proxy can leave two audit events:
 
 | Trail | Written by | `user` in the event | Sees |
 | --- | --- | --- | --- |
-| Proxy audit log | the proxy, before impersonation | the identity your claim mappings produced, groups and extras included | every request that reached the proxy, including 401s the API server never saw |
-| API server audit log | kube-apiserver, after impersonation | the proxy's ServiceAccount; the mapped identity is under `impersonatedUser` | every request the proxy forwarded, with the authorization decision |
+| Proxy audit log | the proxy, before impersonation | the identity your claim mappings produced, groups and extras included; with `--token-passthrough`, for a token OIDC did not accept, the identity the API server's TokenReview returned | every request that reached the proxy, including 401s the API server never saw |
+| API server audit log | kube-apiserver, after impersonation | the proxy's ServiceAccount, with the mapped identity under `impersonatedUser`; for a passthrough request, the token's own identity, since it is forwarded without impersonation | every request the proxy forwarded, with the authorization decision |
 
 The proxy mints a request ID for every request, sets it as the `Audit-ID`
 header on the request it forwards, and uses it as `auditID` in its own events.
@@ -123,22 +123,33 @@ The proxy embeds the API server's audit stack rather than reimplementing it.
    the lifecycle filter, forwarding-header sanitization, authentication,
    impersonation, and finally the audit filter, which sits directly in front of
    the reverse proxy. Because the audit filter runs after authentication, the
-   event's `user` is the mapped identity. Because request info was resolved
+   event's `user` is the mapped identity, or on the token-passthrough path the
+   identity TokenReview returned. Because request info was resolved
    early, the event carries a proper `objectRef` and Kubernetes verb
    (`create`, not `post`) even for core-group paths under `/api`.
 4. **Failed authentication.** A 401 never reaches the main audit filter, so the
    authentication handler wraps its error path in a second, shorter audit chain
    that records the failed attempt against the anonymous user. Both chains use
-   the same policy.
+   the same policy. A request that authenticated and was then refused by the
+   proxy itself — a reserved identity, an impersonation the
+   `SubjectAccessReview` denied or could not answer, a malformed impersonation
+   request — never
+   reaches the reverse proxy either, so its error path runs through the main
+   chain with the authenticated identity as the event's `user`.
 5. **Long-running requests.** `exec`, `attach`, `portforward`, `log`, `proxy`
    and every watch are recorded twice, at `ResponseStarted` and
    `ResponseComplete`, using kube-apiserver's own definition of long-running.
    An hour-long `exec` therefore leaves a trace at its start, and still leaves
    one if the proxy is stopped before the session ends.
-6. **Shutdown.** The backend is flushed as a pre-shutdown hook, and the result
-   is logged as `audit.flush.completed` or `audit.flush.failed`. A failed flush
-   means events for requests the process already served were dropped, so it is
-   never silent.
+6. **Shutdown.** The backend is flushed once the proxy has stopped serving,
+   and `audit.flush.completed` records that the flush finished and how long it
+   took. The bundled
+   backends cannot report a flush that dropped events through it: the upstream
+   backend interface returns nothing from `Shutdown()`, and the buffered
+   webhook backend reports a delivery failure through the Kubernetes error
+   handler instead. Such a failure therefore surfaces as a bridged
+   `component=k8s` ERROR record in the log stream, not as a failed flush
+   record or a non-zero exit; alert on that record.
 
 ## Writing a policy
 

@@ -175,8 +175,9 @@ fi
 
 log "Building proxy image ${PROXY_IMAGE}"
 ( cd "${REPO_ROOT}" \
-  && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags '-w' -o ./bin/amd64/kube-oidc-proxy ./cmd/. \
-  && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags '-w' -o ./bin/arm64/kube-oidc-proxy ./cmd/. )
+  && ldflags="-w $(hack/version-ldflags.sh)" \
+  && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "${ldflags}" -o ./bin/amd64/kube-oidc-proxy ./cmd/. \
+  && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "${ldflags}" -o ./bin/arm64/kube-oidc-proxy ./cmd/. )
 docker build -q -t "${PROXY_IMAGE}" "${REPO_ROOT}" >/dev/null
 ok "image built"
 
@@ -186,9 +187,9 @@ fi
 log "Creating kind cluster ${CLUSTER}"
 kind create cluster --name "${CLUSTER}" >/dev/null
 kind load docker-image "${PROXY_IMAGE}" --name "${CLUSTER}" >/dev/null
-docker pull -q "${DEX_IMAGE}" >/dev/null
-kind load docker-image "${DEX_IMAGE}" --name "${CLUSTER}" >/dev/null
-ok "cluster ready, images loaded"
+# The node pulls Dex from ghcr itself: on ubuntu-26.04 runners, kind load of the
+# pulled multi-platform image fails in ctr images import --all-platforms.
+ok "cluster ready, proxy image loaded"
 
 log "Generating TLS for the local Dex issuer"
 mkdir -p "${CERTS}"

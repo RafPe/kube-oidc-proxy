@@ -1,5 +1,7 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
 
+//go:build e2e
+
 // Package logging asserts the proxy's structured log stream end to end: that
 // every line it writes is one JSON record carrying the schema version and its
 // component, that startup and readiness are recorded, that a request can be

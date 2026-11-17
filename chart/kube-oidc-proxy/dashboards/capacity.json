@@ -635,7 +635,7 @@
     {
       "type": "timeseries",
       "title": "Cache hit ratio by cache",
-      "description": "Share of review cache lookups served without an API server call, per cache. A low ratio means the caches are not earning their keep and every request pays for a review; check the TTLs before adding replicas. A 'bypass' result is a lookup the cache was not allowed to answer, and counts against the ratio.",
+      "description": "Share of review cache lookups served without an API server call, per cache. A low ratio means the caches are not earning their keep and every request pays for a review; check the TTLs before adding replicas. A 'bypass' result is a SubjectAccessReview too large to cache, and counts against the ratio; a cache switched off with zero TTLs records no lookups at all.",
       "datasource": {
         "uid": "${datasource}"
       },

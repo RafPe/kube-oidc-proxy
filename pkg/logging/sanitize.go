@@ -48,27 +48,12 @@ func Bound(s string, max int) string {
 	return string(runes[:max])
 }
 
-// SanitizeList sanitizes every element of a slice and bounds each to
-// MaxIdentity, returning a fresh slice and nil for an empty input, so the field
-// stays absent rather than empty. It caps the elements, not the list: use it
-// where the full list is part of a frozen record shape and BoundedList where
-// the record reports what it dropped.
-func SanitizeList(in []string) []string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]string, len(in))
-	for i, v := range in {
-		out[i] = Bound(v, MaxIdentity)
-	}
-	return out
-}
-
 // BoundedList sanitizes every element of a slice, bounds each to MaxIdentity
 // (its elements are identity strings: group names, extras values) and keeps at
-// most max of them. It returns the kept elements and the number omitted, so
-// callers can report the drop rather than hide it. An empty input yields a nil
-// slice, keeping the field absent rather than empty in the record.
+// most max of them; a max of zero or less keeps every element. It returns the
+// kept elements and the number omitted, so callers can report the drop rather
+// than hide it. An empty input yields a nil slice, which a caller tests to
+// leave the field out of the record rather than write it empty.
 func BoundedList(in []string, max int) (out []string, omitted int) {
 	if len(in) == 0 {
 		return nil, 0

@@ -86,7 +86,7 @@ func TestRequestLabelsAreBoundedUnderHostileInput(t *testing.T) {
 			Verb:        Verb(fmt.Sprintf("verb-%d", i)),
 			Scope:       Scope(fmt.Sprintf("scope-%d", i)),
 			Status:      i,
-			Termination: fmt.Sprintf("term-%d", i),
+			Termination: Termination(fmt.Sprintf("term-%d", i)),
 		})
 	}
 	for _, v := range metricstest.LabelValues(t, r.Gatherer(), nameRequestsTotal, "k8s_verb") {

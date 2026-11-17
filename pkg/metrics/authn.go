@@ -1,10 +1,8 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
 package metrics
 
-// AuthenticationAttempt counts one authentication attempt. method is the
-// access record's auth_method vocabulary (oidc, tokenreview, none); anything
-// else is projected onto other.
-func (r *Recorder) AuthenticationAttempt(method string, outcome AuthOutcome) {
+// AuthenticationAttempt counts one authentication attempt.
+func (r *Recorder) AuthenticationAttempt(method AuthMethod, outcome AuthOutcome) {
 	if r == nil {
 		return
 	}
@@ -14,13 +12,12 @@ func (r *Recorder) AuthenticationAttempt(method string, outcome AuthOutcome) {
 // AccessDecision counts the one access decision a request produces. An
 // allow carries no reason, whatever the caller passed, because the access
 // record has none either and the two must agree.
-func (r *Recorder) AccessDecision(method string, allowed bool, reason string) {
+func (r *Recorder) AccessDecision(method AuthMethod, allowed bool, reason Reason) {
 	if r == nil {
 		return
 	}
-	decision := "deny"
 	if allowed {
-		decision, reason = "allow", ""
+		reason = ReasonNone
 	}
-	r.accessDecisions.WithLabelValues(projectAuthMethod(method), decision, projectReason(reason)).Inc()
+	r.accessDecisions.WithLabelValues(projectAuthMethod(method), string(DecisionFor(allowed)), projectReason(reason)).Inc()
 }

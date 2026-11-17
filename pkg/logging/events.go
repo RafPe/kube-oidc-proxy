@@ -3,7 +3,7 @@ package logging
 
 import (
 	"log/slog"
-	"sort"
+	"slices"
 )
 
 // EventType names the shape of a record. Values are exactly three lowercase
@@ -37,6 +37,7 @@ const (
 	EventOIDCIssuerInitialized      EventType = "oidc.issuer.initialized"
 	EventOIDCIssuerPending          EventType = "oidc.issuer.pending"
 	EventReadinessProxyReady        EventType = "readiness.proxy.ready"
+	EventReadinessServerStarted     EventType = "readiness.server.started"
 	EventReadinessServerFailed      EventType = "readiness.server.failed"
 	EventProxyConfigLoaded          EventType = "proxy.config.loaded"
 	EventProxyConfigInvalid         EventType = "proxy.config.invalid"
@@ -45,12 +46,8 @@ const (
 	EventProxyServerStopped         EventType = "proxy.server.stopped"
 	EventProxyShutdownStarted       EventType = "proxy.shutdown.started"
 	EventProxyShutdownCompleted     EventType = "proxy.shutdown.completed"
-	EventProxyHookCompleted         EventType = "proxy.hook.completed"
-	EventProxyHookFailed            EventType = "proxy.hook.failed"
 	EventAuditBackendStarted        EventType = "audit.backend.started"
-	EventAuditBackendFailed         EventType = "audit.backend.failed"
 	EventAuditFlushCompleted        EventType = "audit.flush.completed"
-	EventAuditFlushFailed           EventType = "audit.flush.failed"
 	EventUpstreamRequestFailed      EventType = "upstream.request.failed"
 	EventUpstreamRequestCanceled    EventType = "upstream.request.canceled"
 	EventLogWarningSuppressed       EventType = "log.warning.suppressed"
@@ -73,10 +70,11 @@ type EventSpec struct {
 	Summary       string   // one line for docs
 }
 
-// Registry holds one entry per EventType constant. Required lists the mandatory
+// registry holds one entry per EventType constant. It is unexported so the
+// event contract can only be read through AllEventTypes and EventType.Spec. Required lists the mandatory
 // attributes beyond time, level, msg, schema_version, component and event_type;
 // conditional attributes are documented in the summary, not required here.
-var Registry = map[EventType]EventSpec{
+var registry = map[EventType]EventSpec{
 	EventRequestAccessDecided: {
 		Components: []Component{ComponentRequest},
 		Level:      slog.LevelInfo,
@@ -152,7 +150,7 @@ var Registry = map[EventType]EventSpec{
 		Level:      slog.LevelDebug,
 		Required:   []string{"request_id", "reason"},
 		Message:    "oidc authentication failed",
-		Summary:    "The OIDC authenticator rejected the token. The denial itself is INFO on request.access.decided.",
+		Summary:    "The OIDC authenticator rejected the token: reason=unauthorized, or reason=client_canceled when the client hung up before it answered. The denial itself is INFO on request.access.decided.",
 	},
 	EventAuthnTokenMissing: {
 		Components: []Component{ComponentTokenReview},
@@ -169,11 +167,12 @@ var Registry = map[EventType]EventSpec{
 		Summary:    "A live TokenReview answered, with duration_ms. A cache hit is reported by cache.tokenreview.lookup instead.",
 	},
 	EventAuthnTokenReviewFailed: {
-		Components: []Component{ComponentTokenReview},
-		Level:      slog.LevelError,
-		Required:   []string{"request_id", "reason", "error_message"},
-		Message:    "tokenreview failed",
-		Summary:    "The API server was unreachable or returned a status error. Carries reason=authentication_dependency_error.",
+		Components:    []Component{ComponentTokenReview},
+		Level:         slog.LevelError,
+		AllowedLevels: []slog.Level{slog.LevelDebug},
+		Required:      []string{"request_id", "reason", "error_message"},
+		Message:       "tokenreview failed",
+		Summary:       "The TokenReview call failed: the API server was unreachable or returned a status error. Carries reason=authentication_dependency_error, or reason=client_canceled at DEBUG when the client hung up before the review answered.",
 	},
 	EventAuthzSARCompleted: {
 		Components: []Component{ComponentSAR},
@@ -239,6 +238,13 @@ var Registry = map[EventType]EventSpec{
 		Message:    "proxy ready",
 		Summary:    "Readiness latched to ready.",
 	},
+	EventReadinessServerStarted: {
+		Components: []Component{ComponentReadiness},
+		Level:      slog.LevelInfo,
+		Required:   []string{"address"},
+		Message:    "readiness server started",
+		Summary:    "The readiness listener is serving the probe endpoints.",
+	},
 	EventReadinessServerFailed: {
 		Components: []Component{ComponentReadiness},
 		Level:      slog.LevelError,
@@ -293,21 +299,7 @@ var Registry = map[EventType]EventSpec{
 		Level:      slog.LevelInfo,
 		Required:   []string{"duration_ms"},
 		Message:    "shutdown completed",
-		Summary:    "Listeners stopped, readiness stopped and pre-shutdown hooks finished.",
-	},
-	EventProxyHookCompleted: {
-		Components: []Component{ComponentShutdown},
-		Level:      slog.LevelInfo,
-		Required:   []string{"hook", "duration_ms"},
-		Message:    "shutdown hook completed",
-		Summary:    "One record per pre-shutdown hook that finished.",
-	},
-	EventProxyHookFailed: {
-		Components: []Component{ComponentShutdown},
-		Level:      slog.LevelError,
-		Required:   []string{"hook", "error_message"},
-		Message:    "shutdown hook failed",
-		Summary:    "A pre-shutdown hook returned an error.",
+		Summary:    "Listeners stopped, readiness stopped and the audit backend flushed.",
 	},
 	EventAuditBackendStarted: {
 		Components: []Component{ComponentAudit},
@@ -316,34 +308,19 @@ var Registry = map[EventType]EventSpec{
 		Message:    "audit backend started",
 		Summary:    "The audit backend is running.",
 	},
-	EventAuditBackendFailed: {
-		Components: []Component{ComponentAudit},
-		Level:      slog.LevelError,
-		Required:   []string{"error_message"},
-		Message:    "audit backend failed",
-		Summary:    "The audit backend did not start.",
-	},
 	EventAuditFlushCompleted: {
 		Components: []Component{ComponentAudit},
 		Level:      slog.LevelInfo,
 		Required:   []string{"duration_ms"},
 		Message:    "audit flush completed",
-		Summary:    "The pre-shutdown audit flush succeeded.",
-	},
-	EventAuditFlushFailed: {
-		Components: []Component{ComponentAudit},
-		Level:      slog.LevelError,
-		Required:   []string{"error_message"},
-		Message:    "audit flush failed",
-		Summary:    "The pre-shutdown audit flush failed.",
+		Summary:    "The pre-shutdown audit flush finished. The bundled backends cannot report a lost flush here: it surfaces as a bridged component=k8s ERROR record.",
 	},
 	EventUpstreamRequestFailed: {
-		Components:    []Component{ComponentUpstream},
-		Level:         slog.LevelError,
-		AllowedLevels: []slog.Level{slog.LevelDebug},
-		Required:      []string{"request_id", "reason", "termination", "error_message"},
-		Message:       "upstream request failed",
-		Summary:       "The reverse proxy transport failed. Carries reason=upstream_error and a classified termination; drops to DEBUG when the client canceled the request.",
+		Components: []Component{ComponentUpstream},
+		Level:      slog.LevelError,
+		Required:   []string{"request_id", "reason", "termination", "error_message"},
+		Message:    "upstream request failed",
+		Summary:    "The reverse proxy transport failed. Carries reason=upstream_error and a classified termination. A client that canceled is reported by upstream.request.canceled instead.",
 	},
 	EventUpstreamRequestCanceled: {
 		Components: []Component{ComponentUpstream},
@@ -355,9 +332,9 @@ var Registry = map[EventType]EventSpec{
 	EventLogWarningSuppressed: {
 		Components: nil, // any
 		Level:      slog.LevelWarn,
-		Required:   []string{"warning_reason", "suppressed_count", "interval_seconds"},
+		Required:   []string{"suppressed_event_type", "warning_reason", "suppressed_count", "interval_seconds"},
 		Message:    "warnings suppressed",
-		Summary:    "Token-bucket summary of dropped warning records.",
+		Summary:    "Token-bucket summary of dropped warning records of one event type and reason.",
 	},
 	EventMetricsServerStarted: {
 		Components: []Component{ComponentMetrics},
@@ -382,13 +359,24 @@ var Registry = map[EventType]EventSpec{
 	},
 }
 
+// retired lists the event_type values that shipped and are no longer emitted.
+// They have no constant, so nothing can emit one, and a test fails if a
+// registered event takes one of the names back or if docs/logging.md's
+// Retired table, which says why each one went, leaves one out.
+var retired = []EventType{
+	"audit.backend.failed",
+	"audit.flush.failed",
+	"proxy.hook.completed",
+	"proxy.hook.failed",
+}
+
 // AllEventTypes returns every registered event type, sorted by string value.
 func AllEventTypes() []EventType {
-	out := make([]EventType, 0, len(Registry))
-	for e := range Registry {
+	out := make([]EventType, 0, len(registry))
+	for e := range registry {
 		out = append(out, e)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	slices.Sort(out)
 	return out
 }
 
@@ -397,6 +385,16 @@ func (e EventType) Attr() slog.Attr { return slog.String("event_type", string(e)
 
 // Spec returns the registry entry for e.
 func (e EventType) Spec() (EventSpec, bool) {
-	s, ok := Registry[e]
+	s, ok := registry[e]
 	return s, ok
+}
+
+// mustSpec returns e's registry entry and panics when there is none: passing
+// an unregistered event is a programming error, and the event set is closed.
+func (e EventType) mustSpec() EventSpec {
+	spec, ok := e.Spec()
+	if !ok {
+		panic("logging: unregistered event " + string(e))
+	}
+	return spec
 }

@@ -110,7 +110,7 @@ the proxy. Each names what to look at.
 | Symptom | Likely cause / fix |
 | --- | --- |
 | Pod never becomes Ready in multi-issuer mode | With `readinessRequireAllIssuers: true`, **all** issuers must fetch their JWKS. Check pod logs for the per-issuer initialization messages and confirm each issuer URL is reachable and serves a valid discovery/JWKS document. Set it to `false` to become ready on the first issuer. |
-| `authentication-config and --oidc-* flags are mutually exclusive` | You set both `authenticationConfig.content` and one or more `oidc.*` values. Pick one mode. |
+| `--authentication-config and the issuer-specific --oidc-* flags are mutually exclusive` | You set both `authenticationConfig.content` and one or more `oidc.*` values. Pick one mode. |
 | `401 Unauthorized` from the proxy | The token failed OIDC validation — wrong `issuerUrl`/`clientId` (audience), expired token, unmet `requiredClaims`, or a signing algorithm not in `--oidc-signing-algs`. Look for an `AuFail` line with `reason=unauthorized` in the proxy logs (`event_type=request.access.decided`). |
 | `403 Forbidden` after a successful login | Authentication worked but RBAC denied the impersonated identity. Grant the mapped username/groups the appropriate roles. Watch for username **prefixes** (e.g. `google:alice@example.com`). |
 | `403 Forbidden` on **every** request from one issuer, right after `AuSuccess` | The API server refused the proxy's own ServiceAccount, not your identity: it authorizes each `Impersonate-Extra-<key>` header separately as `impersonate` on `userextras/<key>`, and an issuer that maps `claimMappings.extra` sends keys the ClusterRole may not name. The response body says which key (`cannot impersonate resource "userextras/..."`); see it with `kubectl ... -v 8`. The chart's ClusterRole grants every key declared in `authenticationConfig.content` and in `extraImpersonationHeaders.headers`; check the rendered ClusterRole for `userextras/<key>` lines, and if your chart version predates that or you install from raw manifests, grant them yourself — see [multi-issuer: Helm](./multi-issuer.md#helm). |
@@ -155,8 +155,7 @@ here to read):
  "path":"/api/v1/namespaces/default/pods","forwarded_for_untrusted":"10.42.0.5","http_method":"GET",
  "auth_method":"oidc","issuer_name":"corp","k8s_verb":"list","k8s_api_group":"","k8s_resource":"pods",
  "k8s_namespace":"default","decision":"allow","inbound_user":"alice@example.com",
- "inbound_groups":["platform-admins","system:authenticated"],
- "inbound_extra":{"Remote-Client-IP":["10.42.1.3"]},"inbound_extra_omitted":1}
+ "inbound_groups":["platform-admins","system:authenticated"],"inbound_extra_omitted":1}
 ```
 
 When impersonation headers are present, the `outbound_*` fields report the
@@ -220,10 +219,9 @@ fine and was then refused — `inbound_user` is real and worth investigating.
 | `http_method`, `k8s_verb`, `k8s_resource`, `k8s_namespace` | The HTTP method, and the Kubernetes API dimensions the request-info resolver determined. The `k8s_*` fields are absent on non-resource paths such as `/healthz` and discovery. |
 | `auth_method` | `oidc`, `tokenreview` (passthrough) or `none` (no token presented). |
 | `issuer_name` | Which configured issuer accepted the token, in a multi-issuer setup. Never the full issuer URL. |
-| `inbound_user`, `inbound_groups`, `inbound_uid` | The identity the OIDC token authenticated as. `inbound_uid` appears only when the authenticator supplied one. |
-| `inbound_extra` | The impersonation extras the proxy sets itself, from a fixed allowlist. Arbitrary claim data from the token is never logged. |
-| `inbound_extra_omitted` | How many extra keys were dropped because they are not on that allowlist, so you can tell data was withheld rather than absent. |
-| `outbound_user`, `outbound_groups`, `outbound_uid`, `outbound_extra`, `outbound_extra_omitted` | The same fields for the impersonated identity, present only when the request carried impersonation headers. Compare these with the `inbound_*` fields to see who acted as whom. |
+| `inbound_user`, `inbound_groups`, `inbound_uid` | The identity the OIDC token authenticated as, or on the token-passthrough path the identity the API server's TokenReview returned. `inbound_uid` appears only when the authenticator supplied one. |
+| `inbound_extra_omitted` | How many extras the identity carried. Extras are never logged, only counted, so you can tell data was withheld rather than absent. |
+| `outbound_user`, `outbound_groups`, `outbound_uid`, `outbound_extra_omitted` | The same fields for the impersonated identity, present only when the request carried impersonation headers. Compare these with the `inbound_*` fields to see who acted as whom. |
 | `target_kind`, `target_name` | On an impersonation denial, what was refused — so a denial never has to be recovered by parsing error text. |
 
 Bearer tokens, `Authorization` and `Cookie` values, request and response bodies,

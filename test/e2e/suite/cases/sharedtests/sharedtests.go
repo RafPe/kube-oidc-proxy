@@ -1,4 +1,7 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
+
+//go:build e2e
+
 // Package sharedtests defines token-validation Ginkgo cases that must pass
 // against any proxy deployment — OIDC-flags or AuthenticationConfiguration.
 // Callers deploy the proxy in the desired mode, then register these cases.
@@ -6,7 +9,6 @@ package sharedtests
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -18,12 +20,16 @@ import (
 	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/rafpe/kube-oidc-proxy/internal/devkit/idtoken"
+	"github.com/rafpe/kube-oidc-proxy/internal/devkit/keybundle"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
-	"github.com/rafpe/kube-oidc-proxy/test/util"
 )
 
 // RunTokenValidationTests registers Ginkgo It blocks exercising the proxy's
 // token-validation behaviour against the framework's primary issuer.
+//
+// The invalid tokens are minted here rather than through SignedTokenFor, which
+// only produces tokens the proxy accepts.
 func RunTokenValidationTests(f *framework.Framework) {
 	It("rejects a missing token", func() {
 		expectUnauthorized(f, f.IssuerKeyBundle(), nil)
@@ -37,21 +43,21 @@ func RunTokenValidationTests(f *framework.Framework) {
 		badURL, err := url.Parse("incorrect-issuer.io")
 		Expect(err).NotTo(HaveOccurred())
 		expectUnauthorized(f, f.IssuerKeyBundle(),
-			f.Helper().NewTokenPayload(badURL, f.ClientID(), time.Now().Add(time.Minute)))
+			idtoken.NewPayload(badURL, f.ClientID(), time.Now().Add(time.Minute)))
 	})
 
 	It("rejects a token with a wrong audience", func() {
 		expectUnauthorized(f, f.IssuerKeyBundle(),
-			f.Helper().NewTokenPayload(f.IssuerURL(), "wrong-aud", time.Now().Add(time.Minute)))
+			idtoken.NewPayload(f.IssuerURL(), "wrong-aud", time.Now().Add(time.Minute)))
 	})
 
 	It("rejects an expired token", func() {
 		expectUnauthorized(f, f.IssuerKeyBundle(),
-			f.Helper().NewTokenPayload(f.IssuerURL(), f.ClientID(), time.Now()))
+			idtoken.NewPayload(f.IssuerURL(), f.ClientID(), time.Now()))
 	})
 
-	It("accepts a valid token from the primary issuer", func() {
-		_, err := f.NewProxyClient().CoreV1().Pods(f.Namespace.Name).List(context.TODO(), metav1.ListOptions{})
+	It("accepts a valid token from the primary issuer", func(ctx SpecContext) {
+		_, err := f.NewProxyClient().CoreV1().Pods(f.Namespace.Name).List(ctx, metav1.ListOptions{})
 		if !k8sErrors.IsForbidden(err) {
 			Expect(err).NotTo(HaveOccurred())
 		}
@@ -61,7 +67,7 @@ func RunTokenValidationTests(f *framework.Framework) {
 // ExpectProxyAuthenticated signs payload with keyBundle and asserts the proxy
 // did not reject the token. Downstream Kubernetes authorization is not
 // asserted, so 403 counts as success.
-func ExpectProxyAuthenticated(f *framework.Framework, keyBundle *util.KeyBundle, payload []byte) {
+func ExpectProxyAuthenticated(f *framework.Framework, keyBundle *keybundle.Bundle, payload []byte) {
 	_, resp := proxyGetPods(f, keyBundle, payload)
 	Expect(resp.StatusCode).NotTo(Equal(http.StatusUnauthorized),
 		"token should be authenticated by proxy (got %d)", resp.StatusCode)
@@ -69,11 +75,11 @@ func ExpectProxyAuthenticated(f *framework.Framework, keyBundle *util.KeyBundle,
 
 // ExpectProxyUnauthorized signs payload with keyBundle and asserts the proxy
 // rejected the token with a bare 401.
-func ExpectProxyUnauthorized(f *framework.Framework, keyBundle *util.KeyBundle, payload []byte) {
+func ExpectProxyUnauthorized(f *framework.Framework, keyBundle *keybundle.Bundle, payload []byte) {
 	expectUnauthorized(f, keyBundle, payload)
 }
 
-func expectUnauthorized(f *framework.Framework, keyBundle *util.KeyBundle, payload []byte) {
+func expectUnauthorized(f *framework.Framework, keyBundle *keybundle.Bundle, payload []byte) {
 	body, resp := proxyGetPods(f, keyBundle, payload)
 	body = bytes.TrimSpace(body)
 	if resp.StatusCode != http.StatusUnauthorized || !bytes.Equal(body, []byte("Unauthorized")) {
@@ -82,8 +88,8 @@ func expectUnauthorized(f *framework.Framework, keyBundle *util.KeyBundle, paylo
 	}
 }
 
-func proxyGetPods(f *framework.Framework, keyBundle *util.KeyBundle, payload []byte) ([]byte, *http.Response) {
-	signedToken, err := f.Helper().SignToken(keyBundle, payload)
+func proxyGetPods(f *framework.Framework, keyBundle *keybundle.Bundle, payload []byte) ([]byte, *http.Response) {
+	signedToken, err := idtoken.Sign(keyBundle, payload)
 	Expect(err).NotTo(HaveOccurred())
 
 	proxyConfig := f.NewProxyRestConfig()

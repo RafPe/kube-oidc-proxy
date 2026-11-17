@@ -1,9 +1,12 @@
 // Copyright Jetstack Ltd. See LICENSE for details.
+
+//go:build e2e
+
 package upgrade
 
 import (
 	"bytes"
-	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +19,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
@@ -26,8 +30,9 @@ import (
 	// required to register oidc auth plugin for rest client
 	_ "k8s.io/client-go/plugin/pkg/client/auth/oidc"
 
-	"github.com/rafpe/kube-oidc-proxy/pkg/util/port"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
+	"github.com/rafpe/kube-oidc-proxy/test/kind"
+	"github.com/rafpe/kube-oidc-proxy/test/util/port"
 )
 
 // Both specs stream through the same default proxy deployment to the same echo
@@ -39,11 +44,11 @@ var _ = framework.CasesDescribe("Upgrade", Ordered, ContinueOnFailure, Label("sh
 	f := framework.NewOrderedDefaultFramework("upgrade")
 
 	var pod *corev1.Pod
-	BeforeAll(func() {
+	BeforeAll(func(ctx SpecContext) {
 		By("Deploying echo server to exec to")
 
 		var err error
-		pod, err = f.Helper().KubeClient.CoreV1().Pods(f.Namespace.Name).Create(context.TODO(), &corev1.Pod{
+		pod, err = f.Helper().KubeClient.CoreV1().Pods(f.Namespace.Name).Create(ctx, &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "echoserver-",
 			},
@@ -51,19 +56,32 @@ var _ = framework.CasesDescribe("Upgrade", Ordered, ContinueOnFailure, Label("sh
 				Containers: []corev1.Container{
 					{
 						Name:            "echoserver",
-						Image:           "gcr.io/google_containers/echoserver:1.10",
-						ImagePullPolicy: corev1.PullIfNotPresent,
+						Image:           kind.EchoServerImageName,
+						ImagePullPolicy: corev1.PullNever,
+						// Without a readiness probe the pod is Ready the moment
+						// the process starts, and the exec case raced it to the
+						// listening socket (curl exit 7 in runs 33990317402 and
+						// 35720045694). Ready now means listening.
+						ReadinessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{
+								HTTPGet: &corev1.HTTPGetAction{
+									Path: "/ready",
+									Port: intstr.FromInt32(8080),
+								},
+							},
+							PeriodSeconds: 1,
+						},
 					},
 				},
 			},
 		}, metav1.CreateOptions{})
 		Expect(err).NotTo(HaveOccurred())
 
-		err = f.Helper().WaitForPodReady(f.Namespace.Name, pod.Name, time.Second*30)
+		err = f.Helper().WaitForPodReady(ctx, f.Namespace.Name, pod.Name, time.Second*30)
 		Expect(err).NotTo(HaveOccurred())
 
 		By("Creating Role")
-		_, err = f.Helper().KubeClient.RbacV1().Roles(f.Namespace.Name).Create(context.TODO(), &rbacv1.Role{
+		_, err = f.Helper().KubeClient.RbacV1().Roles(f.Namespace.Name).Create(ctx, &rbacv1.Role{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "e2e-test-exec",
 			},
@@ -82,7 +100,7 @@ var _ = framework.CasesDescribe("Upgrade", Ordered, ContinueOnFailure, Label("sh
 		Expect(err).NotTo(HaveOccurred())
 
 		By("Creating RoleBinding")
-		_, err = f.Helper().KubeClient.RbacV1().RoleBindings(f.Namespace.Name).Create(context.TODO(),
+		_, err = f.Helper().KubeClient.RbacV1().RoleBindings(f.Namespace.Name).Create(ctx,
 			&rbacv1.RoleBinding{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "e2e-test-exec",
@@ -101,7 +119,7 @@ var _ = framework.CasesDescribe("Upgrade", Ordered, ContinueOnFailure, Label("sh
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("should be able to exec into pod through the proxy", func() {
+	It("should be able to exec into pod through the proxy", func(ctx SpecContext) {
 		restConfig := newRestConfig(f)
 
 		restClient, err := rest.RESTClientFor(restConfig)
@@ -137,7 +155,7 @@ var _ = framework.CasesDescribe("Upgrade", Ordered, ContinueOnFailure, Label("sh
 		}
 
 		By("Running exec into pod and runing curl on local host")
-		err = exec.StreamWithContext(context.Background(), sopt)
+		err = exec.StreamWithContext(ctx, sopt)
 		Expect(err).NotTo(HaveOccurred())
 
 		// should have no stderr output
@@ -189,73 +207,56 @@ var _ = framework.CasesDescribe("Upgrade", Ordered, ContinueOnFailure, Label("sh
 		errCh := make(chan error, 1)
 
 		go func() {
+			// Closing stopCh ends the port forward, which is what lets
+			// forwardPorts below return once the request has been checked.
 			defer close(pfopts.stopCh)
-
-			// give a chance to establish a connection
-			time.Sleep(time.Second * 2)
-
-			By("Attempting to curl through port forward")
-
-			portInR := bytes.NewReader([]byte("hello world"))
-
-			client := &http.Client{
-				Timeout: 10 * time.Second,
-				Transport: &http.Transport{
-					DisableKeepAlives: true,
-				},
-			}
-
-			// send message through port forward
-			fmt.Println("Pre-post")
-			resp, err := client.Post(fmt.Sprintf("http://127.0.0.1:%s", freePort), "", portInR)
-			if err != nil {
-				errCh <- err
-				return
-			}
-			fmt.Println("pre defer")
-			defer resp.Body.Close()
-			fmt.Println("post defer")
-			//_, _ = io.ReadAll(resp.Body)
-			fmt.Println("drain body")
-
-			// expect 200 resp and correct body
-
-			if resp.StatusCode != 200 {
-				errCh <- fmt.Errorf("got unexpected response code from server, exp=200 got=%d",
-					resp.StatusCode)
-				return
-			}
-
-			fmt.Println("read data")
-			body, err := io.ReadAll(resp.Body)
-			fmt.Println("data read")
-			if err != nil {
-				errCh <- fmt.Errorf("failed to read body: %s", err)
-				return
-			}
-			fmt.Printf("check for data %s\n", string(body))
-			// should have correct output from echo server
-			if !bytes.Contains(body, []byte("Request Body:\nhello world")) {
-				errCh <- fmt.Errorf("execOut.String())got unexpected echoserver response: exp=...hello world got=%s",
-					body)
-				return
-			}
-			fmt.Println("after check")
+			errCh <- curlThroughPortForward(freePort, pfopts.readyCh)
 		}()
 
 		By("Running port forward")
-		if err := forwardPorts("POST", req.URL(), pfopts); err != nil {
-			Expect(err).NotTo(HaveOccurred())
-		}
-
-		select {
-		case <-pfopts.stopCh:
-			return
-		case err := <-errCh:
-			Expect(err).NotTo(HaveOccurred())
-		}
+		Expect(forwardPorts("POST", req.URL(), pfopts)).To(Succeed())
+		Expect(<-errCh).To(Succeed())
 	})
 })
+
+// curlThroughPortForward waits for the port forward to report ready, then
+// posts a body through it to the echo server and checks it comes back.
+func curlThroughPortForward(localPort string, readyCh <-chan struct{}) error {
+	select {
+	case <-readyCh:
+	case <-time.After(30 * time.Second):
+		return errors.New("port forward did not become ready within 30s")
+	}
+
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			DisableKeepAlives: true,
+		},
+	}
+
+	resp, err := client.Post(fmt.Sprintf("http://127.0.0.1:%s", localPort), "", strings.NewReader("hello world"))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("got unexpected response code from server, exp=200 got=%d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read body: %w", err)
+	}
+
+	// The echo server answers with the request it received.
+	if !bytes.Contains(body, []byte("Request Body:\nhello world")) {
+		return fmt.Errorf("got unexpected echoserver response: exp=...hello world got=%s", body)
+	}
+
+	return nil
+}
 
 type portForwardOptions struct {
 	address, ports  []string
@@ -280,17 +281,13 @@ func forwardPorts(method string, url *url.URL, opts *portForwardOptions) error {
 }
 
 func newRestConfig(f *framework.Framework) *rest.Config {
-	payload := f.Helper().NewTokenPayload(f.IssuerURL(), f.ClientID(), time.Now().Add(time.Minute))
-	signedToken, err := f.Helper().SignToken(f.IssuerKeyBundle(), payload)
-	Expect(err).NotTo(HaveOccurred())
-
 	return &rest.Config{
 		Host: f.ProxyURL().Host,
 		AuthProvider: &clientcmdapi.AuthProviderConfig{
 			Name: "oidc",
 			Config: map[string]string{
 				"client-id":      f.ClientID(),
-				"id-token":       signedToken,
+				"id-token":       f.SignedToken(),
 				"idp-issuer-url": f.IssuerURL().String(),
 			},
 		},

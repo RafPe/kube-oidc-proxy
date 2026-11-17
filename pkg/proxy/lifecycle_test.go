@@ -16,10 +16,13 @@ import (
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
+	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
+	"github.com/rafpe/kube-oidc-proxy/pkg/metrics/metricstest"
+	"github.com/rafpe/kube-oidc-proxy/pkg/proxy/reqctx"
 )
 
 // serveWith runs a handler through the two filters that own a request's
-// identity and its lifecycle, in the order withHandlers applies them.
+// identity and its lifecycle, in the order withFilterChain applies them.
 func serveWith(t *testing.T, p *fakeProxy, inner http.HandlerFunc, req *http.Request) *httptest.ResponseRecorder {
 	t.Helper()
 	rw := httptest.NewRecorder()
@@ -143,7 +146,7 @@ func TestClientCancelTermination(t *testing.T) {
 func serveChain(t *testing.T, p *fakeProxy, req *http.Request, inner http.HandlerFunc) *httptest.ResponseRecorder {
 	t.Helper()
 	rw := httptest.NewRecorder()
-	p.withHandlers(inner).ServeHTTP(rw, req)
+	p.withFilterChain(inner).ServeHTTP(rw, req)
 	return rw
 }
 
@@ -175,11 +178,11 @@ func TestChainResolvesRequestInfoBeforeLifecycle(t *testing.T) {
 	}
 }
 
-// TestChainResolvesRequestInfoBeforeTheErrorHandler is the other half: the
-// error handler runs outside the audit chain, so a denial would otherwise be
-// recorded with no k8s_* fields and a query on k8s_resource would see only the
-// requests that were allowed through.
-func TestChainResolvesRequestInfoBeforeTheErrorHandler(t *testing.T) {
+// TestChainResolvesRequestInfoBeforeTheRefusalPath is the other half: a
+// refusal is recorded before the main audit chain is reached, so a denial
+// would otherwise be recorded with no k8s_* fields and a query on
+// k8s_resource would see only the requests that were allowed through.
+func TestChainResolvesRequestInfoBeforeTheRefusalPath(t *testing.T) {
 	p := newTestProxy(t)
 
 	serveChain(t, p, watchRequest(), noopHandler)
@@ -195,7 +198,7 @@ func TestChainResolvesRequestInfoBeforeTheErrorHandler(t *testing.T) {
 
 // TestUpstreamFailureReachesTheTerminalRecord pins the one piece of plumbing
 // neither the lifecycle tests nor the classification test can see on its own.
-// The error handler runs several filters below withRequestLifecycle, on a
+// handleUpstreamError runs several filters below withRequestLifecycle, on a
 // request derived from the one the filter holds, so the termination it
 // classifies reaches the terminal record only through the shared holder on the
 // request context.
@@ -203,12 +206,12 @@ func TestUpstreamFailureReachesTheTerminalRecord(t *testing.T) {
 	p := newTestProxy(t)
 	serveWith(t, p, func(w http.ResponseWriter, r *http.Request) {
 		// Derived exactly as the filters below the lifecycle one derive it.
-		p.handleError(w, r.WithContext(logging.NewContext(r.Context(), p.logger)),
+		p.handleUpstreamError(w, r,
 			&net.OpError{Op: "dial", Err: &timeoutErr{}})
 	}, httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil))
 
 	rec := p.logs.Only(t, logging.EventRequestResponseCompleted)
-	if rec.String("termination") != terminationUpstreamTimeout || rec.String("reason") != reasonUpstreamError {
+	if rec.String("termination") != string(metrics.TerminationUpstreamTimeout) || rec.String("reason") != string(metrics.ReasonUpstreamError) {
 		t.Fatalf("%v", rec)
 	}
 	if s, _ := rec.Int("http_status"); s != http.StatusBadGateway {
@@ -246,7 +249,7 @@ func TestFlushBeforeWriteRecordsTheImplicit200(t *testing.T) {
 	if s, _ := rec.Int("http_status"); s != http.StatusOK {
 		t.Fatalf("http_status = %d, want 200: %v", s, rec)
 	}
-	if rec.String("termination") != terminationNormal {
+	if rec.String("termination") != string(metrics.TerminationNormal) {
 		t.Fatalf("%v", rec)
 	}
 }
@@ -257,8 +260,7 @@ func TestFlushBeforeWriteRecordsTheImplicit200(t *testing.T) {
 // the flush is recognised as the moment the response began.
 func TestFlushStartsALongRunningResponse(t *testing.T) {
 	p := newTestProxy(t)
-	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").DoAndReturn(
-		oidcAnswer(&authenticator.Response{User: &authuser.DefaultInfo{Name: "alice"}}, true, nil))
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(&authenticator.Response{User: &authuser.DefaultInfo{Name: "alice"}}, true, nil)
 
 	req := watchRequest()
 	req.Header.Set("Authorization", "bearer fake-token")
@@ -291,16 +293,16 @@ func TestPanicClassification(t *testing.T) {
 	tests := map[string]struct {
 		panicValue any
 		cancel     bool
-		want       string
+		want       metrics.Termination
 	}{
 		"abort after the client went away is a client cancel": {
-			panicValue: http.ErrAbortHandler, cancel: true, want: terminationClientCancel,
+			panicValue: http.ErrAbortHandler, cancel: true, want: metrics.TerminationClientCancel,
 		},
 		"abort with the client still there is an upstream reset": {
-			panicValue: http.ErrAbortHandler, cancel: false, want: terminationUpstreamReset,
+			panicValue: http.ErrAbortHandler, cancel: false, want: metrics.TerminationUpstreamReset,
 		},
 		"an unrelated panic is still a panic": {
-			panicValue: "boom", cancel: false, want: terminationPanic,
+			panicValue: "boom", cancel: false, want: metrics.TerminationPanic,
 		},
 	}
 
@@ -328,7 +330,7 @@ func TestPanicClassification(t *testing.T) {
 			}()
 
 			rec := p.logs.Only(t, logging.EventRequestResponseCompleted)
-			if got := rec.String("termination"); got != test.want {
+			if got := rec.String("termination"); got != string(test.want) {
 				t.Errorf("termination = %q, want %q: %v", got, test.want, rec)
 			}
 			if s, _ := rec.Int("http_status"); s != http.StatusOK {
@@ -341,7 +343,8 @@ func TestPanicClassification(t *testing.T) {
 // TestUnwrittenReturnRecordsTheImplicit200 pins that a handler which returns
 // without writing a header, a body or a flush is recorded with the 200 net/http
 // sends on its behalf, not with 0. A status of 0 is reserved for a response
-// that never went out at all: a hijacked connection or an aborted handler.
+// that never went out at all: a hijacked connection, an aborted handler, or a
+// client that had gone before anything was written.
 func TestUnwrittenReturnRecordsTheImplicit200(t *testing.T) {
 	p := newTestProxy(t)
 	serveWith(t, p, func(http.ResponseWriter, *http.Request) {}, httptest.NewRequest(http.MethodGet, "/", nil))
@@ -351,6 +354,33 @@ func TestUnwrittenReturnRecordsTheImplicit200(t *testing.T) {
 	}
 	if rec.String("termination") != "normal" {
 		t.Fatalf("termination = %q, want normal", rec.String("termination"))
+	}
+}
+
+// TestClientGoneUnansweredRecordsNoStatus pins that a request the proxy
+// deliberately left unanswered because the client went away -- refuse and
+// handleUpstreamError both write nothing then -- is recorded with no status,
+// not with the 200 net/http would have sent to a client still listening: the
+// terminal record carries http_status=0 and the requests counter code="none".
+func TestClientGoneUnansweredRecordsNoStatus(t *testing.T) {
+	p := newTestProxy(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx)
+	serveWith(t, p, func(http.ResponseWriter, *http.Request) { cancel() }, req)
+
+	rec := p.logs.Only(t, logging.EventRequestResponseCompleted)
+	if s, _ := rec.Int("http_status"); s != 0 {
+		t.Errorf("http_status = %d, want 0", s)
+	}
+	if got := rec.String("termination"); got != string(metrics.TerminationClientCancel) {
+		t.Errorf("termination = %q, want %q", got, metrics.TerminationClientCancel)
+	}
+	if v, _ := metricstest.Value(t, p.metrics.Gatherer(), metricRequestsTotal,
+		map[string]string{"code": "none", "termination": "client_cancel"}); v != 1 {
+		t.Errorf("requests_total{code=none,termination=client_cancel} = %v, want 1", v)
+	}
+	if v, _ := metricstest.Value(t, p.metrics.Gatherer(), metricRequestsTotal, map[string]string{"code": "200"}); v != 0 {
+		t.Errorf("requests_total{code=200} = %v, want 0: no 200 was sent", v)
 	}
 }
 
@@ -400,5 +430,38 @@ func TestSwitchingProtocolsIsLatched(t *testing.T) {
 	}))).ServeHTTP(rw, httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil))
 	if s, _ := p.logs.Only(t, logging.EventRequestResponseCompleted).Int("http_status"); s != http.StatusSwitchingProtocols {
 		t.Fatalf("http_status = %d, want 101", s)
+	}
+}
+
+// TestClassifyTerminationPrecedence pins the order classifyTermination
+// applies its observations in: a real panic outranks everything, a hijack
+// outranks a gone client, an aborted copy with the client still attached is
+// an upstream reset, and a handler's own classification applies only when
+// nothing the filter saw says otherwise.
+func TestClassifyTerminationPrecedence(t *testing.T) {
+	upstream := reqctx.TerminationRecord{Kind: metrics.TerminationUpstreamTimeout, Reason: metrics.ReasonUpstreamError}
+
+	tests := map[string]struct {
+		panicked   any
+		hijacked   bool
+		ctxErr     error
+		classified reqctx.TerminationRecord
+		want       metrics.Termination
+	}{
+		"nothing observed":            {want: metrics.TerminationNormal},
+		"handler classified":          {classified: upstream, want: metrics.TerminationUpstreamTimeout},
+		"client gone":                 {ctxErr: context.Canceled, classified: upstream, want: metrics.TerminationClientCancel},
+		"hijacked then client gone":   {hijacked: true, ctxErr: context.Canceled, want: metrics.TerminationHijacked},
+		"panic outranks a hijack":     {panicked: "boom", hijacked: true, want: metrics.TerminationPanic},
+		"abort with client attached":  {panicked: http.ErrAbortHandler, classified: upstream, want: metrics.TerminationUpstreamReset},
+		"abort after the client left": {panicked: http.ErrAbortHandler, ctxErr: context.Canceled, want: metrics.TerminationClientCancel},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := classifyTermination(tc.panicked, tc.hijacked, tc.ctxErr, tc.classified); got != tc.want {
+				t.Errorf("classifyTermination = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

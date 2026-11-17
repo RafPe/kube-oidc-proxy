@@ -12,9 +12,10 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/rafpe/kube-oidc-proxy/internal/devkit/idtoken"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/config"
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework/helper"
 	"github.com/rafpe/kube-oidc-proxy/test/environment"
@@ -59,11 +60,13 @@ func create() {
 }
 
 func deploy() {
+	ctx := context.Background()
+
 	env, err := environment.New(1, 1)
 	errExit(err)
 
 	fmt.Printf("> reloading all images\n")
-	errExit(env.Kind().LoadAllImages())
+	errExit(env.LoadImages())
 
 	kubeconfig := env.KubeConfigPath()
 
@@ -76,56 +79,52 @@ func deploy() {
 	err = cfg.Validate()
 	errExit(err)
 
-	helper := helper.NewHelper(cfg)
-
-	clientConfigFlags := genericclioptions.NewConfigFlags(true)
-	clientConfigFlags.KubeConfig = &kubeconfig
-	config, err := clientConfigFlags.ToRESTConfig()
+	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	errExit(err)
 
 	kubeClient, err := kubernetes.NewForConfig(config)
 	errExit(err)
 
-	helper.KubeClient = kubeClient
+	helper := helper.NewHelper(cfg, kubeClient)
 
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "kube-oidc-proxy-e2e-",
 		},
 	}
-	ns, err = kubeClient.CoreV1().Namespaces().Create(context.TODO(), ns, metav1.CreateOptions{})
+	ns, err = kubeClient.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{})
 	errExit(err)
 
 	fmt.Printf("> created new namespace %s\n", ns.Name)
 
-	issuerKeyBundle, issuerURL, err := helper.DeployIssuer(ns.Name)
+	issuerKeyBundle, issuerURL, err := helper.DeployIssuer(ctx, ns.Name)
 	errExit(err)
 
 	fmt.Printf("> deployed issuer at url %s\n", issuerURL)
 
 	var proxyURL *url.URL
 	if e := os.Getenv(EnvFakeAPIServer); strings.ToLower(e) == "true" {
-		extraOIDCVolume, fURL, err := helper.DeployFakeAPIServer(ns.Name)
+		extraOIDCVolume, fURL, err := helper.DeployFakeAPIServer(ctx, ns.Name)
 		errExit(err)
 
 		fmt.Printf("> deployed fake API server at url %s\n", fURL)
 
-		_, proxyURL, err = helper.DeployProxy(ns, issuerURL,
+		_, proxyURL, err = helper.DeployProxy(ctx, ns, issuerURL,
 			"kube-oidc-proxy-e2e-client-id", issuerKeyBundle, extraOIDCVolume,
 			fmt.Sprintf("--server=%s", fURL), "--certificate-authority=/fake-apiserver/ca.pem")
 		errExit(err)
 
 	} else {
-		_, proxyURL, err = helper.DeployProxy(ns, issuerURL,
+		_, proxyURL, err = helper.DeployProxy(ctx, ns, issuerURL,
 			"kube-oidc-proxy-e2e-client-id", issuerKeyBundle, nil)
 		errExit(err)
 	}
 
 	fmt.Printf("> deployed proxy at url %s\n", proxyURL)
 
-	tokenPayload := helper.NewTokenPayload(issuerURL, clientID, time.Now().Add(time.Hour*48))
+	tokenPayload := idtoken.NewPayload(issuerURL, clientID, time.Now().Add(time.Hour*48))
 
-	signedToken, err := helper.SignToken(issuerKeyBundle, tokenPayload)
+	signedToken, err := idtoken.Sign(issuerKeyBundle, tokenPayload)
 	errExit(err)
 	fmt.Printf("> signed token valid for 48 hours:\n%s\n", signedToken)
 

@@ -2,10 +2,13 @@
 package audit
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	auditinternal "k8s.io/apiserver/pkg/apis/audit"
@@ -14,7 +17,6 @@ import (
 	"k8s.io/apiserver/pkg/server"
 	apiserveroptions "k8s.io/apiserver/pkg/server/options"
 
-	"github.com/rafpe/kube-oidc-proxy/cmd/app/options"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 )
@@ -140,7 +142,7 @@ func TestLongRunningRequests(t *testing.T) {
 func TestRequestInfoLongRunning(t *testing.T) {
 	// An external address with a port, since without one Complete() insists on
 	// deriving the port from a secure serving info this test has no use for.
-	auditor, err := New(&options.AuditOptions{AuditOptions: apiserveroptions.NewAuditOptions()}, "127.0.0.1:6443", nil, slog.New(slog.DiscardHandler))
+	auditor, err := New(Config{Options: apiserveroptions.NewAuditOptions(), ExternalAddress: "127.0.0.1:6443", SecureServing: nil}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("failed to create auditor: %s", err)
 	}
@@ -307,28 +309,24 @@ func TestRequestInfoLongRunning(t *testing.T) {
 	}
 }
 
-// fakeBackend is an audit.Backend that records whether it was shut down. It
-// implements errorReporter so a test can drive both Shutdown outcomes: the
-// upstream audit.Backend interface has a Shutdown that returns nothing, so a
-// backend that knows its flush failed can only say so through this extension.
+// fakeBackend is an audit.Backend that records whether it was shut down and
+// can be told to fail Run.
 type fakeBackend struct {
-	runErr      error
-	shutdownErr error
-	shutdown    bool
+	runErr   error
+	shutdown bool
 }
 
 func (f *fakeBackend) ProcessEvents(_ ...*auditinternal.Event) bool { return true }
 func (f *fakeBackend) Run(_ <-chan struct{}) error                  { return f.runErr }
 func (f *fakeBackend) Shutdown()                                    { f.shutdown = true }
 func (f *fakeBackend) String() string                               { return "fake" }
-func (f *fakeBackend) ShutdownErr() error                           { return f.shutdownErr }
 
 // newTestAuditWithBackend builds an Audit reporting through root whose backend
 // is the supplied fake, so Shutdown can be exercised without a real audit sink.
 func newTestAuditWithBackend(t testing.TB, root *slog.Logger, backend audit.Backend) *Audit {
 	t.Helper()
 
-	a, err := New(&options.AuditOptions{AuditOptions: apiserveroptions.NewAuditOptions()}, "127.0.0.1:6443", nil,
+	a, err := New(Config{Options: apiserveroptions.NewAuditOptions(), ExternalAddress: "127.0.0.1:6443", SecureServing: nil},
 		logging.ForComponent(root, logging.ComponentAudit))
 	if err != nil {
 		t.Fatalf("failed to create auditor: %s", err)
@@ -337,36 +335,21 @@ func newTestAuditWithBackend(t testing.TB, root *slog.Logger, backend audit.Back
 	return a
 }
 
-// TestShutdownReportsFlushResult covers the success case: the backend's
-// Shutdown returns without reporting an error, so the flush is recorded as
-// completed and Shutdown reports no failure to the caller.
-func TestShutdownReportsFlushResult(t *testing.T) {
+// TestShutdownFlushesAndRecordsCompletion pins what Shutdown can actually
+// observe: it flushes the backend and records the flush as completed. The
+// upstream backend interface gives it no failure to report.
+func TestShutdownFlushesAndRecordsCompletion(t *testing.T) {
 	root, cap := logtest.New(t, 0)
 	defer logtest.AssertRegistered(t, cap)
-	a := newTestAuditWithBackend(t, root, &fakeBackend{shutdownErr: nil})
-	if err := a.Shutdown(); err != nil {
-		t.Fatal(err)
+	backend := &fakeBackend{}
+	a := newTestAuditWithBackend(t, root, backend)
+
+	a.Shutdown()
+
+	if !backend.shutdown {
+		t.Fatal("Shutdown did not flush the backend")
 	}
 	cap.Only(t, logging.EventAuditFlushCompleted)
-}
-
-// TestShutdownReportsFlushFailure covers the failure case: a backend that
-// reports a shutdown error through errorReporter yields audit.flush.failed and
-// the error reaches the caller, so a lost audit flush is not silent.
-func TestShutdownReportsFlushFailure(t *testing.T) {
-	root, cap := logtest.New(t, 0)
-	defer logtest.AssertRegistered(t, cap)
-	a := newTestAuditWithBackend(t, root, &fakeBackend{shutdownErr: errors.New("flush timed out")})
-	err := a.Shutdown()
-	if err == nil {
-		t.Fatal("Shutdown reported success for a backend that failed to flush")
-	}
-	if got := cap.Only(t, logging.EventAuditFlushFailed).String("error_message"); got != "flush timed out" {
-		t.Fatalf("error_message = %q, want %q", got, "flush timed out")
-	}
-	if len(cap.ByEvent(logging.EventAuditFlushCompleted)) != 0 {
-		t.Fatal("a failed flush also reported completion")
-	}
 }
 
 // TestRunReportsBackendStarted covers the success case: a backend that starts
@@ -377,7 +360,7 @@ func TestRunReportsBackendStarted(t *testing.T) {
 	defer logtest.AssertRegistered(t, cap)
 	a := newTestAuditWithBackend(t, root, &fakeBackend{})
 
-	if err := a.Run(make(chan struct{})); err != nil {
+	if err := a.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -390,28 +373,21 @@ func TestRunReportsBackendStarted(t *testing.T) {
 	}
 }
 
-// TestRunReportsBackendFailed covers the failure case: a backend that cannot
-// start is an error the process cannot serve correctly through, so it is
-// reported at ERROR and the cause reaches the caller.
-func TestRunReportsBackendFailed(t *testing.T) {
+// TestRunReturnsBackendFailure covers the failure case: a backend that cannot
+// start is an error the process cannot serve correctly through, so the cause
+// reaches the caller, which reports it once as the startup failure. Nothing is
+// logged here, and in particular no start.
+func TestRunReturnsBackendFailure(t *testing.T) {
 	root, cap := logtest.New(t, 0)
 	defer logtest.AssertRegistered(t, cap)
 	a := newTestAuditWithBackend(t, root, &fakeBackend{runErr: errors.New("webhook unreachable")})
 
-	err := a.Run(make(chan struct{}))
-	if err == nil {
-		t.Fatal("Run reported success for a backend that failed to start")
+	err := a.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "webhook unreachable") || !strings.HasPrefix(err.Error(), "audit: ") {
+		t.Fatalf("Start() = %v, want the backend's start error under the audit: prefix", err)
 	}
-
-	rec := cap.Only(t, logging.EventAuditBackendFailed)
-	if rec.String("error_message") != "webhook unreachable" {
-		t.Fatalf("error_message = %q", rec.String("error_message"))
-	}
-	if rec.String("level") != "ERROR" {
-		t.Fatalf("level = %q, want ERROR", rec.String("level"))
-	}
-	if len(cap.ByEvent(logging.EventAuditBackendStarted)) != 0 {
-		t.Fatal("a backend that failed to start also reported starting")
+	if len(cap.Records()) != 0 {
+		t.Fatalf("a failed start was logged by the auditor as well as returned: %s", cap.Raw())
 	}
 }
 
@@ -423,67 +399,22 @@ func TestRunWithoutBackendIsSilent(t *testing.T) {
 	defer logtest.AssertRegistered(t, cap)
 	a := newTestAuditWithBackend(t, root, nil)
 
-	if err := a.Run(make(chan struct{})); err != nil {
+	if err := a.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.Shutdown(); err != nil {
-		t.Fatal(err)
-	}
+	a.Shutdown()
 	if raw := cap.Raw(); raw != "" {
 		t.Fatalf("records emitted with no audit backend configured: %s", raw)
 	}
 }
 
-// TestWithRequestInfoResolvesCoreGroupAsResourceRequest pins
-// LegacyAPIGroupPrefixes. Without it every /api request parses as a
-// non-resource request whose verb is the lowercased HTTP method, which would
-// silently collapse the k8s_verb metric label to "other" and the scope label
-// to "none" for the whole core group.
-func TestWithRequestInfoResolvesCoreGroupAsResourceRequest(t *testing.T) {
-	a, err := New(new(options.AuditOptions), "0.0.0.0:1234", new(server.SecureServingInfo), slog.New(slog.DiscardHandler))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	tests := map[string]struct {
-		method, path      string
-		wantVerb, wantRes string
-		wantNamespace     string
-		wantResource      bool
-	}{
-		"core group list in a namespace": {
-			method: http.MethodGet, path: "/api/v1/namespaces/team-a/pods",
-			wantVerb: "list", wantRes: "pods", wantNamespace: "team-a", wantResource: true,
-		},
-		"core group watch": {
-			method: http.MethodGet, path: "/api/v1/pods?watch=true",
-			wantVerb: "watch", wantRes: "pods", wantResource: true,
-		},
-		"named group create": {
-			method: http.MethodPost, path: "/apis/apps/v1/namespaces/team-a/deployments",
-			wantVerb: "create", wantRes: "deployments", wantNamespace: "team-a", wantResource: true,
-		},
-		"non-resource path keeps the raw method": {
-			method: http.MethodPost, path: "/healthz",
-			wantVerb: "post", wantResource: false,
-		},
-	}
-
-	for name, tc := range tests {
-		t.Run(name, func(t *testing.T) {
-			var got *request.RequestInfo
-			h := a.WithRequestInfo(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-				got, _ = request.RequestInfoFrom(r.Context())
-			}))
-			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(tc.method, tc.path, nil))
-			if got == nil {
-				t.Fatal("no RequestInfo on the context")
-			}
-			if got.IsResourceRequest != tc.wantResource || got.Verb != tc.wantVerb ||
-				got.Resource != tc.wantRes || got.Namespace != tc.wantNamespace {
-				t.Fatalf("got %+v, want resource=%v verb=%q resource=%q namespace=%q",
-					got, tc.wantResource, tc.wantVerb, tc.wantRes, tc.wantNamespace)
-			}
-		})
-	}
+// TestNewPanicsOnNilLogger pins that a nil logger is a wiring bug caught at
+// construction, naming the package, rather than a silent auditor.
+func TestNewPanicsOnNilLogger(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil || !strings.Contains(fmt.Sprint(r), "audit:") {
+			t.Fatalf("New(nil logger) recovered %v, want a panic naming the audit package", r)
+		}
+	}()
+	_, _ = New(Config{ExternalAddress: "0.0.0.0:1234", SecureServing: new(server.SecureServingInfo)}, nil)
 }

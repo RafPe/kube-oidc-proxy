@@ -50,9 +50,9 @@ it does not render the issuer-specific `oidc.*` values while
 | `--oidc-client-id` | — | Client ID expected in the token audience. |
 | `--oidc-ca-file` | — | CA that verifies the issuer's TLS; falls back to the host root CAs. |
 | `--oidc-username-claim` | `sub` | Token claim used as the username. |
-| `--oidc-username-prefix` | — | Prefix prepended to usernames (`-` to disable prefixing). |
+| `--oidc-username-prefix` | _(empty)_ | Prefix prepended verbatim to usernames; empty means no prefix. Unlike kube-apiserver's flag, there is no issuer-URL default and `-` is not special (it yields `-alice`). |
 | `--oidc-groups-claim` | — | Token claim carrying the user's groups. |
-| `--oidc-groups-prefix` | — | Prefix prepended to group names. |
+| `--oidc-groups-prefix` | _(empty)_ | Prefix prepended verbatim to group names; empty means no prefix. |
 | `--oidc-signing-algs` | `RS256` | Comma-separated allowed JOSE signing algorithms. |
 | `--oidc-required-claim` | — | Repeatable `key=value` claim that must be present with a matching value. |
 
@@ -81,7 +81,7 @@ not require a pod restart.
 | `--token-passthrough-request-timeout` | `10s` | Timeout for each TokenReview request sent to the target API server when validating a passthrough token. |
 | `--token-passthrough-cache-success-ttl` | `10s` | How long a successful TokenReview result is reused without a new API-server request. A cached success outlives token revocation for up to this duration, so keep it low. `0` disables caching successes. See [caching](./caching.md#tokenreview-result-cache). |
 | `--token-passthrough-cache-failure-ttl` | `10s` | How long an unauthenticated TokenReview result is cached, shielding the API server from repeated reviews of the same invalid token. Review errors are never cached. `0` disables caching failures. |
-| `--disable-impersonation` | `false` | (Alpha) Forward authenticated requests as-is, without impersonation. |
+| `--disable-impersonation` | `false` | (Alpha) Forward authenticated requests without impersonation or the proxy's own credentials: the OIDC token is consumed, so they reach the API server as `system:anonymous`, with any client `Impersonate-*` headers passed through unchecked for the API server to authorize. See [No impersonation](./authentication.md#no-impersonation). |
 | `--extra-user-header-client-ip` | `false` | (Alpha) Add `Impersonate-Extra-Remote-Client-IP` with the request's resolved client IP. |
 | `--extra-user-headers` | — | (Alpha) Extra `key=value` user headers to add to the impersonated request. |
 | `--trusted-proxies` | — | Comma-separated trusted proxy CIDRs (IPv4/IPv6). `X-Forwarded-For` is honoured for client-IP resolution only when the immediate peer is within one of these networks. Empty (default) trusts no proxy. See [Trusted proxies and client IP](#trusted-proxies-and-client-ip). |

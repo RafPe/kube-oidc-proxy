@@ -12,7 +12,7 @@ export GO111MODULE=on
 help:  ## display this help
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n\nTargets:\n"} /^[a-zA-Z0-9_-]+:.*?##/ { printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
-.PHONY: help build docker_build test depend verify all clean generate eventdoc verify_eventdoc metricdoc verify_metricdoc e2e e2e-clean verify-e2e-shards metrics_demo_up metrics_demo_load metrics_demo_verify metrics_demo_down site site_dev site_test
+.PHONY: help build docker_build test depend verify all clean generate mocks eventdoc verify_eventdoc metricdoc verify_metricdoc e2e e2e-clean verify-e2e-shards metrics_demo_up metrics_demo_load metrics_demo_verify metrics_demo_down site site_dev site_test
 
 # golangci-lint is installed via the upstream, GOOS/GOARCH-aware installer,
 # pinned to a supported v2 release. Keep this in lockstep with the version the
@@ -68,10 +68,12 @@ go_fmt:
 
 # Both build configurations: a build tag selects one of pkg/logging's two
 # checkRequired implementations, so one pass can only ever see one of them.
-# Untagged is what ships; -tags logcheck is what every test run compiles.
+# Untagged is what ships; -tags logcheck is what every test run compiles. The
+# second pass also sets e2e, the tag that gates test/e2e/suite (so a plain
+# go test ./... never provisions a kind cluster), to keep the suite vetted.
 go_vet:
 	go vet ./...
-	go vet -tags logcheck ./...
+	go vet -tags logcheck,e2e ./...
 
 go_lint: $(BINDIR)/golangci-lint ## lint golang code for problems
 	$(BINDIR)/golangci-lint run --timeout 5m ./...
@@ -79,15 +81,21 @@ go_lint: $(BINDIR)/golangci-lint ## lint golang code for problems
 clean: ## clean up created files
 	rm -rf \
 		$(BINDIR) \
-		$(CURDIR)/pkg/mocks/authenticator.go \
-		$(CURDIR)/test/e2e/framework/issuer/bin \
-		$(CURDIR)/test/e2e/framework/fake-apiserver/bin
+		$(CURDIR)/pkg/authn/authntest/authenticator.go \
+		$(CURDIR)/test/tools/issuer/bin \
+		$(CURDIR)/test/tools/fake-apiserver/bin \
+		$(CURDIR)/test/tools/audit-webhook/bin
 
-# generate (not just depend) so pkg/mocks/authenticator.go exists before
+# generate first so pkg/authn/authntest/authenticator.go exists before
 # go_vet ./... and go_lint compile the packages that reference it.
 verify: generate verify_boilerplate verify_eventdoc verify_metricdoc go_fmt go_vet go_lint ## verify code and mod
 
-generate: depend eventdoc metricdoc ## generates mocks and assets files
+generate: mocks eventdoc metricdoc ## generates mocks and assets files
+
+# The mocks are not committed; every go:generate directive under pkg/ and cmd/
+# says where its output goes, so CI runs this target rather than repeating the
+# mockgen command lines. mockgen comes from $(BINDIR), which is first on PATH.
+mocks: $(BINDIR)/mockgen ## generate the gomock mocks
 	go generate $$(go list ./pkg/... ./cmd/...)
 
 eventdoc: ## regenerate the event table in docs/logging.md
@@ -102,9 +110,12 @@ metricdoc: ## regenerate the metric table in docs/metrics.md
 verify_metricdoc:
 	go run ./hack/metricdoc -check
 
+# -benchtime=1x runs every benchmark once, as a smoke test that it still
+# compiles and completes. -bench needs its pattern explicitly, or it takes the
+# first package path as the pattern and skips testing that package.
 test: generate verify ## run all go tests
 	mkdir -p $(ARTIFACTS)
-	go test -tags logcheck -v -bench $$(go list ./pkg/... ./cmd/... ./test/tools/... ./test/e2e/framework/... ./test/e2e/versions/... | grep -v pkg/e2e) | tee $(ARTIFACTS)/go-test.stdout
+	go test -race -tags logcheck -v -bench=. -benchtime=1x $$(go list ./pkg/... ./cmd/... ./hack/... ./internal/... ./test/tools/... ./test/util/... ./test/e2e/framework/... ./test/e2e/versions/...) | tee $(ARTIFACTS)/go-test.stdout
 
 # Name of the kind cluster the e2e suite creates (must match the const in
 # test/kind/kind.go). Used by e2e-clean for the failure/interrupt safety net.
@@ -135,7 +146,7 @@ e2e: $(BINDIR)/kubectl ## run the e2e suite hermetically (creates + destroys its
 	@echo "e2e: removing any stale cluster from a previous run"
 	@$(MAKE) --no-print-directory e2e-clean
 	trap '$(MAKE) --no-print-directory e2e-clean' EXIT INT TERM; \
-	KUBE_OIDC_PROXY_ROOT_PATH="$$(pwd)" go test -timeout $(E2E_TIMEOUT) -v --count=1 ./test/e2e/suite/. $(E2E_GOTEST_ARGS) 2>&1 | tee $(ARTIFACTS)/e2e.log
+	KUBE_OIDC_PROXY_ROOT_PATH="$$(pwd)" go test -tags e2e -timeout $(E2E_TIMEOUT) -v --count=1 ./test/e2e/suite/. $(E2E_GOTEST_ARGS) 2>&1 | tee $(ARTIFACTS)/e2e.log
 
 e2e-clean: ## delete the e2e kind cluster if present (safe to run anytime)
 	@command -v kind >/dev/null 2>&1 || { \

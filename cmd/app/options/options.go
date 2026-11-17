@@ -7,65 +7,98 @@ package options
 import (
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"slices"
+
+	"golang.org/x/term"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
-	"golang.org/x/term"
-	k8sErrors "k8s.io/apimachinery/pkg/util/errors"
-
+	apiserveroptions "k8s.io/apiserver/pkg/server/options"
 	cliflag "k8s.io/component-base/cli/flag"
+	"k8s.io/component-base/cli/globalflag"
 )
 
 const (
 	AppName = "kube-oidc-proxy"
 )
 
+// Options is every flag the proxy binary accepts, grouped by concern. Each
+// group registers its own flag set and validates its own fields; Validate adds
+// the checks that span groups.
 type Options struct {
 	App                  *KubeOIDCProxyOptions
 	OIDCAuthentication   *OIDCAuthenticationOptions
 	AuthenticationConfig *AuthenticationConfigOptions
-	SecureServing        *SecureServingOptions
-	Audit                *AuditOptions
+	SecureServing        *apiserveroptions.SecureServingOptions
+	Audit                *apiserveroptions.AuditOptions
 	Client               *ClientOptions
 	Logging              *LoggingOptions
 	Metrics              *MetricsOptions
-	Misc                 *MiscOptions
+	Version              *VersionOptions
 
 	nfs *cliflag.NamedFlagSets
 }
 
+// GlobalFlagSet names the flag set carrying the component-base global flags
+// (-v, --vmodule and friends), which LoggingOptions reads the verbosity from.
+const GlobalFlagSet = "Global"
+
+// New registers every flag set and returns the options they bind to.
 func New() *Options {
 	nfs := new(cliflag.NamedFlagSets)
+	globalflag.AddGlobalFlags(nfs.FlagSet(GlobalFlagSet), AppName)
 
-	// Add flags to command sets
 	return &Options{
 		App:                  NewKubeOIDCProxyOptions(nfs),
 		OIDCAuthentication:   NewOIDCAuthenticationOptions(nfs),
 		AuthenticationConfig: NewAuthenticationConfigOptions(nfs),
-		SecureServing:        NewSecureServingOptions(nfs),
-		Audit:                NewAuditOptions(nfs),
+		SecureServing:        newSecureServingOptions(nfs),
+		Audit:                newAuditOptions(nfs),
 		Client:               NewClientOptions(nfs),
 		Logging:              NewLoggingOptions(nfs),
 		Metrics:              NewMetricsOptions(nfs),
-		Misc:                 NewMiscOptions(nfs),
+		Version:              NewVersionOptions(nfs),
 
 		nfs: nfs,
 	}
 }
 
+// terminalWidth is the column count of the terminal w writes to, or 0 (no
+// wrapping) when w is not a terminal. It measures the writer the help text
+// goes to, not stdin, so redirected help is never wrapped to a stale width.
+func terminalWidth(w io.Writer) int {
+	f, ok := w.(*os.File)
+	if !ok {
+		return 0
+	}
+	cols, _, err := term.GetSize(int(f.Fd()))
+	if err != nil {
+		return 0
+	}
+	return cols
+}
+
+// AddFlags adds every registered flag set to cmd and installs the sectioned
+// help and usage output.
 func (o *Options) AddFlags(cmd *cobra.Command) {
-	// pretty output from kube-apiserver
+	// pretty output from kube-apiserver, wrapped to the width of the terminal
+	// the text is written to (0, no wrapping, when it is not a terminal)
 	usageFmt := "Usage:\n  %s\n"
-	cols, _, _ := term.GetSize(0)
 	cmd.SetUsageFunc(func(cmd *cobra.Command) error {
-		_, _ = fmt.Fprintf(cmd.OutOrStderr(), usageFmt, cmd.UseLine())
-		cliflag.PrintSections(cmd.OutOrStderr(), *o.nfs, cols)
+		out := cmd.OutOrStderr()
+		cols := terminalWidth(out)
+		_, _ = fmt.Fprintf(out, usageFmt, cmd.UseLine())
+		cliflag.PrintSections(out, *o.nfs, cols)
 		return nil
 	})
 
 	cmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n\n"+usageFmt, cmd.Long, cmd.UseLine())
-		cliflag.PrintSections(cmd.OutOrStdout(), *o.nfs, cols)
+		out := cmd.OutOrStdout()
+		cols := terminalWidth(out)
+		_, _ = fmt.Fprintf(out, "%s\n\n"+usageFmt, cmd.Long, cmd.UseLine())
+		cliflag.PrintSections(out, *o.nfs, cols)
 	})
 
 	fs := cmd.Flags()
@@ -74,11 +107,11 @@ func (o *Options) AddFlags(cmd *cobra.Command) {
 	}
 }
 
+// Validate checks the parsed options and returns every problem found, joined.
+// It is the one place a flag error is reported: everything that can be
+// checked from the flag values alone is checked here, before anything is
+// built, so an operator sees every mistake in one run.
 func (o *Options) Validate(cmd *cobra.Command) error {
-	if cmd.Flag("version").Value.String() == "true" {
-		o.Misc.PrintVersionAndExit()
-	}
-
 	var errs []error
 
 	if err := o.AuthenticationConfig.Validate(); err != nil {
@@ -88,11 +121,16 @@ func (o *Options) Validate(cmd *cobra.Command) error {
 	authConfigSet := o.AuthenticationConfig.ConfigFile != ""
 
 	if authConfigSet && o.oidcFlagsChanged(cmd) {
-		errs = append(errs, fmt.Errorf("authentication-config and issuer-specific --oidc-* flags are mutually exclusive"))
+		errs = append(errs, errors.New("--authentication-config and the issuer-specific --oidc-* flags are mutually exclusive"))
 	}
 
-	if err := o.OIDCAuthentication.Validate(authConfigSet); err != nil {
+	if err := o.OIDCAuthentication.Validate(); err != nil {
 		errs = append(errs, err)
+	}
+	if !authConfigSet {
+		if err := o.OIDCAuthentication.ValidateIssuerFlags(); err != nil {
+			errs = append(errs, err)
+		}
 	}
 
 	if err := o.SecureServing.Validate(); len(err) > 0 {
@@ -100,7 +138,7 @@ func (o *Options) Validate(cmd *cobra.Command) error {
 	}
 
 	if o.SecureServing.BindPort == o.App.ReadinessProbePort {
-		errs = append(errs, fmt.Errorf("unable to securely serve on port %d (used by readiness probe)", o.SecureServing.BindPort))
+		errs = append(errs, fmt.Errorf("--secure-port %d is already used by --readiness-probe-port", o.SecureServing.BindPort))
 	}
 
 	if err := o.Audit.Validate(); len(err) > 0 {
@@ -117,63 +155,37 @@ func (o *Options) Validate(cmd *cobra.Command) error {
 		// Port() cannot fail here: Validate just accepted the address.
 		port, _ := o.Metrics.Port()
 		if port == o.App.ReadinessProbePort {
-			errs = append(errs, fmt.Errorf("--metrics-bind-address port %d is already used by the readiness probe", port))
+			errs = append(errs, fmt.Errorf("--metrics-bind-address port %d is already used by --readiness-probe-port", port))
 		}
 		if port == o.SecureServing.BindPort {
-			errs = append(errs, fmt.Errorf("--metrics-bind-address port %d is already used by the secure serving port", port))
+			errs = append(errs, fmt.Errorf("--metrics-bind-address port %d is already used by --secure-port", port))
 		}
 	}
 
-	if o.App.DisableImpersonation &&
-		(o.App.ExtraHeaderOptions.EnableClientIPExtraUserHeader || len(o.App.ExtraHeaderOptions.ExtraUserHeaders) > 0) {
-		errs = append(errs, errors.New("cannot add extra user headers when impersonation disabled"))
+	if err := o.App.Validate(); err != nil {
+		errs = append(errs, err)
 	}
 
-	if o.App.TokenPassthrough.Enabled && o.App.TokenPassthrough.RequestTimeout <= 0 {
-		errs = append(errs, errors.New("--token-passthrough-request-timeout must be greater than zero"))
-	}
-
-	// Zero is meaningful for the cache TTLs (it disables that class of
-	// caching); only negatives are configuration mistakes. Checked regardless
-	// of --token-passthrough — like --subject-access-review-timeout — so a
-	// broken value never lies dormant until the feature is switched on.
-	if o.App.TokenPassthrough.CacheSuccessTTL < 0 {
-		errs = append(errs, errors.New("--token-passthrough-cache-success-ttl must not be negative"))
-	}
-	if o.App.TokenPassthrough.CacheFailureTTL < 0 {
-		errs = append(errs, errors.New("--token-passthrough-cache-failure-ttl must not be negative"))
-	}
-
-	if o.App.SubjectAccessReviewTimeout <= 0 {
-		errs = append(errs, fmt.Errorf("--subject-access-review-timeout must be greater than 0, got %s", o.App.SubjectAccessReviewTimeout))
-	}
-
-	if o.App.SubjectAccessReviewAllowCacheTTL < 0 {
-		errs = append(errs, fmt.Errorf("--subject-access-review-cache-allow-ttl must not be negative (0 disables caching of allowed decisions), got %s", o.App.SubjectAccessReviewAllowCacheTTL))
-	}
-
-	if o.App.SubjectAccessReviewDenyCacheTTL < 0 {
-		errs = append(errs, fmt.Errorf("--subject-access-review-cache-deny-ttl must not be negative (0 disables caching of denied decisions), got %s", o.App.SubjectAccessReviewDenyCacheTTL))
-	}
-
-	if o.App.MaxImpersonationHeaderValues <= 0 {
-		errs = append(errs, fmt.Errorf("--max-impersonation-header-values must be greater than 0, got %d", o.App.MaxImpersonationHeaderValues))
-	}
-
-	if len(errs) > 0 {
-		return k8sErrors.NewAggregate(errs)
-	}
-
-	return nil
+	return errors.Join(errs...)
 }
 
-// oidcFlagsChanged reports whether any --oidc-* flag was set on cmd. The flag
-// names are derived from the registered OIDC flag set so the list stays in sync
-// with the flags defined in OIDCAuthenticationOptions.AddFlags automatically.
+// oidcFlagsChanged reports whether any issuer-specific --oidc-* flag was set
+// on cmd. The flag names are derived from the registered OIDC flag set so the
+// list stays in sync with OIDCAuthenticationOptions.AddFlags automatically.
+// The TLS client certificate flags are left out: they apply to the issuers of
+// --authentication-config too.
 func (o *Options) oidcFlagsChanged(cmd *cobra.Command) bool {
+	return flagsChanged(cmd, o.nfs.FlagSet("OIDC"), "oidc-tls-client-cert-file", "oidc-tls-client-key-file")
+}
+
+// flagsChanged reports whether any flag registered in fs, other than those
+// named in except, was set on cmd's command line. It reads Changed from cmd,
+// which parsed the line, not from fs: a named set is only merged into cmd's
+// flags, so its own record of what was set stays empty.
+func flagsChanged(cmd *cobra.Command, fs *pflag.FlagSet, except ...string) bool {
 	changed := false
-	o.nfs.FlagSet("OIDC").VisitAll(func(f *pflag.Flag) {
-		if f.Name == "oidc-tls-client-cert-file" || f.Name == "oidc-tls-client-key-file" {
+	fs.VisitAll(func(f *pflag.Flag) {
+		if slices.Contains(except, f.Name) {
 			return
 		}
 		if cf := cmd.Flag(f.Name); cf != nil && cf.Changed {
