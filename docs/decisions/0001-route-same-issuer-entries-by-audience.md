@@ -153,7 +153,8 @@ Deliver the work as stacked pull requests on top of the pull request for this AD
 
 ### PR 4: Docs, chart and changelog
 
-* **Affected paths**: `docs/multi-issuer.md`, `docs/integrations.md`, `docs/metrics.md`, `pkg/metrics/catalogue.go` (the `issuer_name` comment), `chart/kube-oidc-proxy/`, `.changes/unreleased/`.
+* **Affected paths**: `docs/multi-issuer.md`, `docs/integrations.md`, `docs/metrics.md`, `docs/logging.md`, `pkg/metrics/catalogue.go` (the `issuer_name` comment), `chart/kube-oidc-proxy/`, `hack/verify-chart-rbac.sh`.
+* The chart grants `impersonate` on `userextras/<key>` for each `claimMappings.extra` key that it reads from `authenticationConfig.content`. The chart helper must read the keys of `issuers[].jwt` too. Without this, each request with an extra key of the new kind fails with 403.
 * Document the new kind, the startup checks, and the rule that audience is routing only.
 * Add GitHub Actions and Google examples with two trust groups on one issuer URL.
 * Replace "use one entry per source cluster" in the GKE section with an example of the new kind.
@@ -164,10 +165,10 @@ Deliver the work as stacked pull requests on top of the pull request for this AD
 - [ ] A configuration of the upstream kind gives the same `issuer_name` values and the same accept and reject results as before the change.
 - [ ] Two entries with the same issuer URL and disjoint audiences start. Only the entry of the token audience accepts the token. The access log shows the name of that entry.
 - [ ] Two entries with the same issuer URL and a shared audience fail at startup. The error names both entries by index.
-- [ ] A token whose `aud` matches no entry, or more than one entry, fails with reason `audience_unrouted`. No other entry runs.
+- [ ] The proxy refuses a token whose `aud` matches no entry, or more than one entry. The `authn.oidc.failed` record carries `reason=audience_unrouted`. No other entry runs.
 - [ ] The proxy rejects a token that has the correct audience and fails the claim rules of its entry. No other entry runs.
 - [ ] Two GKE cluster issuers on `container.googleapis.com` start with the new kind and have different `issuer_name` values.
-- [ ] The readiness probe reports each entry, also when two entries share an issuer URL.
+- [ ] The readiness probe reports each entry, also when two entries share an issuer URL. The fake JWT of the probe carries the first audience of its entry.
 - [ ] No code outside `pkg/authn` calls `IssuerName`.
 - [ ] An e2e test runs two trust groups behind one fake issuer and the two trust groups have different RBAC results.
 
@@ -208,6 +209,8 @@ GitHub Enterprise Cloud can add the enterprise slug to the issuer URL. This was 
 * Bad, because a selector that reads unverified claims is easy to write as authorization by mistake.
 
 ## More Information
+
+* 2026-11-17: The changelog fragments are in PR 2 (the new kind) and PR 3 (routing by audience). Those two PRs carry `release/minor`.
 
 * Upstream union: `k8s.io/apiserver/pkg/authentication/token/union`, `NewFailOnError`.
 * Upstream issuer check: `k8s.io/apiserver/plugin/pkg/authenticator/token/oidc`, `hasCorrectIssuer` and `untrustedIssuer`.
