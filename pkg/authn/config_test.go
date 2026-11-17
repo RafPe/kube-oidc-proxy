@@ -449,6 +449,37 @@ func TestProxyAuthenticationConfigLoad(t *testing.T) {
 			wantErr: []string{"unknown field"},
 		},
 		{
+			name: "a key with the wrong case inside jwt is refused, as upstream refuses it",
+			config: proxyConfig(`- name: a
+  jwt:
+    issuer:
+      url: https://a.example.com
+      Audiences: ["aud"]
+    claimMappings:
+      username: {claim: sub, prefix: "a:"}
+`),
+			wantErr: []string{"unknown field"},
+		},
+		{
+			name: "a key with the wrong case at the top is refused",
+			config: proxyConfig(proxyEntry("a", "https://a.example.com", `["aud"]`)) +
+				"Issuers: []\n",
+			wantErr: []string{"unknown field"},
+		},
+		{
+			name: "a duplicate key is refused",
+			config: proxyConfig(`- name: a
+  name: b
+  jwt:
+    issuer:
+      url: https://a.example.com
+      audiences: ["aud"]
+    claimMappings:
+      username: {claim: sub, prefix: "a:"}
+`),
+			wantErr: []string{"name"},
+		},
+		{
 			name:    "an empty issuers list is refused",
 			config:  "apiVersion: kube-oidc-proxy.rafpe.github.io/v1alpha1\nkind: AuthenticationConfiguration\nissuers: []\n",
 			wantErr: []string{"issuers list must not be empty"},

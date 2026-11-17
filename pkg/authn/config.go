@@ -3,6 +3,7 @@ package authn
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	apiserverv1 "k8s.io/apiserver/pkg/apis/apiserver/v1"
 	"k8s.io/apiserver/pkg/apis/apiserver/validation"
 	authenticationcel "k8s.io/apiserver/pkg/authentication/cel"
+	kjson "sigs.k8s.io/json"
 	"sigs.k8s.io/yaml"
 
 	"github.com/rafpe/kube-oidc-proxy/pkg/authn/v1alpha1"
@@ -137,8 +139,8 @@ func decodeUpstream(data []byte) (*apiserver.AuthenticationConfiguration, error)
 // The errors name an issuer by its index, as issuers[i]. The errors that this
 // function makes do not contain an issuer URL.
 func loadProxyConfiguration(path string, data []byte, compiler authenticationcel.Compiler) (*Configuration, error) {
-	var doc v1alpha1.AuthenticationConfiguration
-	if err := yaml.UnmarshalStrict(data, &doc); err != nil {
+	doc, err := decodeProxyStrict(data)
+	if err != nil {
 		return nil, fmt.Errorf("parsing authentication-config %q: %w", path, err)
 	}
 	if doc.Kind != v1alpha1.Kind {
@@ -167,6 +169,25 @@ func loadProxyConfiguration(path string, data []byte, compiler authenticationcel
 		return nil, fmt.Errorf("invalid authentication-config %q: %w", path, err)
 	}
 	return &Configuration{ProxyKind: true, Entries: entries}, nil
+}
+
+// decodeProxyStrict decodes a document of the proxy kind as strictly as the
+// apimachinery decoder decodes the upstream kind. It refuses a duplicate key,
+// an unknown field, and a key with the wrong case.
+func decodeProxyStrict(data []byte) (v1alpha1.AuthenticationConfiguration, error) {
+	var doc v1alpha1.AuthenticationConfiguration
+	jsonData, err := yaml.YAMLToJSONStrict(data)
+	if err != nil {
+		return doc, err
+	}
+	strictErrs, err := kjson.UnmarshalStrict(jsonData, &doc)
+	if err != nil {
+		return doc, err
+	}
+	if len(strictErrs) > 0 {
+		return doc, errors.Join(strictErrs...)
+	}
+	return doc, nil
 }
 
 // validateJWT runs the upstream decoding and validation on a document that
