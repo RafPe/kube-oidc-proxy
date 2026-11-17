@@ -83,8 +83,8 @@ issuers:
 Rules for the kind:
 
 * The API group is `kube-oidc-proxy.rafpe.github.io`. The version is `v1alpha1`. The kind is `AuthenticationConfiguration`. The group makes it different from the upstream kind with the same name.
-* `issuers[].jwt` is an upstream `JWTAuthenticator` in the `apiserver.config.k8s.io/v1` form. The proxy decodes it strictly. An unknown field is an error.
-* `issuers[].name` is mandatory. It must be unique. It must be a DNS-1123 subdomain: lowercase letters, digits, `-` and `.`, at most 253 characters. It becomes `issuer_name` in logs and metrics. An operator who moves from the upstream kind can set `name` to the old host and keep the old `issuer_name`.
+* `issuers[].jwt` is an upstream `JWTAuthenticator` in the `apiserver.config.k8s.io/v1` form. The proxy decodes the document as strictly as apimachinery decodes the upstream kind. An unknown field, a duplicate key and a key with the wrong case are errors.
+* `issuers[].name` is mandatory. It must be unique. It must be a DNS-1123 subdomain: lowercase letters, digits, `-` and `.`, at most 253 characters. It becomes `issuer_name` in logs and metrics. An operator who moves from the upstream kind can set `name` to the old host and keep the old `issuer_name`. This is not possible when the host has a port, because `:` is not valid in a DNS-1123 subdomain.
 * `--authentication-config` accepts both kinds. The proxy selects the decoder from `apiVersion`.
 * The upstream kind keeps its current behavior. Its names stay the host of the issuer URL. Its `issuers must differ by host` check stays.
 
