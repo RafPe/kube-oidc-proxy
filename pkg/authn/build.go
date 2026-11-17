@@ -113,8 +113,11 @@ func Build(cfg Config, root *slog.Logger) (authenticator.Token, []Issuer, error)
 	// CEL environments are expensive to construct.
 	compiler := authenticationcel.NewDefaultCompiler()
 
-	issuers, err := configuredIssuers(cfg, compiler)
+	issuers, proxyKind, err := configuredIssuers(cfg, compiler)
 	if err != nil {
+		return nil, nil, fmt.Errorf("authn: %w", err)
+	}
+	if err := checkIssuerNames(issuers, proxyKind); err != nil {
 		return nil, nil, fmt.Errorf("authn: %w", err)
 	}
 	token, named, err := buildIssuers(issuers, compiler, cfg, oidcLogger, startupLogger)
@@ -127,6 +130,9 @@ func Build(cfg Config, root *slog.Logger) (authenticator.Token, []Issuer, error)
 // issuer is one issuer to authenticate against, whichever way it was
 // configured.
 type issuer struct {
+	// name is the issuer_name of the issuer.
+	name string
+
 	jwt apiserverapi.JWTAuthenticator
 
 	// caFile is the --oidc-ca-file path, re-read on every use. An issuer from
@@ -147,24 +153,28 @@ type issuer struct {
 // flag-specific, because the flags define them differently: the CA is a file
 // re-read on every use rather than inline content, and the signing algorithms
 // are --oidc-signing-algs rather than every valid one.
-func configuredIssuers(cfg Config, compiler authenticationcel.Compiler) ([]issuer, error) {
+//
+// proxyKind is true when the issuers come from a document of the proxy kind.
+// Their names then come from the document.
+func configuredIssuers(cfg Config, compiler authenticationcel.Compiler) (issuers []issuer, proxyKind bool, err error) {
 	if cfg.ConfigFile == "" {
 		return []issuer{{
+			name:        IssuerName(cfg.Issuer.URL),
 			jwt:         jwtAuthenticatorFromIssuer(cfg.Issuer),
 			caFile:      cfg.Issuer.CAFile,
 			signingAlgs: cfg.Issuer.SigningAlgs,
-		}}, nil
+		}}, false, nil
 	}
 
 	authCfg, err := LoadConfiguration(cfg.ConfigFile, compiler)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	issuers := make([]issuer, 0, len(authCfg.JWT))
-	for _, jwtEntry := range authCfg.JWT {
-		issuers = append(issuers, issuer{jwt: jwtEntry, signingAlgs: oidc.AllValidSigningAlgorithms()})
+	issuers = make([]issuer, 0, len(authCfg.Entries))
+	for _, e := range authCfg.Entries {
+		issuers = append(issuers, issuer{name: e.Name, jwt: e.JWT, signingAlgs: oidc.AllValidSigningAlgorithms()})
 	}
-	return issuers, nil
+	return issuers, authCfg.ProxyKind, nil
 }
 
 // jwtAuthenticatorFromIssuer builds the internal JWTAuthenticator config for
@@ -204,28 +214,46 @@ func jwtAuthenticatorFromIssuer(i IssuerConfig) apiserverapi.JWTAuthenticator {
 	}
 }
 
+// checkIssuerNames refuses issuers that the proxy cannot tell apart. Build
+// calls it before it makes an authenticator or reports an issuer.
+//
+// The upstream kind and the flags name an issuer by the host of its URL. Two
+// issuers on one host with different paths then share a name, and a
+// per-issuer gauge cannot tell them apart. The proxy kind has unique names
+// from LoadConfiguration. checkIssuerNames refuses two issuers of the proxy
+// kind with the same issuer URL, because the union in buildIssuers cannot
+// route a token between them.
+func checkIssuerNames(issuers []issuer, proxyKind bool) error {
+	if !proxyKind {
+		issuerURLs := make([]string, 0, len(issuers))
+		for _, iss := range issuers {
+			issuerURLs = append(issuerURLs, iss.jwt.Issuer.URL)
+		}
+		if name, first, other, dup := duplicateIssuerName(issuerURLs); dup {
+			return fmt.Errorf("issuers jwt[%d] and jwt[%d] share the name %q; issuers must differ by host", first, other, name)
+		}
+		return nil
+	}
+	for i := range issuers {
+		for j := i + 1; j < len(issuers); j++ {
+			if issuers[i].jwt.Issuer.URL == issuers[j].jwt.Issuer.URL {
+				return fmt.Errorf("issuers[%d] and issuers[%d] have the same issuer URL. This version of the proxy cannot route a token between them", i, j)
+			}
+		}
+	}
+	return nil
+}
+
 // buildIssuers builds one authenticator per issuer and combines them into a
 // union that fails on the first error. A union of one behaves exactly as its
 // single member: an error or an acceptance is returned as is, and a refusal
 // aggregates no errors into a nil one.
 func buildIssuers(issuers []issuer, compiler authenticationcel.Compiler, cfg Config, oidcLogger, startupLogger *slog.Logger) (authenticator.Token, []Issuer, error) {
-	// Issuers are named by host in every record and every metric series. Two
-	// issuers on one host with different paths would share a name, and a
-	// per-issuer gauge cannot tell them apart, so the configuration is refused
-	// here, before any authenticator is built or any issuer is reported.
-	issuerURLs := make([]string, 0, len(issuers))
-	for _, iss := range issuers {
-		issuerURLs = append(issuerURLs, iss.jwt.Issuer.URL)
-	}
-	if name, first, other, dup := duplicateIssuerName(issuerURLs); dup {
-		return nil, nil, fmt.Errorf("issuers jwt[%d] and jwt[%d] share the name %q; issuers must differ by host", first, other, name)
-	}
-
 	named := make([]Issuer, 0, len(issuers))
 	authenticators := make([]authenticator.Token, 0, len(issuers))
 	for _, iss := range issuers {
 		n := Issuer{
-			Name:      IssuerName(iss.jwt.Issuer.URL),
+			Name:      iss.name,
 			URL:       iss.jwt.Issuer.URL,
 			Audiences: slices.Clone(iss.jwt.Issuer.Audiences),
 		}

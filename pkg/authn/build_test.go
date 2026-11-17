@@ -410,3 +410,48 @@ func TestBuildErrorNamesIssuerByHost(t *testing.T) {
 		t.Fatalf("Build = %v, want no full issuer URL", err)
 	}
 }
+
+// TestBuildProxyKindUsesConfiguredNames pins that issuers of the proxy kind
+// carry their configured names, also when two issuers share a host.
+func TestBuildProxyKindUsesConfiguredNames(t *testing.T) {
+	_, issuers, err := Build(Config{ConfigFile: writeAuthConfig(t, validProxyConfig)}, discardLogger())
+	if err != nil {
+		t.Fatalf("Build() unexpected error: %v", err)
+	}
+	want := []Issuer{
+		{
+			Name:      "gke-vendor",
+			URL:       "https://container.googleapis.com/v1/projects/vendor/locations/europe-west1/clusters/a",
+			Audiences: []string{"aud-vendor"},
+		},
+		{
+			Name:      "gke-internal",
+			URL:       "https://container.googleapis.com/v1/projects/internal/locations/europe-west1/clusters/b",
+			Audiences: []string{"aud-internal"},
+		},
+	}
+	if !reflect.DeepEqual(issuers, want) {
+		t.Fatalf("Build() issuers = %+v, want %+v", issuers, want)
+	}
+}
+
+// TestBuildRefusesProxyKindIssuersSharingAURL pins that Build refuses two
+// issuers with one issuer URL until the proxy can route a token between them.
+func TestBuildRefusesProxyKindIssuersSharingAURL(t *testing.T) {
+	config := proxyConfig(
+		proxyEntry("gha-int", "https://token.actions.githubusercontent.com", `["aud-int"]`) +
+			proxyEntry("gha-vendor", "https://token.actions.githubusercontent.com", `["aud-vendor"]`))
+
+	_, _, err := Build(Config{ConfigFile: writeAuthConfig(t, config)}, discardLogger())
+	if err == nil {
+		t.Fatal("Build() error = nil, want a refusal")
+	}
+	for _, want := range []string{"issuers[0]", "issuers[1]", "same issuer URL"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Build() error = %v, want it to contain %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "token.actions.githubusercontent.com") {
+		t.Fatalf("Build() error = %v, must not contain the issuer URL", err)
+	}
+}
