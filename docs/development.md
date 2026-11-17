@@ -75,8 +75,8 @@ request and the full declared window on the twice-daily scheduled run.
 
 The suite runs in CI on every pull request and on pushes to `main`
 (`.github/workflows/e2e.yaml`). A companion workflow
-(`.github/workflows/e2e-oidc-gha.yaml`) proves the multi-issuer union
-authenticator against the **real** GitHub Actions OIDC issuer alongside a local
+(`.github/workflows/e2e-oidc-gha.yaml`) proves the multi-issuer router
+against the **real** GitHub Actions OIDC issuer alongside a local
 Dex issuer. For a scripted multi-issuer demo, see [`../demo/README.md`](../demo/README.md).
 
 ## Local multi-issuer test: kind and GitHub Actions

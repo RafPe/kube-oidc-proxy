@@ -34,7 +34,7 @@ carries over one-to-one.
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--authentication-config` | — | Path to an `AuthenticationConfiguration` (`apiserver.config.k8s.io/v1` or `v1beta1`) enabling multi-issuer OIDC. Mutually exclusive with issuer-specific `--oidc-*` flags; the OIDC TLS client certificate/key flags may be shared by all issuers. |
+| `--authentication-config` | — | Path to an `AuthenticationConfiguration` (`apiserver.config.k8s.io/v1` or `v1beta1`, or the proxy kind `kube-oidc-proxy.rafpe.github.io/v1alpha1`, see [several issuers for one issuer URL](./multi-issuer.md#several-issuers-for-one-issuer-url)) enabling multi-issuer OIDC. Mutually exclusive with issuer-specific `--oidc-*` flags; the OIDC TLS client certificate/key flags may be shared by all issuers. |
 | `--readiness-require-all-issuers` | `false` | Report ready only once **every** issuer has initialized (JWKS fetched). Default: ready after the first issuer; others keep initializing in the background. |
 
 ### Single-issuer OIDC

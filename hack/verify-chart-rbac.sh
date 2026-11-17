@@ -79,4 +79,43 @@ if helm template kop "$CHART" --set 'authenticationConfig.content=jwt: [' >/dev/
   echo "invalid authenticationConfig.content rendered instead of failing" >&2; exit 1
 fi
 
+# The kube-oidc-proxy.rafpe.github.io kind declares its issuers under
+# issuers[].jwt. Their extra keys need the same grant.
+proxy_kind_values=$(mktemp)
+trap 'rm -f "$proxy_kind_values"' EXIT
+cat >"$proxy_kind_values" <<'YAML'
+authenticationConfig:
+  content: |
+    apiVersion: kube-oidc-proxy.rafpe.github.io/v1alpha1
+    kind: AuthenticationConfiguration
+    issuers:
+    - name: gha-internal
+      jwt:
+        issuer:
+          url: https://token.actions.githubusercontent.com
+          audiences: ["aud-internal"]
+        claimMappings:
+          username: {claim: sub, prefix: "gha-internal:"}
+          extra:
+          - key: github.com/actor
+            valueExpression: claims.actor
+    - name: gha-vendor
+      jwt:
+        issuer:
+          url: https://token.actions.githubusercontent.com
+          audiences: ["aud-vendor"]
+        claimMappings:
+          username: {claim: sub, prefix: "gha-vendor:"}
+          extra:
+          - key: github.com/actor
+            valueExpression: claims.actor
+          - key: github.com/sha
+            valueExpression: claims.sha
+YAML
+out=$(render -f "$proxy_kind_values")
+for key in github.com/actor github.com/sha; do
+  n=$(grep -c -- "\"userextras/${key}\"" <<<"$out" || true)
+  [ "$n" = "1" ] || { echo "proxy kind userextras/${key}: rendered ${n} times, expected 1" >&2; exit 1; }
+done
+
 echo "chart rbac userextras: ok"

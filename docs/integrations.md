@@ -28,6 +28,7 @@ The same three steps apply to every provider:
 - [GKE workloads via the cluster's own issuer (per-ServiceAccount identity)](#gke-workloads-via-the-clusters-own-issuer-per-serviceaccount-identity)
 - [Internal / custom issuer with a private CA](#internal--custom-issuer-with-a-private-ca)
 - [GitLab CI](#gitlab-ci)
+- [Several trust groups on one issuer URL](#several-trust-groups-on-one-issuer-url)
 - [RBAC for the mapped identities](#rbac-for-the-mapped-identities)
 - [See also](#see-also)
 
@@ -362,6 +363,35 @@ ServiceAccount in it becomes a bindable identity, with no Google service
 accounts involved. GKE publishes public OIDC discovery for its
 ServiceAccount issuer. Use one entry (and one prefix) per source cluster.
 
+All GKE cluster issuers are on the host `container.googleapis.com`. The
+upstream kind names each issuer by its host, so it refuses two GKE cluster
+issuers. For more than one source cluster, use the proxy kind and give each
+cluster a `name`:
+
+```yaml
+apiVersion: kube-oidc-proxy.rafpe.github.io/v1alpha1
+kind: AuthenticationConfiguration
+issuers:
+- name: gke-prod
+  jwt:
+    issuer:
+      url: https://container.googleapis.com/v1/projects/MY_PROJECT/locations/MY_LOCATION/clusters/prod
+      audiences: ["kube-oidc-proxy.example.com"]
+    claimMappings:
+      username: {claim: sub, prefix: "gke-prod:"}
+- name: gke-staging
+  jwt:
+    issuer:
+      url: https://container.googleapis.com/v1/projects/MY_PROJECT/locations/MY_LOCATION/clusters/staging
+      audiences: ["kube-oidc-proxy.example.com"]
+    claimMappings:
+      username: {claim: sub, prefix: "gke-staging:"}
+```
+
+The same applies to EKS cluster issuers in one region, which share the host
+`oidc.eks.<region>.amazonaws.com`. The single-cluster entry below works with
+both kinds.
+
 ```yaml
 - issuer:
     url: https://container.googleapis.com/v1/projects/MY_PROJECT/locations/MY_LOCATION/clusters/MY_CLUSTER
@@ -422,6 +452,53 @@ cluster RBAC:
     groups:
       expression: '["gitlab:ns:" + claims.namespace_path]'
 ```
+
+## Several trust groups on one issuer URL
+
+GitHub Actions and Google sign the tokens of many organizations and projects
+with one issuer URL. To give two trust groups on one issuer URL different
+rules, use the proxy kind with one issuer per trust group. Each trust group
+requests its own audience:
+
+- GitHub Actions: `core.getIDToken('kube-oidc-proxy-vendor')` in the vendor
+  workflows.
+- Google: `audience=kube-oidc-proxy-vendor` on the metadata server request.
+
+```yaml
+apiVersion: kube-oidc-proxy.rafpe.github.io/v1alpha1
+kind: AuthenticationConfiguration
+issuers:
+- name: google-internal
+  jwt:
+    issuer:
+      url: https://accounts.google.com
+      audiences: ["kube-oidc-proxy-internal"]
+    claimMappings:
+      username: {expression: '"google-internal:" + claims.email'}
+    claimValidationRules:
+    - expression: 'claims.email_verified == true'
+      message: "unverified email claim"
+    - expression: 'claims.email.endsWith("@internal-project.iam.gserviceaccount.com")'
+      message: "only the internal project"
+- name: google-vendor
+  jwt:
+    issuer:
+      url: https://accounts.google.com
+      audiences: ["kube-oidc-proxy-vendor"]
+    claimMappings:
+      username: {expression: '"google-vendor:" + claims.email'}
+    claimValidationRules:
+    - expression: 'claims.email_verified == true'
+      message: "unverified email claim"
+    - expression: 'claims.email.endsWith("@vendor-project.iam.gserviceaccount.com")'
+      message: "only the vendor project"
+```
+
+The audience selects the issuer, but it does not prove the trust group. A
+vendor can request the internal audience. Keep the `claimValidationRules` that
+pin the trust group in every issuer. For GitHub Actions, pin
+`repository_owner_id`. [Several issuers for one issuer URL](./multi-issuer.md#several-issuers-for-one-issuer-url)
+gives the full rules.
 
 ## RBAC for the mapped identities
 

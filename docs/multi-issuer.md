@@ -9,6 +9,7 @@ provider can be configured.
 
 - [Enabling](#enabling)
 - [Several audiences for one issuer](#several-audiences-for-one-issuer)
+- [Several issuers for one issuer URL](#several-issuers-for-one-issuer-url)
 - [Recipes per identity provider](#recipes-per-identity-provider)
 - [Security: always use distinct per-issuer prefixes](#security-always-use-distinct-per-issuer-prefixes)
 - [Readiness](#readiness)
@@ -57,6 +58,84 @@ Typical uses are rotating an audience without a flag day, and one proxy
 serving clients that request tokens for different audience strings. Both
 kube-apiserver's audience rules apply: each value must be non-empty and unique
 within its entry.
+
+## Several issuers for one issuer URL
+
+One issuer URL can sign tokens for more than one trust group. For example,
+`https://token.actions.githubusercontent.com` signs tokens for the workflows of
+every GitHub organization. The upstream format accepts only one entry per
+issuer URL. For several trust groups on one issuer URL, use the proxy kind
+`kube-oidc-proxy.rafpe.github.io/v1alpha1` `AuthenticationConfiguration`:
+
+```yaml
+apiVersion: kube-oidc-proxy.rafpe.github.io/v1alpha1
+kind: AuthenticationConfiguration
+issuers:
+- name: gha-internal
+  jwt:
+    issuer:
+      url: https://token.actions.githubusercontent.com
+      audiences: ["kube-oidc-proxy-internal"]
+    claimMappings:
+      username:
+        expression: '"gha-internal:" + claims.repository + ":" + claims.ref'
+    claimValidationRules:
+    - expression: 'claims.repository_owner_id == "1234567"'
+      message: "only the internal organization"
+- name: gha-vendor
+  jwt:
+    issuer:
+      url: https://token.actions.githubusercontent.com
+      audiences: ["kube-oidc-proxy-vendor"]
+    claimMappings:
+      username:
+        expression: '"gha-vendor:" + claims.repository + ":" + claims.ref'
+    claimValidationRules:
+    - expression: 'claims.repository_owner_id == "7654321"'
+      message: "only the vendor organization"
+```
+
+Each item of `issuers` has these fields:
+
+- `name`: the `issuer_name` of the issuer in logs and metrics. It must be a
+  DNS-1123 subdomain (lowercase letters, digits, `-` and `.`, at most 253
+  characters). It must be unique in the document.
+- `jwt`: one entry of the upstream `jwt` list, in the
+  `apiserver.config.k8s.io/v1` form.
+
+The proxy refuses to start in these conditions:
+
+- A `name` is not a DNS-1123 subdomain, or two issuers have the same `name`.
+- Two issuers have the same issuer URL and share an audience.
+- Two issuers have the same `discoveryURL`.
+- A `jwt` entry fails the upstream validation. The error names the issuer as
+  `issuers[i]`.
+
+The proxy selects the issuer for a token in these steps:
+
+1. It reads `iss` and `aud` from the token without verification.
+2. If one issuer has the URL `iss`, that issuer verifies the token. The `aud`
+   claim has no effect on the selection.
+3. If several issuers have the URL `iss`, the issuer whose `audiences`
+   contain a value of `aud` verifies the token.
+4. If no issuer or more than one issuer matches, the proxy rejects the token.
+   The `authn.oidc.failed` record carries `reason=audience_unrouted`. No
+   other issuer verifies the token.
+
+**The audience is routing, not authorization.** The client chooses `aud`, so
+a vendor workflow can request the audience of the internal issuer. Each issuer
+must pin its trust group with an immutable claim in `claimValidationRules`.
+For GitHub Actions, use `repository_owner_id`. For Google, use `sub`, or the
+email domain together with `email_verified`.
+
+The proxy kind also gives different names to issuers on one host, for example
+two GKE or EKS cluster issuers. The upstream kind refuses issuers on one host,
+because it names each issuer by its host.
+
+A file of the proxy kind does not load in kube-apiserver. A file that must
+load in kube-apiserver can select the trust group in CEL inside one entry
+instead. ADR-0001 ([`docs/decisions/0001-route-same-issuer-entries-by-audience.md`](https://github.com/RafPe/kube-oidc-proxy/blob/main/docs/decisions/0001-route-same-issuer-entries-by-audience.md))
+compares the two options.
 
 ## Recipes per identity provider
 
@@ -107,8 +186,9 @@ yet) or `transient` (the JWKS endpoint is failing but the fetch is being
 retried). `ready_issuers`/`total_issuers` on any of these records tells you
 how far initialization has got without reading the probe.
 
-`issuer_name` is the **host** of the configured issuer URL, bounded to 256
-characters and sanitized. The proxy's own records never carry the full issuer
+`issuer_name` is the `name` of the issuer for the proxy kind. For the upstream
+kind and for the `--oidc-*` flags, it is the **host** of the configured issuer
+URL, bounded to 256 characters and sanitized. The proxy's own records never carry the full issuer
 URL, except a `proxy.startup.failed` for an issuer configuration the Kubernetes
 JWT authenticator rejects; bridged `component=k8s` records from that
 authenticator can quote it as well (see
@@ -193,6 +273,6 @@ request carrying an extra fails with 403:
 - [Getting started](./getting-started.md) — install and choose an auth mode.
 - [Configuration reference](./configuration.md) — all flags and impersonation.
 - [Local multi-issuer test: kind and GitHub Actions](./development.md#local-multi-issuer-test-kind-and-github-actions).
-- [Architecture: union authenticator](./architecture.md#multi-issuer-union-authenticator).
+- [Architecture: issuer router](./architecture.md#multi-issuer-router).
 - [Logging reference](./logging.md) — the `oidc.issuer.*` records and how to
   query them.
