@@ -208,7 +208,7 @@ func startup(cmd *cobra.Command, opts *options.Options, root *slog.Logger, recor
 		logging.ForComponent(root, logging.ComponentSAR),
 	)
 
-	tokenAuthenticator, issuerURLs, err := authn.Build(authenticatorConfig(opts), root)
+	tokenAuthenticator, issuers, err := authn.Build(authenticatorConfig(opts), root)
 	if err != nil {
 		return nil, err
 	}
@@ -242,7 +242,7 @@ func startup(cmd *cobra.Command, opts *options.Options, root *slog.Logger, recor
 	logConfigLoaded(startupLogger, configSummary{
 		version:       opts.Version.Version(),
 		configHash:    configHash(cmd.Flags()),
-		issuerCount:   len(issuerURLs),
+		issuerCount:   len(issuers),
 		readinessMode: readinessMode,
 	})
 
@@ -250,7 +250,7 @@ func startup(cmd *cobra.Command, opts *options.Options, root *slog.Logger, recor
 		// The kubelet probes the pod IP, so the listener binds every
 		// interface.
 		Addr:          net.JoinHostPort("0.0.0.0", strconv.Itoa(opts.App.ReadinessProbePort)),
-		IssuerURLs:    issuerURLs,
+		Issuers:       issuers,
 		Mode:          readinessMode,
 		Authenticator: tokenAuthenticator,
 		Metrics:       recorder,
