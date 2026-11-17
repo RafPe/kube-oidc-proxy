@@ -105,3 +105,31 @@ func TestProbeNamesIssuersByTheirConfiguredName(t *testing.T) {
 		t.Fatalf("pending record issuer_name = %q, want corp-b", got)
 	}
 }
+
+// TestProbeReportsIssuersOfASharedURLApart pins that the probe reports each
+// issuer of a shared issuer URL by its own state.
+func TestProbeReportsIssuersOfASharedURLApart(t *testing.T) {
+	const shared = "https://token.actions.githubusercontent.com"
+	rec := newMetricsRecorder(t)
+
+	s := NewServer(Config{
+		Issuers: []authn.Issuer{
+			{Name: "gha-int", URL: shared, Audiences: []string{"aud-int"}},
+			{Name: "gha-vendor", URL: shared, Audiences: []string{"aud-vendor"}},
+		},
+		Authenticator: &fakeAuthenticator{notInitAudience: map[string]bool{audienceKey(shared, "aud-vendor"): true}},
+		Metrics:       rec,
+	}, slog.New(slog.DiscardHandler))
+	g := rec.Gatherer()
+
+	s.SetServing()
+	if err := s.check(); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if v, _ := metricstest.Value(t, g, metricIssuerInitialized, map[string]string{"issuer_name": "gha-int"}); v != 1 {
+		t.Fatalf("issuer gha-int after check = %v, want 1", v)
+	}
+	if v, _ := metricstest.Value(t, g, metricIssuerInitialized, map[string]string{"issuer_name": "gha-vendor"}); v != 0 {
+		t.Fatalf("issuer gha-vendor after check = %v, want 0", v)
+	}
+}

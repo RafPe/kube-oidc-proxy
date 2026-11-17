@@ -30,7 +30,8 @@ import (
 // JWKS yet; every other issuer is initialized and fails ordinary verification
 // of the probe token. A per-issuer error may be supplied via override to model
 // alternate phrasings and transient failures. Every map is keyed by issuer
-// URL.
+// URL. notInitAudience holds issuers that share an issuer URL, keyed by the
+// issuer URL and the aud claim of the probe token, as audienceKey makes it.
 //
 // It is a stateful fake rather than the generated authntest.MockToken on
 // purpose: tests flip an issuer from pending to initialized between checks and
@@ -39,10 +40,16 @@ import (
 // advance and could not express "however many calls, answer from the current
 // state".
 type fakeAuthenticator struct {
-	mu       sync.Mutex
-	notInit  map[string]bool
-	override map[string]error
-	calls    map[string]int
+	mu              sync.Mutex
+	notInit         map[string]bool
+	notInitAudience map[string]bool
+	override        map[string]error
+	calls           map[string]int
+}
+
+// audienceKey is the notInitAudience key of an issuer URL and an audience.
+func audienceKey(issuerURL, audience string) string {
+	return issuerURL + " " + audience
 }
 
 func (f *fakeAuthenticator) AuthenticateToken(_ context.Context, token string) (*authenticator.Response, bool, error) {
@@ -57,7 +64,7 @@ func (f *fakeAuthenticator) AuthenticateToken(_ context.Context, token string) (
 	if err, ok := f.override[issuerURL]; ok {
 		return nil, false, err
 	}
-	if f.notInit[issuerURL] {
+	if f.notInit[issuerURL] || f.notInitAudience[audienceKey(issuerURL, audienceOf(token))] {
 		return nil, false, errors.New("oidc: authenticator not initialized")
 	}
 	return nil, false, errors.New("oidc: verify token: signature invalid")
@@ -67,6 +74,26 @@ func (f *fakeAuthenticator) callCount(issuerURL string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls[issuerURL]
+}
+
+// audienceOf returns the aud claim of a probe token as a string, or "" for a
+// token that has none.
+func audienceOf(token string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Audience string `json:"aud"`
+	}
+	if err := json.Unmarshal(raw, &claims); err != nil {
+		return ""
+	}
+	return claims.Audience
 }
 
 // issuerOf returns the iss claim of a probe token, or "" for a token that is
@@ -426,7 +453,7 @@ func (timeoutError) Temporary() bool { return true }
 // naming a different issuer would probe the wrong one.
 func TestNewIssuerReadinessNamesTheIssuer(t *testing.T) {
 	const issuerURL = "https://issuer.example.com/realm"
-	r := newIssuerReadiness(authn.Issuer{Name: "corp", URL: issuerURL})
+	r := newIssuerReadiness(authn.Issuer{Name: "corp", URL: issuerURL, Audiences: []string{"aud-1", "aud-2"}})
 	if r.name != "corp" {
 		t.Fatalf("name = %q, want corp", r.name)
 	}
@@ -455,11 +482,17 @@ func TestNewIssuerReadinessNamesTheIssuer(t *testing.T) {
 	}
 
 	var claims struct {
-		Issuer string `json:"iss"`
+		Issuer   string `json:"iss"`
+		Audience string `json:"aud"`
 	}
 	decode(parts[1], &claims)
 	if claims.Issuer != issuerURL {
 		t.Fatalf("iss = %q, want %q", claims.Issuer, issuerURL)
+	}
+	// The router selects an issuer of a shared issuer URL by aud. A probe
+	// token without the aud of its issuer would not reach that issuer.
+	if claims.Audience != "aud-1" {
+		t.Fatalf("aud = %q, want the first audience aud-1", claims.Audience)
 	}
 
 	mac := hmac.New(sha256.New, fakeJWTKey)

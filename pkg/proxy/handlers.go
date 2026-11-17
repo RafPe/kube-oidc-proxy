@@ -2,6 +2,7 @@
 package proxy
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -146,9 +147,13 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 				return
 			}
 
+			reason := metrics.ReasonUnauthorized
+			if errors.Is(err, authn.ErrAudienceUnrouted) {
+				reason = metrics.ReasonAudienceUnrouted
+			}
 			p.metrics.AuthenticationAttempt(metrics.AuthMethodOIDC, metrics.AuthRejected)
 			logging.Emit(req.Context(), p.oidcLogger, logging.EventAuthnOIDCFailed,
-				slog.String("src_ip", reqctx.ClientIP(req)), slog.String("reason", string(metrics.ReasonUnauthorized)))
+				slog.String("src_ip", reqctx.ClientIP(req)), slog.String("reason", string(reason)))
 
 			// OIDC rejected the token, so the token-review filter decides:
 			// with token passthrough on, the API server gets a second look.
