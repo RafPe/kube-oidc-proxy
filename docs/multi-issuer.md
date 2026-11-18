@@ -1,15 +1,24 @@
 # Multi-Issuer OIDC Authentication
 
-kube-oidc-proxy can accept JWTs from several OIDC issuers at once using the
-standard Kubernetes [Structured Authentication Configuration](https://kubernetes.io/docs/reference/access-authn-authz/authentication/#using-authentication-configuration)
-file format — the same format kube-apiserver consumes since Kubernetes 1.30.
+kube-oidc-proxy can accept JWTs from several OIDC issuers at once. The
+configuration file has one of two kinds:
+
+- The upstream kind `apiserver.config.k8s.io` `AuthenticationConfiguration`.
+  This is the Kubernetes [Structured Authentication Configuration](https://kubernetes.io/docs/reference/access-authn-authz/authentication/#using-authentication-configuration)
+  format that kube-apiserver reads since Kubernetes 1.30.
+- The proxy kind `kube-oidc-proxy.rafpe.github.io/v1alpha1`
+  `AuthenticationConfiguration`. Only kube-oidc-proxy reads this kind.
+  [Choose a kind](#choose-a-kind) tells you which kind to use.
+
 This is particularly useful on managed clusters (EKS, GKE, DOKS, ...) where
 apiserver flags cannot be changed and only a single (or no) native OIDC
 provider can be configured.
 
 - [Enabling](#enabling)
+- [Choose a kind](#choose-a-kind)
 - [Several audiences for one issuer](#several-audiences-for-one-issuer)
 - [Several issuers for one issuer URL](#several-issuers-for-one-issuer-url)
+  - [Move from the upstream kind](#move-from-the-upstream-kind)
 - [Recipes per identity provider](#recipes-per-identity-provider)
 - [Security: always use distinct per-issuer prefixes](#security-always-use-distinct-per-issuer-prefixes)
 - [Readiness](#readiness)
@@ -22,14 +31,39 @@ provider can be configured.
 
 Pass `--authentication-config=/path/to/config.yaml`. This flag is mutually
 exclusive with issuer-specific `--oidc-*` flags; the optional OIDC TLS client
-certificate/key flags apply to all issuers. Both `apiserver.config.k8s.io/v1` and
-`v1beta1` are accepted; the file is strictly validated at startup (unknown
-fields, duplicate issuers, and invalid CEL expressions are rejected). Only
-the `jwt:` section is supported; `anonymous:` is rejected.
+certificate/key flags apply to all issuers. The proxy accepts three
+`apiVersion` values:
+
+- `apiserver.config.k8s.io/v1` and `apiserver.config.k8s.io/v1beta1`, the
+  upstream kind.
+- `kube-oidc-proxy.rafpe.github.io/v1alpha1`, the proxy kind.
+
+The proxy validates the file strictly at startup. It refuses unknown fields,
+duplicate issuers and invalid CEL expressions. The upstream kind supports only
+the `jwt:` section. The proxy refuses `anonymous:`.
 
 The file is read once at startup. To apply changes, restart the pods — the
 Helm chart annotates the Deployment with a config checksum, so editing
 `authenticationConfig.content` triggers a rolling restart automatically.
+
+## Choose a kind
+
+Use the upstream kind when it can express your configuration. Use the proxy
+kind when you need a feature that only the proxy kind has.
+
+| Need | Kind |
+|---|---|
+| kube-apiserver must also load the same file | upstream |
+| One `jwt` entry for each issuer URL, and one issuer for each host | upstream |
+| Several issuers for one issuer URL, selected by the token audience | proxy |
+| Several issuers on one host, for example two GKE or EKS cluster issuers | proxy |
+| An `issuer_name` that you set, not the host of the issuer URL | proxy |
+| The issuer name in CEL with `authenticationConfiguration.issuer.name` | proxy |
+
+The two kinds use the same `jwt` entry. The proxy kind puts each entry under
+`issuers[].jwt` and adds a `name`. A token from one issuer URL gets the same
+result in both kinds, unless several issuers of the proxy kind share that URL.
+[Move from the upstream kind](#move-from-the-upstream-kind) gives the steps.
 
 ## Several audiences for one issuer
 
@@ -164,6 +198,56 @@ A file of the proxy kind does not load in kube-apiserver. A file that must
 load in kube-apiserver can select the trust group in CEL inside one entry
 instead. ADR-0001 ([`docs/decisions/0001-route-same-issuer-entries-by-audience.md`](https://github.com/RafPe/kube-oidc-proxy/blob/main/docs/decisions/0001-route-same-issuer-entries-by-audience.md))
 compares the two options.
+
+### Move from the upstream kind
+
+Do these steps to change a file of the upstream kind to the proxy kind:
+
+1. Set `apiVersion` to `kube-oidc-proxy.rafpe.github.io/v1alpha1`.
+2. Keep `kind: AuthenticationConfiguration`.
+3. Change the `jwt` key to `issuers`.
+4. Move each old `jwt` entry under the `jwt` key of one item of `issuers`.
+5. Give each item a `name`.
+6. Restart the proxy and make sure that each issuer reports ready.
+
+Before:
+
+```yaml
+apiVersion: apiserver.config.k8s.io/v1
+kind: AuthenticationConfiguration
+jwt:
+- issuer:
+    url: https://token.actions.githubusercontent.com
+    audiences: ["kube-oidc-proxy"]
+  claimMappings:
+    username:
+      expression: '"gha:" + claims.repository'
+```
+
+After:
+
+```yaml
+apiVersion: kube-oidc-proxy.rafpe.github.io/v1alpha1
+kind: AuthenticationConfiguration
+issuers:
+- name: token.actions.githubusercontent.com
+  jwt:
+    issuer:
+      url: https://token.actions.githubusercontent.com
+      audiences: ["kube-oidc-proxy"]
+    claimMappings:
+      username:
+        expression: '"gha:" + claims.repository'
+```
+
+The upstream kind uses the host of the issuer URL as `issuer_name`. To keep the
+old `issuer_name` in logs, metrics and dashboards, set `name` to that host. The
+example above does this. A host with a port, for example `dex.example.com:5556`,
+is not a valid `name`, because `:` is not valid in a DNS-1123 subdomain. Then
+the `issuer_name` changes, and you must update the queries that use it.
+
+The `jwt` entry of the proxy kind has the `apiserver.config.k8s.io/v1` form. A
+`v1beta1` entry has the same fields.
 
 ## Recipes per identity provider
 
