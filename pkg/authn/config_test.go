@@ -180,6 +180,11 @@ func TestAuthenticationConfigLoad(t *testing.T) {
 			wantErr: []string{"not supported"},
 		},
 		{
+			name:    "the issuer name variable is not defined in the upstream kind",
+			doc:     upstreamDoc(nameVarJWT("https://issuer1.example.com", "aud-one")),
+			wantErr: []string{"undeclared reference"},
+		},
+		{
 			name:    "empty jwt list rejected",
 			doc:     upstreamDoc(),
 			wantErr: []string{"must not be empty"},
@@ -248,6 +253,46 @@ func gkeProxyDoc() v1alpha1.AuthenticationConfiguration {
 func withDiscoveryURL(iss v1alpha1.Issuer, url string) v1alpha1.Issuer {
 	iss.JWT.Issuer.DiscoveryURL = &url
 	return iss
+}
+
+// nameVarJWT returns a v1 JWT authenticator that uses IssuerNameVariable in
+// each CEL expression field.
+func nameVarJWT(url string, audiences ...string) apiserverv1.JWTAuthenticator {
+	const v = IssuerNameVariable
+	jwt := testJWT(url, "", audiences...)
+	jwt.ClaimMappings = apiserverv1.ClaimMappings{
+		Username: apiserverv1.PrefixedClaimOrExpression{Expression: v + ` + ":" + claims.sub`},
+		Groups:   apiserverv1.PrefixedClaimOrExpression{Expression: `dyn(claims.groups).map(g, ` + v + ` + ":" + g)`},
+		UID:      apiserverv1.ClaimOrExpression{Expression: v + ` + "/" + claims.sub`},
+		Extra:    []apiserverv1.ExtraMapping{{Key: "example.com/issuer", ValueExpression: v}},
+	}
+	jwt.ClaimValidationRules = []apiserverv1.ClaimValidationRule{
+		{Expression: `claims.iss != ` + v, Message: "iss is not the name"},
+	}
+	jwt.UserValidationRules = []apiserverv1.UserValidationRule{
+		{Expression: `user.username.startsWith(` + v + ` + ":")`, Message: "prefix"},
+	}
+	return jwt
+}
+
+// wantNameVarJWT returns the internal form of nameVarJWT after the proxy
+// replaces the variable with the string literal of name.
+func wantNameVarJWT(name, url string, audiences ...string) apiserver.JWTAuthenticator {
+	lit := `"` + name + `"`
+	jwt := wantJWT(url, "", audiences...)
+	jwt.ClaimMappings = apiserver.ClaimMappings{
+		Username: apiserver.PrefixedClaimOrExpression{Expression: lit + ` + ":" + claims.sub`},
+		Groups:   apiserver.PrefixedClaimOrExpression{Expression: `dyn(claims.groups).map(g, ` + lit + ` + ":" + g)`},
+		UID:      apiserver.ClaimOrExpression{Expression: lit + ` + "/" + claims.sub`},
+		Extra:    []apiserver.ExtraMapping{{Key: "example.com/issuer", ValueExpression: lit}},
+	}
+	jwt.ClaimValidationRules = []apiserver.ClaimValidationRule{
+		{Expression: `claims.iss != ` + lit, Message: "iss is not the name"},
+	}
+	jwt.UserValidationRules = []apiserver.UserValidationRule{
+		{Expression: `user.username.startsWith(` + lit + ` + ":")`, Message: "prefix"},
+	}
+	return jwt
 }
 
 func TestProxyAuthenticationConfigLoad(t *testing.T) {
@@ -335,6 +380,27 @@ func TestProxyAuthenticationConfigLoad(t *testing.T) {
 			name:    "an entry that fails upstream validation is refused by index",
 			doc:     proxyDoc(proxyIssuer("a", "https://a.example.com", "aud"), badCEL),
 			wantErr: []string{"issuers[1]"},
+		},
+		{
+			name: "each issuer gets its own name for the issuer name variable",
+			doc: proxyDoc(
+				v1alpha1.Issuer{Name: "gha-int", JWT: nameVarJWT(ghaURL, "aud-int")},
+				v1alpha1.Issuer{Name: "gha-vendor", JWT: nameVarJWT(ghaURL, "aud-vendor")}),
+			want: &Configuration{ProxyKind: true, Entries: []Entry{
+				{Name: "gha-int", JWT: wantNameVarJWT("gha-int", ghaURL, "aud-int")},
+				{Name: "gha-vendor", JWT: wantNameVarJWT("gha-vendor", ghaURL, "aud-vendor")},
+			}},
+		},
+		{
+			name: "an unknown field of the issuer name variable is refused by path",
+			doc: func() v1alpha1.AuthenticationConfiguration {
+				iss := proxyIssuer("a", "https://a.example.com", "aud")
+				iss.JWT.ClaimMappings.Username = apiserverv1.PrefixedClaimOrExpression{
+					Expression: "authenticationConfiguration.issuer.url + claims.sub",
+				}
+				return proxyDoc(iss)
+			}(),
+			wantErr: []string{"issuers[0].jwt.claimMappings.username.expression", "is the only field"},
 		},
 		{
 			name:    "more issuers than the limit are refused",

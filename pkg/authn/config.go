@@ -130,8 +130,10 @@ func decodeUpstream(data []byte) (*apiserver.AuthenticationConfiguration, error)
 // AuthenticationConfiguration. It runs these steps in this order:
 //
 //  1. Decode the document strictly. An unknown field is an error.
-//  2. For each issuer, validate the name and run the upstream decoding and
-//     validation on a document that contains only that issuer.
+//  2. For each issuer, validate the name. Replace each reference to
+//     IssuerNameVariable in its CEL expressions with the name. Then run the
+//     upstream decoding and validation on a document that contains only
+//     that issuer.
 //  3. Refuse two issuers with the same name.
 //  4. Refuse two issuers with the same issuer URL and a shared audience.
 //  5. Refuse two issuers with the same non-empty discoveryURL.
@@ -157,6 +159,9 @@ func loadProxyConfiguration(path string, data []byte, compiler authenticationcel
 	for i, iss := range doc.Issuers {
 		if msgs := k8svalidation.IsDNS1123Subdomain(iss.Name); len(msgs) > 0 {
 			return nil, fmt.Errorf("invalid authentication-config %q: issuers[%d].name %q: %s", path, i, iss.Name, strings.Join(msgs, ", "))
+		}
+		if err := expandIssuerVariables(&iss.JWT, iss.Name); err != nil {
+			return nil, fmt.Errorf("invalid authentication-config %q: issuers[%d].%w", path, i, err)
 		}
 		jwt, err := validateJWT(iss.JWT, compiler)
 		if err != nil {

@@ -39,6 +39,8 @@ type Issuer struct {
 	Name string `json:"name"`
 
 	// JWT is the upstream Kubernetes JWT authenticator configuration of the
-	// issuer.
+	// issuer. Its CEL expressions can use authenticationConfiguration.issuer.name.
+	// The proxy replaces that reference with a string literal of Name before
+	// the upstream validation.
 	JWT apiserverv1.JWTAuthenticator `json:"jwt"`
 }
