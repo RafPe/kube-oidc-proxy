@@ -22,6 +22,16 @@ test('on a tagged commit the tag is the version and it is a release', () => {
   assert.deepEqual(docsVersion(repo), { version: 'v1.8.1', isRelease: true });
 });
 
+test('local edits at a tag are development documentation', () => {
+  writeFileSync(path.join(repo, 'one'), 'modified');
+  assert.deepEqual(docsVersion(repo), { version: 'v1.8.1', isRelease: false });
+});
+
+test('untracked documentation at a tag is development documentation', () => {
+  writeFileSync(path.join(repo, 'new-doc.md'), '# New documentation');
+  assert.deepEqual(docsVersion(repo), { version: 'v1.8.1', isRelease: false });
+});
+
 test('after the tag the latest reachable tag is reported and it is not a release', () => {
   commit('two');
   assert.deepEqual(docsVersion(repo), { version: 'v1.8.1', isRelease: false });

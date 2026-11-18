@@ -1,0 +1,27 @@
+---
+import { requestMapData } from '../../../scripts/request-map-data.mjs';
+import model from './request-model.cjs?raw';
+import app from './request-app.js?raw';
+import './explorer.css';
+const data = requestMapData();
+const script = '(() => {' + model + '\nconst MAP_DATA = ' + JSON.stringify(data).replaceAll('<', '\\u003c') + ';\n' + app + '})();';
+---
+<div class="kop-explorer not-content flow-explorer">
+  <div class="explorer-intro"><p>Follow a request. Select a step to see what happens.</p></div>
+  <div class="explorer-toolbar"><label for="scenario">Scenario<select id="scenario"></select></label><span id="result" class="result"></span></div>
+  <p id="scenario-note" class="scenario-note"></p>
+  <noscript>This explorer requires JavaScript. Read the architecture guide for the request flow.</noscript>
+  <div class="workspace">
+    <section class="map-panel" aria-label="Interactive request flow">
+      <div class="panel-top"><h2>Request steps</h2></div>
+      <div class="flow-scroll"><ol id="flow" aria-label="Request stages"></ol></div>
+    </section>
+    <section class="detail-panel" aria-label="Selected stage details">
+      <div class="detail-top"><span id="breadcrumb"></span><button id="copy-link">Copy link</button></div>
+      <div id="detail"></div>
+    </section>
+  </div>
+  <p class="explorer-footnote">Learning example. No requests reach a cluster.</p>
+  <div class="sr-only" id="announcement" role="status" aria-live="polite"></div>
+</div>
+<script is:inline set:html={script} />

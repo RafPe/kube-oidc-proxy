@@ -1,0 +1,151 @@
+---
+import './explorer.css';
+import { examples } from './identity-model.mjs';
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+---
+<div class="kop-explorer not-content identity-explorer" data-base={base}>
+  <div class="explorer-intro"><p>Choose an identity. See what its binding allows.</p></div>
+  <form id="identity-form" class="identity-form">
+    <div class="explorer-toolbar">
+      <label>Example<select name="example">{Object.entries(examples).map(([id,e])=><option value={id}>{e.label}</option>)}</select></label>
+      <div class="resource-picker" role="group" aria-label="Resource to list"><button type="button" data-resource="pods" aria-pressed="true">List pods</button><button type="button" data-resource="secrets" aria-pressed="false">List Secrets</button></div>
+    </div>
+    <section class="identity-results" aria-label="Identity and RBAC result">
+      <div class="identity-journey">
+        <div><span class="eyebrow">01 / IDENTITY</span><h2 id="identity-name"></h2><p id="identity-short-groups"></p></div>
+        <div><span class="eyebrow">02 / BINDING</span><h2 id="identity-binding"></h2><p id="identity-scope"></p></div>
+        <div><span class="eyebrow">03 / PERMISSION</span><h2>view</h2><p>Read pods. No Secrets access.</p></div>
+      </div>
+      <div class="identity-outcome"><div><p id="identity-request"></p><div id="identity-verdict" class="verdict" role="status" aria-live="polite"></div><p id="identity-reason"></p></div><a id="identity-source" href={`${base}/start/multi-issuer-demo/`}>Read the example ↗</a></div>
+      <div class="rbac-config" aria-label="RBAC configuration">
+        <div class="rbac-config-intro"><h3>What grants access?</h3><p>The binding selects an identity. The ClusterRole defines its permissions.</p></div>
+        <div class="rbac-yaml-grid">
+          <section><h4>ClusterRole: view</h4><p>Relevant rule only. This is not the complete built-in role.</p><pre aria-label="Relevant view ClusterRole rule"><code id="identity-role-yaml"></code></pre></section>
+          <section><h4 id="identity-binding-kind">ClusterRoleBinding</h4><p id="identity-binding-note">This binding grants view across namespaces.</p><pre aria-label="Selected resource binding"><code id="identity-yaml"></code></pre></section>
+        </div>
+        <p class="hint">Changing the request does not change these permissions. The default view role excludes Secrets.</p>
+      </div>
+    </section>
+    <details class="disclosure" id="identity-options"><summary>Change the request or binding</summary>
+      <div class="advanced-grid">
+        <div>
+          <label>Request resource<select name="resource"><option>pods</option><option>secrets</option></select></label>
+          <label>Request verb<select name="verb"><option>list</option><option>get</option><option>watch</option><option>delete</option></select></label>
+          <label>Request scope<select name="namespace"><option value="all">All namespaces (-A)</option><option>development</option><option>production</option></select></label>
+          <label><input name="proxyGrant" type="checkbox" checked /> Proxy can impersonate the outbound identity</label>
+        </div>
+        <div>
+          <label>Binding scope<select name="bindingScope"><option value="cluster">All namespaces</option><option value="namespace">Development only</option></select></label>
+          <label>Subject kind<select name="kind"><option>User</option><option>Group</option></select></label>
+          <label>Subject name<input name="subject" value="oidc-a:alice@example.com" maxlength="150" spellcheck="false" /></label>
+          <div id="caller-controls" hidden>
+            <label>Target (--as)<select name="target"><option>ci-viewer</option><option>other-user</option></select></label>
+            <label><input name="callerGrant" type="checkbox" checked /> Caller can impersonate ci-viewer</label>
+          </div>
+        </div>
+      </div>
+      <button id="identity-reset" type="button">Reset example</button>
+    </details>
+  </form>
+  <details class="disclosure" id="identity-details"><summary>How this result follows from the token</summary>
+    <div class="identity-body">
+      <h3>Map the token</h3><p id="identity-mapping"></p>
+      <div class="io"><b>AUTHENTICATED CALLER</b><pre id="identity-inbound"></pre></div>
+      <h3>Select the upstream identity</h3><p id="identity-mechanism"></p>
+      <div class="io"><b>EFFECTIVE GROUPS</b><pre id="identity-groups"></pre></div>
+      <h3>Check each permission</h3><ul id="identity-checks" class="identity-checks"></ul>
+      <p class="hint">This model covers pods and Secrets under the default view role. Other bindings or custom role rules can grant additional access. It does not evaluate admission controls.</p>
+    </div>
+  </details>
+  <p class="explorer-footnote">This example assumes a valid token and working review APIs. No requests reach a cluster.</p>
+  <noscript>This explorer requires JavaScript. Read the examples below for identity mappings and permissions.</noscript>
+</div>
+<script>
+  import { evaluateIdentity, exampleDefaults, examples, bindingYaml } from './identity-model.mjs';
+  const form = document.querySelector<HTMLFormElement>('#identity-form')!;
+  const control = (name: string) => form.elements.namedItem(name) as HTMLInputElement | HTMLSelectElement;
+  const put = (id: string, text: string) => { document.getElementById(id)!.textContent = text; };
+  function showYaml(id: string, yaml: string) {
+    const code = document.getElementById(id)!;
+    code.replaceChildren();
+    for (const line of yaml.split('\n')) {
+      const row = document.createElement('span');
+      row.className = 'yaml-line';
+      const key = line.match(/^(\s*(?:- )?)([A-Za-z][A-Za-z0-9]*)(:)(.*)$/);
+      if (key) {
+        row.append(document.createTextNode(key[1]));
+        const name = document.createElement('span');
+        name.className = 'yaml-key'; name.textContent = key[2];
+        row.append(name, document.createTextNode(key[3]));
+        const value = document.createElement('span');
+        value.className = 'yaml-value'; value.textContent = key[4];
+        row.append(value);
+      } else row.textContent = line;
+      code.append(row,document.createTextNode('\n'));
+    }
+  }
+  showYaml('identity-role-yaml',`apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: view
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]`);
+  function values() {
+    return Object.fromEntries(Array.from(form.elements).filter((el): el is HTMLInputElement | HTMLSelectElement => el instanceof HTMLInputElement || el instanceof HTMLSelectElement).map(el=>[el.name,el instanceof HTMLInputElement && el.type === 'checkbox' ? el.checked : el.value]));
+  }
+  function render() {
+    const allNamespaces = control('namespace').querySelector<HTMLOptionElement>('option[value="all"]')!;
+    allNamespaces.disabled = !['list','watch'].includes(control('verb').value);
+    if(allNamespaces.disabled && control('namespace').value === 'all') control('namespace').value = 'development';
+    const input = values(), result = evaluateIdentity(input);
+    const preset = examples[input.example as keyof typeof examples];
+    document.getElementById('caller-controls')!.hidden = input.example !== 'impersonation';
+    const base = document.querySelector<HTMLElement>('.identity-explorer')!.dataset.base;
+    (document.getElementById('identity-source') as HTMLAnchorElement).href = `${base}/${preset.source}`;
+    put('identity-mapping',preset.mapping);
+    put('identity-inbound',`${result.inbound.username}\nGroups: ${result.inbound.groups.join(', ')}`);
+    put('identity-name',result.forwarded ? result.username : 'No upstream request');
+    put('identity-groups',result.forwarded ? result.groups.join('\n') : 'No upstream request');
+    put('identity-mechanism',input.example === 'impersonation' ? 'SubjectAccessReview checks the caller’s grant for the requested target. The target does not inherit the caller’s groups. The proxy forwards with its own credential.' : 'No explicit impersonation request. The proxy forwards with its own credential and identity headers. system:authenticated is implicit, not a token group claim.');
+    put('identity-request',`${input.verb} ${input.resource} · ${input.namespace === 'all' ? 'all namespaces' : input.namespace}`);
+    put('identity-verdict',result.allowed ? 'Allowed by this example' : 'Not allowed by this example');
+    put('identity-reason',result.allowed ? 'The subject matches. The binding grants this request.' : result.verdict);
+    put('identity-short-groups',result.forwarded ? (input.example === 'github' ? 'Repository group from token claims' : input.example === 'impersonation' ? 'Target of the impersonation request' : 'Username from the email claim') : 'The proxy stopped this request.');
+    put('identity-binding',`${input.kind}: ${input.subject}`);
+    put('identity-scope',input.bindingScope === 'cluster' ? 'ClusterRoleBinding · all namespaces' : 'RoleBinding · development');
+    for(const button of document.querySelectorAll<HTMLButtonElement>('[data-resource]')) button.setAttribute('aria-pressed',String(button.dataset.resource === input.resource && input.verb === 'list'));
+
+    document.getElementById('identity-verdict')!.dataset.allowed = String(result.allowed);
+    const list = document.getElementById('identity-checks')!;
+    list.replaceChildren();
+    for (const [i,[pass,text]] of result.checks.entries()) {
+      const li = document.createElement('li');
+      const reached = i === 0 || (result.forwarded && (i === 1 || input.proxyGrant));
+      li.textContent = `${reached ? (pass ? 'Pass' : 'No grant') : 'Not reached'}: ${text}`;
+      list.append(li);
+    }
+    showYaml('identity-yaml',bindingYaml(input));
+    put('identity-binding-kind',input.bindingScope === 'cluster' ? 'ClusterRoleBinding' : 'RoleBinding');
+    put('identity-binding-note',input.bindingScope === 'cluster' ? 'This binding grants view across namespaces.' : 'This binding grants view only in development. It still refers to the ClusterRole.');
+  }
+  function restore() {
+    for(const [name,value] of Object.entries(exampleDefaults(control('example').value))) {
+      const el = control(name);
+      if(el instanceof HTMLInputElement && el.type === 'checkbox') el.checked = Boolean(value);
+      else el.value = String(value);
+    }
+    render();
+  }
+  form.addEventListener('input',event=>{if(event.target !== control('example')) render();});
+  form.addEventListener('change',event=>event.target === control('example') ? restore() : render());
+  form.addEventListener('submit',event=>event.preventDefault());
+  document.getElementById('identity-reset')!.addEventListener('click',restore);
+  for(const button of document.querySelectorAll<HTMLButtonElement>('[data-resource]')) button.addEventListener('click',()=>{
+    control('resource').value = button.dataset.resource!;
+    control('verb').value = 'list';
+    render();
+  });
+  render();
+</script>

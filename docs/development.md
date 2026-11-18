@@ -327,6 +327,30 @@ in `go.mod`, which is the one the e2e suite uses. Prerequisites, the pinned
 versions and what each file does are in
 [`hack/metrics-demo/README.md`](../hack/metrics-demo/README.md).
 
+## Interactive documentation
+
+The [request flow](./interactive/request-flow.md) and [identity explorer](./interactive/identity-and-rbac.md) use Astro components in `website/src/components/interactive/`.
+Edit their explanations in `request-content.cjs` and the corresponding Markdown pages.
+The build checks that each request stage references a unique Go function anchor.
+It excludes these references and Go source from the browser data.
+Update the anchors when a function moves or changes its signature.
+The explorer uses the same checkout as the documentation.
+A clean tagged checkout displays the release version. Local changes display Development in the version selector.
+
+Run these commands from `website/`:
+
+```sh
+npm ci
+npm test
+npm run build
+npm run check
+npm run preview -- --host 127.0.0.1 --port 4321
+```
+
+Open `http://127.0.0.1:4321/kube-oidc-proxy/interactive/request-flow/`.
+For browser checks, set `CHROME_PATH` to a local Chromium executable and run `node scripts/interactive-browser.mjs`.
+These checks cover request scenarios, controls, identity rules, and narrow screens.
+
 ## See also
 
 - [Operations](./operations.md) — running the proxy in production.

@@ -52,6 +52,22 @@ test('lifts the H1 into frontmatter title and removes it from the body', () => {
   assert.doesNotMatch(out, /^# Getting started$/m);
 });
 
+test('stages an interactive component inside the normal documentation page', () => {
+  manifest([{ ...basePages[0], component: 'RequestExplorer' }, basePages[1]]);
+  run();
+  const text = readFileSync(path.join(outDir, 'start/getting-started.mdx'), 'utf8');
+  assert.match(text, /import Interactive from/);
+  assert.match(text, /components\/interactive\/RequestExplorer\.astro/);
+  assert.match(text, /<Interactive \/>/);
+  assert.match(text, /tableOfContents: false/);
+  assert.ok(!existsSync(path.join(outDir, 'start/getting-started.md')));
+});
+
+test('rejects an unknown interactive component before staging files', () => {
+  manifest([{ ...basePages[0], component: '../Unknown' }, basePages[1]]);
+  assert.throws(() => run(), /Unknown interactive component/);
+});
+
 test('description is the first paragraph, plain text, at most 160 characters', () => {
   write('docs/operations.md', '# Operations\n\n' + 'word '.repeat(60) + '\n');
   run();
