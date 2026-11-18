@@ -1,6 +1,11 @@
 # Unreleased
 <!-- next-release -->
 
+## [2.1.0] - 2026-11-18
+
+- The Helm chart adds `extraEnv`, a list of `EnvVar` entries appended to the proxy container, for settings such as `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`; any `OIDC_*` name, which the chart sets from `oidc.*`, fails the render, and so does an `extraEnv` that is not a list.
+- Bump the k8s.io libraries from 0.37.0 to 0.37.2, github.com/go-jose/go-jose/v4 from 4.1.4 to 4.1.6, go.opentelemetry.io/otel, otel/sdk and otel/trace from 1.45.0 to 1.47.0, github.com/prometheus/common from 0.70.1 to 0.73.1, golang.org/x/mod from 0.41.0 to 0.43.0 and golang.org/x/sync from 0.23.0 to 0.25.0, with golang.org/x/crypto, x/net, x/sys, x/term, x/text and x/tools moved along by `go mod tidy`.
+
 ## [2.0.0] - 2026-11-14
 
 - A request the proxy leaves unanswered because the client went away is recorded with `http_status=0` and `code="none"`, not 200. A client that hangs up during OIDC authentication is recorded as `client_canceled` and is not passed on to TokenReview.
