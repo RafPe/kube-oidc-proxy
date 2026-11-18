@@ -85,6 +85,16 @@ Rules for the kind:
 * The API group is `kube-oidc-proxy.rafpe.github.io`. The version is `v1alpha1`. The kind is `AuthenticationConfiguration`. The group makes it different from the upstream kind with the same name.
 * `issuers[].jwt` is an upstream `JWTAuthenticator` in the `apiserver.config.k8s.io/v1` form. The proxy decodes the document as strictly as apimachinery decodes the upstream kind. An unknown field, a duplicate key and a key with the wrong case are errors.
 * `issuers[].name` is mandatory. It must be unique. It must be a DNS-1123 subdomain: lowercase letters, digits, `-` and `.`, at most 253 characters. It becomes `issuer_name` in logs and metrics. An operator who moves from the upstream kind can set `name` to the old host and keep the old `issuer_name`. This is not possible when the host has a port, because `:` is not valid in a DNS-1123 subdomain.
+* The CEL expressions of an entry can use `authenticationConfiguration.issuer.name`. Its value is the `name` of the entry. Example: `authenticationConfiguration.issuer.name + ":" + claims.sub`. The rules:
+  * The proxy finds each reference in the syntax tree of the expression. It replaces the reference with a string literal of the name before step 2 of the startup validation. Upstream validation then sees a plain expression. The same text inside a string literal stays.
+  * `issuer.name` is the only field. Each other use of the root `authenticationConfiguration` is an error, for example `authenticationConfiguration.issuer.url` or `has(...)`. The error names the field, for example `issuers[0].jwt.claimMappings.username.expression`.
+  * The variable applies to the expression fields: `claimValidationRules`, `claimMappings` (`username`, `groups`, `uid`, `extra`) and `userValidationRules`. It does not apply to `prefix`, which is not CEL. Use the expression form of a mapping to put the name in the username.
+  * The upstream kind does not define the variable. In that kind, and in kube-apiserver, the reference fails with "undeclared reference".
+  * The root follows the document structure: the kind, then one `issuers[]` element, then its `name`. A variable root that the proxy owns cannot collide with a variable that upstream adds later. These roots were rejected:
+    * `issuer` can collide with upstream, and readers can confuse it with `jwt.issuer`.
+    * `proxy` is unclear in the context of a proxy.
+    * `config` has the wrong scope.
+    * `self` and `params` have a different meaning in Kubernetes CEL.
 * `--authentication-config` accepts both kinds. The proxy selects the decoder from `apiVersion`.
 * The upstream kind keeps its current behavior. Its names stay the host of the issuer URL. Its `issuers must differ by host` check stays.
 
@@ -143,6 +153,7 @@ Deliver the work as stacked pull requests on top of the pull request for this AD
 * Add the types with `+k8s:deepcopy-gen` markers if the scheme needs them. Register the group in its own scheme.
 * `LoadConfiguration` returns the entries for both kinds. The upstream kind uses the host as the name.
 * Implement the startup checks in the order of the "Startup validation" section.
+* Replace `authenticationConfiguration.issuer.name` in the CEL expressions of each entry before the upstream validation (`pkg/authn/issuervar.go`).
 * The router does not exist yet. Until PR 3, refuse two entries with the same issuer URL with a clear error.
 
 ### PR 3: Route by `iss` and `aud`
@@ -164,6 +175,7 @@ Deliver the work as stacked pull requests on top of the pull request for this AD
 
 ### Verification
 
+- [ ] An entry of the proxy kind that uses `authenticationConfiguration.issuer.name` in each expression field loads, with the name of that entry in each field. An unknown field of the variable fails at startup with the path of the expression.
 - [ ] A configuration of the upstream kind gives the same `issuer_name` values and the same accept and reject results as before the change.
 - [ ] Two entries with the same issuer URL and disjoint audiences start. Only the entry of the token audience accepts the token. The access log shows the name of that entry.
 - [ ] Two entries with the same issuer URL and a shared audience fail at startup. The error names both entries by index.
@@ -212,6 +224,7 @@ GitHub Enterprise Cloud can add the enterprise slug to the issuer URL. This was 
 
 ## More Information
 
+* 2026-11-18: Added the CEL variable `authenticationConfiguration.issuer.name` for the proxy kind. The maintainer chose this name from ten options.
 * 2026-11-18: Status changed to `accepted`. The maintainer decided that the proxy does not refuse same-URL entries without `claimValidationRules`. `docs/multi-issuer.md` and `docs/integrations.md` show a warning instead.
 * 2026-11-17: The changelog fragments are in PR 2 (the new kind) and PR 3 (routing by audience). Those two PRs carry `release/minor`.
 
