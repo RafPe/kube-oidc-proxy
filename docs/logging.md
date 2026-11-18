@@ -162,7 +162,7 @@ that must be present beyond `time`, `level`, `msg`, `schema_version`,
 |---|---|---|---|---|
 | `audit.backend.started` | `audit` | INFO | `backend_kind` | The audit backend is running. |
 | `audit.flush.completed` | `audit` | INFO | `duration_ms` | The pre-shutdown audit flush finished. The bundled backends cannot report a lost flush here: it surfaces as a bridged component=k8s ERROR record. |
-| `authn.oidc.failed` | `oidc` | DEBUG | `request_id`, `reason` | The OIDC authenticator rejected the token: reason=unauthorized, or reason=client_canceled when the client hung up before it answered. The denial itself is INFO on request.access.decided. |
+| `authn.oidc.failed` | `oidc` | DEBUG | `request_id`, `reason` | The OIDC authenticator rejected the token: reason=unauthorized, reason=audience_unrouted when the token aud selects no single issuer of its issuer URL, or reason=client_canceled when the client hung up before it answered. The denial itself is INFO on request.access.decided. |
 | `authn.oidc.succeeded` | `oidc` | DEBUG | `request_id`, `issuer_name` | The OIDC authenticator accepted the token. Names the issuer that accepted it. |
 | `authn.token.missing` | `tokenreview` | DEBUG | `request_id` | No bearer token was presented on the TokenReview path. |
 | `authn.tokenreview.completed` | `tokenreview` | DEBUG | `request_id`, `authenticated` | A live TokenReview answered, with duration_ms. A cache hit is reported by cache.tokenreview.lookup instead. |
