@@ -122,11 +122,17 @@ The proxy selects the issuer for a token in these steps:
    The `authn.oidc.failed` record carries `reason=audience_unrouted`. No
    other issuer verifies the token.
 
-**The audience is routing, not authorization.** The client chooses `aud`, so
-a vendor workflow can request the audience of the internal issuer. Each issuer
-must pin its trust group with an immutable claim in `claimValidationRules`.
-For GitHub Actions, use `repository_owner_id`. For Google, use `sub`, or the
-email domain together with `email_verified`.
+> [!WARNING]
+> The audience is routing, not authorization. The client chooses `aud`, so a
+> vendor workflow can request the audience of the internal issuer. Each issuer
+> must pin its trust group with an immutable claim in `claimValidationRules`.
+> For GitHub Actions, use `repository_owner_id`. For Google, use `sub`, or the
+> email domain together with `email_verified`.
+>
+> The proxy does not refuse this at startup. It starts with an issuer that has
+> no `claimValidationRules`, also when that issuer shares its issuer URL with
+> another issuer. Then any token of that issuer URL with the audience of that
+> issuer gets the mappings and the RBAC of that issuer.
 
 The proxy kind also gives different names to issuers on one host, for example
 two GKE or EKS cluster issuers. The upstream kind refuses issuers on one host,

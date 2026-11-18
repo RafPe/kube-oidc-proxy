@@ -494,11 +494,14 @@ issuers:
       message: "only the vendor project"
 ```
 
-The audience selects the issuer, but it does not prove the trust group. A
-vendor can request the internal audience. Keep the `claimValidationRules` that
-pin the trust group in every issuer. For GitHub Actions, pin
-`repository_owner_id`. [Several issuers for one issuer URL](./multi-issuer.md#several-issuers-for-one-issuer-url)
-gives the full rules.
+> [!WARNING]
+> The audience selects the issuer, but it does not prove the trust group. A
+> vendor can request the internal audience. Keep the `claimValidationRules`
+> that pin the trust group in every issuer. For GitHub Actions, pin
+> `repository_owner_id`. The proxy does not refuse an issuer without these
+> rules at startup.
+> [Several issuers for one issuer URL](./multi-issuer.md#several-issuers-for-one-issuer-url)
+> gives the full rules.
 
 ## RBAC for the mapped identities
 
