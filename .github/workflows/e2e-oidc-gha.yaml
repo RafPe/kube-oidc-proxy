@@ -7,6 +7,11 @@ name: e2e-oidc-gha
 # through a single AuthenticationConfiguration. See
 # hack/ci/gha-multi-issuer-e2e.sh for the full flow and assertions.
 #
+# The matrix runs the script twice. config-kind upstream is the required
+# check test:e2e-oidc. config-kind proxy, test:e2e-oidc-shared-issuer, puts
+# three issuers on the GitHub Actions issuer URL with the proxy kind
+# (ADR-0001) and routes real tokens between them by audience.
+#
 # The minted token's audience MUST match the AuthenticationConfiguration's
 # `audiences` entry; both are set to GHA_AUDIENCE below.
 on:
@@ -28,12 +33,20 @@ env:
 
 jobs:
   gha-multi-issuer:
-    name: "test:e2e-oidc"
+    name: ${{ matrix.check }}
     # OIDC tokens (id-token: write) are not issued to pull requests from forks,
     # so skip fork PRs; runs on push to main, workflow_dispatch, and same-repo PRs.
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - config-kind: upstream
+            check: "test:e2e-oidc"
+          - config-kind: proxy
+            check: "test:e2e-oidc-shared-issuer"
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -73,6 +86,7 @@ jobs:
       - name: Run multi-issuer e2e (real GHA issuer + local Dex)
         env:
           GHA_TOKEN_FILE: ${{ github.workspace }}/gha-token.jwt
+          GHA_CONFIG_KIND: ${{ matrix.config-kind }}
         run: hack/ci/gha-multi-issuer-e2e.sh
 
       - name: Remove the minted token
@@ -83,7 +97,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: e2e-oidc-gha-logs
+          name: e2e-oidc-gha-logs-${{ matrix.config-kind }}
           path: |
             artifacts/**
           if-no-files-found: ignore

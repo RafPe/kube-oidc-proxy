@@ -27,7 +27,30 @@
 # allowed to make (get secrets) is denied with a Forbidden error that echoes the
 # impersonated username.
 #
+# GHA_CONFIG_KIND=proxy runs the same flow with the proxy kind
+# kube-oidc-proxy.rafpe.github.io/v1alpha1 (ADR-0001). The document has three
+# issuers on the GitHub Actions issuer URL, each with its own name and
+# audience, and the local Dex issuer:
+#
+#   gha-internal  audience GHA_AUDIENCE           pins repository_owner_id
+#   gha-vendor    audience GHA_AUDIENCE-vendor    pins repository_owner_id
+#   gha-foreign   audience GHA_AUDIENCE-foreign   pins repository_owner_id "0"
+#
+# The GitHub Actions issuers map the username with
+# authenticationConfiguration.issuer.name + ":" + claims.sub. Assertions in
+# this mode, with real GitHub Actions tokens minted per audience:
+#   * The GHA_AUDIENCE token impersonates "gha-internal:<sub>".
+#   * The vendor token impersonates "gha-vendor:<sub>".
+#   * The foreign token gets 401: the router selects gha-foreign, its claim
+#     rule refuses the token, and no other issuer verifies it.
+#   * A token with an audience that no issuer has gets 401, and the proxy
+#     logs authn.oidc.failed with reason=audience_unrouted.
+#   * The access records carry issuer_name gha-internal and gha-vendor.
+#   * Each issuer maps a different extra key, so the requests also prove the
+#     chart RBAC for the extra keys of issuers[].jwt.
+#
 # Environment:
+#   GHA_CONFIG_KIND upstream (default) or proxy. See above.
 #   GHA_TOKEN_FILE  Optional path to a file containing a GitHub Actions OIDC ID
 #                   token (minted in-workflow via core.getIDToken). When set, the
 #                   GHA-token assertions run; when unset, only issuer (a) config +
@@ -51,6 +74,11 @@ BCRYPT_HASH='$2a$10$Z5ozIZvkgAWpm1LX.c0V1.BRXkYYS4vNDcZSJQm5mcDdS8IRXJ0x2'
 GHA_ISSUER="https://token.actions.githubusercontent.com"
 GHA_AUDIENCE="${GHA_AUDIENCE:-kube-oidc-proxy-kind-test}"
 GHA_TOKEN_FILE="${GHA_TOKEN_FILE:-}"
+GHA_CONFIG_KIND="${GHA_CONFIG_KIND:-upstream}"
+case "${GHA_CONFIG_KIND}" in
+  upstream|proxy) ;;
+  *) echo "GHA_CONFIG_KIND must be upstream or proxy, not ${GHA_CONFIG_KIND}" >&2; exit 1 ;;
+esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -145,6 +173,45 @@ check_identity() { # <kubeconfig> <expected_user> <label>
   ok "authenticated + impersonated through the proxy as ${expected}"
 }
 
+# assert that the proxy refuses the token with 401.
+check_unauthorized() { # <kubeconfig> <label>
+  local kcfg="$1" label="$2" out
+  echo; echo "${BLUE}--- ${label}: expecting 401 ---${NC}"
+  if out="$(kubectl --kubeconfig "${kcfg}" get pods -A 2>&1)"; then
+    fail "${label}: 'get pods' succeeded, but the proxy must refuse the token:\n${out}"
+  fi
+  echo "${out}" | grep -q "Unauthorized" \
+    || fail "${label}: the refusal is not a 401:\n${out}"
+  ok "the proxy refused the token with 401"
+}
+
+# mint a GitHub Actions ID token for an audience. The runner OIDC endpoint
+# mints any audience. Without it, only GHA_TOKEN_FILE, minted for
+# GHA_AUDIENCE, is available.
+mint_gha_token() { # <audience>
+  local aud="$1" token=""
+  if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+    token="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+      "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${aud}" | jq -r '.value // empty')" || token=""
+  fi
+  if [ -z "${token}" ] && [ "${aud}" = "${GHA_AUDIENCE}" ]; then
+    token="$(cat "${GHA_TOKEN_FILE}")"
+  fi
+  [ -n "${token}" ] || fail "cannot mint a GitHub Actions token for audience ${aud}"
+  printf '%s' "${token}"
+}
+
+# assert that the proxy log has a JSON record that matches a jq filter.
+check_log() { # <jq filter> <label>
+  local filter="$1" label="$2"
+  # Read every proxy pod: the port-forward and the log can select other pods.
+  kubectl --context "${CTX}" -n "${PROXY_NS}" logs --tail=-1 --prefix=false \
+    -l "app.kubernetes.io/instance=${PROXY_RELEASE}" \
+    | jq -cR "fromjson? | select(${filter})" | grep -q . \
+    || fail "${label}: no proxy log record matches ${filter}"
+  ok "${label}"
+}
+
 check_impersonation() { # <kubeconfig> <caller> <label>
   local kcfg="$1" caller="$2" label="$3" out
   echo; echo "${BLUE}--- ${label}: kubectl --as through the proxy as \"${caller}\" ---${NC}"
@@ -223,8 +290,69 @@ sed \
 kubectl --context "${CTX}" -n dex rollout status "deploy/${DEX_NAME}" --timeout=120s
 ok "local Dex is ready"
 
-log "Rendering multi-issuer AuthenticationConfiguration (GHA + local Dex)"
 CA_INDENTED="$(sed 's/^/            /' "${CA_CRT}")"
+if [ "${GHA_CONFIG_KIND}" = "proxy" ]; then
+log "Rendering the proxy-kind AuthenticationConfiguration (3 x GHA on one URL + local Dex)"
+# The owner of the repository that runs the workflow. Without a token, the
+# GitHub Actions assertions do not run, and any value loads.
+GHA_OWNER_ID=""
+if [ -n "${GHA_TOKEN_FILE}" ]; then
+  GHA_OWNER_ID="$(jwt_claim "$(cat "${GHA_TOKEN_FILE}")" repository_owner_id)"
+fi
+GHA_OWNER_ID="${GHA_OWNER_ID:-${GITHUB_REPOSITORY_OWNER_ID:-1}}"
+CA_INDENTED_PROXY="$(sed 's/^/              /' "${CA_CRT}")"
+gha_issuer() { # <name> <audience> <owner id> <extra key> <extra claim>
+  cat <<EOF
+  - name: $1
+    jwt:
+      issuer:
+        url: ${GHA_ISSUER}
+        audiences:
+          - $2
+      claimMappings:
+        username:
+          expression: 'authenticationConfiguration.issuer.name + ":" + claims.sub'
+        extra:
+          - key: $4
+            valueExpression: claims.$5
+      claimValidationRules:
+        - expression: 'claims.repository_owner_id == "$3"'
+          message: only the owner $3
+EOF
+}
+{
+  cat <<EOF
+apiVersion: kube-oidc-proxy.rafpe.github.io/v1alpha1
+kind: AuthenticationConfiguration
+issuers:
+EOF
+  gha_issuer gha-internal "${GHA_AUDIENCE}" "${GHA_OWNER_ID}" github.com/repository repository
+  gha_issuer gha-vendor "${GHA_AUDIENCE}-vendor" "${GHA_OWNER_ID}" github.com/ref ref
+  gha_issuer gha-foreign "${GHA_AUDIENCE}-foreign" 0 github.com/workflow workflow
+  cat <<EOF
+  - name: dex-local
+    jwt:
+      issuer:
+        url: https://${DEX_NAME}.dex.svc.cluster.local:5556/dex
+        audiences:
+          - demo
+        certificateAuthority: |
+${CA_INDENTED_PROXY}
+      claimMappings:
+        username:
+          claim: email
+          prefix: "oidc-local:"
+        groups:
+          claim: groups
+          prefix: "oidc-local:"
+        extra:
+          - key: example.com/email
+            valueExpression: claims.email
+EOF
+} >"${GEN}/authentication-config.yaml"
+ok "authentication-config.yaml rendered (proxy kind, owner ${GHA_OWNER_ID})"
+else
+log "Rendering multi-issuer AuthenticationConfiguration (GHA + local Dex)"
 cat >"${GEN}/authentication-config.yaml" <<EOF
 apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
@@ -262,9 +390,15 @@ ${CA_INDENTED}
           valueExpression: claims.email
 EOF
 ok "authentication-config.yaml rendered (GHA issuer has no certificateAuthority; both issuers map an extra)"
+fi
 
 log "Installing kube-oidc-proxy via Helm (multi-issuer, readinessRequireAllIssuers)"
-helm --kube-context "${CTX}" install "${PROXY_RELEASE}" "${CHART}" \
+# The proxy mode reads the DEBUG record authn.oidc.failed, so it sets --v=1.
+HELM_EXTRA=()
+if [ "${GHA_CONFIG_KIND}" = "proxy" ]; then
+  HELM_EXTRA+=(--set-string logging.verbosity=1)
+fi
+helm --kube-context "${CTX}" install "${PROXY_RELEASE}" "${CHART}" ${HELM_EXTRA[@]+"${HELM_EXTRA[@]}"} \
   --namespace "${PROXY_NS}" --create-namespace \
   --set image.repository=kube-oidc-proxy \
   --set image.tag=gha-e2e \
@@ -272,7 +406,7 @@ helm --kube-context "${CTX}" install "${PROXY_RELEASE}" "${CHART}" \
   --set readinessRequireAllIssuers=true \
   --set-file authenticationConfig.content="${GEN}/authentication-config.yaml" \
   --wait --timeout 180s >/dev/null
-ok "proxy Ready -> BOTH issuers initialised (real GitHub Actions JWKS fetched)"
+ok "proxy Ready -> every issuer initialised (real GitHub Actions JWKS fetched)"
 
 log "Applying RBAC (view) for the impersonated identities"
 kubectl --context "${CTX}" create clusterrolebinding gha-e2e-local-view \
@@ -310,10 +444,18 @@ if [ -n "${GHA_TOKEN_FILE}" ]; then
   GHA_SUB="$(jwt_claim "${GHA_TOKEN}" sub)"
   [ -n "${GHA_SUB}" ] || fail "could not decode 'sub' from the GitHub Actions token"
   log "GitHub Actions token sub=${GHA_SUB}"
-  kubectl --context "${CTX}" create clusterrolebinding gha-e2e-github-view \
-    --clusterrole=view --user="gha:${GHA_SUB}" >/dev/null
-  kubectl --context "${CTX}" create clusterrolebinding gha-e2e-github-impersonate \
-    --clusterrole=gha-e2e-impersonate-ci-viewer --user="gha:${GHA_SUB}" >/dev/null
+  if [ "${GHA_CONFIG_KIND}" = "proxy" ]; then
+    GHA_USERS=("gha-internal:${GHA_SUB}" "gha-vendor:${GHA_SUB}")
+  else
+    GHA_USERS=("gha:${GHA_SUB}")
+  fi
+  for u in "${GHA_USERS[@]}"; do
+    n="$(printf '%s' "${u%%:*}")"
+    kubectl --context "${CTX}" create clusterrolebinding "gha-e2e-${n}-view" \
+      --clusterrole=view --user="${u}" >/dev/null
+    kubectl --context "${CTX}" create clusterrolebinding "gha-e2e-${n}-impersonate" \
+      --clusterrole=gha-e2e-impersonate-ci-viewer --user="${u}" >/dev/null
+  done
 fi
 ok "RBAC applied"
 
@@ -337,18 +479,48 @@ check_impersonation "${GEN}/kubeconfig-local.yaml" "oidc-local:${DEX_USER}" "Loc
 
 # ---- Assertion 2 (CI only): the real GitHub Actions token authenticates,
 # with its own extra (userextras/github.com/repository) and --as.
-if [ -n "${GHA_TOKEN_FILE}" ]; then
+if [ -n "${GHA_TOKEN_FILE}" ] && [ "${GHA_CONFIG_KIND}" = "upstream" ]; then
   log "Authenticating the real GitHub Actions token through the proxy"
   write_kubeconfig "${GHA_TOKEN}" "${GEN}/kubeconfig-gha.yaml"
   check_identity "${GEN}/kubeconfig-gha.yaml" "gha:${GHA_SUB}" "GitHub Actions issuer"
   check_impersonation "${GEN}/kubeconfig-gha.yaml" "gha:${GHA_SUB}" "GitHub Actions issuer"
 fi
 
+# ---- Assertion 3 (CI only, proxy kind): three issuers on one issuer URL.
+# Each token is minted at point of use for its own audience.
+if [ -n "${GHA_TOKEN_FILE}" ] && [ "${GHA_CONFIG_KIND}" = "proxy" ]; then
+  log "Routing real GitHub Actions tokens between issuers of one issuer URL"
+  write_kubeconfig "$(mint_gha_token "${GHA_AUDIENCE}")" "${GEN}/kubeconfig-gha-internal.yaml"
+  check_identity "${GEN}/kubeconfig-gha-internal.yaml" "gha-internal:${GHA_SUB}" "Issuer gha-internal"
+  check_impersonation "${GEN}/kubeconfig-gha-internal.yaml" "gha-internal:${GHA_SUB}" "Issuer gha-internal"
+
+  write_kubeconfig "$(mint_gha_token "${GHA_AUDIENCE}-vendor")" "${GEN}/kubeconfig-gha-vendor.yaml"
+  check_identity "${GEN}/kubeconfig-gha-vendor.yaml" "gha-vendor:${GHA_SUB}" "Issuer gha-vendor"
+
+  write_kubeconfig "$(mint_gha_token "${GHA_AUDIENCE}-foreign")" "${GEN}/kubeconfig-gha-foreign.yaml"
+  check_unauthorized "${GEN}/kubeconfig-gha-foreign.yaml" "Issuer gha-foreign, which pins another owner"
+
+  write_kubeconfig "$(mint_gha_token "${GHA_AUDIENCE}-unrouted")" "${GEN}/kubeconfig-gha-unrouted.yaml"
+  check_unauthorized "${GEN}/kubeconfig-gha-unrouted.yaml" "An audience that no issuer has"
+
+  echo; echo "${BLUE}--- proxy log records ---${NC}"
+  check_log '.event_type == "request.access.decided" and .issuer_name == "gha-internal" and .decision == "allow"' \
+    "an access record names issuer gha-internal"
+  check_log '.event_type == "request.access.decided" and .issuer_name == "gha-vendor" and .decision == "allow"' \
+    "an access record names issuer gha-vendor"
+  check_log '.event_type == "authn.oidc.failed" and .reason == "audience_unrouted"' \
+    "authn.oidc.failed carries reason=audience_unrouted"
+fi
+
 stop_pf
 echo
 echo "${GREEN}SUCCESS:${NC} multi-issuer proxy verified."
-if [ -n "${GHA_TOKEN_FILE}" ]; then
+if [ -n "${GHA_TOKEN_FILE}" ] && [ "${GHA_CONFIG_KIND}" = "upstream" ]; then
   echo "  - real GitHub Actions OIDC token impersonated as gha:${GHA_SUB}, with extra github.com/repository"
+fi
+if [ -n "${GHA_TOKEN_FILE}" ] && [ "${GHA_CONFIG_KIND}" = "proxy" ]; then
+  echo "  - one GitHub Actions issuer URL, three issuers: gha-internal:${GHA_SUB} and gha-vendor:${GHA_SUB} accepted,"
+  echo "    gha-foreign refused by its claim rule, an unknown audience refused as audience_unrouted"
 fi
 echo "  - local Dex token impersonated as oidc-local:${DEX_USER}, with extra example.com/email"
 echo "  - kubectl --as=ci-viewer allowed for both, --as=nobody refused by the proxy"
