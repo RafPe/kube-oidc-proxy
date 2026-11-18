@@ -186,8 +186,8 @@ algorithm mapping, the existing `signingAlgs: [RS256]` default still applies.
 Kubernetes injects each selected key through `secretKeyRef` into the matching
 `OIDC_*` environment variable; the Pod's arguments expand those variables into
 `--oidc-*` flags. This is chart wiring: the binary does not automatically read
-`OIDC_*` variables outside this Pod specification. Generic `extraEnv` and
-`envFrom` are not chart options.
+`OIDC_*` variables outside this Pod specification, and `extraEnv` refuses those
+names. `envFrom` is not a chart option.
 
 The chart does not create, read, or update the external Secret. It still creates
 its configuration Secret for inline values such as signing algorithms and CA
@@ -311,8 +311,29 @@ no `$job` or `$instance` variables and no job/instance matchers.
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `extraArgs` | map | `{}` | Extra CLI flags passed as `--key=value`, for anything without a value of its own, such as the audit flags ([auditing](../../docs/auditing.md#enabling-it-with-the-chart)). Rendered last, so an entry here wins over a flag the chart generates. `metrics-bind-address` is the one exception: when either `metrics.enabled` or `metrics.serviceMonitor.enabled` is true it fails the render, because the container port, the metrics Service and the monitors all follow `metrics.port` and would no longer point at the listener. Set `metrics.port` or `metrics.bindAddress` instead. With both switches false, `extraArgs.metrics-bind-address` remains available for manually managed listeners. |
+| `extraEnv` | list | `[]` | Extra container environment variables, as Kubernetes `EnvVar` entries (`value` or `valueFrom`), appended after the ones the chart generates. For example `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` when the issuer is reached through an outbound proxy. Any `OIDC_*` name fails the render: those names belong to the chart, set them through `oidc.*`. A value that is not a list also fails. |
 | `extraVolumeMounts` | list | `{}` | Extra container volumeMounts. |
 | `extraVolumes` | list | `{}` | Extra pod volumes. |
+
+### Outbound proxy (`extraEnv`)
+
+The proxy binary reads `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` for all of its
+outbound clients. That includes the Kubernetes API server client used for the
+reverse-proxied requests, TokenReview and SubjectAccessReview. In the cluster
+that client connects to the `kubernetes` Service by IP address, not by a `.svc`
+name, so `NO_PROXY` must include the API server address. A CIDR such as
+`10.0.0.0/8` only covers it when the Service CIDR falls inside it (the EKS
+default, for example, is `172.20.0.0/16`). Kubernetes expands
+`$(KUBERNETES_SERVICE_HOST)` in an env value, so this works with any Service
+CIDR:
+
+```yaml
+extraEnv:
+  - name: HTTPS_PROXY
+    value: http://proxy.example.com:3128
+  - name: NO_PROXY
+    value: $(KUBERNETES_SERVICE_HOST),.svc,.cluster.local
+```
 
 ### Ingress
 

@@ -387,6 +387,23 @@ extraArgs: {}
   #audit-log-path: /audit-log
   #audit-policy-file: /audit/audit.yaml
 
+# Extra environment variables added to the proxy container, as a list of
+# Kubernetes EnvVar entries (value or valueFrom). Useful for HTTP_PROXY,
+# HTTPS_PROXY and NO_PROXY when the proxy reaches the OIDC issuer through an
+# outbound proxy. OIDC_* names belong to the chart and are refused; set them
+# through oidc.*. A map instead of a list fails the render.
+# HTTPS_PROXY also applies to the Kubernetes API server client (proxied
+# requests, TokenReview, SubjectAccessReview), which connects to the
+# `kubernetes` Service by IP, so NO_PROXY must include the API server address.
+# A CIDR like 10.0.0.0/8 only covers it if the Service CIDR is inside it (the
+# EKS default is 172.20.0.0/16); Kubernetes expands $(KUBERNETES_SERVICE_HOST)
+# in env values, which works for any Service CIDR.
+extraEnv: []
+  #- name: HTTPS_PROXY
+  #  value: http://proxy.example.com:3128
+  #- name: NO_PROXY
+  #  value: $(KUBERNETES_SERVICE_HOST),.svc,.cluster.local
+
 # Extra volumeMounts added to the proxy container.
 extraVolumeMounts: {}
   #- name: audit
