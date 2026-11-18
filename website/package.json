@@ -16,19 +16,19 @@
     "lighthouse": "node scripts/lighthouse.mjs"
   },
   "dependencies": {
-    "@astrojs/markdown-remark": "7.3.2",
-    "@astrojs/starlight": "0.42.6",
+    "@astrojs/markdown-remark": "7.3.7",
+    "@astrojs/starlight": "0.42.10",
     "@fontsource-variable/bricolage-grotesque": "5.3.0",
     "@fontsource/ibm-plex-mono": "5.3.0",
     "@fontsource/ibm-plex-sans": "5.3.0",
-    "astro": "7.3.6",
-    "astro-mermaid": "2.1.0",
-    "mermaid": "11.17.2",
+    "astro": "7.4.12",
+    "astro-mermaid": "2.2.0",
+    "mermaid": "12.3.0",
     "sharp": "0.35.5",
     "starlight-github-alerts": "0.5.0"
   },
   "devDependencies": {
-    "puppeteer-core": "25.15.0"
+    "puppeteer-core": "25.17.0"
   },
   "overrides": {
     "katex": "0.18.11",

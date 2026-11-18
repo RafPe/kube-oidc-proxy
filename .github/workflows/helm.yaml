@@ -8,6 +8,8 @@ on:
       - 'chart/kube-oidc-proxy/**'
       - '.github/workflows/helm.yaml'
       - 'hack/verify-chart-logging.sh'
+      - 'hack/verify-chart-env.sh'
+      - 'hack/verify-chart-schema.sh'
       - 'hack/verify-chart-rbac.sh'
       - 'hack/verify-chart-namespace.sh'
       - 'hack/verify-chart-metrics.sh'
@@ -18,6 +20,8 @@ on:
       - 'chart/kube-oidc-proxy/**'
       - '.github/workflows/helm.yaml'
       - 'hack/verify-chart-logging.sh'
+      - 'hack/verify-chart-env.sh'
+      - 'hack/verify-chart-schema.sh'
       - 'hack/verify-chart-rbac.sh'
       - 'hack/verify-chart-namespace.sh'
       - 'hack/verify-chart-metrics.sh'
@@ -52,7 +56,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Set up Helm
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
 
       - name: helm lint (single-issuer fixture)
         run: helm lint "$CHART" -f "$CHART/ci/single-issuer-values.yaml"
@@ -106,6 +110,12 @@ jobs:
 
       - name: logging values render as proxy flags
         run: bash hack/verify-chart-logging.sh
+
+      - name: extraEnv renders into the proxy container
+        run: bash hack/verify-chart-env.sh
+
+      - name: rendered manifests pass the strict Kubernetes schema
+        run: bash hack/verify-chart-schema.sh
 
       - name: ClusterRole grants every declared userextras key
         run: bash hack/verify-chart-rbac.sh
