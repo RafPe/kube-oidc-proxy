@@ -4,4 +4,4 @@ This directory contains the architecture decision records (ADRs) of kube-oidc-pr
 
 | ADR | Title | Status |
 |---|---|---|
-| [0001](0001-route-same-issuer-entries-by-audience.md) | Route JWT entries that share an issuer URL by audience | proposed |
+| [0001](0001-route-same-issuer-entries-by-audience.md) | Route JWT entries that share an issuer URL by audience | accepted |

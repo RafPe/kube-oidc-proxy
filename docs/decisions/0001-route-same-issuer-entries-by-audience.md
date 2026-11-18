@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-17
 decision-makers: Rafal P
 ---
@@ -96,6 +96,8 @@ Rules for the kind:
 4. Refuse two entries with the same issuer URL when their `audiences` share a value.
 5. Refuse two entries with the same non-empty `discoveryURL`.
 6. Name both entries in each error, as `issuers[i]` and `issuers[j]`. Do not put the full issuer URL in the error.
+
+The proxy does not refuse an entry without `claimValidationRules`, also when the entry shares its issuer URL with another entry. The operator decides how to pin each trust group. The docs show a warning for this case. See the consequence about `aud` below.
 
 ### Request routing
 
@@ -210,6 +212,7 @@ GitHub Enterprise Cloud can add the enterprise slug to the issuer URL. This was 
 
 ## More Information
 
+* 2026-11-18: Status changed to `accepted`. The maintainer decided that the proxy does not refuse same-URL entries without `claimValidationRules`. `docs/multi-issuer.md` and `docs/integrations.md` show a warning instead.
 * 2026-11-17: The changelog fragments are in PR 2 (the new kind) and PR 3 (routing by audience). Those two PRs carry `release/minor`.
 
 * Upstream union: `k8s.io/apiserver/pkg/authentication/token/union`, `NewFailOnError`.
