@@ -173,15 +173,14 @@ check_identity() { # <kubeconfig> <expected_user> <label>
   ok "authenticated + impersonated through the proxy as ${expected}"
 }
 
-# assert that the proxy refuses the token with 401.
-check_unauthorized() { # <kubeconfig> <label>
-  local kcfg="$1" label="$2" out
+# assert that the proxy refuses the token with HTTP 401. The check reads the
+# status code, because the kubectl error text differs between versions.
+check_unauthorized() { # <token> <label>
+  local token="$1" label="$2" code
   echo; echo "${BLUE}--- ${label}: expecting 401 ---${NC}"
-  if out="$(kubectl --kubeconfig "${kcfg}" get pods -A 2>&1)"; then
-    fail "${label}: 'get pods' succeeded, but the proxy must refuse the token:\n${out}"
-  fi
-  echo "${out}" | grep -q "Unauthorized" \
-    || fail "${label}: the refusal is not a 401:\n${out}"
+  code="$(curl -sk -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer ${token}" https://127.0.0.1:8443/api/v1/pods)"
+  [ "${code}" = "401" ] || fail "${label}: the proxy answered ${code}, not 401"
   ok "the proxy refused the token with 401"
 }
 
@@ -497,11 +496,8 @@ if [ -n "${GHA_TOKEN_FILE}" ] && [ "${GHA_CONFIG_KIND}" = "proxy" ]; then
   write_kubeconfig "$(mint_gha_token "${GHA_AUDIENCE}-vendor")" "${GEN}/kubeconfig-gha-vendor.yaml"
   check_identity "${GEN}/kubeconfig-gha-vendor.yaml" "gha-vendor:${GHA_SUB}" "Issuer gha-vendor"
 
-  write_kubeconfig "$(mint_gha_token "${GHA_AUDIENCE}-foreign")" "${GEN}/kubeconfig-gha-foreign.yaml"
-  check_unauthorized "${GEN}/kubeconfig-gha-foreign.yaml" "Issuer gha-foreign, which pins another owner"
-
-  write_kubeconfig "$(mint_gha_token "${GHA_AUDIENCE}-unrouted")" "${GEN}/kubeconfig-gha-unrouted.yaml"
-  check_unauthorized "${GEN}/kubeconfig-gha-unrouted.yaml" "An audience that no issuer has"
+  check_unauthorized "$(mint_gha_token "${GHA_AUDIENCE}-foreign")" "Issuer gha-foreign, which pins another owner"
+  check_unauthorized "$(mint_gha_token "${GHA_AUDIENCE}-unrouted")" "An audience that no issuer has"
 
   echo; echo "${BLUE}--- proxy log records ---${NC}"
   check_log '.event_type == "request.access.decided" and .issuer_name == "gha-internal" and .decision == "allow"' \
