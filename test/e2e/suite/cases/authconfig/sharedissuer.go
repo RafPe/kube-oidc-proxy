@@ -29,8 +29,9 @@ const (
 )
 
 // Two trust groups on one issuer URL, as ADR-0001 describes. Each group has
-// its own audience and username prefix. Only the internal group has RBAC
-// access to pods.
+// its own audience. The username of each group starts with the name of its
+// issuer, from authenticationConfiguration.issuer.name. Only the internal
+// group has RBAC access to pods.
 var _ = framework.CasesDescribe("AuthenticationConfiguration of the proxy kind with a shared issuer URL", Ordered, ContinueOnFailure, Label("shard-a"), func() {
 	f := framework.NewOrderedDefaultFramework("sharedissuer")
 
@@ -41,8 +42,8 @@ var _ = framework.CasesDescribe("AuthenticationConfiguration of the proxy kind w
 		cfgYAML, err := yaml.Marshal(v1alpha1.AuthenticationConfiguration{
 			TypeMeta: metav1.TypeMeta{APIVersion: v1alpha1.APIVersion, Kind: v1alpha1.Kind},
 			Issuers: []v1alpha1.Issuer{
-				{Name: "internal", JWT: prefixedJWTAuthenticator(issuerURL, caBundle, audienceInternal, "internal:")},
-				{Name: "vendor", JWT: prefixedJWTAuthenticator(issuerURL, caBundle, audienceVendor, "vendor:")},
+				{Name: "internal", JWT: namedJWTAuthenticator(issuerURL, caBundle, audienceInternal)},
+				{Name: "vendor", JWT: namedJWTAuthenticator(issuerURL, caBundle, audienceVendor)},
 			},
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -97,10 +98,18 @@ var _ = framework.CasesDescribe("AuthenticationConfiguration of the proxy kind w
 	})
 })
 
-// prefixedJWTAuthenticator builds one jwt entry with one audience and the
-// given username prefix.
-func prefixedJWTAuthenticator(issuerURL string, caBundle []byte, audience, usernamePrefix string) apiserverv1.JWTAuthenticator {
+// namedJWTAuthenticator builds one jwt entry with one audience. The username
+// is the issuer name, a colon and the email claim. Upstream validation
+// requires a reference to email_verified when an expression reads the email
+// claim. The token of the suite has no email_verified claim.
+func namedJWTAuthenticator(issuerURL string, caBundle []byte, audience string) apiserverv1.JWTAuthenticator {
 	jwt := jwtAuthenticator(issuerURL, caBundle, audience)
-	jwt.ClaimMappings.Username.Prefix = &usernamePrefix
+	jwt.ClaimMappings.Username = apiserverv1.PrefixedClaimOrExpression{
+		Expression: `authenticationConfiguration.issuer.name + ":" + claims.email`,
+	}
+	jwt.ClaimValidationRules = append(jwt.ClaimValidationRules, apiserverv1.ClaimValidationRule{
+		Expression: `claims.?email_verified.orValue(true) == true`,
+		Message:    "email_verified must be true",
+	})
 	return jwt
 }
