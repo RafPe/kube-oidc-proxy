@@ -474,7 +474,7 @@ issuers:
       url: https://accounts.google.com
       audiences: ["kube-oidc-proxy-internal"]
     claimMappings:
-      username: {expression: '"google-internal:" + claims.email'}
+      username: {expression: 'authenticationConfiguration.issuer.name + ":" + claims.email'}
     claimValidationRules:
     - expression: 'claims.email_verified == true'
       message: "unverified email claim"
@@ -486,13 +486,18 @@ issuers:
       url: https://accounts.google.com
       audiences: ["kube-oidc-proxy-vendor"]
     claimMappings:
-      username: {expression: '"google-vendor:" + claims.email'}
+      username: {expression: 'authenticationConfiguration.issuer.name + ":" + claims.email'}
     claimValidationRules:
     - expression: 'claims.email_verified == true'
       message: "unverified email claim"
     - expression: 'claims.email.endsWith("@vendor-project.iam.gserviceaccount.com")'
       message: "only the vendor project"
 ```
+
+Both issuers use one username expression. `authenticationConfiguration.issuer.name`
+is the `name` of each issuer, so the usernames start with `google-internal:`
+and `google-vendor:`. [The issuer name in CEL](./multi-issuer.md#the-issuer-name-in-cel)
+gives the rules.
 
 > [!WARNING]
 > The audience selects the issuer, but it does not prove the trust group. A

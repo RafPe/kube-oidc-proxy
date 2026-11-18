@@ -78,7 +78,7 @@ issuers:
       audiences: ["kube-oidc-proxy-internal"]
     claimMappings:
       username:
-        expression: '"gha-internal:" + claims.repository + ":" + claims.ref'
+        expression: 'authenticationConfiguration.issuer.name + ":" + claims.repository + ":" + claims.ref'
     claimValidationRules:
     - expression: 'claims.repository_owner_id == "1234567"'
       message: "only the internal organization"
@@ -89,7 +89,7 @@ issuers:
       audiences: ["kube-oidc-proxy-vendor"]
     claimMappings:
       username:
-        expression: '"gha-vendor:" + claims.repository + ":" + claims.ref'
+        expression: 'authenticationConfiguration.issuer.name + ":" + claims.repository + ":" + claims.ref'
     claimValidationRules:
     - expression: 'claims.repository_owner_id == "7654321"'
       message: "only the vendor organization"
@@ -102,6 +102,28 @@ Each item of `issuers` has these fields:
   characters). It must be unique in the document.
 - `jwt`: one entry of the upstream `jwt` list, in the
   `apiserver.config.k8s.io/v1` form.
+
+### The issuer name in CEL
+
+The CEL expressions of an issuer can use `authenticationConfiguration.issuer.name`.
+Its value is the `name` of that issuer. In the example above, the two
+issuers have the same username expression. The usernames start with
+`gha-internal:` and `gha-vendor:`.
+
+- At startup, the proxy replaces each reference with a string literal of the
+  name. Then the upstream validation runs. The same text inside a string
+  literal stays.
+- The variable works in each expression field: `claimValidationRules`,
+  `claimMappings` (`username`, `groups`, `uid` and `extra`) and
+  `userValidationRules`.
+- `prefix` is not CEL, so the variable does not work there. To put the name
+  in the username, use the expression form of the mapping.
+- `issuer.name` is the only field. `authenticationConfiguration.issuer.url`
+  and each other use of `authenticationConfiguration` stop the startup. The
+  error gives the path of the expression, for example
+  `issuers[0].jwt.claimMappings.username.expression`.
+- The upstream kind and kube-apiserver do not define the variable. There, the
+  expression fails with `undeclared reference`.
 
 The proxy refuses to start in these conditions:
 
@@ -157,7 +179,8 @@ them freely in a single configuration, subject to the prefix rule below.
 All issuers feed the same RBAC namespace. Without distinct prefixes, issuer
 B could mint a `sub` or group value that collides with an identity you bound
 for issuer A. Give every issuer a unique `prefix:` (or bake a unique prefix
-into every CEL expression) and never use unprefixed usernames (`prefix: ""`)
+into every CEL expression, for example with
+`authenticationConfiguration.issuer.name` in the proxy kind) and never use unprefixed usernames (`prefix: ""`)
 in a multi-issuer setup. The prefix is prepended verbatim: `prefix: "-"` is
 not an opt-out, it makes every username start with `-`.
 
