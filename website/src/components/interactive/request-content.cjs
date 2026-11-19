@@ -417,7 +417,7 @@ module.exports = {
     },
     "oidc": {
       "label": "OIDC → Kubernetes",
-      "note": "A valid OIDC token maps to alice@example.com. This example assumes that Kubernetes allows the user to list pods.",
+      "note": "A valid OIDC token maps to oidc-a:alice@example.com. This example assumes that Kubernetes allows the user to list pods.",
       "result": "Example: 200 OK"
     },
     "impersonation": {
