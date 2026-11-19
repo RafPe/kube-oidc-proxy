@@ -4,10 +4,11 @@ name: Claude Review
 #   - Release PRs (any label starting with "autorelease") are approved without
 #     review after verifying the diff carries only generated changelog and
 #     fragment changes (.github/scripts/approve-release-pr.sh).
-#   - Commenting "@claude review" on any other PR runs a Claude code review
-#     and approves only when the review finds no blocking issues. The review
-#     reads the PR as fetched commits and a copy of the PR head tree, area by
-#     area, so a large PR is reviewed in full rather than skipped. A second
+#   - Commenting "@claude review" on any other PR with the label
+#     review/claude-allowed runs a Claude code review and approves only when
+#     the review finds no blocking issues. The review reads the PR as fetched
+#     commits and a copy of the PR head tree, area by area, so a large PR is
+#     reviewed in full rather than skipped. A second
 #     "@claude review" continues from the previous one: it re-checks the
 #     earlier findings against the new commits and reviews only the new work.
 on:
@@ -71,13 +72,18 @@ jobs:
           fi
           .github/scripts/approve-release-pr.sh "${pr}"
 
+  # A review runs only on a PR with the label review/claude-allowed. Only a
+  # user with triage access can set a label. A release PR keeps its own path
+  # without the label.
   claude-review:
     name: "review:claude"
     if: |
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request &&
       contains(github.event.comment.body, '@claude review') &&
-      github.event.comment.author_association == 'OWNER'
+      github.event.comment.author_association == 'OWNER' &&
+      (contains(github.event.issue.labels.*.name, 'review/claude-allowed') ||
+       contains(join(github.event.issue.labels.*.name, ','), 'autorelease'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # The review reads untrusted PR content. GITHUB_TOKEN of this job cannot
@@ -499,6 +505,31 @@ jobs:
           ${what} and posted no summary comment, so nothing from it should be taken as a verdict. See the [run](${RUN_URL}). Comment \`@claude review\` again to run a full review.
           EOF
           )"
+
+  # The same request on a PR without the label. Reply, so that the request
+  # does not stop without a sign.
+  claude-review-label-missing:
+    name: "review:label-missing"
+    if: |
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '@claude review') &&
+      github.event.comment.author_association == 'OWNER' &&
+      !contains(github.event.issue.labels.*.name, 'review/claude-allowed') &&
+      !contains(join(github.event.issue.labels.*.name, ','), 'autorelease')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Ask for the label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.issue.number }}
+        run: |
+          gh pr comment "${PR}" -R "${GITHUB_REPOSITORY}" \
+            --body 'The review did not start. Add the label `review/claude-allowed` to this PR, then comment `@claude review` again.'
 
   # A separate job, so that nothing the review step writes to the runner, for
   # example GITHUB_ENV, reaches the step that holds an approving token. It
