@@ -224,7 +224,14 @@ jobs:
         if: ${{ !contains(join(github.event.issue.labels.*.name, ','), 'autorelease') }}
         uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Workload identity federation: the action exchanges the GitHub
+          # OIDC token of this job for a Claude API token. No static key is
+          # stored. The rule in the Anthropic organization must accept the
+          # token of this repository on the default branch.
+          anthropic_federation_rule_id: ${{ secrets.ANTHROPIC_FEDERATION_RULE_ID }}
+          anthropic_organization_id: ${{ secrets.ANTHROPIC_ORGANIZATION_ID }}
+          anthropic_service_account_id: ${{ secrets.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          anthropic_workspace_id: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.issue.number }}
@@ -307,6 +314,28 @@ jobs:
             --disallowedTools "Task,Agent"
             --max-turns 200
             --json-schema '{"type":"object","properties":{"approve":{"type":"boolean"},"summary":{"type":"string"}},"required":["approve","summary"]}'
+
+      # The action logs only is_error for a failed API call. The execution
+      # file keeps the HTTP status and the error text, for example a 429
+      # usage limit or a refused token exchange.
+      - name: Show the API error of a failed review
+        if: ${{ failure() && steps.review.outcome == 'failure' }}
+        env:
+          EXECUTION_FILE: ${{ steps.review.outputs.execution_file }}
+        run: |
+          set -euo pipefail
+          if [ -z "${EXECUTION_FILE}" ] || [ ! -s "${EXECUTION_FILE}" ]; then
+            echo "::warning::the review step wrote no execution file"
+            exit 0
+          fi
+          # Print only the start of the error text, to keep the log short.
+          jq -r '
+            [.[] | select(.type == "result")] | last // {} |
+            "api_error_status=\(.api_error_status // "none")",
+            "result=\((.result // "none") | tostring | .[0:300])"
+          ' "${EXECUTION_FILE}" | while IFS= read -r line; do
+            echo "::error title=Claude API::${line}"
+          done
 
       # The summary is the review's own job, but a run that errors, hits the
       # job timeout or is cancelled never gets there. Leave a plain notice
