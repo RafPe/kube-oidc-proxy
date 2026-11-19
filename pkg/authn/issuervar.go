@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/google/cel-go/common"
 	"github.com/google/cel-go/common/ast"
@@ -24,8 +25,9 @@ const issuerVariableRoot = "authenticationConfiguration"
 // issuerNameReference matches one reference at the start of the text. CEL
 // permits whitespace around a dot. A closing parenthesis before a dot closes
 // a parenthesis that opens before the root identifier, for example
-// (authenticationConfiguration.issuer).name.
-var issuerNameReference = regexp.MustCompile(`^` + issuerVariableRoot + `[\s)]*\.\s*issuer[\s)]*\.\s*name`)
+// (authenticationConfiguration.issuer).name. A leading dot makes the
+// reference absolute.
+var issuerNameReference = regexp.MustCompile(`^(?:\.\s*)?` + issuerVariableRoot + `[\s)]*\.\s*issuer[\s)]*\.\s*name`)
 
 // expandIssuerVariables replaces each reference to IssuerNameVariable in the
 // CEL expressions of jwt with a string literal of name. The upstream CEL
@@ -91,7 +93,7 @@ func expandIssuerName(expr, name string) (string, error) {
 	ast.PreOrderVisit(tree.Expr(), ast.NewExprVisitor(func(e ast.Expr) {
 		switch e.Kind() {
 		case ast.IdentKind:
-			if e.AsIdent() == issuerVariableRoot {
+			if isIssuerVariableRoot(e.AsIdent()) {
 				roots = append(roots, e)
 			}
 		case ast.SelectKind:
@@ -111,7 +113,14 @@ func expandIssuerName(expr, name string) (string, error) {
 		if !ok {
 			return "", fmt.Errorf("cannot find %q in the expression", IssuerNameVariable)
 		}
-		starts = append(starts, int(r.Start))
+		start := int(r.Start)
+		if strings.HasPrefix(root.AsIdent(), ".") {
+			// The offset of an absolute identifier is after its leading dot.
+			if start = leadingDot(runes, start); start < 0 {
+				return "", fmt.Errorf("write %q without comments inside it", IssuerNameVariable)
+			}
+		}
+		starts = append(starts, start)
 	}
 
 	// Replace from the end, so that each start offset stays correct.
@@ -144,8 +153,28 @@ func issuerNameRoot(e ast.Expr) (ast.Expr, bool) {
 		return nil, false
 	}
 	root := issuer.Operand()
-	if root.AsIdent() != issuerVariableRoot {
+	if !isIssuerVariableRoot(root.AsIdent()) {
 		return nil, false
 	}
 	return root, true
+}
+
+// isIssuerVariableRoot reports whether id is the root identifier. The parser
+// keeps the leading dot of an absolute identifier, for example
+// .authenticationConfiguration.
+func isIssuerVariableRoot(id string) bool {
+	return strings.TrimPrefix(id, ".") == issuerVariableRoot
+}
+
+// leadingDot returns the offset of the dot before start, with only whitespace
+// between them. It returns -1 when no such dot exists.
+func leadingDot(runes []rune, start int) int {
+	i := start - 1
+	for i >= 0 && unicode.IsSpace(runes[i]) {
+		i--
+	}
+	if i < 0 || runes[i] != '.' {
+		return -1
+	}
+	return i
 }

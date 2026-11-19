@@ -88,6 +88,26 @@ func TestExpandIssuerName(t *testing.T) {
 			expr: `authenticationConfiguration.issuer.name + ":" + claims.?preferred_username.orValue(claims.sub)`,
 			want: `"gha-vendor" + ":" + claims.?preferred_username.orValue(claims.sub)`,
 		},
+		{
+			name: "an absolute reference is replaced",
+			expr: `.authenticationConfiguration.issuer.name + ":" + claims.sub`,
+			want: `"gha-vendor" + ":" + claims.sub`,
+		},
+		{
+			name: "an absolute reference with whitespace after the leading dot is replaced",
+			expr: `claims.sub + ":" + . authenticationConfiguration.issuer.name`,
+			want: `claims.sub + ":" + "gha-vendor"`,
+		},
+		{
+			name: "an absolute reference in parentheses is replaced",
+			expr: `(.authenticationConfiguration.issuer).name`,
+			want: `("gha-vendor")`,
+		},
+		{
+			name:    "an absolute root without the issuer name is an error",
+			expr:    `.authenticationConfiguration.issuer`,
+			wantErr: "is the only field of",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
