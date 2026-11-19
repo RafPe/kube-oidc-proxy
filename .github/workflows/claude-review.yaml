@@ -80,12 +80,22 @@ jobs:
       github.event.comment.author_association == 'OWNER'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # The review reads untrusted PR content. GITHUB_TOKEN of this job cannot
+    # approve: only the review:approve job has pull-requests: write. The
+    # review posts its comments with the token of the Claude GitHub App.
     permissions:
       contents: read
-      pull-requests: write
-      issues: write
+      pull-requests: read
+      issues: write # the notice of a review that left no summary
       actions: read # let Claude read CI results on the PR
       id-token: write
+    # The approve job reads these. The approve output is "true" only for a
+    # structured verdict with approve=true.
+    outputs:
+      approve: ${{ steps.review.outputs.structured_output != '' && fromJSON(steps.review.outputs.structured_output).approve == true }}
+      summary: ${{ steps.review.outputs.structured_output != '' && fromJSON(steps.review.outputs.structured_output).summary || '' }}
+      cross: ${{ steps.origin.outputs.cross }}
+      head: ${{ steps.endpoints.outputs.head }}
     steps:
       # issue_comment events check out the default branch, so both paths get
       # trusted repo content: the approve script for release PRs, the source
@@ -239,6 +249,29 @@ jobs:
           echo "previous=${prev}" >> "${GITHUB_OUTPUT}"
           echo "previous_file=${prev_file}" >> "${GITHUB_OUTPUT}"
 
+      # git show, git diff and git log accept --output=<file>, which can write
+      # to GITHUB_OUTPUT or GITHUB_ENV of the review step. A wrapper named git
+      # comes first on PATH for the later steps and refuses that option. The
+      # allowed tools match only commands that start with "git show", "git
+      # diff" or "git log", so an absolute path to the real git is refused.
+      - name: Install the git guard
+        if: ${{ !contains(join(github.event.issue.labels.*.name, ','), 'autorelease') }}
+        run: |
+          set -euo pipefail
+          real_git="$(command -v git)"
+          guard_dir="${RUNNER_TEMP}/git-guard"
+          mkdir -p "${guard_dir}"
+          printf '#!/bin/sh\nexec %q %q "$@"\n' \
+            "${GITHUB_WORKSPACE}/.github/scripts/git-guard.sh" "${real_git}" > "${guard_dir}/git"
+          chmod +x "${guard_dir}/git"
+          echo "${guard_dir}" >> "${GITHUB_PATH}"
+          # Prove the guard before the review starts.
+          if PATH="${guard_dir}:${PATH}" git log --output="${RUNNER_TEMP}/guard-probe" -1 >/dev/null 2>&1 \
+            || [ -e "${RUNNER_TEMP}/guard-probe" ]; then
+            echo "::error::the git guard did not refuse --output"
+            exit 1
+          fi
+
       - name: Run Claude review
         id: review
         if: ${{ !contains(join(github.event.issue.labels.*.name, ','), 'autorelease') }}
@@ -291,6 +324,19 @@ jobs:
               a stacked PR is another branch. Read surrounding code only where
               the change calls it, is called by it, or shares its data. Never
               pull the whole diff through one command.
+            - HEAD TREE has no agent configuration: `.claude/`, `CLAUDE.md`,
+              `CLAUDE.local.md` and `.mcp.json` are removed at every depth. If
+              the PR changes one of them, read it with
+              `git show pr/head:<path>`. Do not report it as deleted.
+            - Run each command on its own, from the working directory, where
+              the git commands find BASE, HEAD and pr/head. Do not use `cd`,
+              `;`, `&&`, `||` or pipes. The permission check refuses a
+              command in those forms. `git --output` is refused too.
+            - Post each comment with one `gh pr comment <PR> --body '<text>'`
+              call. Write the body in one single-quoted argument. No line of
+              the body may start with `#`: the permission check refuses that
+              command. Use bold text for headings, and put the review marker
+              as the first line exactly as stated below.
             - Re-review (PREVIOUS REVIEW HEAD is a commit): you are continuing
               your own earlier review, not starting over. Read PREVIOUS REVIEW
               FILE first: it holds your last summary and every inline thread
@@ -384,7 +430,9 @@ jobs:
           jq -r '
             [.[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use")]
             | "tool calls: \(length)",
-              (.[] | "  \(.name) \(.input.file_path // .input.command // .input.pattern // .input.path // "" | tostring | gsub("[\r\n]"; " ") | .[0:200])")
+              (.[] | "  \(.name) \(.input.file_path // .input.command
+                  // ((.input.pattern // "" | tostring) + (if .input.path then " in \(.input.path)" else "" end))
+                  | tostring | gsub("[\r\n]"; " ") | .[0:200])")
           ' "${EXECUTION_FILE}"
           jq -r '
             [.[] | select(.type == "result")] | last // {} | .permission_denials // []
@@ -432,19 +480,28 @@ jobs:
           EOF
           )"
 
+  # A separate job, so that nothing the review step writes to the runner, for
+  # example GITHUB_ENV, reaches the step that holds an approving token. It
+  # reads only the outputs of the review job. A failed or cancelled review
+  # job skips it.
+  claude-approve:
+    name: "review:approve"
+    needs: claude-review
+    if: |
+      needs.claude-review.outputs.approve == 'true' &&
+      needs.claude-review.outputs.cross == 'false' &&
+      needs.claude-review.outputs.head != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
       - name: Approve on clean review
-        if: |
-          !contains(join(github.event.issue.labels.*.name, ','), 'autorelease') &&
-          steps.origin.outputs.cross == 'false' &&
-          steps.review.outputs.structured_output != '' &&
-          fromJSON(steps.review.outputs.structured_output).approve == true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.issue.number }}
-          REVIEWED: ${{ steps.endpoints.outputs.head }}
-          # The output is empty after a failed review. Run 44498432420 then
-          # failed on this line with a template error.
-          SUMMARY: ${{ steps.review.outputs.structured_output != '' && fromJSON(steps.review.outputs.structured_output).summary || '' }}
+          REVIEWED: ${{ needs.claude-review.outputs.head }}
+          SUMMARY: ${{ needs.claude-review.outputs.summary }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -477,8 +534,8 @@ jobs:
 
           <sub>🤖 Approval submitted automatically because the review verdict was approve=true and the PR is not from a fork — <code>.github/workflows/claude-review.yaml</code></sub>
           EOF
-          } > approve-body.md
+          } > "${RUNNER_TEMP}/approve-body.md"
           # The REST call pins the approval to the reviewed commit; a later
           # push makes it stale instead of leaving it counting.
           gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/reviews" \
-            -f event=APPROVE -f commit_id="${REVIEWED}" -F body=@approve-body.md --silent
+            -f event=APPROVE -f commit_id="${REVIEWED}" -F body=@"${RUNNER_TEMP}/approve-body.md" --silent
