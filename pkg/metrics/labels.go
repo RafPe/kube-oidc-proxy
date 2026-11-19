@@ -242,6 +242,11 @@ const (
 	// headers have a shape the proxy refuses before asking anyone: a kind it
 	// does not know, or groups, uid or extras with no user to refine.
 	ReasonMalformedImpersonation Reason = "malformed_impersonation"
+
+	// ReasonAudienceUnrouted classifies a token whose iss has several issuers
+	// and whose aud selects none or more than one of them. ADR-0001 gives the
+	// rules.
+	ReasonAudienceUnrouted Reason = "audience_unrouted"
 )
 
 // reasons is the documented set, in catalogue order. ReasonNone is the
@@ -250,7 +255,7 @@ var reasons = []Reason{
 	ReasonNone, ReasonUnauthorized, ReasonReservedIdentity, ReasonNoUsernameClaim,
 	ReasonImpersonationDenied, ReasonTooManyImpersonationValues, ReasonClientCanceled,
 	ReasonInternalError, ReasonUpstreamError, ReasonAuthenticationDependencyError,
-	ReasonAuthorizationDependencyError, ReasonMalformedImpersonation,
+	ReasonAuthorizationDependencyError, ReasonMalformedImpersonation, ReasonAudienceUnrouted,
 }
 
 func projectReason(r Reason) string {

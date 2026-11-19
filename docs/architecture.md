@@ -13,7 +13,7 @@ on a managed control plane (EKS, GKE, AKS, ...).
 
 - [Request flow](#request-flow)
 - [The auth → impersonate handler chain](#the-auth--impersonate-handler-chain)
-- [Multi-issuer union authenticator](#multi-issuer-union-authenticator)
+- [Multi-issuer router](#multi-issuer-router)
 - [Readiness semantics](#readiness-semantics)
 - [Diagrams](#diagrams)
   - [System context (C4 level 1)](#system-context-c4-level-1)
@@ -83,19 +83,29 @@ Every request passes through the same pipeline:
 4. **Proxy.** The request is streamed to the API server and the response streamed
    back.
 
-## Multi-issuer union authenticator
+## Multi-issuer router
 
 Single-issuer mode uses the familiar `--oidc-*` flags and trusts exactly one
 issuer. Multi-issuer mode (`--authentication-config`) loads a Kubernetes
 [`AuthenticationConfiguration`](./multi-issuer.md) that lists several JWT
-issuers, each with its own audiences and claim mappings.
+issuers, each with its own audiences and claim mappings. It also loads the
+proxy kind `kube-oidc-proxy.rafpe.github.io/v1alpha1`, which gives each issuer
+a name and accepts several issuers for one issuer URL.
 
-The proxy builds one authenticator per issuer and combines them into a **union
-authenticator**: an incoming token is offered to each issuer's authenticator in
-turn, and the first one that accepts it wins. This is what lets a single proxy
-accept, for example, tokens from your corporate IdP **and** from GitHub Actions'
-OIDC issuer at the same time. Per-issuer username/group **prefixes** keep
-identities from different issuers from colliding.
+The proxy builds one authenticator per issuer and combines them into a
+**router**. The router reads the `iss` and `aud` claims of a token without
+verification and selects at most one issuer:
+
+- The issuer with the URL `iss` verifies the token.
+- If several issuers have the URL `iss`, the issuer whose audiences contain a
+  value of `aud` verifies the token. If no issuer or more than one issuer
+  matches, the proxy rejects the token.
+
+A token never goes to a second issuer. With unique issuer URLs, the router
+gives the same results as the union authenticator of kube-apiserver. A single
+proxy can accept, for example, tokens from your corporate IdP **and** from
+GitHub Actions' OIDC issuer at the same time. Per-issuer username/group
+**prefixes** keep identities from different issuers from colliding.
 
 The two modes are **mutually exclusive**. When `--authentication-config` is set,
 issuer-specific `--oidc-*` flags are rejected. The optional OIDC TLS client
@@ -135,8 +145,8 @@ impersonates the mapped user to the external Kubernetes API server.
 ### Containers (C4 level 2)
 
 Inside the proxy: TLS is terminated by the serving layer, which drives the
-handler chain. The authenticator validates the token against the union of
-issuers; a token-passthrough fallback and the inbound-`--as` check both consult
+handler chain. The authenticator selects one issuer for the token and
+validates the token against it. A token-passthrough fallback and the inbound-`--as` check both consult
 the API server, and the readiness probe watches each issuer's JWKS
 initialization through the authenticator.
 

@@ -210,7 +210,7 @@ its checksum-based rollout behavior.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `authenticationConfig.content` | string | `""` | YAML of an `AuthenticationConfiguration`. When set, `--authentication-config` is used and issuer-specific `--oidc-*` flags are omitted. Format and recipes: [multi-issuer authentication](../../docs/multi-issuer.md), [integrations](../../docs/integrations.md). |
+| `authenticationConfig.content` | string | `""` | YAML of an `AuthenticationConfiguration`, the upstream kind or the proxy kind `kube-oidc-proxy.rafpe.github.io/v1alpha1`. When set, `--authentication-config` is used and issuer-specific `--oidc-*` flags are omitted. Format and recipes: [multi-issuer authentication](../../docs/multi-issuer.md), [integrations](../../docs/integrations.md). |
 | `authenticationConfig.existingSecret` | string | `""` | Existing Secret in the release namespace. Mutually exclusive with `content`. |
 | `authenticationConfig.key` | string | `"authentication-config.yaml"` | Key in the existing Secret containing the configuration. Empty or omitted uses the default. Ignored for inline content. |
 | `readinessRequireAllIssuers` | bool | `false` | Require every issuer to initialize before the pod is ready. Default: ready once at least one initializes. |

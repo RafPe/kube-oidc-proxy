@@ -1,5 +1,6 @@
 {
   "exclude": [
+    "docs/decisions/",
     "docs/testing/",
     "docs/superpowers/",
     "docs/artifact-hub.md"

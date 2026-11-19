@@ -156,7 +156,7 @@ and a PromQL query select the same thing.
 | `review` | `tokenreview`, `sar`. |
 | `outcome` (review) | `allow`, `deny`, `timeout`, `canceled`, `error`, classified from the API call itself. For a TokenReview, `allow` means authenticated. |
 | `cache` / `result` | `tokenreview` or `sar`; `hit`, `miss`, `bypass`. For `sar`, `bypass` is a review spec too large to cache. For `tokenreview` only `hit` and `miss` occur. With both TTLs at zero neither cache is constructed and no lookup is counted. |
-| `issuer_name` | The configured issuer's host, as in the log records. Never the URL. Two issuers sharing a host are refused at startup. |
+| `issuer_name` | The `name` of the issuer for the proxy kind, otherwise the configured issuer's host, as in the log records. Never the URL. For the upstream kind, the proxy refuses two issuers on one host at startup. |
 | `operation` | `run`: the backend failed to start. |
 
 ## Buckets

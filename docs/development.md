@@ -75,9 +75,22 @@ request and the full declared window on the twice-daily scheduled run.
 
 The suite runs in CI on every pull request and on pushes to `main`
 (`.github/workflows/e2e.yaml`). A companion workflow
-(`.github/workflows/e2e-oidc-gha.yaml`) proves the multi-issuer union
-authenticator against the **real** GitHub Actions OIDC issuer alongside a local
-Dex issuer. For a scripted multi-issuer demo, see [`../demo/README.md`](../demo/README.md).
+(`.github/workflows/e2e-oidc-gha.yaml`) proves the multi-issuer router
+against the **real** GitHub Actions OIDC issuer alongside a local
+Dex issuer. It runs `hack/ci/gha-multi-issuer-e2e.sh` in two jobs:
+
+- `test:e2e-oidc` uses the upstream kind, with one GitHub Actions issuer.
+- `test:e2e-oidc-shared-issuer` uses the proxy kind, with three issuers on
+  the GitHub Actions issuer URL (ADR-0001). The job mints a real token for
+  each audience and checks three results. Each token maps to the username
+  of its own issuer. The claim rule of the selected issuer refuses a token.
+  The proxy refuses an unknown audience with `401` and
+  `reason=audience_unrouted`.
+
+To run the proxy-kind job locally without a GitHub token, set
+`GHA_CONFIG_KIND=proxy`. Only the local Dex checks then run.
+
+For a scripted multi-issuer demo, see [`../demo/README.md`](../demo/README.md).
 
 ## Local multi-issuer test: kind and GitHub Actions
 

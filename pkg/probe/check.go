@@ -10,7 +10,6 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/rafpe/kube-oidc-proxy/pkg/authn"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 )
 
@@ -19,8 +18,8 @@ import (
 // change: an issuer that moves from unreachable to still-initializing is a
 // change an operator wants to see.
 type pendingIssuer struct {
-	issuerURL string
-	reason    pendingReason
+	name   string
+	reason pendingReason
 }
 
 // isNotInitialized reports whether err indicates the issuer's authenticator has
@@ -88,7 +87,7 @@ func (s *Server) check() error {
 	s.mu.Lock()
 	toProbe := make([]issuerReadiness, 0, len(s.issuers))
 	for _, issuer := range s.issuers {
-		if !s.initialized[issuer.issuerURL] {
+		if !s.initialized[issuer.name] {
 			toProbe = append(toProbe, issuer)
 		}
 	}
@@ -102,11 +101,11 @@ func (s *Server) check() error {
 		// token verification, which the fake token always fails.
 		if _, _, err := s.oidcAuthenticator.AuthenticateToken(ctx, issuer.fakeJWT); err != nil {
 			if reason, isPending := classifyPending(err); isPending {
-				pending = append(pending, pendingIssuer{issuerURL: issuer.issuerURL, reason: reason})
+				pending = append(pending, pendingIssuer{name: issuer.name, reason: reason})
 				continue
 			}
 		}
-		newlyInitialized = append(newlyInitialized, issuer.issuerURL)
+		newlyInitialized = append(newlyInitialized, issuer.name)
 	}
 
 	// Re-acquire the lock to record results and evaluate readiness.
@@ -144,14 +143,14 @@ func (s *Server) check() error {
 // for that issuer stays the initialized one and readiness is not held back by
 // it. The caller holds s.mu.
 func (s *Server) recordProbeResults(ctx context.Context, newlyInitialized []string, pending []pendingIssuer) []pendingIssuer {
-	for _, issuerURL := range newlyInitialized {
-		if s.initialized[issuerURL] {
+	for _, name := range newlyInitialized {
+		if s.initialized[name] {
 			continue
 		}
-		s.initialized[issuerURL] = true
-		s.metrics.SetIssuerInitialized(authn.IssuerName(issuerURL), true)
+		s.initialized[name] = true
+		s.metrics.SetIssuerInitialized(name, true)
 		logging.Emit(ctx, s.oidcLogger, logging.EventOIDCIssuerInitialized,
-			slog.String("issuer_name", authn.IssuerName(issuerURL)),
+			slog.String("issuer_name", name),
 			slog.String("issuer_state", string(issuerInitialized)),
 			slog.Int("ready_issuers", len(s.initialized)),
 			slog.Int("total_issuers", len(s.issuers)))
@@ -160,7 +159,7 @@ func (s *Server) recordProbeResults(ctx context.Context, newlyInitialized []stri
 	// Drop results made stale by a concurrent check that initialized the
 	// issuer between this check's snapshot and now.
 	pending = slices.DeleteFunc(pending, func(p pendingIssuer) bool {
-		return s.initialized[p.issuerURL]
+		return s.initialized[p.name]
 	})
 
 	// Report only on change, and record the new state either way so that a
@@ -170,7 +169,7 @@ func (s *Server) recordProbeResults(ctx context.Context, newlyInitialized []stri
 	if key := pendingKey(pending); key != s.lastPending {
 		for _, p := range pending {
 			logging.Emit(ctx, s.oidcLogger, logging.EventOIDCIssuerPending,
-				slog.String("issuer_name", authn.IssuerName(p.issuerURL)),
+				slog.String("issuer_name", p.name),
 				slog.String("issuer_state", string(issuerPending)),
 				slog.String("pending_reason", string(p.reason)),
 				slog.Int("ready_issuers", len(s.initialized)),
@@ -188,7 +187,7 @@ func (s *Server) recordProbeResults(ctx context.Context, newlyInitialized []stri
 func pendingKey(pending []pendingIssuer) string {
 	parts := make([]string, len(pending))
 	for i, p := range pending {
-		parts[i] = p.issuerURL + "=" + string(p.reason)
+		parts[i] = p.name + "=" + string(p.reason)
 	}
 	return strings.Join(parts, ",")
 }
