@@ -170,13 +170,16 @@ The proxy refuses to start in these conditions:
 The proxy selects the issuer for a token in these steps:
 
 1. It reads `iss` and `aud` from the token without verification.
-2. If one issuer has the URL `iss`, that issuer verifies the token. The `aud`
+2. If no issuer has the URL `iss`, no issuer verifies the token. The proxy
+   rejects the token as a token of an unknown issuer, not with
+   `reason=audience_unrouted`.
+3. If one issuer has the URL `iss`, that issuer verifies the token. The `aud`
    claim has no effect on the selection.
-3. If several issuers have the URL `iss`, the issuer whose `audiences`
+4. If several issuers have the URL `iss`, the issuer whose `audiences`
    contain a value of `aud` verifies the token.
-4. If no issuer or more than one issuer matches, the proxy rejects the token.
-   The `authn.oidc.failed` record carries `reason=audience_unrouted`. No
-   other issuer verifies the token.
+5. If several issuers have the URL `iss` and `aud` matches no issuer or more
+   than one issuer, the proxy rejects the token. The `authn.oidc.failed`
+   record carries `reason=audience_unrouted`. No issuer verifies the token.
 
 > [!WARNING]
 > The audience is routing, not authorization. The client chooses `aud`, so a
