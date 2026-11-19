@@ -3,7 +3,6 @@ package authn
 
 import (
 	"log/slog"
-	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -15,21 +14,6 @@ import (
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging/logtest"
 )
-
-func writeTempFile(t *testing.T, content string) string {
-	t.Helper()
-	f, err := os.CreateTemp(t.TempDir(), "auth-config-*.yaml")
-	if err != nil {
-		t.Fatalf("creating temp file: %v", err)
-	}
-	if _, err := f.WriteString(content); err != nil {
-		t.Fatalf("writing temp file: %v", err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatalf("closing temp file: %v", err)
-	}
-	return f.Name()
-}
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
@@ -176,34 +160,9 @@ func TestBuildDerivesTheOIDCComponent(t *testing.T) {
 }
 
 func TestBuildTokenAuthenticator_AuthConfig(t *testing.T) {
-	configContent := `
-apiVersion: apiserver.config.k8s.io/v1beta1
-kind: AuthenticationConfiguration
-jwt:
-  - issuer:
-      url: https://vault.example.com/v1/identity/oidc
-      audiences:
-        - my-client
-    claimMappings:
-      username:
-        claim: email
-        prefix: ""
-      groups:
-        claim: groups
-        prefix: ""
-  - issuer:
-      url: https://issuer2.example.com/v1/identity/oidc
-      audiences:
-        - kubernetes
-    claimMappings:
-      username:
-        claim: email
-        prefix: ""
-      groups:
-        claim: groups
-        prefix: ""
-`
-	configPath := writeTempFile(t, configContent)
+	configPath := writeDoc(t, marshalDoc(t, upstreamDoc(
+		testJWT("https://vault.example.com/v1/identity/oidc", "", "my-client"),
+		testJWT("https://issuer2.example.com/v1/identity/oidc", "", "kubernetes"))))
 
 	authn, issuers, err := Build(Config{ConfigFile: configPath}, discardLogger())
 	if err != nil {
@@ -222,30 +181,9 @@ jwt:
 }
 
 func TestBuildUnionAuthenticatorFromV1ConfigWithCEL(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "auth.yaml")
-	cfg := `apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: https://issuer1.example.com
-    audiences: ["aud-one"]
-  claimMappings:
-    username:
-      claim: sub
-      prefix: "one:"
-    groups:
-      expression: '["g:" + claims.owner]'
-- issuer:
-    url: https://issuer2.example.com
-    audiences: ["aud-two"]
-  claimMappings:
-    username:
-      claim: sub
-      prefix: "two:"
-`
-	if err := os.WriteFile(path, []byte(cfg), 0600); err != nil {
-		t.Fatal(err)
-	}
+	path := writeDoc(t, marshalDoc(t, upstreamDoc(
+		celJWT(),
+		testJWT("https://issuer2.example.com", "two:", "aud-two"))))
 
 	authn, issuers, err := Build(Config{ConfigFile: path}, discardLogger())
 	if err != nil {
@@ -319,30 +257,9 @@ func TestLogIssuersConfiguredNoIssuers(t *testing.T) {
 // configuration is refused by Build itself, before it constructs
 // any authenticator.
 func TestBuildTokenAuthenticatorRefusesIssuersSharingAHost(t *testing.T) {
-	config := filepath.Join(t.TempDir(), "auth.yaml")
-	content := `apiVersion: apiserver.config.k8s.io/v1beta1
-kind: AuthenticationConfiguration
-jwt:
-  - issuer:
-      url: https://idp.example.com/realms/a
-      audiences:
-        - a
-    claimMappings:
-      username:
-        claim: email
-        prefix: ""
-  - issuer:
-      url: https://idp.example.com/realms/b
-      audiences:
-        - b
-    claimMappings:
-      username:
-        claim: email
-        prefix: ""
-`
-	if err := os.WriteFile(config, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	config := writeDoc(t, marshalDoc(t, upstreamDoc(
+		testJWT("https://idp.example.com/realms/a", "", "a"),
+		testJWT("https://idp.example.com/realms/b", "", "b"))))
 	_, _, err := Build(Config{ConfigFile: config}, discardLogger())
 	// The name alone does not say which two entries have to be changed, so
 	// the refusal names both by position; the full URLs are never in it.
@@ -408,5 +325,50 @@ func TestBuildErrorNamesIssuerByHost(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "/realms/secret") {
 		t.Fatalf("Build = %v, want no full issuer URL", err)
+	}
+}
+
+// TestBuildProxyKindUsesConfiguredNames pins that issuers of the proxy kind
+// carry their configured names, also when two issuers share a host.
+func TestBuildProxyKindUsesConfiguredNames(t *testing.T) {
+	_, issuers, err := Build(Config{ConfigFile: writeDoc(t, marshalDoc(t, gkeProxyDoc()))}, discardLogger())
+	if err != nil {
+		t.Fatalf("Build() unexpected error: %v", err)
+	}
+	want := []Issuer{
+		{
+			Name:      "gke-vendor",
+			URL:       gkeVendorURL,
+			Audiences: []string{"aud-vendor"},
+		},
+		{
+			Name:      "gke-internal",
+			URL:       gkeInternalURL,
+			Audiences: []string{"aud-internal"},
+		},
+	}
+	if !reflect.DeepEqual(issuers, want) {
+		t.Fatalf("Build() issuers = %+v, want %+v", issuers, want)
+	}
+}
+
+// TestBuildRefusesProxyKindIssuersSharingAURL pins that Build refuses two
+// issuers with one issuer URL until the proxy can route a token between them.
+func TestBuildRefusesProxyKindIssuersSharingAURL(t *testing.T) {
+	config := writeDoc(t, marshalDoc(t, proxyDoc(
+		proxyIssuer("gha-int", ghaURL, "aud-int"),
+		proxyIssuer("gha-vendor", ghaURL, "aud-vendor"))))
+
+	_, _, err := Build(Config{ConfigFile: config}, discardLogger())
+	if err == nil {
+		t.Fatal("Build() error = nil, want a refusal")
+	}
+	for _, want := range []string{"issuers[0]", "issuers[1]", "same issuer URL"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Build() error = %v, want it to contain %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "token.actions.githubusercontent.com") {
+		t.Fatalf("Build() error = %v, must not contain the issuer URL", err)
 	}
 }
