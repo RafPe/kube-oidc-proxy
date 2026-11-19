@@ -196,7 +196,7 @@ jobs:
           # forged marker would let a stranger write the "history" the next
           # review trusts. Pages are merged before picking the last comment.
           summary=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
-            | jq -s --arg bot "${BOT_LOGIN}" '
+            | jq -rs --arg bot "${BOT_LOGIN}" '
                 add
                 | map(select(.user.login == $bot and .user.type == "Bot"
                              and (.body | test("^<!-- claude-review head=[0-9a-f]{40} -->"))))
@@ -245,7 +245,7 @@ jobs:
             cursor=$(jq -r '.pageInfo.endCursor' <<<"${page}")
           done
 
-          prev_file="${RUNNER_TEMP}/previous-review.md"
+          prev_file="${review_dir}/previous-review.md"
           {
             echo "# Previous review of PR ${PR} at ${prev}"
             echo
@@ -339,7 +339,9 @@ jobs:
             - Post each comment with one `gh pr comment <PR> --body '<text>'`
               call. Write the body in one single-quoted argument. No line of
               the body may start with `#`: the permission check refuses that
-              command. Use bold text for headings, and put the review marker
+              command. Do not use an apostrophe in the body, because it ends
+              the quoted argument. Write "the PR description", not "the PR's
+              description". Use bold text for headings, and put the review marker
               as the first line exactly as stated below.
             - Re-review (PREVIOUS REVIEW HEAD is a commit): you are continuing
               your own earlier review, not starting over. Read PREVIOUS REVIEW
@@ -375,7 +377,8 @@ jobs:
             - Before you write the first comment, load the asd-ste100 skill
               with the Skill tool. If the Skill tool is not available, Read
               `.claude/skills/asd-ste100/SKILL.md` in the working directory.
-              Apply its Strict mode to every comment.
+              Apply its Strict mode to every comment. Do not run the scripts
+              of the skill: the review has no command for them.
             - Write facts about the code only. Do not describe your own work,
               your reading order or your tools. No praise. No closing
               summary of the comment.
@@ -433,6 +436,7 @@ jobs:
             --disallowedTools "Task,Agent"
             --model claude-opus-5-5
             --add-dir ${{ steps.endpoints.outputs.head_tree }}
+            --add-dir ${{ steps.endpoints.outputs.review_dir }}
             --max-turns 200
             --json-schema '{"type":"object","properties":{"approve":{"type":"boolean"},"summary":{"type":"string"}},"required":["approve","summary"]}'
 
