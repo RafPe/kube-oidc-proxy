@@ -173,15 +173,24 @@ check_identity() { # <kubeconfig> <expected_user> <label>
   ok "authenticated + impersonated through the proxy as ${expected}"
 }
 
-# assert that the proxy refuses the token with HTTP 401. The check reads the
-# status code, because the kubectl error text differs between versions.
-check_unauthorized() { # <token> <label>
-  local token="$1" label="$2" code
-  echo; echo "${BLUE}--- ${label}: expecting 401 ---${NC}"
-  code="$(curl -sk -o /dev/null -w '%{http_code}' \
+# assert that the proxy refuses the token with HTTP 401 and that the
+# authn.oidc.failed record of that request carries the expected reason. The
+# check reads the status code, because the kubectl error text differs between
+# versions. The Audit-ID response header is the request_id of the record.
+check_unauthorized() { # <token> <reason> <label>
+  local token="$1" reason="$2" label="$3" headers code request_id
+  echo; echo "${BLUE}--- ${label}: expecting 401 with reason=${reason} ---${NC}"
+  [ -n "${token}" ] || fail "${label}: the token is empty"
+  headers="$(mktemp)"
+  code="$(curl -sk -o /dev/null -D "${headers}" -w '%{http_code}' \
     -H "Authorization: Bearer ${token}" https://127.0.0.1:8443/api/v1/pods)"
+  request_id="$(tr -d '\r' < "${headers}" | awk 'tolower($1) == "audit-id:" { print $2 }' | tail -n 1)"
+  rm -f "${headers}"
   [ "${code}" = "401" ] || fail "${label}: the proxy answered ${code}, not 401"
-  ok "the proxy refused the token with 401"
+  [ -n "${request_id}" ] || fail "${label}: the 401 response has no Audit-ID header"
+  ok "the proxy refused the token with 401 (request_id ${request_id})"
+  check_log ".event_type == \"authn.oidc.failed\" and .request_id == \"${request_id}\" and .reason == \"${reason}\"" \
+    "authn.oidc.failed of request ${request_id} carries reason=${reason}"
 }
 
 # mint a GitHub Actions ID token for an audience. The runner OIDC endpoint
@@ -191,7 +200,7 @@ mint_gha_token() { # <audience>
   local aud="$1" token=""
   if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
     token="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-      "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${aud}" | jq -r '.value // empty')" || token=""
+      "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=$(jq -rn --arg a "${aud}" '$a | @uri')" | jq -r '.value // empty')" || token=""
   fi
   if [ -z "${token}" ] && [ "${aud}" = "${GHA_AUDIENCE}" ]; then
     token="$(cat "${GHA_TOKEN_FILE}")"
@@ -433,7 +442,7 @@ if [ -n "${GHA_TOKEN_FILE}" ]; then
   if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
     log "Re-minting the GitHub Actions token at point of use (5-minute expiry vs ~5-minute setup)"
     FRESH_GHA_TOKEN="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-      "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${GHA_AUDIENCE}" | jq -r '.value // empty')" || FRESH_GHA_TOKEN=""
+      "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=$(jq -rn --arg a "${GHA_AUDIENCE}" '$a | @uri')" | jq -r '.value // empty')" || FRESH_GHA_TOKEN=""
     if [ -n "${FRESH_GHA_TOKEN}" ]; then
       GHA_TOKEN="${FRESH_GHA_TOKEN}"
     else
@@ -486,26 +495,30 @@ if [ -n "${GHA_TOKEN_FILE}" ] && [ "${GHA_CONFIG_KIND}" = "upstream" ]; then
 fi
 
 # ---- Assertion 3 (CI only, proxy kind): three issuers on one issuer URL.
-# Each token is minted at point of use for its own audience.
+# Each token is minted at point of use for its own audience. Each token goes
+# into a variable first: a failed mint inside a command argument does not stop
+# the script under set -e.
 if [ -n "${GHA_TOKEN_FILE}" ] && [ "${GHA_CONFIG_KIND}" = "proxy" ]; then
   log "Routing real GitHub Actions tokens between issuers of one issuer URL"
-  write_kubeconfig "$(mint_gha_token "${GHA_AUDIENCE}")" "${GEN}/kubeconfig-gha-internal.yaml"
+  token="$(mint_gha_token "${GHA_AUDIENCE}")"
+  write_kubeconfig "${token}" "${GEN}/kubeconfig-gha-internal.yaml"
   check_identity "${GEN}/kubeconfig-gha-internal.yaml" "gha-internal:${GHA_SUB}" "Issuer gha-internal"
   check_impersonation "${GEN}/kubeconfig-gha-internal.yaml" "gha-internal:${GHA_SUB}" "Issuer gha-internal"
 
-  write_kubeconfig "$(mint_gha_token "${GHA_AUDIENCE}-vendor")" "${GEN}/kubeconfig-gha-vendor.yaml"
+  token="$(mint_gha_token "${GHA_AUDIENCE}-vendor")"
+  write_kubeconfig "${token}" "${GEN}/kubeconfig-gha-vendor.yaml"
   check_identity "${GEN}/kubeconfig-gha-vendor.yaml" "gha-vendor:${GHA_SUB}" "Issuer gha-vendor"
 
-  check_unauthorized "$(mint_gha_token "${GHA_AUDIENCE}-foreign")" "Issuer gha-foreign, which pins another owner"
-  check_unauthorized "$(mint_gha_token "${GHA_AUDIENCE}-unrouted")" "An audience that no issuer has"
+  token="$(mint_gha_token "${GHA_AUDIENCE}-foreign")"
+  check_unauthorized "${token}" unauthorized "Issuer gha-foreign, which pins another owner"
+  token="$(mint_gha_token "${GHA_AUDIENCE}-unrouted")"
+  check_unauthorized "${token}" audience_unrouted "An audience that no issuer has"
 
   echo; echo "${BLUE}--- proxy log records ---${NC}"
   check_log '.event_type == "request.access.decided" and .issuer_name == "gha-internal" and .decision == "allow"' \
     "an access record names issuer gha-internal"
   check_log '.event_type == "request.access.decided" and .issuer_name == "gha-vendor" and .decision == "allow"' \
     "an access record names issuer gha-vendor"
-  check_log '.event_type == "authn.oidc.failed" and .reason == "audience_unrouted"' \
-    "authn.oidc.failed carries reason=audience_unrouted"
 fi
 
 stop_pf

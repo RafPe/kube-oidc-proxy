@@ -34,11 +34,12 @@ env:
 jobs:
   gha-multi-issuer:
     name: ${{ matrix.check }}
-    # OIDC tokens (id-token: write) are not issued to pull requests from forks,
-    # so skip fork PRs; runs on push to main, workflow_dispatch, and same-repo PRs.
-    if: >-
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name == github.repository
+    # GitHub does not issue OIDC tokens (id-token: write) to pull requests from
+    # forks. The steps skip fork PRs, not the job. A job-level if is evaluated
+    # before the matrix expands, so the skipped job reports the unexpanded name
+    # and the required check test:e2e-oidc stays pending.
+    env:
+      RUN_E2E: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     strategy:
       fail-fast: false
       matrix:
@@ -53,16 +54,23 @@ jobs:
       contents: read
       id-token: write # mint a genuine GitHub Actions OIDC token in-job
     steps:
+      - name: Skip a pull request from a fork
+        if: env.RUN_E2E != 'true'
+        run: echo "::notice::GitHub issues no OIDC token to a fork PR. The steps are skipped."
+
       - name: Checkout
+        if: env.RUN_E2E == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Go
+        if: env.RUN_E2E == 'true'
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Install kind CLI
+        if: env.RUN_E2E == 'true'
         env:
           KIND_VERSION: v0.33.0
         run: |
@@ -72,6 +80,7 @@ jobs:
           kind version
 
       - name: Mint a GitHub Actions OIDC token
+        if: env.RUN_E2E == 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           GHA_AUDIENCE: ${{ env.GHA_AUDIENCE }}
@@ -84,17 +93,18 @@ jobs:
             core.info(`minted GitHub Actions OIDC token for audience ${audience}`)
 
       - name: Run multi-issuer e2e (real GHA issuer + local Dex)
+        if: env.RUN_E2E == 'true'
         env:
           GHA_TOKEN_FILE: ${{ github.workspace }}/gha-token.jwt
           GHA_CONFIG_KIND: ${{ matrix.config-kind }}
         run: hack/ci/gha-multi-issuer-e2e.sh
 
       - name: Remove the minted token
-        if: always()
+        if: always() && env.RUN_E2E == 'true'
         run: rm -f gha-token.jwt
 
       - name: Upload logs on failure
-        if: failure()
+        if: failure() && env.RUN_E2E == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-oidc-gha-logs-${{ matrix.config-kind }}
