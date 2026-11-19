@@ -38,9 +38,11 @@ certificate/key flags apply to all issuers. The proxy accepts three
   upstream kind.
 - `kube-oidc-proxy.rafpe.github.io/v1alpha1`, the proxy kind.
 
-The proxy validates the file strictly at startup. It refuses unknown fields,
-duplicate issuers and invalid CEL expressions. The upstream kind supports only
-the `jwt:` section. The proxy refuses `anonymous:`.
+The proxy validates the file strictly at startup. It refuses unknown fields
+and invalid CEL expressions. The upstream kind refuses two issuers on one host.
+The proxy kind accepts several issuers on one issuer URL, with the limits in
+[Several issuers for one issuer URL](#several-issuers-for-one-issuer-url). The
+upstream kind supports only the `jwt:` section. The proxy refuses `anonymous:`.
 
 The file is read once at startup. To apply changes, restart the pods — the
 Helm chart annotates the Deployment with a config checksum, so editing
@@ -54,7 +56,7 @@ kind when you need a feature that only the proxy kind has.
 | Need | Kind |
 |---|---|
 | kube-apiserver must also load the same file | upstream |
-| One `jwt` entry for each issuer URL, and one issuer for each host | upstream |
+| Each issuer URL has one `jwt` entry, and each host has one issuer | upstream |
 | Several issuers for one issuer URL, selected by the token audience | proxy |
 | Several issuers on one host, for example two GKE or EKS cluster issuers | proxy |
 | An `issuer_name` that you set, not the host of the issuer URL | proxy |
@@ -156,6 +158,9 @@ issuers have the same username expression. The usernames start with
   and each other use of `authenticationConfiguration` stop the startup. The
   error gives the path of the expression, for example
   `issuers[0].jwt.claimMappings.username.expression`.
+- `authenticationConfiguration` cannot be the variable of a macro, for
+  example in `claims.groups.exists(authenticationConfiguration, ...)`. The
+  startup stops with `cannot be a macro variable`.
 - The upstream kind and kube-apiserver do not define the variable. There, the
   expression fails with `undeclared reference`.
 
@@ -163,7 +168,7 @@ The proxy refuses to start in these conditions:
 
 - A `name` is not a DNS-1123 subdomain, or two issuers have the same `name`.
 - Two issuers have the same issuer URL and share an audience.
-- Two issuers have the same `discoveryURL`.
+- Two issuers have the same non-empty `discoveryURL`.
 - A `jwt` entry fails the upstream validation. The error names the issuer as
   `issuers[i]`.
 
@@ -278,7 +283,7 @@ fetched; issuers still pending are logged and keep initializing in the
 background (tokens for them fail with 401 until initialized). Set
 `--readiness-require-all-issuers` (Helm: `readinessRequireAllIssuers: true`)
 to only report ready when every issuer is initialized. Configuration errors
-(invalid YAML, unknown fields, duplicate issuers, bad CEL) always fail
+(invalid YAML, unknown fields, conflicting issuers, bad CEL) always fail
 startup, regardless of this flag.
 
 Readiness is about startup. What happens when an issuer becomes unreachable

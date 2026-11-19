@@ -83,7 +83,8 @@ Dex issuer. It runs `hack/ci/gha-multi-issuer-e2e.sh` in two jobs:
 - `test:e2e-oidc-shared-issuer` uses the proxy kind, with three issuers on
   the GitHub Actions issuer URL (ADR-0001). The job mints a real token for
   each audience and checks three results. Each token maps to the username
-  of its own issuer. The claim rule of the selected issuer refuses a token.
+  of its own issuer. A token for the audience of `gha-foreign`, which pins
+  another owner, gets `401`.
   The proxy refuses an unknown audience with `401` and
   `reason=audience_unrouted`.
 
