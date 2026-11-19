@@ -14,7 +14,6 @@ import (
 	apiserverapi "k8s.io/apiserver/pkg/apis/apiserver"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	authenticationcel "k8s.io/apiserver/pkg/authentication/cel"
-	tokenunion "k8s.io/apiserver/pkg/authentication/token/union"
 	"k8s.io/apiserver/pkg/server/dynamiccertificates"
 	"k8s.io/apiserver/plugin/pkg/authenticator/token/oidc"
 	"k8s.io/client-go/rest"
@@ -220,37 +219,28 @@ func jwtAuthenticatorFromIssuer(i IssuerConfig) apiserverapi.JWTAuthenticator {
 // The upstream kind and the flags name an issuer by the host of its URL. Two
 // issuers on one host with different paths then share a name, and a
 // per-issuer gauge cannot tell them apart. The proxy kind has unique names
-// from LoadConfiguration. checkIssuerNames refuses two issuers of the proxy
-// kind with the same issuer URL, because the union in buildIssuers cannot
-// route a token between them.
+// from LoadConfiguration, so checkIssuerNames does not check them again.
 func checkIssuerNames(issuers []issuer, proxyKind bool) error {
-	if !proxyKind {
-		issuerURLs := make([]string, 0, len(issuers))
-		for _, iss := range issuers {
-			issuerURLs = append(issuerURLs, iss.jwt.Issuer.URL)
-		}
-		if name, first, other, dup := duplicateIssuerName(issuerURLs); dup {
-			return fmt.Errorf("issuers jwt[%d] and jwt[%d] share the name %q; issuers must differ by host", first, other, name)
-		}
+	if proxyKind {
 		return nil
 	}
-	for i := range issuers {
-		for j := i + 1; j < len(issuers); j++ {
-			if issuers[i].jwt.Issuer.URL == issuers[j].jwt.Issuer.URL {
-				return fmt.Errorf("issuers[%d] and issuers[%d] have the same issuer URL. This version of the proxy cannot route a token between them", i, j)
-			}
-		}
+	issuerURLs := make([]string, 0, len(issuers))
+	for _, iss := range issuers {
+		issuerURLs = append(issuerURLs, iss.jwt.Issuer.URL)
+	}
+	if name, first, other, dup := duplicateIssuerName(issuerURLs); dup {
+		return fmt.Errorf("issuers jwt[%d] and jwt[%d] share the name %q; issuers must differ by host", first, other, name)
 	}
 	return nil
 }
 
 // buildIssuers builds one authenticator per issuer and combines them into a
-// union that fails on the first error. A union of one behaves exactly as its
-// single member: an error or an acceptance is returned as is, and a refusal
-// aggregates no errors into a nil one.
+// router. The router selects at most one issuer for a token. With unique
+// issuer URLs, the router gives the same results as the upstream
+// fail-on-error union.
 func buildIssuers(issuers []issuer, compiler authenticationcel.Compiler, cfg Config, oidcLogger, startupLogger *slog.Logger) (authenticator.Token, []Issuer, error) {
 	named := make([]Issuer, 0, len(issuers))
-	authenticators := make([]authenticator.Token, 0, len(issuers))
+	routes := make([]route, 0, len(issuers))
 	for _, iss := range issuers {
 		n := Issuer{
 			Name:      iss.name,
@@ -262,7 +252,7 @@ func buildIssuers(issuers []issuer, compiler authenticationcel.Compiler, cfg Con
 			return nil, nil, fmt.Errorf("building authenticator for issuer %q: %w", n.Name, err)
 		}
 		named = append(named, n)
-		authenticators = append(authenticators, AttributeToIssuer(n.Name, authn))
+		routes = append(routes, route{url: n.URL, audiences: n.Audiences, authenticator: AttributeToIssuer(n.Name, authn)})
 	}
 
 	names := make([]string, 0, len(named))
@@ -271,7 +261,7 @@ func buildIssuers(issuers []issuer, compiler authenticationcel.Compiler, cfg Con
 	}
 	logIssuersConfigured(oidcLogger, names)
 
-	return tokenunion.NewFailOnError(authenticators...), named, nil
+	return newRouter(routes), named, nil
 }
 
 // newIssuerAuthenticator builds the OIDC authenticator for one issuer.

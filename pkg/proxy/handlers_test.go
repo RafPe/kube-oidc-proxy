@@ -22,6 +22,7 @@ import (
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	authuser "k8s.io/apiserver/pkg/authentication/user"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/authn"
 	"github.com/rafpe/kube-oidc-proxy/pkg/authn/tokenreview"
 	fakesubjectaccessreview "github.com/rafpe/kube-oidc-proxy/pkg/authz/subjectaccessreview/fake"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
@@ -219,6 +220,23 @@ func TestOIDCFailureEmitsAuthnOIDCFailed(t *testing.T) {
 	}
 	if strings.Contains(p.logs.Raw(), "8.8.8.8:1234") {
 		t.Fatal("raw peer address with port logged")
+	}
+}
+
+// TestUnroutedAudienceEmitsItsReason pins the reason audience_unrouted for a
+// token whose aud selects no single issuer of a shared issuer URL. The
+// request then goes to the token-review path, as for any OIDC rejection.
+func TestUnroutedAudienceEmitsItsReason(t *testing.T) {
+	p := newTestProxy(t)
+	p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "fake-token").Return(nil, false, authn.ErrAudienceUnrouted)
+	handler := p.withAuthenticateRequest(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("reached inner") }))
+	req := reservedIdentityRequest(t, nil)
+	req = req.WithContext(logging.WithRequestID(req.Context(), "rid-1"))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	rec := p.logs.Only(t, logging.EventAuthnOIDCFailed)
+	if got := rec.String("reason"); got != string(metrics.ReasonAudienceUnrouted) {
+		t.Fatalf("reason = %q, want %q", got, metrics.ReasonAudienceUnrouted)
 	}
 }
 

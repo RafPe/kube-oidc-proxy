@@ -96,16 +96,26 @@ var fakeJWTHeader = base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256",
 // naming the issuer, signed with a key no issuer holds. It is assembled by
 // hand because a throwaway token is all the probe needs, and a JOSE library
 // for it alone would be one more dependency in the proxy binary.
+//
+// The token carries the first audience of the issuer as aud. The router of
+// authn selects an issuer of a shared issuer URL by aud, so a token without
+// that aud does not reach the issuer.
 func newIssuerReadiness(issuer authn.Issuer) issuerReadiness {
-	// Marshalling two strings and an integer cannot fail, so the error is
+	var audience string
+	if len(issuer.Audiences) > 0 {
+		audience = issuer.Audiences[0]
+	}
+	// Marshalling three strings and an integer cannot fail, so the error is
 	// not a path this function has.
 	claims, _ := json.Marshal(struct {
 		Subject   string `json:"sub"`
 		Issuer    string `json:"iss"`
+		Audience  string `json:"aud,omitempty"`
 		NotBefore int64  `json:"nbf"`
 	}{
 		Subject:   "fake",
 		Issuer:    issuer.URL,
+		Audience:  audience,
 		NotBefore: time.Date(2016, 1, 1, 0, 0, 0, 0, time.UTC).Unix(),
 	})
 

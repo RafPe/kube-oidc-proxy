@@ -79,6 +79,13 @@ func ExpectProxyUnauthorized(f *framework.Framework, keyBundle *keybundle.Bundle
 	expectUnauthorized(f, keyBundle, payload)
 }
 
+// ExpectProxyStatus signs payload with keyBundle, lists pods through the
+// proxy, and asserts the HTTP status code of the answer.
+func ExpectProxyStatus(f *framework.Framework, keyBundle *keybundle.Bundle, payload []byte, status int) {
+	body, resp := proxyGetPods(f, keyBundle, payload)
+	Expect(resp.StatusCode).To(Equal(status), "body: %s", bytes.TrimSpace(body))
+}
+
 func expectUnauthorized(f *framework.Framework, keyBundle *keybundle.Bundle, payload []byte) {
 	body, resp := proxyGetPods(f, keyBundle, payload)
 	body = bytes.TrimSpace(body)

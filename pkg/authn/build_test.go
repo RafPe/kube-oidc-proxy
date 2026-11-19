@@ -352,23 +352,25 @@ func TestBuildProxyKindUsesConfiguredNames(t *testing.T) {
 	}
 }
 
-// TestBuildRefusesProxyKindIssuersSharingAURL pins that Build refuses two
-// issuers with one issuer URL until the proxy can route a token between them.
-func TestBuildRefusesProxyKindIssuersSharingAURL(t *testing.T) {
+// TestBuildAcceptsProxyKindIssuersSharingAURL pins that Build starts with two
+// issuers of one issuer URL and disjoint audiences, each under its own name.
+func TestBuildAcceptsProxyKindIssuersSharingAURL(t *testing.T) {
 	config := writeDoc(t, marshalDoc(t, proxyDoc(
 		proxyIssuer("gha-int", ghaURL, "aud-int"),
 		proxyIssuer("gha-vendor", ghaURL, "aud-vendor"))))
 
-	_, _, err := Build(Config{ConfigFile: config}, discardLogger())
-	if err == nil {
-		t.Fatal("Build() error = nil, want a refusal")
+	authn, issuers, err := Build(Config{ConfigFile: config}, discardLogger())
+	if err != nil {
+		t.Fatalf("Build() unexpected error: %v", err)
 	}
-	for _, want := range []string{"issuers[0]", "issuers[1]", "same issuer URL"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("Build() error = %v, want it to contain %q", err, want)
-		}
+	if authn == nil {
+		t.Fatal("Build() returned nil authenticator")
 	}
-	if strings.Contains(err.Error(), "token.actions.githubusercontent.com") {
-		t.Fatalf("Build() error = %v, must not contain the issuer URL", err)
+	want := []Issuer{
+		{Name: "gha-int", URL: ghaURL, Audiences: []string{"aud-int"}},
+		{Name: "gha-vendor", URL: ghaURL, Audiences: []string{"aud-vendor"}},
+	}
+	if !reflect.DeepEqual(issuers, want) {
+		t.Fatalf("Build() issuers = %+v, want %+v", issuers, want)
 	}
 }
