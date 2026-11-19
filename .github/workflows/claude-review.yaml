@@ -529,7 +529,10 @@ jobs:
           else
             what="The review of \`${HEAD:0:7}\` finished with outcome \`${OUTCOME}\`"
           fi
-          gh pr comment "${PR}" -R "${GITHUB_REPOSITORY}" --body "$(cat <<EOF
+          # The REST issue-comments call works with issues: write. gh pr
+          # comment uses the GraphQL addComment call, which this token cannot
+          # use on a pull request.
+          gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" --silent -f body="$(cat <<EOF
           ## Review run ended without a summary
 
           ${what} and posted no summary comment, so nothing from it should be taken as a verdict. See the [run](${RUN_URL}). Comment \`@claude review\` again to run a full review.
@@ -551,15 +554,16 @@ jobs:
     timeout-minutes: 5
     permissions:
       issues: write
-      pull-requests: read
     steps:
       - name: Ask for the label
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.issue.number }}
         run: |
-          gh pr comment "${PR}" -R "${GITHUB_REPOSITORY}" \
-            --body 'The review did not start. Add the label `review/claude-allowed` to this PR, then comment `@claude review` again.'
+          # The REST call works with issues: write. The GraphQL addComment
+          # call of gh pr comment does not (run 44615729074).
+          gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" --silent \
+            -f body='The review did not start. Add the label `review/claude-allowed` to this PR, then comment `@claude review` again.'
 
   # A separate job, so that nothing the review step writes to the runner, for
   # example GITHUB_ENV, reaches the step that holds an approving token. It
