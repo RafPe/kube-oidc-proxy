@@ -387,22 +387,24 @@ jobs:
             - Keep every condition and hedge that the evidence supports. Do
               not state a guess as a fact.
 
-            Summary format. Replace each <...> with the value. Keep the
-            badge row on one line. In a badge text, write a space as `_`,
-            `-` as `--` and `/` as `%2F`.
+            Summary format. The summary is the lines below, with no leading
+            spaces. Replace each <...> with the value. Keep the badge row on
+            one line. In a badge text, write a space as `_`, `-` as `--` and
+            `/` as `%2F`. This format takes priority over the Output Format
+            of the asd-ste100 skill.
 
-                <!-- claude-review head=<HEAD COMMIT, 40 chars> -->
-                ![verdict](https://img.shields.io/badge/verdict-<VERDICT>-<COLOR>) ![blocking](https://img.shields.io/badge/blocking-<N>-<COLOR>) ![nits](https://img.shields.io/badge/nits-<N>-d4a017) ![files](https://img.shields.io/badge/files-<READ>%2F<CHANGED>-<COLOR>) ![head](https://img.shields.io/badge/head-<7 chars>-555)
+            <!-- claude-review head=<HEAD COMMIT, 40 chars> -->
+            ![verdict](https://img.shields.io/badge/verdict-<VERDICT>-<COLOR>) ![blocking](https://img.shields.io/badge/blocking-<N>-<COLOR>) ![nits](https://img.shields.io/badge/nits-<N>-d4a017) ![files](https://img.shields.io/badge/files-<READ>%2F<CHANGED>-<COLOR>) ![head](https://img.shields.io/badge/head-<7 chars>-555)
 
-                **Blocking**
-                - `<path>:<line>`: <problem>. <effect>. <fix>.
+            **Blocking**
+            - `<path>:<line>`: <problem>. <effect>. <fix>.
 
-                **Nits**
-                - `<path>:<line>`: <problem>. <fix>.
+            **Nits**
+            - `<path>:<line>`: <problem>. <fix>.
 
-                **Checked, no issue:** <one short sentence for each area>
+            **Checked, no issue:** <one short sentence for each area>
 
-                Not covered: <none, or one path or area for each line>
+            Not covered: <none, or one path or area for each line>
 
             - VERDICT is `approved` (color 1f7a3d), `changes_needed` (color
               c62f3b) or `partial` (color d4a017). Use `partial` when "Not
