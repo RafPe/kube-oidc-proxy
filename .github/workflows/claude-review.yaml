@@ -151,6 +151,13 @@ jobs:
           head_tree="${RUNNER_TEMP}/pr-head"
           GIT_LFS_SKIP_SMUDGE=1 git -c core.symlinks=false -c filter.lfs.required=false \
             worktree add --detach "${head_tree}" refs/remotes/pr/head
+          # Claude Code can load configuration from an added directory, for
+          # example skills under .claude/skills. Remove each agent
+          # configuration path from the copy, at every depth, so that PR text
+          # cannot become system context. The review can still read these
+          # files with git show.
+          find "${head_tree}" \( -name .claude -o -name CLAUDE.md -o -name CLAUDE.local.md \
+            -o -name .mcp.json \) -prune -exec rm -rf {} +
           echo "head_tree=${head_tree}" >> "${GITHUB_OUTPUT}"
 
           # A re-review starts from the previous one. Every summary the review
@@ -363,6 +370,9 @@ jobs:
       # and act as a workflow command.
       - name: Show the tool calls of the review
         if: ${{ always() && steps.review.outputs.execution_file != '' }}
+        # A diagnostic step must not decide the verdict. Without this, a jq
+        # failure skips the approve step.
+        continue-on-error: true
         env:
           EXECUTION_FILE: ${{ steps.review.outputs.execution_file }}
         run: |
