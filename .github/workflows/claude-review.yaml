@@ -265,12 +265,9 @@ jobs:
             "${GITHUB_WORKSPACE}/.github/scripts/git-guard.sh" "${real_git}" > "${guard_dir}/git"
           chmod +x "${guard_dir}/git"
           echo "${guard_dir}" >> "${GITHUB_PATH}"
-          # Prove the guard before the review starts.
-          if PATH="${guard_dir}:${PATH}" git log --output="${RUNNER_TEMP}/guard-probe" -1 >/dev/null 2>&1 \
-            || [ -e "${RUNNER_TEMP}/guard-probe" ]; then
-            echo "::error::the git guard did not refuse --output"
-            exit 1
-          fi
+          # Test the guard, through PATH, before the review starts.
+          .github/scripts/git-guard-test.sh "${guard_dir}/git"
+          [ "$(PATH="${guard_dir}:${PATH}" command -v git)" = "${guard_dir}/git" ]
 
       - name: Run Claude review
         id: review
@@ -439,6 +436,29 @@ jobs:
             | "refused tool calls: \(length)",
               (.[] | "  \(.tool_name) \(.tool_input | tostring | gsub("[\r\n]"; " ") | .[0:200])")
           ' "${EXECUTION_FILE}"
+
+      # The guard test runs in a step shell. It does not prove that the Bash
+      # tool of Claude Code finds the guard on PATH. If a git call of the
+      # review used an --output option, this step fails the job, so the
+      # approve job does not run. A refused call counts too.
+      - name: Refuse a review that ran git with --output
+        if: ${{ steps.review.outcome == 'success' }}
+        env:
+          EXECUTION_FILE: ${{ steps.review.outputs.execution_file }}
+        run: |
+          set -euo pipefail
+          if [ -z "${EXECUTION_FILE}" ] || [ ! -s "${EXECUTION_FILE}" ]; then
+            echo "::error::the review step wrote no execution file, so its git calls cannot be checked"
+            exit 1
+          fi
+          hits=$(jq '[.[] | select(.type == "assistant") | .message.content[]?
+                      | select(.type == "tool_use" and .name == "Bash")
+                      | .input.command // "" | tostring
+                      | select(test("^\\s*git\\s") and test("\\s--ou"))] | length' "${EXECUTION_FILE}")
+          if [ "${hits}" != "0" ]; then
+            echo "::error::the review ran git with an --output option ${hits} time(s). The PR is not approved."
+            exit 1
+          fi
 
       # The summary is the review's own job, but a run that errors, hits the
       # job timeout or is cancelled never gets there. Leave a plain notice
