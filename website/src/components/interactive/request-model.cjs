@@ -3,6 +3,7 @@ const FlowModel = (() => {
   const entry = ['client','requestid','info','lifecycle','headers','auth'];
   const tail = ['audit','reverse','transport','upstream','response'];
   const paths = {
+    sharedIssuer: [...entry,'guard','impersonate',...tail],
     oidc: [...entry,'guard','impersonate',...tail],
     impersonation: [...entry,'guard','sar','impersonate',...tail],
     denied: [...entry,'guard','sar','forbidden','response'],

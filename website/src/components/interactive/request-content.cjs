@@ -91,7 +91,7 @@ module.exports = {
       "tag": "AUTHENTICATION",
       "subtitle": "withAuthenticateRequest",
       "summary": "OIDC authentication verifies the token and returns a Kubernetes identity. This identity does not grant resource access.",
-      "detail": "An OIDC validation error can enter TokenReview fallback. A canceled client request stops without fallback. A missing token returns 401 directly. Accepted requests receive user, issuer, and authentication-method context.",
+      "detail": "The router reads unverified iss and aud claims to select one issuer entry. When entries share an issuer URL, aud must match exactly one entry. Only that entry verifies the signature, expiry, audience, and configured claim rules. No other entry runs after a verification failure. Claim mappings then produce the identity. An OIDC error can enter TokenReview fallback unless the client canceled the request. A missing token returns 401 directly.",
       "input": "Authorization bearer token + configured authenticator",
       "output": "Authenticated user in context, or a branch to fallback / rejection",
       "change": "Change claim mappings in pkg/authn. Preserve the separate paths for cancellation, validation errors, and missing tokens.",
@@ -358,9 +358,9 @@ module.exports = {
       "tag": "STARTUP",
       "subtitle": "authn.Build",
       "summary": "The authn package constructs OIDC authenticators from flags or an AuthenticationConfiguration file.",
-      "detail": "Both configuration paths produce issuer definitions. The builder creates issuer authenticators with a shared CEL compiler and combines them in a union. Each authenticator records which issuer accepts a token.",
+      "detail": "The builder creates an issuer router with a shared CEL compiler. The proxy configuration kind supports named entries that share an issuer URL. Their audience sets must not overlap. Each entry has its own claim rules and mappings. The upstream configuration kind permits only one entry per issuer URL.",
       "input": "OIDC options or AuthenticationConfiguration",
-      "output": "authenticator.Token + issuer URLs used by readiness",
+      "output": "authenticator.Token + named issuers used by readiness",
       "change": "Change claim mapping and issuer validation in pkg/authn. Test flag and file configuration.",
       "tests": "go test ./pkg/authn ./cmd/app/...",
       "refs": [
@@ -410,6 +410,11 @@ module.exports = {
     }
   },
   "scenarios": {
+    "sharedIssuer": {
+      "label": "Shared issuer URL · GitHub Actions",
+      "note": "The internal and vendor entries share the GitHub issuer URL. The internal audience selects gha-internal. Its claim rule checks repository_owner_id before mapping the username. Kubernetes then checks bindings for that username. This example assumes a valid internal token and a pod-read grant.",
+      "result": "Example: 200 OK"
+    },
     "oidc": {
       "label": "OIDC → Kubernetes",
       "note": "A valid OIDC token maps to alice@example.com. This example assumes that Kubernetes allows the user to list pods.",

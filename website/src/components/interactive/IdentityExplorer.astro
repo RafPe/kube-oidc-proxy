@@ -57,6 +57,15 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '');
       <p class="hint">This model covers pods and Secrets under the default view role. Other bindings or custom role rules can grant additional access. It does not evaluate admission controls.</p>
     </div>
   </details>
+  <details class="disclosure"><summary>Several entries for the same OIDC issuer</summary>
+    <div class="identity-body">
+      <p>The proxy can select different entries for one issuer URL. The token audience selects an entry, not an RBAC permission.</p>
+      <p>For GitHub Actions, each entry must check repository_owner_id before its claim mappings produce an identity.</p>
+      <p>The issuer name does not automatically prefix usernames or groups. The mapping must include it.</p>
+      <p>A binding must match the mapped username or group exactly. Changing the audience does not create a binding.</p>
+      <a href={`${base}/guides/multi-issuer/#several-issuers-for-one-issuer-url`}>Read the shared issuer configuration ↗</a>
+    </div>
+  </details>
   <p class="explorer-footnote">This example assumes a valid token and working review APIs. No requests reach a cluster.</p>
   <noscript>This explorer requires JavaScript. Read the examples below for identity mappings and permissions.</noscript>
 </div>

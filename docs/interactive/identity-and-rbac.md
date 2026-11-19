@@ -55,6 +55,41 @@ ServiceAccounts are Kubernetes objects and use names such as `system:serviceacco
 The proxy credential needs impersonation grants. The mapped identity needs separate resource grants.
 Use distinct username and group prefixes for each issuer. RoleBinding subjects must match the resulting names exactly.
 
+## Several entries for the same issuer URL
+
+Use `kube-oidc-proxy.rafpe.github.io/v1alpha1` `AuthenticationConfiguration` when entries share an OIDC issuer URL.
+Each entry has a unique `name` and its own `jwt` configuration.
+Entries for the same URL must have separate audience sets.
+The upstream configuration kind does not support repeated issuer URLs.
+
+The [shared GitHub issuer example](../multi-issuer.md#several-issuers-for-one-issuer-url) defines `gha-internal` and `gha-vendor`.
+Both entries use `https://token.actions.githubusercontent.com`.
+
+| Token audience | Selected entry | Required `repository_owner_id` | Username prefix |
+| --- | --- | --- | --- |
+| `kube-oidc-proxy-internal` | `gha-internal` | `1234567` | `gha-internal:` |
+| `kube-oidc-proxy-vendor` | `gha-vendor` | `7654321` | `gha-vendor:` |
+
+A client can request either audience. The selected entry must check the organization through `claimValidationRules`.
+A vendor token with the internal audience fails the internal claim rule. The router does not try the vendor entry afterward.
+The proxy does not require these claim rules at startup. Configure them before using shared issuer URLs.
+
+Both entries use this username expression:
+
+```cel
+authenticationConfiguration.issuer.name + ":" + claims.repository + ":" + claims.ref
+```
+
+For repository `my-org/my-repo` and ref `refs/heads/main`, the internal entry produces `gha-internal:my-org/my-repo:refs/heads/main`.
+A binding must match that exact username with `kind: User`.
+The existing `gha:repo:my-org/my-repo` group binding does not match this username.
+The shared issuer example maps only a username. It does not create that repository group or grant resource access.
+
+The issuer name affects the identity only when the mapping uses it.
+The proxy does not automatically prefix usernames or groups with the issuer name.
+Use separate prefixes for both usernames and groups across trust groups.
+The CEL variable works only in the proxy configuration kind. It does not work in a literal `prefix` field.
+
 ## TokenReview and passthrough
 
 TokenReview asks Kubernetes whether it accepts a bearer token. Passthrough forwards that token after a successful review.
