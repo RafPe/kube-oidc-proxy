@@ -145,15 +145,16 @@ func TestBuildTokenAuthenticator_SingleIssuer(t *testing.T) {
 		SigningAlgs:   []string{"RS256"},
 	}}
 
-	authn, issuerURLs, err := Build(cfg, discardLogger())
+	authn, issuers, err := Build(cfg, discardLogger())
 	if err != nil {
 		t.Fatalf("Build() unexpected error: %v", err)
 	}
 	if authn == nil {
 		t.Error("Build() returned nil authenticator")
 	}
-	if want := []string{cfg.Issuer.URL}; len(issuerURLs) != len(want) || issuerURLs[0] != want[0] {
-		t.Errorf("Build() issuerURLs = %v, want %v", issuerURLs, want)
+	want := []Issuer{{Name: "vault.example.com", URL: cfg.Issuer.URL, Audiences: []string{"my-client"}}}
+	if !reflect.DeepEqual(issuers, want) {
+		t.Errorf("Build() issuers = %+v, want %+v", issuers, want)
 	}
 }
 
@@ -204,24 +205,19 @@ jwt:
 `
 	configPath := writeTempFile(t, configContent)
 
-	authn, issuerURLs, err := Build(Config{ConfigFile: configPath}, discardLogger())
+	authn, issuers, err := Build(Config{ConfigFile: configPath}, discardLogger())
 	if err != nil {
 		t.Fatalf("Build() unexpected error: %v", err)
 	}
 	if authn == nil {
 		t.Error("Build() returned nil authenticator")
 	}
-	want := []string{
-		"https://vault.example.com/v1/identity/oidc",
-		"https://issuer2.example.com/v1/identity/oidc",
+	want := []Issuer{
+		{Name: "vault.example.com", URL: "https://vault.example.com/v1/identity/oidc", Audiences: []string{"my-client"}},
+		{Name: "issuer2.example.com", URL: "https://issuer2.example.com/v1/identity/oidc", Audiences: []string{"kubernetes"}},
 	}
-	if len(issuerURLs) != len(want) {
-		t.Fatalf("Build() issuerURLs = %v, want %v", issuerURLs, want)
-	}
-	for i := range want {
-		if issuerURLs[i] != want[i] {
-			t.Errorf("Build() issuerURLs[%d] = %q, want %q", i, issuerURLs[i], want[i])
-		}
+	if !reflect.DeepEqual(issuers, want) {
+		t.Fatalf("Build() issuers = %+v, want %+v", issuers, want)
 	}
 }
 
@@ -251,16 +247,19 @@ jwt:
 		t.Fatal(err)
 	}
 
-	authn, issuerURLs, err := Build(Config{ConfigFile: path}, discardLogger())
+	authn, issuers, err := Build(Config{ConfigFile: path}, discardLogger())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if authn == nil {
 		t.Fatal("expected a token authenticator, got nil")
 	}
-	want := []string{"https://issuer1.example.com", "https://issuer2.example.com"}
-	if !reflect.DeepEqual(issuerURLs, want) {
-		t.Fatalf("expected issuer URLs %v, got %v", want, issuerURLs)
+	want := []Issuer{
+		{Name: "issuer1.example.com", URL: "https://issuer1.example.com", Audiences: []string{"aud-one"}},
+		{Name: "issuer2.example.com", URL: "https://issuer2.example.com", Audiences: []string{"aud-two"}},
+	}
+	if !reflect.DeepEqual(issuers, want) {
+		t.Fatalf("Build() issuers = %+v, want %+v", issuers, want)
 	}
 }
 

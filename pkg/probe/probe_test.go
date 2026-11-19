@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -20,6 +21,8 @@ import (
 	"testing"
 
 	"k8s.io/apiserver/pkg/authentication/authenticator"
+
+	"github.com/rafpe/kube-oidc-proxy/pkg/authn"
 )
 
 // fakeAuthenticator simulates the union authenticator, which routes a token to
@@ -97,7 +100,21 @@ func newTestServerWithAuthenticator(t testing.TB, requireAll bool, authn authent
 
 func newTestServerWithRoot(t testing.TB, root *slog.Logger, requireAll bool, authn authenticator.Token, issuerURLs ...string) *Server {
 	t.Helper()
-	return NewServer(Config{IssuerURLs: issuerURLs, Mode: ReadinessModeFor(requireAll), Authenticator: authn}, root)
+	return NewServer(Config{Issuers: issuersFor(issuerURLs...), Mode: ReadinessModeFor(requireAll), Authenticator: authn}, root)
+}
+
+// issuersFor names each issuer URL by its host, as authn.Build does for an
+// issuer of the upstream configuration kind.
+func issuersFor(issuerURLs ...string) []authn.Issuer {
+	issuers := make([]authn.Issuer, 0, len(issuerURLs))
+	for _, issuerURL := range issuerURLs {
+		u, err := url.Parse(issuerURL)
+		if err != nil {
+			panic(err)
+		}
+		issuers = append(issuers, authn.Issuer{Name: u.Host, URL: issuerURL})
+	}
+	return issuers
 }
 
 func newTestServer(t testing.TB, requireAll bool, notInit map[string]bool, issuerURLs ...string) *Server {
@@ -409,9 +426,9 @@ func (timeoutError) Temporary() bool { return true }
 // naming a different issuer would probe the wrong one.
 func TestNewIssuerReadinessNamesTheIssuer(t *testing.T) {
 	const issuerURL = "https://issuer.example.com/realm"
-	r := newIssuerReadiness(issuerURL)
-	if r.issuerURL != issuerURL {
-		t.Fatalf("issuerURL = %q, want %q", r.issuerURL, issuerURL)
+	r := newIssuerReadiness(authn.Issuer{Name: "corp", URL: issuerURL})
+	if r.name != "corp" {
+		t.Fatalf("name = %q, want corp", r.name)
 	}
 
 	// Decoded by hand, as the probe builds it: a JOSE library here would only

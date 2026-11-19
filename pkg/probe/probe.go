@@ -78,8 +78,9 @@ func ReadinessModeFor(requireAll bool) ReadinessMode {
 // issuerReadiness pairs an issuer with the fake JWT used to probe whether
 // its authenticator has completed JWKS initialization.
 type issuerReadiness struct {
-	issuerURL string
-	fakeJWT   string
+	// name is the issuer_name that authn.Build resolved for the issuer.
+	name    string
+	fakeJWT string
 }
 
 // fakeJWTKey signs the probe token. The token is meant to fail verification:
@@ -95,7 +96,7 @@ var fakeJWTHeader = base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256",
 // naming the issuer, signed with a key no issuer holds. It is assembled by
 // hand because a throwaway token is all the probe needs, and a JOSE library
 // for it alone would be one more dependency in the proxy binary.
-func newIssuerReadiness(issuerURL string) issuerReadiness {
+func newIssuerReadiness(issuer authn.Issuer) issuerReadiness {
 	// Marshalling two strings and an integer cannot fail, so the error is
 	// not a path this function has.
 	claims, _ := json.Marshal(struct {
@@ -104,7 +105,7 @@ func newIssuerReadiness(issuerURL string) issuerReadiness {
 		NotBefore int64  `json:"nbf"`
 	}{
 		Subject:   "fake",
-		Issuer:    issuerURL,
+		Issuer:    issuer.URL,
 		NotBefore: time.Date(2016, 1, 1, 0, 0, 0, 0, time.UTC).Unix(),
 	})
 
@@ -112,7 +113,7 @@ func newIssuerReadiness(issuerURL string) issuerReadiness {
 	mac := hmac.New(sha256.New, fakeJWTKey)
 	mac.Write([]byte(signingInput))
 	token := signingInput + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-	return issuerReadiness{issuerURL: issuerURL, fakeJWT: token}
+	return issuerReadiness{name: issuer.Name, fakeJWT: token}
 }
 
 // Server is the readiness probe: it tracks per-issuer OIDC initialization,
@@ -143,8 +144,11 @@ type Server struct {
 
 	serving atomic.Bool
 
-	mu          sync.Mutex
-	ready       bool
+	mu    sync.Mutex
+	ready bool
+
+	// initialized holds the issuers whose JWKS fetch completed, keyed by the
+	// issuer name.
 	initialized map[string]bool
 
 	// lastPending is the pending issuer set as of the previous check, joined
@@ -171,10 +175,11 @@ type Config struct {
 	// the metrics listener takes.
 	Addr string
 
-	// IssuerURLs are the issuers readiness waits for. The probe builds the
-	// fake JWT it sends each one to learn whether its authenticator has
-	// fetched its JWKS.
-	IssuerURLs []string
+	// Issuers are the issuers readiness waits for, as authn.Build returns
+	// them. The probe sends a fake JWT to each issuer. The answer tells
+	// whether the authenticator of the issuer fetched its JWKS. The probe
+	// reports each issuer by its Name.
+	Issuers []authn.Issuer
 
 	// Mode is whether readiness waits for any one issuer or for all of them.
 	// The zero value is ReadinessAny.
@@ -204,9 +209,9 @@ func NewServer(cfg Config, root *slog.Logger) *Server {
 	if mode == "" {
 		mode = ReadinessAny
 	}
-	issuers := make([]issuerReadiness, 0, len(cfg.IssuerURLs))
-	for _, issuerURL := range cfg.IssuerURLs {
-		issuers = append(issuers, newIssuerReadiness(issuerURL))
+	issuers := make([]issuerReadiness, 0, len(cfg.Issuers))
+	for _, issuer := range cfg.Issuers {
+		issuers = append(issuers, newIssuerReadiness(issuer))
 	}
 
 	s := &Server{
@@ -222,8 +227,8 @@ func NewServer(cfg Config, root *slog.Logger) *Server {
 	s.srv = httpserve.NewHTTPServer(cfg.Addr, s.handler(), s.readinessLogger)
 
 	cfg.Metrics.SetReady(false)
-	for _, issuerURL := range cfg.IssuerURLs {
-		cfg.Metrics.SetIssuerInitialized(authn.IssuerName(issuerURL), false)
+	for _, issuer := range cfg.Issuers {
+		cfg.Metrics.SetIssuerInitialized(issuer.Name, false)
 	}
 	return s
 }

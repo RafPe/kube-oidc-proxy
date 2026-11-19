@@ -144,9 +144,9 @@ func TestStalePendingResultIsDroppedOnceInitialized(t *testing.T) {
 		"https://a")
 
 	hc.mu.Lock()
-	hc.initialized["https://a"] = true
+	hc.initialized["a"] = true
 	pending := hc.recordProbeResults(context.Background(), nil,
-		[]pendingIssuer{{issuerURL: "https://a", reason: pendingNotInitialized}})
+		[]pendingIssuer{{name: "a", reason: pendingNotInitialized}})
 	hc.mu.Unlock()
 
 	if len(pending) != 0 {
