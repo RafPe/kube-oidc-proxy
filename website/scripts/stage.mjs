@@ -15,6 +15,11 @@ const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp']);
 
 export function stage({ repoRoot, manifestPath, outDir, imgDir }) {
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  for (const page of manifest.pages) {
+    if (page.component && !['RequestExplorer', 'IdentityExplorer'].includes(page.component)) {
+      throw new Error(`Unknown interactive component: ${page.component}`);
+    }
+  }
   const bySource = new Map(manifest.pages.map((p) => [p.source, p]));
 
   checkCoverage(repoRoot, manifest, bySource);
@@ -31,11 +36,17 @@ export function stage({ repoRoot, manifestPath, outDir, imgDir }) {
     // A manifest `title` wins over the H1; the H1 then stays in the body as a
     // section heading (CHANGELOG.md starts with "# Unreleased").
     const { title, body } = page.title ? { title: page.title, body: demoteH1(raw) } : splitTitle(raw, page.source);
-    const outFile = path.join(outDir, `${page.route}.md`);
+    const outFile = path.join(outDir, `${page.route}.${page.component ? 'mdx' : 'md'}`);
     const rewritten = rewrite(body, { page, abs, repoRoot, bySource, outFile, imgDir });
-    const fm = frontmatter({ title, description: describe(rewritten), editUrl: `${GITHUB}/edit/main/${page.source}`, order: page.order, lastUpdated: lastUpdated(repoRoot, page.source) });
+    const fm = frontmatter({ title, description: describe(rewritten), editUrl: `${GITHUB}/edit/main/${page.source}`, order: page.order, lastUpdated: lastUpdated(repoRoot, page.source), interactive: !!page.component });
     mkdirSync(path.dirname(outFile), { recursive: true });
-    writeFileSync(outFile, `${fm}\n${rewritten}`);
+    let component = '';
+    if (page.component) {
+      const target = path.join(repoRoot, 'website/src/components/interactive', `${page.component}.astro`);
+      const relative = path.relative(path.dirname(outFile), target).split(path.sep).join('/');
+      component = `\nimport Interactive from ${JSON.stringify(relative)};\n\n<Interactive />\n`;
+    }
+    writeFileSync(outFile, `${fm}\n${component}\n${rewritten}`);
     return { route: page.route, title, group: page.group, label: page.label, order: page.order, source: page.source };
   });
   return { pages };
@@ -103,12 +114,13 @@ function describe(body) {
   return text;
 }
 
-function frontmatter({ title, description, editUrl, order, lastUpdated }) {
+function frontmatter({ title, description, editUrl, order, lastUpdated, interactive }) {
   const q = (s) => JSON.stringify(s);
   const lines = ['---', `title: ${q(title)}`];
   if (description) lines.push(`description: ${q(description)}`);
   lines.push(`editUrl: ${q(editUrl)}`);
   if (lastUpdated) lines.push(`lastUpdated: ${lastUpdated}`);
+  if (interactive) lines.push('tableOfContents: false');
   lines.push('sidebar:', `  order: ${order}`, '---');
   return lines.join('\n');
 }

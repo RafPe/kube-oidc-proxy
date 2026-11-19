@@ -387,14 +387,14 @@ jobs:
             - Keep every condition and hedge that the evidence supports. Do
               not state a guess as a fact.
 
-            Summary format. The summary is the lines below, with no leading
-            spaces. Replace each <...> with the value. Keep the badge row on
+            Summary format. The summary is the lines from the marker line to
+            the `Not covered:` line, with no leading spaces. Replace each <...> with the value. Keep the badge row on
             one line. In a badge text, write a space as `_`, `-` as `--` and
             `/` as `%2F`. This format takes priority over the Output Format
             of the asd-ste100 skill.
 
             <!-- claude-review head=<HEAD COMMIT, 40 chars> -->
-            ![verdict](https://img.shields.io/badge/verdict-<VERDICT>-<COLOR>) ![blocking](https://img.shields.io/badge/blocking-<N>-<COLOR>) ![nits](https://img.shields.io/badge/nits-<N>-d4a017) ![files](https://img.shields.io/badge/files-<READ>%2F<CHANGED>-<COLOR>) ![head](https://img.shields.io/badge/head-<7 chars>-555)
+            ![verdict](https://img.shields.io/badge/verdict-<VERDICT>-<COLOR>) ![blocking](https://img.shields.io/badge/blocking-<N>-<COLOR>) ![nits](https://img.shields.io/badge/nits-<N>-<COLOR>) ![files](https://img.shields.io/badge/files-<READ>%2F<CHANGED>-<COLOR>) ![head](https://img.shields.io/badge/head-<7 chars>-555)
 
             **Blocking**
             - `<path>:<line>`: <problem>. <effect>. <fix>.
@@ -411,6 +411,7 @@ jobs:
               covered" is not empty. Use `approved` only when you set
               approve=true.
             - The blocking badge is c62f3b when N is more than 0, else
+              1f7a3d. The nits badge is d4a017 when N is more than 0, else
               1f7a3d. The files badge is 1f7a3d when READ equals CHANGED,
               else d4a017.
             - Leave out a section that has no items, but always keep the
@@ -485,7 +486,7 @@ jobs:
           jq -r '
             [.[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use")]
             | "tool calls: \(length)",
-              (.[] | "  \(.name) \(.input.file_path // .input.command
+              (.[] | "  \(.name) \(.input.file_path // .input.command // .input.skill
                   // ((.input.pattern // "" | tostring) + (if .input.path then " in \(.input.path)" else "" end))
                   | tostring | gsub("[\r\n]"; " ") | .[0:200])")
           ' "${EXECUTION_FILE}"
@@ -528,7 +529,10 @@ jobs:
           else
             what="The review of \`${HEAD:0:7}\` finished with outcome \`${OUTCOME}\`"
           fi
-          gh pr comment "${PR}" -R "${GITHUB_REPOSITORY}" --body "$(cat <<EOF
+          # The REST issue-comments call works with issues: write. gh pr
+          # comment uses the GraphQL addComment call, which this token cannot
+          # use on a pull request.
+          gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" --silent -f body="$(cat <<EOF
           ## Review run ended without a summary
 
           ${what} and posted no summary comment, so nothing from it should be taken as a verdict. See the [run](${RUN_URL}). Comment \`@claude review\` again to run a full review.
@@ -550,15 +554,16 @@ jobs:
     timeout-minutes: 5
     permissions:
       issues: write
-      pull-requests: read
     steps:
       - name: Ask for the label
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.issue.number }}
         run: |
-          gh pr comment "${PR}" -R "${GITHUB_REPOSITORY}" \
-            --body 'The review did not start. Add the label `review/claude-allowed` to this PR, then comment `@claude review` again.'
+          # The REST call works with issues: write. The GraphQL addComment
+          # call of gh pr comment does not (run 44615729074).
+          gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" --silent \
+            -f body='The review did not start. Add the label `review/claude-allowed` to this PR, then comment `@claude review` again.'
 
   # A separate job, so that nothing the review step writes to the runner, for
   # example GITHUB_ENV, reaches the step that holds an approving token. It

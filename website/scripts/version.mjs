@@ -16,7 +16,10 @@ function git(repo, ...args) {
 
 export function docsVersion(repo) {
   const exact = git(repo, 'describe', '--tags', '--exact-match', '--match', 'v*');
-  if (exact) return { version: exact, isRelease: true };
+  if (exact) {
+    const status = git(repo, 'status', '--porcelain', '--untracked-files=normal');
+    return { version: exact, isRelease: status === '' };
+  }
   const latest = git(repo, 'describe', '--tags', '--abbrev=0', '--match', 'v*');
   return { version: latest ?? 'main', isRelease: false };
 }

@@ -51,7 +51,7 @@ jobs:
     name: "site:build"
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
@@ -86,6 +86,13 @@ jobs:
 
       - name: Build
         run: npm run build -- --site "${PAGES_ORIGIN}" --base "${PAGES_BASE}"
+        working-directory: website
+        env:
+          PAGES_ORIGIN: ${{ steps.pages.outputs.origin }}
+          PAGES_BASE: ${{ steps.pages.outputs.base_path }}
+
+      - name: Build tagged documentation archives
+        run: npm run archive -- --site "${PAGES_ORIGIN}" --base "${PAGES_BASE}"
         working-directory: website
         env:
           PAGES_ORIGIN: ${{ steps.pages.outputs.origin }}

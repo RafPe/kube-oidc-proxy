@@ -30,6 +30,8 @@ The proxy sits in front of the API server, validates the bearer token against on
 
 See [architecture](./docs/architecture.md) for the full C4 model (system context, containers) and the request-flow sequence.
 
+Explore [Request flow](./docs/interactive/request-flow.md) and [Token to RBAC](./docs/interactive/identity-and-rbac.md) in the docs site’s Interactive section.
+
 ## Does it fit?
 
 - **You need it** when the API server's OIDC flags are out of reach, when several identity providers must authenticate to one cluster, or when a CI system's OIDC tokens should become Kubernetes identities without long-lived credentials.

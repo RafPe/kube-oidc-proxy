@@ -389,8 +389,9 @@ issuers:
 ```
 
 The same applies to EKS cluster issuers in one region, which share the host
-`oidc.eks.<region>.amazonaws.com`. The single-cluster entry below works with
-both kinds.
+`oidc.eks.<region>.amazonaws.com`. The single-cluster entry below is for the
+upstream kind. For the proxy kind, put it under `issuers[].jwt` and add a
+`name`.
 
 ```yaml
 - issuer:

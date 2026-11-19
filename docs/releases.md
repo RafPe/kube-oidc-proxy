@@ -132,6 +132,39 @@ place a page is added to the navigation, and a doc that is not listed there
 fails the build. Pull requests build the site and upload it as a `site`
 workflow artifact; pushes to `main` deploy it.
 
+### Documentation versions
+
+The header version selector lists development documentation and the three newest stable releases with documentation.
+Select **All versions** to show the full archive. Select **Recent versions** to restore the short list.
+Older versions keep their direct URLs. When you open one, the selector identifies it as an archived version.
+Each tagged site builds from its own checkout and package lock.
+The archive starts with `v1.9.0`. Earlier tags do not contain the website.
+
+The workflow includes all eligible tagged sites in each Pages deployment.
+For example, `v2.1.0` lives under `/kube-oidc-proxy/v2.1.0/`.
+The root path serves the current checkout. The build uses the configured base path for custom domains.
+
+Switching versions preserves the current page when that version contains it.
+Otherwise, the selector opens that version's Getting Started page.
+Older versions do not receive newer explanations or interactive pages.
+Only their version navigation uses the current selector.
+
+A failed archive build fails the deployment. The selector lists only archives included in the completed build.
+Tag contents stay fixed, but this process rebuilds the HTML. It does not retain byte-identical copies of previous deployments.
+
+To preview the complete archive, run these commands from `website/`:
+
+```sh
+npm run build
+npm run archive
+npm run preview -- --host 127.0.0.1 --port 4321
+```
+
+The archive command needs local release tags and network access for locked npm dependencies.
+A regular `npm run build` creates only the current site. Run `npm run archive` again to restore local version choices.
+
+### Repository settings
+
 Two repository settings are not in this repository and must be in place
 before the first pull request that touches the site merges: without Pages
 enabled, `actions/configure-pages` fails the build job on every such PR.

@@ -43,8 +43,9 @@ export default defineConfig({
       components: {
         // Rendered only on pages that declare a hero, i.e. the landing page.
         Hero: './src/components/landing/Hero.astro',
-        // Version line on every docs page.
+        // Preserve explicit page notices.
         Banner: './src/components/overrides/Banner.astro',
+        SocialIcons: './src/components/overrides/SocialIcons.astro',
         // Site title plus the Docs / Guides / Reference / Releases links.
         SiteTitle: './src/components/overrides/SiteTitle.astro',
       },

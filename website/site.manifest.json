@@ -9,6 +9,7 @@
     "Start",
     "Guides",
     "Concepts",
+    "Interactive",
     "Reference",
     "Project"
   ],
@@ -146,6 +147,22 @@
       "group": "Project",
       "label": "Contributing",
       "order": 5
+    },
+    {
+      "source": "docs/interactive/request-flow.md",
+      "route": "interactive/request-flow",
+      "group": "Interactive",
+      "label": "Request flow",
+      "order": 1,
+      "component": "RequestExplorer"
+    },
+    {
+      "source": "docs/interactive/identity-and-rbac.md",
+      "route": "interactive/identity-and-rbac",
+      "group": "Interactive",
+      "label": "Token to RBAC",
+      "order": 2,
+      "component": "IdentityExplorer"
     }
   ]
 }

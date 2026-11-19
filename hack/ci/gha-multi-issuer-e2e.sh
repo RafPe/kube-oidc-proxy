@@ -41,8 +41,8 @@
 # this mode, with real GitHub Actions tokens minted per audience:
 #   * The GHA_AUDIENCE token impersonates "gha-internal:<sub>".
 #   * The vendor token impersonates "gha-vendor:<sub>".
-#   * The foreign token gets 401: the router selects gha-foreign, its claim
-#     rule refuses the token, and no other issuer verifies it.
+#   * The foreign token gets 401 with reason=unauthorized. gha-foreign pins
+#     another owner. The check does not prove which issuer refused the token.
 #   * A token with an audience that no issuer has gets 401, and the proxy
 #     logs authn.oidc.failed with reason=audience_unrouted.
 #   * The access records carry issuer_name gha-internal and gha-vendor.
@@ -529,7 +529,7 @@ if [ -n "${GHA_TOKEN_FILE}" ] && [ "${GHA_CONFIG_KIND}" = "upstream" ]; then
 fi
 if [ -n "${GHA_TOKEN_FILE}" ] && [ "${GHA_CONFIG_KIND}" = "proxy" ]; then
   echo "  - one GitHub Actions issuer URL, three issuers: gha-internal:${GHA_SUB} and gha-vendor:${GHA_SUB} accepted,"
-  echo "    gha-foreign refused by its claim rule, an unknown audience refused as audience_unrouted"
+  echo "    the gha-foreign token refused with 401, an unknown audience refused as audience_unrouted"
 fi
 echo "  - local Dex token impersonated as oidc-local:${DEX_USER}, with extra example.com/email"
 echo "  - kubectl --as=ci-viewer allowed for both, --as=nobody refused by the proxy"

@@ -83,7 +83,8 @@ Dex issuer. It runs `hack/ci/gha-multi-issuer-e2e.sh` in two jobs:
 - `test:e2e-oidc-shared-issuer` uses the proxy kind, with three issuers on
   the GitHub Actions issuer URL (ADR-0001). The job mints a real token for
   each audience and checks three results. Each token maps to the username
-  of its own issuer. The claim rule of the selected issuer refuses a token.
+  of its own issuer. A token for the audience of `gha-foreign`, which pins
+  another owner, gets `401`.
   The proxy refuses an unknown audience with `401` and
   `reason=audience_unrouted`.
 
@@ -339,6 +340,30 @@ kubectl, helm, jq and curl — but no `kind` CLI: the scripts run the kind pinne
 in `go.mod`, which is the one the e2e suite uses. Prerequisites, the pinned
 versions and what each file does are in
 [`hack/metrics-demo/README.md`](../hack/metrics-demo/README.md).
+
+## Interactive documentation
+
+The [request flow](./interactive/request-flow.md) and [identity explorer](./interactive/identity-and-rbac.md) use Astro components in `website/src/components/interactive/`.
+Edit their explanations in `request-content.cjs` and the corresponding Markdown pages.
+The build checks that each request stage references a unique Go function anchor.
+It excludes these references and Go source from the browser data.
+Update the anchors when a function moves or changes its signature.
+The explorer uses the same checkout as the documentation.
+A clean tagged checkout displays the release version. Local changes display Development in the version selector.
+
+Run these commands from `website/`:
+
+```sh
+npm ci
+npm test
+npm run build
+npm run check
+npm run preview -- --host 127.0.0.1 --port 4321
+```
+
+Open `http://127.0.0.1:4321/kube-oidc-proxy/interactive/request-flow/`.
+For browser checks, set `CHROME_PATH` to a local Chromium executable and run `node scripts/interactive-browser.mjs`.
+These checks cover request scenarios, controls, identity rules, and narrow screens.
 
 ## See also
 
