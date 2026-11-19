@@ -108,6 +108,18 @@ func TestExpandIssuerName(t *testing.T) {
 			expr:    `.authenticationConfiguration.issuer`,
 			wantErr: "is the only field of",
 		},
+		{
+			name:    "the root identifier as a macro variable is an error",
+			expr:    `[{"issuer":{"name":"x"}}].exists(authenticationConfiguration, authenticationConfiguration.issuer.name == "x")`,
+			wantErr: "cannot be a macro variable",
+		},
+		{
+			// The parser reads a two-variable macro as a call, so the bare
+			// root identifier is refused.
+			name:    "the root identifier as the second variable of a two-variable macro is an error",
+			expr:    `{"a": 1}.all(k, authenticationConfiguration, authenticationConfiguration > 0)`,
+			wantErr: "is the only field of",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

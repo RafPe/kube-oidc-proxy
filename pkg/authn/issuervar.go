@@ -90,8 +90,16 @@ func expandIssuerName(expr, name string) (string, error) {
 	// identifier. Each other use of the root identifier is an error.
 	matched := map[int64]bool{}
 	var roots []ast.Expr
+	bound := false
 	ast.PreOrderVisit(tree.Expr(), ast.NewExprVisitor(func(e ast.Expr) {
 		switch e.Kind() {
+		case ast.ComprehensionKind:
+			// A macro variable with the root name hides the variable inside
+			// the macro, so a replacement there changes the meaning.
+			c := e.AsComprehension()
+			if isIssuerVariableRoot(c.IterVar()) {
+				bound = true
+			}
 		case ast.IdentKind:
 			if isIssuerVariableRoot(e.AsIdent()) {
 				roots = append(roots, e)
@@ -102,6 +110,9 @@ func expandIssuerName(expr, name string) (string, error) {
 			}
 		}
 	}))
+	if bound {
+		return "", fmt.Errorf("%q cannot be a macro variable", issuerVariableRoot)
+	}
 
 	runes := []rune(expr)
 	var starts []int
