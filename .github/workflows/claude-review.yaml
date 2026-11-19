@@ -6,7 +6,7 @@ name: Claude Review
 #     fragment changes (.github/scripts/approve-release-pr.sh).
 #   - Commenting "@claude review" on any other PR runs a Claude code review
 #     and approves only when the review finds no blocking issues. The review
-#     reads the PR as fetched commits against the main checkout, area by
+#     reads the PR as fetched commits and a copy of the PR head tree, area by
 #     area, so a large PR is reviewed in full rather than skipped. A second
 #     "@claude review" continues from the previous one: it re-checks the
 #     earlier findings against the new commits and reviews only the new work.
@@ -114,9 +114,10 @@ jobs:
           echo "cross=${cross}" >> "${GITHUB_OUTPUT}"
 
       # The checkout above is main. Fetch the PR's two endpoints as plain
-      # commits (no checkout, nothing from the PR is executed) so the review
-      # can diff and read the change file by file instead of pulling the whole
-      # diff through one command, which does not fit a large PR.
+      # commits and write the head tree to a separate directory. Nothing from
+      # the PR is executed. The review can then diff and read the change file
+      # by file instead of pulling the whole diff through one command, which
+      # does not fit a large PR.
       - name: Fetch PR endpoints
         id: endpoints
         if: ${{ !contains(join(github.event.issue.labels.*.name, ','), 'autorelease') }}
@@ -132,8 +133,8 @@ jobs:
           # BASE is the merge base of the PR with its base branch, so
           # `git diff BASE HEAD` is the PR's own change (what `gh pr diff`
           # shows) even after the base branch has moved on. Both endpoints are
-          # fetched as single commits; the main checkout is the current base
-          # for surrounding code.
+          # fetched as single commits. The surrounding code comes from the head
+          # tree below, not from the main checkout.
           refs=$(gh pr view "${PR}" -R "${GITHUB_REPOSITORY}" --json baseRefOid,headRefOid --jq '.baseRefOid + "..." + .headRefOid')
           base=$(gh api "repos/${GITHUB_REPOSITORY}/compare/${refs}" --jq '.merge_base_commit.sha')
           git fetch --no-tags --depth=1 origin "${base}" "+refs/pull/${PR}/head:refs/remotes/pr/head"
@@ -144,9 +145,12 @@ jobs:
           # around the change must come from the PR head. Write the head tree
           # to a separate directory for Read, Grep and Glob. Symlinks become
           # plain files, so a link in the PR cannot point the review at a
-          # file of the runner. Nothing from the tree is executed.
+          # file of the runner. The PR's .gitattributes can select the LFS
+          # filter of the runner. LFS smudge is off, so a missing LFS object
+          # cannot make the checkout fail. Nothing from the tree is executed.
           head_tree="${RUNNER_TEMP}/pr-head"
-          git -c core.symlinks=false worktree add --detach "${head_tree}" refs/remotes/pr/head
+          GIT_LFS_SKIP_SMUDGE=1 git -c core.symlinks=false -c filter.lfs.required=false \
+            worktree add --detach "${head_tree}" refs/remotes/pr/head
           echo "head_tree=${head_tree}" >> "${GITHUB_OUTPUT}"
 
           # A re-review starts from the previous one. Every summary the review
@@ -354,6 +358,9 @@ jobs:
 
       # Show what the review read, so that its scope and cost can be
       # checked. A refused tool call shows a tool that the review needed.
+      # The inputs come from the review, which reads untrusted PR content.
+      # Each newline becomes a space, so no input line can start with "::"
+      # and act as a workflow command.
       - name: Show the tool calls of the review
         if: ${{ always() && steps.review.outputs.execution_file != '' }}
         env:
@@ -367,12 +374,12 @@ jobs:
           jq -r '
             [.[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use")]
             | "tool calls: \(length)",
-              (.[] | "  \(.name) \(.input.file_path // .input.command // .input.pattern // .input.path // "" | tostring | .[0:200])")
+              (.[] | "  \(.name) \(.input.file_path // .input.command // .input.pattern // .input.path // "" | tostring | gsub("[\r\n]"; " ") | .[0:200])")
           ' "${EXECUTION_FILE}"
           jq -r '
             [.[] | select(.type == "result")] | last // {} | .permission_denials // []
             | "refused tool calls: \(length)",
-              (.[] | "  \(.tool_name) \(.tool_input | tostring | .[0:200])")
+              (.[] | "  \(.tool_name) \(.tool_input | tostring | gsub("[\r\n]"; " ") | .[0:200])")
           ' "${EXECUTION_FILE}"
 
       # The summary is the review's own job, but a run that errors, hits the
