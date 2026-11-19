@@ -195,6 +195,11 @@ func TestUntrustedAudiences(t *testing.T) {
 		{name: "null with spaces is an error", aud: ` null `, wantErr: true},
 		{name: "a number is an error", aud: `1`, wantErr: true},
 		{name: "a missing claim is an error", aud: ``, wantErr: true},
+		{name: "null in a list is an error", aud: `[null]`, wantErr: true},
+		{name: "null next to a value is an error", aud: `["a",null]`, wantErr: true},
+		{name: "an empty string is an error", aud: `""`, wantErr: true},
+		{name: "an empty string in a list is an error", aud: `["a",""]`, wantErr: true},
+		{name: "an empty list is an error", aud: `[]`, wantErr: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
