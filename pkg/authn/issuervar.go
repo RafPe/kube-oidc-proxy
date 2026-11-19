@@ -22,8 +22,10 @@ const IssuerNameVariable = issuerVariableRoot + ".issuer.name"
 const issuerVariableRoot = "authenticationConfiguration"
 
 // issuerNameReference matches one reference at the start of the text. CEL
-// permits whitespace around a dot.
-var issuerNameReference = regexp.MustCompile(`^` + issuerVariableRoot + `\s*\.\s*issuer\s*\.\s*name`)
+// permits whitespace around a dot. A closing parenthesis before a dot closes
+// a parenthesis that opens before the root identifier, for example
+// (authenticationConfiguration.issuer).name.
+var issuerNameReference = regexp.MustCompile(`^` + issuerVariableRoot + `[\s)]*\.\s*issuer[\s)]*\.\s*name`)
 
 // expandIssuerVariables replaces each reference to IssuerNameVariable in the
 // CEL expressions of jwt with a string literal of name. The upstream CEL
@@ -71,7 +73,9 @@ func expandIssuerName(expr, name string) (string, error) {
 	if !strings.Contains(expr, issuerVariableRoot) {
 		return expr, nil
 	}
-	p, err := parser.NewParser(parser.Macros(parser.AllMacros...))
+	// The upstream CEL environment permits optional syntax, for example
+	// claims.?email. The parser must permit it too, or the reference stays.
+	p, err := parser.NewParser(parser.Macros(parser.AllMacros...), parser.EnableOptionalSyntax(true))
 	if err != nil {
 		return "", err
 	}
@@ -118,8 +122,12 @@ func expandIssuerName(expr, name string) (string, error) {
 		if loc == nil {
 			return "", fmt.Errorf("write %q without comments inside it", IssuerNameVariable)
 		}
-		end := start + len([]rune(string(runes[start:])[:loc[1]]))
-		runes = slices.Concat(runes[:start], literal, runes[end:])
+		matched := string(runes[start:])[:loc[1]]
+		end := start + len([]rune(matched))
+		// Keep each closing parenthesis, so that each opening parenthesis
+		// before the reference keeps its pair.
+		closing := []rune(strings.Repeat(")", strings.Count(matched, ")")))
+		runes = slices.Concat(runes[:start], literal, closing, runes[end:])
 	}
 	return string(runes), nil
 }

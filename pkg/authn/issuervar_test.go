@@ -73,6 +73,21 @@ func TestExpandIssuerName(t *testing.T) {
 			expr:    "authenticationConfiguration. // why\nissuer.name + claims.sub",
 			wantErr: "without comments",
 		},
+		{
+			name: "a reference in parentheses is replaced",
+			expr: `(authenticationConfiguration.issuer).name + ":" + claims.sub`,
+			want: `("gha-vendor") + ":" + claims.sub`,
+		},
+		{
+			name: "a reference in nested parentheses is replaced",
+			expr: `((authenticationConfiguration ).issuer ).name + ":" + claims.sub`,
+			want: `(("gha-vendor")) + ":" + claims.sub`,
+		},
+		{
+			name: "a reference next to optional syntax is replaced",
+			expr: `authenticationConfiguration.issuer.name + ":" + claims.?preferred_username.orValue(claims.sub)`,
+			want: `"gha-vendor" + ":" + claims.?preferred_username.orValue(claims.sub)`,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
