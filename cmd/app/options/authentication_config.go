@@ -25,8 +25,8 @@ func NewAuthenticationConfigOptions(nfs *cliflag.NamedFlagSets) *AuthenticationC
 func (o *AuthenticationConfigOptions) AddFlags(fs *pflag.FlagSet) *AuthenticationConfigOptions {
 	fs.StringVar(&o.ConfigFile, "authentication-config", o.ConfigFile,
 		"Path to a file containing an AuthenticationConfiguration "+
-			"(apiserver.config.k8s.io/v1 or v1beta1) enabling multi-issuer OIDC "+
-			"authentication. This flag is mutually exclusive with the --oidc-* flags.")
+			"(apiserver.config.k8s.io/v1 or v1beta1, or kube-oidc-proxy.rafpe.github.io/v1alpha1) "+
+			"enabling multi-issuer OIDC authentication. This flag is mutually exclusive with the --oidc-* flags.")
 	return o
 }
 

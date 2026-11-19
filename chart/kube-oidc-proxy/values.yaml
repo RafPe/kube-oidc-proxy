@@ -143,7 +143,10 @@ authenticationConfig:
   # YAML content of an AuthenticationConfiguration resource. When non-empty,
   # --authentication-config is passed to the proxy and the individual --oidc-*
   # flags are omitted. Each issuer's CA must be inline under
-  # issuer.certificateAuthority in this content.
+  # issuer.certificateAuthority in this content. The content can be the
+  # upstream kind (apiserver.config.k8s.io) or the proxy kind
+  # (kube-oidc-proxy.rafpe.github.io/v1alpha1). The proxy kind gives each
+  # issuer a name and accepts several issuers for one issuer URL.
   content: ""
   # Existing Secret in the release namespace. Mutually exclusive with content.
   # Set rbac.userExtras for any extra claim keys in this external configuration.

@@ -12,7 +12,7 @@ type Spec struct {
 
 	// Values gives, for each label with a closed vocabulary, every value the
 	// projections in this package can put on it. A label whose value is
-	// bounded in shape but not enumerable -- issuer_name is a host, the
+	// bounded in shape but not enumerable -- issuer_name is a configured name or a host, the
 	// build_info labels are build strings -- has no entry. The vocabulary is
 	// the family's, not the label name's: outcome means one thing on the
 	// authentication counter and another on the review counters. Read it

@@ -230,7 +230,7 @@ If an alias is ever added it goes in this table with a status of `alias`.
 | `k8s_namespace` | string | namespace | new | `request.access.decided` | absent for cluster-scoped requests |
 | `k8s_name` | string | object name, max 256 chars | new | `request.access.decided` | absent on list and watch |
 | `auth_method` | string | `oidc`, `tokenreview`, `none` | new | `request.access.decided` | `none` is the no-token 401 path |
-| `issuer_name` | string | host of the configured issuer URL, max 256 chars | new | `request.access.decided`, `oidc.issuer.*` | never the full issuer URL |
+| `issuer_name` | string | `name` of the issuer for the proxy kind, otherwise the host of the configured issuer URL, max 256 chars | new | `request.access.decided`, `oidc.issuer.*` | never the full issuer URL |
 | `reason` | string | closed set, see [reason vocabularies](#reason-vocabularies) | new | `request.access.decided` on `AuFail`, and on error records | |
 | `decision` | string | `allow`, `deny` | new | `request.access.decided`, `cache.sar.lookup`, `authz.sar.completed` | authorization outcome |
 | `inbound_user` | string | username, sanitized, max 256 chars | frozen | `request.access.decided` | the identity OIDC produced, or with `--token-passthrough` the one the API server's TokenReview returned; absent on a request refused before either authenticated it |
@@ -296,7 +296,7 @@ logged. The cache identity is in the event type, not in a field.
 `too_many_impersonation_values`, `malformed_impersonation`,
 `no_username_claim`, `authentication_dependency_error`,
 `authorization_dependency_error`, `upstream_error`, `internal_error`,
-`client_canceled`.
+`client_canceled`, `audience_unrouted`.
 
 **Startup configuration failures** — on `proxy.config.invalid` only, a
 startup-scoped vocabulary that is deliberately disjoint from the request set so
@@ -572,7 +572,7 @@ This table is for whoever writes the ingest pipeline that copies them.
   `outbound_groups_omitted` reporting the drop.
 - Prefer a classified `reason` over raw error text at INFO and WARN. A truncated
   `error_message` appears only on internal failures and at DEBUG.
-- `issuer_name` is the host of the issuer URL. First-party records (those
+- `issuer_name` is the `name` of the issuer for the proxy kind, and the host of the issuer URL for the upstream kind. First-party records (those
   with an `event_type`) never carry the full issuer URL, with one exception: a
   configuration the process refuses to start with. `proxy.startup.failed`
   carries the error that rejected it, and a validation error from the

@@ -53,7 +53,9 @@ ServiceAccount is not granted fails the whole request with 403, so the
 ClusterRole has to name every key the proxy can emit. Three sources feed it:
 
   1. `claimMappings.extra[].key` of every issuer in authenticationConfig.content,
-     read straight from that YAML so the grant cannot drift from the mapping;
+     read straight from that YAML so the grant cannot drift from the mapping.
+     The issuers are `jwt[]` in the upstream kind and `issuers[].jwt` in the
+     kube-oidc-proxy.rafpe.github.io kind;
   2. the keys of `extraImpersonationHeaders.headers` (`k1=v1,k2=v2`), which the
      proxy adds to every impersonated request;
   3. `rbac.userExtras`, for keys that reach the proxy some other way, such as
@@ -79,7 +81,11 @@ is nil rather than its default.
 {{- if hasKey $cfg "Error" -}}
 {{- fail (printf "authenticationConfig.content is not valid YAML: %s" (index $cfg "Error")) -}}
 {{- end -}}
-{{- range $issuer := (default (list) $cfg.jwt) -}}
+{{- $jwts := default (list) $cfg.jwt -}}
+{{- range $named := (default (list) $cfg.issuers) -}}
+{{- with $named.jwt -}}{{- $jwts = append $jwts . -}}{{- end -}}
+{{- end -}}
+{{- range $issuer := $jwts -}}
 {{- range $extra := (default (list) (dig "claimMappings" "extra" (list) $issuer)) -}}
 {{- with $extra.key -}}{{- $keys = append $keys . -}}{{- end -}}
 {{- end -}}
