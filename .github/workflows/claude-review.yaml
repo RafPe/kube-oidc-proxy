@@ -87,12 +87,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # The review reads untrusted PR content. GITHUB_TOKEN of this job cannot
-    # approve: only the review:approve job has pull-requests: write. The
-    # review posts its comments with the token of the Claude GitHub App.
+    # approve or comment: only review:approve and review:report have
+    # pull-requests: write. The review posts its comments with the token of
+    # the Claude GitHub App.
     permissions:
       contents: read
       pull-requests: read
-      issues: write # the notice of a review that left no summary
       actions: read # let Claude read CI results on the PR
       id-token: write
     # The approve job reads these. The approve output is "true" only for a
@@ -102,6 +102,8 @@ jobs:
       summary: ${{ steps.review.outputs.structured_output != '' && fromJSON(steps.review.outputs.structured_output).summary || '' }}
       cross: ${{ steps.origin.outputs.cross }}
       head: ${{ steps.endpoints.outputs.head }}
+      endpoints_outcome: ${{ steps.endpoints.outcome }}
+      review_outcome: ${{ steps.review.outcome }}
     steps:
       # issue_comment events check out the default branch, so both paths get
       # trusted repo content: the approve script for release PRs, the source
@@ -496,49 +498,6 @@ jobs:
               (.[] | "  \(.tool_name) \(.tool_input | tostring | gsub("[\r\n]"; " ") | .[0:200])")
           ' "${EXECUTION_FILE}"
 
-      # The summary is the review's own job, but a run that errors, hits the
-      # job timeout or is cancelled never gets there. Leave a plain notice
-      # instead, without the marker, so the next review starts fresh.
-      - name: Report a review that left no summary
-        if: |
-          always() &&
-          !contains(join(github.event.issue.labels.*.name, ','), 'autorelease')
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ github.event.issue.number }}
-          # Empty when the endpoints step failed before resolving the head.
-          HEAD: ${{ steps.endpoints.outputs.head }}
-          BOT_LOGIN: claude[bot]
-          ENDPOINTS_OUTCOME: ${{ steps.endpoints.outcome }}
-          OUTCOME: ${{ steps.review.outcome }}
-          # Only a summary posted after the triggering comment belongs to this
-          # run: a re-review of an unchanged head would otherwise find the
-          # previous run's marker and stay silent.
-          TRIGGERED_AT: ${{ github.event.comment.created_at }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          posted=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
-            | jq -s --arg bot "${BOT_LOGIN}" --arg head "${HEAD}" --arg since "${TRIGGERED_AT}" '
-                add | map(select(.user.login == $bot and .user.type == "Bot"
-                                 and .created_at > $since
-                                 and (.body | startswith("<!-- claude-review head=" + $head)))) | length')
-          if [ "${posted}" != "0" ]; then exit 0; fi
-          if [ "${ENDPOINTS_OUTCOME}" != "success" ]; then
-            what="The review could not start: fetching the PR endpoints ended with outcome \`${ENDPOINTS_OUTCOME}\`"
-          else
-            what="The review of \`${HEAD:0:7}\` finished with outcome \`${OUTCOME}\`"
-          fi
-          # The REST issue-comments call works with issues: write. gh pr
-          # comment uses the GraphQL addComment call, which this token cannot
-          # use on a pull request.
-          gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" --silent -f body="$(cat <<EOF
-          ## Review run ended without a summary
-
-          ${what} and posted no summary comment, so nothing from it should be taken as a verdict. See the [run](${RUN_URL}). Comment \`@claude review\` again to run a full review.
-          EOF
-          )"
-
   # The same request on a PR without the label. Reply, so that the request
   # does not stop without a sign.
   claude-review-label-missing:
@@ -552,18 +511,73 @@ jobs:
       !contains(join(github.event.issue.labels.*.name, ','), 'autorelease')
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # A comment on a pull request needs pull-requests: write. Run 44618847981
+    # failed with HTTP 403 with issues: write only. This job runs no PR code.
     permissions:
-      issues: write
+      pull-requests: write
     steps:
       - name: Ask for the label
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.issue.number }}
         run: |
-          # The REST call works with issues: write. The GraphQL addComment
-          # call of gh pr comment does not (run 44615729074).
           gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" --silent \
             -f body='The review did not start. Add the label `review/claude-allowed` to this PR, then comment `@claude review` again.'
+
+  # The summary is the review's own job, but a run that errors, hits the
+  # job timeout or is cancelled never gets there. Leave a plain notice
+  # instead, without the marker, so the next review starts fresh. This is a
+  # separate job, because a comment needs pull-requests: write, which the
+  # review job does not get. It reads only the outputs of the review job.
+  claude-review-report:
+    name: "review:report"
+    needs: claude-review
+    if: |
+      always() &&
+      needs.claude-review.result != 'skipped' &&
+      !contains(join(github.event.issue.labels.*.name, ','), 'autorelease')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Report a review that left no summary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.issue.number }}
+          # Empty when the endpoints step failed before resolving the head, or
+          # when the review job was cancelled.
+          HEAD: ${{ needs.claude-review.outputs.head }}
+          BOT_LOGIN: claude[bot]
+          JOB_RESULT: ${{ needs.claude-review.result }}
+          ENDPOINTS_OUTCOME: ${{ needs.claude-review.outputs.endpoints_outcome }}
+          OUTCOME: ${{ needs.claude-review.outputs.review_outcome }}
+          # Only a summary posted after the triggering comment belongs to this
+          # run: a re-review of an unchanged head would otherwise find the
+          # previous run's marker and stay silent.
+          TRIGGERED_AT: ${{ github.event.comment.created_at }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          posted=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
+            | jq -s --arg bot "${BOT_LOGIN}" --arg head "${HEAD}" --arg since "${TRIGGERED_AT}" '
+                add | map(select(.user.login == $bot and .user.type == "Bot"
+                                 and .created_at > $since
+                                 and (.body | startswith("<!-- claude-review head=" + $head)))) | length')
+          if [ "${posted}" != "0" ]; then exit 0; fi
+          if [ -z "${ENDPOINTS_OUTCOME}" ]; then
+            what="The review job ended with result \`${JOB_RESULT}\`"
+          elif [ "${ENDPOINTS_OUTCOME}" != "success" ]; then
+            what="The review could not start: fetching the PR endpoints ended with outcome \`${ENDPOINTS_OUTCOME}\`"
+          else
+            what="The review of \`${HEAD:0:7}\` finished with outcome \`${OUTCOME}\`"
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" --silent -f body="$(cat <<EOF
+          ## Review run ended without a summary
+
+          ${what} and posted no summary comment, so nothing from it should be taken as a verdict. See the [run](${RUN_URL}). Comment \`@claude review\` again to run a full review.
+          EOF
+          )"
 
   # A separate job, so that nothing the review step writes to the runner, for
   # example GITHUB_ENV, reaches the step that holds an approving token. It
