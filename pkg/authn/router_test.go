@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -178,5 +179,38 @@ func TestErrAudienceUnroutedText(t *testing.T) {
 		if strings.Contains(msg, forbidden) {
 			t.Fatalf("ErrAudienceUnrouted = %q, must not contain %q", msg, forbidden)
 		}
+	}
+}
+
+func TestUntrustedAudiences(t *testing.T) {
+	tests := []struct {
+		name    string
+		aud     string
+		want    []string
+		wantErr bool
+	}{
+		{name: "one string", aud: `"a"`, want: []string{"a"}},
+		{name: "a list", aud: `["a","b"]`, want: []string{"a", "b"}},
+		{name: "null is an error", aud: `null`, wantErr: true},
+		{name: "null with spaces is an error", aud: ` null `, wantErr: true},
+		{name: "a number is an error", aud: `1`, wantErr: true},
+		{name: "a missing claim is an error", aud: ``, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := untrustedClaims{aud: json.RawMessage(tc.aud)}.audiences()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("audiences() = %q, want an error", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("audiences() unexpected error: %v", err)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("audiences() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

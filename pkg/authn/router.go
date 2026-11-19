@@ -2,6 +2,7 @@
 package authn
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -133,6 +134,10 @@ func parseUntrustedClaims(token string) (untrustedClaims, error) {
 // audiences returns the aud claim as a list. A JWT aud is one string or an
 // array of strings. Any other value is an error.
 func (c untrustedClaims) audiences() ([]string, error) {
+	// json.Unmarshal accepts null for a string and leaves it empty.
+	if bytes.Equal(bytes.TrimSpace(c.aud), []byte("null")) {
+		return nil, errors.New("oidc: the token aud is null")
+	}
 	var one string
 	if err := json.Unmarshal(c.aud, &one); err == nil {
 		return []string{one}, nil

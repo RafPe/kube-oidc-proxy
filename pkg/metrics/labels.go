@@ -245,17 +245,20 @@ const (
 
 	// ReasonAudienceUnrouted classifies a token whose iss has several issuers
 	// and whose aud selects none or more than one of them. ADR-0001 gives the
-	// rules.
+	// rules. Only the authn.oidc.failed record carries it. The request then
+	// goes to the token-review path, which sets the final reason, so the
+	// access decision counter never receives it.
 	ReasonAudienceUnrouted Reason = "audience_unrouted"
 )
 
-// reasons is the documented set, in catalogue order. ReasonNone is the
-// reason of an allow and passes through.
+// reasons is the documented set of the access decision counter, in catalogue
+// order. ReasonNone is the reason of an allow and passes through.
+// ReasonAudienceUnrouted is a log reason only and is not in this set.
 var reasons = []Reason{
 	ReasonNone, ReasonUnauthorized, ReasonReservedIdentity, ReasonNoUsernameClaim,
 	ReasonImpersonationDenied, ReasonTooManyImpersonationValues, ReasonClientCanceled,
 	ReasonInternalError, ReasonUpstreamError, ReasonAuthenticationDependencyError,
-	ReasonAuthorizationDependencyError, ReasonMalformedImpersonation, ReasonAudienceUnrouted,
+	ReasonAuthorizationDependencyError, ReasonMalformedImpersonation,
 }
 
 func projectReason(r Reason) string {
