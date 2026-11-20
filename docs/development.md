@@ -392,7 +392,7 @@ A re-review of the same PR reads the previous summary and the change since the r
 `review:report` hides these as outdated, so the PR shows only the latest review:
 
 - each summary of the review except the newest one.
-- each other comment of the review from before the current `@claude review`.
+- each other comment of the review from before the current `@claude review`, when the current run posted a summary.
 - each notice of `review:report` and `review:label-missing`.
 - each `@claude review` comment of the owner except the current one.
 - each approval of `review:approve` that GitHub dismissed after a new push.
