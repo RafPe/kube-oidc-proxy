@@ -273,19 +273,54 @@ jobs:
           echo "previous=${prev}" >> "${GITHUB_OUTPUT}"
           echo "previous_file=${prev_file}" >> "${GITHUB_OUTPUT}"
 
+      # The repository variable CLAUDE_REVIEW_AUTH selects the credential of
+      # the review: wif (the default when the variable is not set) or token.
+      # Stop here for any other value, or when the secret of that mode is
+      # empty, so that the review does not start with no credential.
+      - name: Check the review credential
+        if: ${{ !contains(join(github.event.issue.labels.*.name, ','), 'autorelease') }}
+        env:
+          AUTH: ${{ vars.CLAUDE_REVIEW_AUTH || 'wif' }}
+          HAS_RULE: ${{ secrets.ANTHROPIC_FEDERATION_RULE_ID != '' }}
+          HAS_ORG: ${{ secrets.ANTHROPIC_ORGANIZATION_ID != '' }}
+          HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          case "${AUTH}" in
+            wif)
+              if [ "${HAS_RULE}" != true ] || [ "${HAS_ORG}" != true ]; then
+                echo "::error::CLAUDE_REVIEW_AUTH=wif needs the secrets ANTHROPIC_FEDERATION_RULE_ID and ANTHROPIC_ORGANIZATION_ID"
+                exit 1
+              fi ;;
+            token)
+              if [ "${HAS_TOKEN}" != true ]; then
+                echo "::error::CLAUDE_REVIEW_AUTH=token needs the secret CLAUDE_CODE_OAUTH_TOKEN"
+                exit 1
+              fi ;;
+            *)
+              echo "::error::CLAUDE_REVIEW_AUTH must be wif or token, not ${AUTH}"
+              exit 1 ;;
+          esac
+          echo "::notice title=Review credential::${AUTH}"
+
       - name: Run Claude review
         id: review
         if: ${{ !contains(join(github.event.issue.labels.*.name, ','), 'autorelease') }}
         uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
         with:
-          # Workload identity federation: the action exchanges the GitHub
-          # OIDC token of this job for a Claude API token. No static key is
-          # stored. The rule in the Anthropic organization must accept the
+          # CLAUDE_REVIEW_AUTH=wif: workload identity federation. The action
+          # exchanges the GitHub OIDC token of this job for a Claude API
+          # token. The rule in the Anthropic organization must accept the
           # token of this repository on the default branch.
-          anthropic_federation_rule_id: ${{ secrets.ANTHROPIC_FEDERATION_RULE_ID }}
-          anthropic_organization_id: ${{ secrets.ANTHROPIC_ORGANIZATION_ID }}
-          anthropic_service_account_id: ${{ secrets.ANTHROPIC_SERVICE_ACCOUNT_ID }}
-          anthropic_workspace_id: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
+          # CLAUDE_REVIEW_AUTH=token: the OAuth token in CLAUDE_CODE_OAUTH_TOKEN.
+          # Each input of the other mode is empty. The form "cond && secret
+          # || ''" gives '' when cond is false, and the secret when cond is
+          # true and the secret is not empty.
+          anthropic_federation_rule_id: ${{ (vars.CLAUDE_REVIEW_AUTH || 'wif') == 'wif' && secrets.ANTHROPIC_FEDERATION_RULE_ID || '' }}
+          anthropic_organization_id: ${{ (vars.CLAUDE_REVIEW_AUTH || 'wif') == 'wif' && secrets.ANTHROPIC_ORGANIZATION_ID || '' }}
+          anthropic_service_account_id: ${{ (vars.CLAUDE_REVIEW_AUTH || 'wif') == 'wif' && secrets.ANTHROPIC_SERVICE_ACCOUNT_ID || '' }}
+          anthropic_workspace_id: ${{ (vars.CLAUDE_REVIEW_AUTH || 'wif') == 'wif' && secrets.ANTHROPIC_WORKSPACE_ID || '' }}
+          claude_code_oauth_token: ${{ vars.CLAUDE_REVIEW_AUTH == 'token' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.issue.number }}
