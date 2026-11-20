@@ -329,8 +329,9 @@ review dependencies are healthy. Denials by reason, reserved-identity and
 header-flood attempts, authentication attempts by method and outcome,
 tokens and rejection ratio per issuer, SubjectAccessReview allow/deny, review
 errors and timeouts, issuer state, audit backend failures. The `$issuer`
-variable selects one or more issuers. The per-issuer panels work with one
-issuer and with several issuers on one issuer URL.
+variable filters only the per-issuer row and the Issuer initialized panel. The
+other panels have no issuer label. The per-issuer panels work with one issuer
+and with several issuers on one issuer URL.
 
 ![Security and identity dashboard](./dashboards/security.png)
 

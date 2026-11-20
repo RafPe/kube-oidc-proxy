@@ -683,7 +683,7 @@
     {
       "type": "timeseries",
       "title": "Rejection ratio by issuer",
-      "description": "Share of the tokens each issuer verified that it rejected. A rise for one issuer while the others stay flat points to that trust group: its claim rules, its clients, or tokens from another group that ask for its audience. A rise for every issuer on one URL points to the identity provider. An issuer with no tokens in the window has no line.",
+      "description": "Share of the tokens each issuer verified that it rejected. A rise for one issuer while the others stay flat points to that trust group. Check its claim rules, its clients, and tokens from another group that ask for its audience. A rise for every issuer on one URL points to the identity provider. An issuer with no tokens in the window has no line.",
       "datasource": {
         "uid": "${datasource}"
       },

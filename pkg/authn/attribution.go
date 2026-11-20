@@ -15,7 +15,7 @@ import (
 // holder keeps issuer attribution a logging concern.
 //
 // A holder belongs to exactly one in-flight request. The router runs at most
-// one issuer for a token, so each field is written at most once.
+// one issuer for a token, so the router writes each field at most one time.
 type IssuerHolder struct {
 	name     string
 	selected string
@@ -28,7 +28,7 @@ func (h *IssuerHolder) Name() string {
 }
 
 // Selected returns the issuer that verified the token, or "" when no issuer
-// ran. It is set also when that issuer refused the token.
+// ran. The wrapper records the issuer also when that issuer refused the token.
 func (h *IssuerHolder) Selected() string {
 	return h.selected
 }

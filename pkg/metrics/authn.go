@@ -32,9 +32,9 @@ func (r *Recorder) IssuerToken(issuerName string, outcome AuthOutcome) {
 	r.issuerTokens.WithLabelValues(issuerName, projectAuthOutcome(outcome)).Inc()
 }
 
-// DeclareIssuer creates the token series of the issuer issuerName at 0, so
-// that a dashboard shows the issuer before its first token and rate() does
-// not lose the first increase.
+// DeclareIssuer creates the token series of the issuer issuerName at 0. Then a
+// dashboard shows the issuer before its first token, and rate() does not lose
+// the first increase.
 func (r *Recorder) DeclareIssuer(issuerName string) {
 	if r == nil {
 		return
