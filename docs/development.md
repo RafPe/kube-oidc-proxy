@@ -70,11 +70,13 @@ Useful overrides: `E2E_TIMEOUT` (Go test timeout, default `30m`) and
 `KUBE_OIDC_PROXY_K8S_VERSION`, which selects among the versions declared in
 `test/e2e/versions/kubernetes-versions.json` (default: the newest). Versions
 outside the manifest are refused — the manifest is the definition of what
-this commit supports. CI tests the newest declared version on every pull
-request and the full declared window on the twice-daily scheduled run.
+this commit supports. CI tests the full declared window on a pull request,
+on the twice-daily scheduled run and on a manual run. The Release workflow
+tests the newest declared version.
 
-The suite runs in CI on every pull request and on pushes to `main`
-(`.github/workflows/e2e.yaml`). A companion workflow
+The suite runs in CI (`.github/workflows/e2e.yaml`) on a pull request with the
+label `ci/e2e`, on the twice-daily schedule and in the Release workflow. See
+[CI labels](#ci-labels). A companion workflow
 (`.github/workflows/e2e-oidc-gha.yaml`) proves the multi-issuer router
 against the **real** GitHub Actions OIDC issuer alongside a local
 Dex issuer. It runs `hack/ci/gha-multi-issuer-e2e.sh` in two jobs:
@@ -364,6 +366,42 @@ npm run preview -- --host 127.0.0.1 --port 4321
 Open `http://127.0.0.1:4321/kube-oidc-proxy/interactive/request-flow/`.
 For browser checks, set `CHROME_PATH` to a local Chromium executable and run `node scripts/interactive-browser.mjs`.
 These checks cover request scenarios, controls, identity rules, and narrow screens.
+
+## CI labels
+
+The end-to-end workflows run on a pull request only after a collaborator adds
+the label `ci/e2e`. Unit tests, lint and the scans run on every push.
+
+| Label | What it starts |
+| --- | --- |
+| `ci/e2e` | `e2e.yaml` (`test:e2e`, all supported Kubernetes versions) and `e2e-oidc-gha.yaml` (`test:e2e-oidc`, `test:e2e-oidc-shared-issuer`) |
+
+1. Open the PR. The commit statuses `gate:e2e` and `gate:e2e-oidc` show
+   pending, with the text "waiting for label ci/e2e". The e2e jobs show as
+   skipped.
+2. Add the label `ci/e2e` when the PR is ready to test. Both workflows start.
+3. Each later push runs both workflows again. A newer push cancels the run of
+   an older push.
+4. Each workflow sets its gate status to success or failure from its result.
+
+Branch protection on `main` requires `gate:e2e` and `gate:e2e-oidc`, not the
+names of the e2e jobs. GitHub counts a skipped job as passed, so a required
+job name would let a PR without the label merge without e2e. A pending
+status blocks the merge, and it shows yellow, not red.
+
+Other rules:
+
+- A label other than `ci/e2e` does not start e2e, and it does not cancel a
+  running e2e.
+- A release PR (label `autorelease`) runs e2e without the label.
+- A Dependabot PR needs the label, as every other PR does.
+- A push to `main` runs `e2e-oidc-gha.yaml`, because a real GitHub Actions
+  token has different claims on a push. The schedule and the Release
+  workflow run `e2e.yaml`.
+- A PR from a fork gets a read-only token and cannot set the gate statuses.
+  To accept one, a maintainer pushes its commits to a branch in this
+  repository and adds `ci/e2e` there. The maintainer then merges the fork PR
+  with an admin bypass.
 
 ## Claude review
 
