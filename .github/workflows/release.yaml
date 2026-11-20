@@ -71,8 +71,12 @@ jobs:
   e2e:
     name: "release:e2e"
     needs: verify
+    # e2e.yaml has jobs that ask for statuses: write to publish gate:e2e on
+    # a pull request. A called workflow cannot get more than its caller
+    # grants, so the caller grants it. The status steps do not run here.
     permissions:
       contents: read
+      statuses: write
     uses: ./.github/workflows/e2e.yaml
     with:
       target_ref: ${{ needs.verify.outputs.sha }}

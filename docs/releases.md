@@ -110,6 +110,29 @@ gh label create 'autorelease: pending' --color ededed \
 Prepare Release refuses to run without `autorelease: pending`, because a
 release PR that does not carry it can never be published by **Release**.
 
+Create the CI and review labels. `ci/e2e` starts the end-to-end workflows on
+a PR, and `review/claude-allowed` allows the Claude review. See
+[CI labels](./development.md#ci-labels) and
+[Claude review](./development.md#claude-review).
+
+```sh
+gh label create ci/e2e --color 1d76db --description 'Run the e2e workflows on this PR' --force
+gh label create review/claude-allowed --description 'Allow the Claude review on this PR' --force
+```
+
+Branch protection on `main` requires these status checks: `test:unit`,
+`lint:go`, `scan:vuln`, `scan:codeql`, `gate:e2e` and `gate:e2e-oidc`. The two
+`gate:*` contexts are commit statuses that the e2e workflows set, not job
+names.
+
+The workflows read these repository secrets:
+
+| Secret | Used by |
+| --- | --- |
+| `RELEASE_APPROVE_PAT` | The approval of the release PR. See [Release PR](./development.md#release-pr). |
+| `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`, `ANTHROPIC_SERVICE_ACCOUNT_ID`, `ANTHROPIC_WORKSPACE_ID` | The Claude review with workload identity federation. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | The Claude review with `CLAUDE_REVIEW_AUTH=token`. |
+
 Allow Actions to open the release pull request. Without this, `GITHUB_TOKEN`
 may push a branch but not open a PR, and `gh pr create` fails:
 

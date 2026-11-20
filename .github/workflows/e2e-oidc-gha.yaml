@@ -15,7 +15,10 @@ name: e2e-oidc-gha
 # The minted token's audience MUST match the AuthenticationConfiguration's
 # `audiences` entry; both are set to GHA_AUDIENCE below.
 on:
+  # A pull request runs this e2e only with the label ci/e2e. See the gate job
+  # below and docs/development.md#ci-labels.
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
   push:
     branches:
       - main
@@ -25,15 +28,74 @@ permissions:
   contents: read
 
 concurrency:
-  group: e2e-oidc-gha-${{ github.workflow }}-${{ github.ref }}
+  # A label other than ci/e2e gets its own group, so that adding it does not
+  # cancel a running e2e. Its run skips every job.
+  group: e2e-oidc-gha-${{ github.workflow }}-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ci/e2e' && format('-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 env:
   GHA_AUDIENCE: kube-oidc-proxy-kind-test
 
 jobs:
+  # Decides whether the e2e runs, and publishes the commit status
+  # gate:e2e-oidc that branch protection requires. The rules are the same as
+  # for gate:e2e in e2e.yaml: a push or a manual run always runs, a PR runs
+  # with the label ci/e2e or as a release PR, and an unrelated label event
+  # runs nothing and posts nothing.
+  gate:
+    name: "test:e2e-oidc:gate"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      statuses: write
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - name: Decide and publish gate:e2e-oidc
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          ADDED: ${{ github.event.label.name }}
+          HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci/e2e') }}
+          RELEASE_PR: ${{ contains(join(github.event.pull_request.labels.*.name, ','), 'autorelease') }}
+          FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          run=false
+          post=false
+          if [ "${EVENT}" != "pull_request" ]; then
+            run=true
+          elif [ "${ACTION}" = "labeled" ] && [ "${ADDED}" != "ci/e2e" ]; then
+            run=false
+          else
+            post=true
+            if [ "${HAS_LABEL}" = "true" ] || [ "${RELEASE_PR}" = "true" ]; then
+              run=true
+            fi
+          fi
+          echo "run=${run}" >> "${GITHUB_OUTPUT}"
+          echo "run=${run} post=${post}"
+          if [ "${post}" != "true" ] || [ "${FORK}" = "true" ]; then
+            exit 0
+          fi
+          if [ "${run}" = "true" ]; then
+            description="e2e is running"
+          else
+            description="waiting for label ci/e2e"
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/statuses/${SHA}" --silent \
+            -f state=pending -f context=gate:e2e-oidc -f description="${description}" -f target_url="${RUN_URL}"
+
   gha-multi-issuer:
     name: ${{ matrix.check }}
+    needs: [gate]
+    # A closed gate skips the job. GitHub evaluates a job-level if before the
+    # matrix expands, so the skipped job shows the unexpanded name.
+    if: needs.gate.outputs.run == 'true'
     # GitHub does not issue OIDC tokens (id-token: write) to pull requests from
     # forks. The steps skip fork PRs, not the job. A job-level if is evaluated
     # before the matrix expands, so the skipped job reports the unexpanded name
@@ -112,3 +174,32 @@ jobs:
             artifacts/**
           if-no-files-found: ignore
           retention-days: 7
+
+  # Publishes the result of both matrix legs as gate:e2e-oidc on a PR. Not
+  # always(): a run that a newer push cancels must not report a result.
+  result:
+    name: "test:e2e-oidc:result"
+    needs: [gate, gha-multi-issuer]
+    if: ${{ !cancelled() && needs.gate.outputs.run == 'true' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      statuses: write
+    steps:
+      - name: Publish gate:e2e-oidc
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          RESULT: ${{ needs.gha-multi-issuer.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ "${RESULT}" = "success" ]; then
+            state=success
+            description="e2e passed"
+          else
+            state=failure
+            description="e2e ${RESULT}"
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/statuses/${SHA}" --silent \
+            -f state="${state}" -f context=gate:e2e-oidc -f description="${description}" -f target_url="${RUN_URL}"
