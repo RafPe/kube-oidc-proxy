@@ -198,7 +198,7 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 }
 
 // countIssuerToken counts the token for the issuer that verified it. A token
-// that selected no issuer gets no count. This handler counts, not the issuer
+// that selected no issuer gets no count. withAuthenticateRequest counts, not the issuer
 // wrapper, because the readiness probe also runs the wrappers.
 func (p *Proxy) countIssuerToken(issuer *authn.IssuerHolder, outcome metrics.AuthOutcome) {
 	if name := issuer.Selected(); name != "" {

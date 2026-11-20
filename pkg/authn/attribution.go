@@ -15,7 +15,7 @@ import (
 // holder keeps issuer attribution a logging concern.
 //
 // A holder belongs to exactly one in-flight request. The router runs at most
-// one issuer for a token, so the router writes each field at most one time.
+// one issuer for a token, so the issuer wrapper writes each field at most one time.
 type IssuerHolder struct {
 	name     string
 	selected string
