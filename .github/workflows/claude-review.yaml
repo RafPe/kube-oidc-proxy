@@ -277,6 +277,10 @@ jobs:
       # the review: wif (the default when the variable is not set) or token.
       # Stop here for any other value, or when the secret of that mode is
       # empty, so that the review does not start with no credential.
+      # The == operator of a GitHub expression ignores letter case, so this
+      # step compares the lowercase value too.
+      # The token mode puts a long-lived token in a job that reads untrusted
+      # PR content. Use it only for a short time.
       - name: Check the review credential
         if: ${{ !contains(join(github.event.issue.labels.*.name, ','), 'autorelease') }}
         env:
@@ -286,6 +290,7 @@ jobs:
           HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
         run: |
           set -euo pipefail
+          AUTH=$(printf '%s' "${AUTH}" | tr '[:upper:]' '[:lower:]')
           case "${AUTH}" in
             wif)
               if [ "${HAS_RULE}" != true ] || [ "${HAS_ORG}" != true ]; then
