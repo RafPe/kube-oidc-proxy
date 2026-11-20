@@ -239,6 +239,7 @@ func NewServer(cfg Config, root *slog.Logger) *Server {
 	cfg.Metrics.SetReady(false)
 	for _, issuer := range cfg.Issuers {
 		cfg.Metrics.SetIssuerInitialized(issuer.Name, false)
+		cfg.Metrics.DeclareIssuer(issuer.Name)
 	}
 	return s
 }

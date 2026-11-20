@@ -135,6 +135,7 @@ change with a changelog entry.
 | `kube_oidc_proxy_oidc_issuer_initialized` | gauge | `issuer_name` | STABLE | 1 once the issuer's authenticator has fetched its JWKS. Reports initialization, not ongoing issuer availability. |
 | `kube_oidc_proxy_ready` | gauge | none | STABLE | 1 once the proxy is serving and readiness has latched. |
 | `kube_oidc_proxy_audit_backend_failures_total` | counter | `operation` | ALPHA | Audit backend failures observable at start. Asynchronous delivery failures and lost flushes at shutdown are not included. |
+| `kube_oidc_proxy_oidc_issuer_tokens_total` | counter | `issuer_name`, `outcome` | ALPHA | OIDC tokens by the issuer that verified them and the result of that verification. A token that selects no issuer is not counted. A rejected token can still pass the token review that follows. |
 <!-- metrics:end -->
 
 ## Label values
@@ -326,8 +327,11 @@ For the security engineer: who is being refused and why, how clients
 authenticate, whether impersonation is authorized as intended, whether the
 review dependencies are healthy. Denials by reason, reserved-identity and
 header-flood attempts, authentication attempts by method and outcome,
-SubjectAccessReview allow/deny, review errors and timeouts, issuer state,
-audit backend failures.
+tokens and rejection ratio per issuer, SubjectAccessReview allow/deny, review
+errors and timeouts, issuer state, audit backend failures. The `$issuer`
+variable filters only the per-issuer row and the Issuer initialized panel. The
+other panels have no issuer label. The per-issuer panels work with one issuer
+and with several issuers on one issuer URL.
 
 ![Security and identity dashboard](./dashboards/security.png)
 

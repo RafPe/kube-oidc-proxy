@@ -66,6 +66,7 @@ const (
 	nameIssuerInitialized    = Namespace + "_oidc_issuer_initialized"
 	nameReady                = Namespace + "_ready"
 	nameAuditBackendFailures = Namespace + "_audit_backend_failures_total"
+	nameIssuerTokens         = Namespace + "_oidc_issuer_tokens_total"
 )
 
 // Catalogue lists every first-party family, as a fresh literal on every call
@@ -116,6 +117,9 @@ func Catalogue() []Spec {
 		{Name: nameAuditBackendFailures, Type: TypeCounter, Labels: []string{"operation"}, Stability: StabilityAlpha,
 			Values: map[string]func() []string{"operation": closed(auditOperations, other)},
 			Help:   "Audit backend failures observable at start. Asynchronous delivery failures and lost flushes at shutdown are not included."},
+		{Name: nameIssuerTokens, Type: TypeCounter, Labels: []string{"issuer_name", "outcome"}, Stability: StabilityAlpha,
+			Values: map[string]func() []string{"outcome": closed(authOutcomes, other)},
+			Help:   "OIDC tokens by the issuer that verified them and the result of that verification. A token that selects no issuer is not counted. A rejected token can still pass the token review that follows."},
 	}
 }
 

@@ -37,3 +37,21 @@ func TestAuthenticationAttemptAndAccessDecision(t *testing.T) {
 	nilr.AuthenticationAttempt("oidc", AuthAccepted)
 	nilr.AccessDecision("oidc", true, "")
 }
+
+func TestDeclareIssuerCreatesEachOutcomeAtZero(t *testing.T) {
+	r := newTestRecorder(t)
+	r.DeclareIssuer("platform")
+	r.IssuerToken("platform", AuthRejected)
+	for outcome, want := range map[string]float64{"accepted": 0, "rejected": 1, "error": 0} {
+		v, ok := metricstest.Value(t, r.Gatherer(), nameIssuerTokens, map[string]string{"issuer_name": "platform", "outcome": outcome})
+		if !ok || v != want {
+			t.Errorf("issuer_tokens{platform,%s} = %v (present %v), want %v", outcome, v, ok, want)
+		}
+	}
+}
+
+func TestNilRecorderIssuerTokenIsNoOp(t *testing.T) {
+	var r *Recorder
+	r.IssuerToken("platform", AuthAccepted)
+	r.DeclareIssuer("platform")
+}

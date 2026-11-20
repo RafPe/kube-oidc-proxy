@@ -141,6 +141,7 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 			// there is nobody left to forward a TokenReview's answer to.
 			if ctxerr.ClientGone(req.Context(), err) {
 				p.metrics.AuthenticationAttempt(metrics.AuthMethodOIDC, metrics.AuthError)
+				p.countIssuerToken(issuer, metrics.AuthError)
 				logging.Emit(req.Context(), p.oidcLogger, logging.EventAuthnOIDCFailed,
 					slog.String("src_ip", reqctx.ClientIP(req)), slog.String("reason", string(metrics.ReasonClientCanceled)))
 				p.refuse(rw, req, err)
@@ -152,6 +153,7 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 				reason = metrics.ReasonAudienceUnrouted
 			}
 			p.metrics.AuthenticationAttempt(metrics.AuthMethodOIDC, metrics.AuthRejected)
+			p.countIssuerToken(issuer, metrics.AuthRejected)
 			logging.Emit(req.Context(), p.oidcLogger, logging.EventAuthnOIDCFailed,
 				slog.String("src_ip", reqctx.ClientIP(req)), slog.String("reason", string(reason)))
 
@@ -168,6 +170,7 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 		}
 
 		p.metrics.AuthenticationAttempt(metrics.AuthMethodOIDC, metrics.AuthAccepted)
+		p.countIssuerToken(issuer, metrics.AuthAccepted)
 
 		// Attribute the request to the issuer that accepted its token, for this
 		// record and for every access record the request goes on to produce.
@@ -192,6 +195,15 @@ func (p *Proxy) withAuthenticateRequest(handler http.Handler) http.Handler {
 
 		handler.ServeHTTP(rw, req)
 	})
+}
+
+// countIssuerToken counts the token for the issuer that verified it. A token
+// that selected no issuer gets no count. withAuthenticateRequest counts, not the issuer
+// wrapper, because the readiness probe also runs the wrappers.
+func (p *Proxy) countIssuerToken(issuer *authn.IssuerHolder, outcome metrics.AuthOutcome) {
+	if name := issuer.Selected(); name != "" {
+		p.metrics.IssuerToken(name, outcome)
+	}
 }
 
 // checkReservedIdentity refuses an identity that a token claim must never be

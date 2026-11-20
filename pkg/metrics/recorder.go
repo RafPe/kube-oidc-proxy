@@ -57,6 +57,7 @@ type Recorder struct {
 	issuerInitialized   *prometheus.GaugeVec
 	ready               prometheus.Gauge
 	auditFailures       *prometheus.CounterVec
+	issuerTokens        *prometheus.CounterVec
 }
 
 // New builds a Recorder whose registry carries every first-party family plus
@@ -96,11 +97,12 @@ func New(build BuildInfo) (*Recorder, error) {
 	r.issuerInitialized = gaugeVec(nameIssuerInitialized)
 	r.ready = gauge(nameReady)
 	r.auditFailures = counter(nameAuditBackendFailures)
+	r.issuerTokens = counter(nameIssuerTokens)
 
 	for _, c := range []prometheus.Collector{
 		r.buildInfo, r.requestsTotal, r.requestDuration, r.requestsInFlight, r.longRunningRequests,
 		r.authnAttempts, r.accessDecisions, r.reviewRequests, r.reviewDuration, r.cacheLookups,
-		r.issuerInitialized, r.ready, r.auditFailures,
+		r.issuerInitialized, r.ready, r.auditFailures, r.issuerTokens,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	} {

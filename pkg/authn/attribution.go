@@ -14,18 +14,23 @@ import (
 // that map becomes Impersonate-Extra- headers on the outbound request. The
 // holder keeps issuer attribution a logging concern.
 //
-// A holder belongs to exactly one in-flight request and is written at most
-// once, by the single authenticator that accepted the token: the union
-// authenticator tries its members in sequence, and the ones that refuse the
-// token never reach the wrapper's success path.
+// A holder belongs to exactly one in-flight request. The router runs at most
+// one issuer for a token, so the issuer wrapper writes each field at most one time.
 type IssuerHolder struct {
-	name string
+	name     string
+	selected string
 }
 
 // Name returns the issuer recorded on the holder, or "" when no authenticator
 // accepted the token.
 func (h *IssuerHolder) Name() string {
 	return h.name
+}
+
+// Selected returns the issuer that verified the token, or "" when no issuer
+// ran. The wrapper records the issuer also when that issuer refused the token.
+func (h *IssuerHolder) Selected() string {
+	return h.selected
 }
 
 // issuerHolderKey is the context key the holder travels under.
@@ -48,6 +53,14 @@ func recordIssuer(ctx context.Context, name string) {
 	}
 }
 
+// recordSelected records the issuer that verified the token on the holder
+// the context carries, whatever the result of the verification.
+func recordSelected(ctx context.Context, name string) {
+	if holder, ok := ctx.Value(issuerHolderKey{}).(*IssuerHolder); ok {
+		holder.selected = name
+	}
+}
+
 // AttributeToIssuer returns inner wrapped so that a token it accepts is
 // attributed to name, the issuer's name as IssuerName derives it: the host of
 // its URL, never the full URL. Wrap every per-issuer authenticator before
@@ -67,6 +80,7 @@ type namedIssuer struct {
 // an error, attributes nothing: the request was not authenticated by this
 // issuer.
 func (n *namedIssuer) AuthenticateToken(ctx context.Context, token string) (*authenticator.Response, bool, error) {
+	recordSelected(ctx, n.name)
 	resp, ok, err := n.inner.AuthenticateToken(ctx, token)
 	if ok && err == nil {
 		recordIssuer(ctx, n.name)

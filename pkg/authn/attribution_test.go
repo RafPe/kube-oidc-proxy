@@ -45,6 +45,10 @@ func TestAttributeToIssuerAttributesOnlyAcceptedTokens(t *testing.T) {
 			if holder.Name() != test.want {
 				t.Errorf("issuer name = %q, want %q", holder.Name(), test.want)
 			}
+			// The issuer ran, so it is the selected issuer whatever its result.
+			if holder.Selected() != "corp" {
+				t.Errorf("selected issuer = %q, want %q", holder.Selected(), "corp")
+			}
 		})
 	}
 }
@@ -55,4 +59,5 @@ func TestAttributeToIssuerAttributesOnlyAcceptedTokens(t *testing.T) {
 // the context.
 func TestRecordIssuerWithoutHolderIsNoOp(t *testing.T) {
 	recordIssuer(context.Background(), "corp")
+	recordSelected(context.Background(), "corp")
 }

@@ -28,6 +28,12 @@ grafana:
       org_role: Viewer
     users:
       viewers_can_edit: false
+    # Grafana installs and updates plugins in the background at start. An
+    # update of the bundled Prometheus plugin unregisters it, then fails on
+    # the read-only file system, and every panel reads "No data". The demo
+    # uses only the bundled plugins.
+    plugins:
+      preinstall_disabled: true
   imageRenderer:
     enabled: true
   # The dashboards ConfigMap lives in the proxy's namespace, not Grafana's.
