@@ -1,0 +1,2 @@
+kind: Dependencies
+body: Bump github.com/prometheus/client_golang from 1.24.1 to 1.25.0, github.com/prometheus/common from 0.73.1 to 0.74.0, github.com/spf13/pflag from 1.0.10 to 1.1.0, golang.org/x/term from 0.47.0 to 0.48.0 and golang.org/x/time from 0.15.0 to 0.16.0, with github.com/prometheus/procfs, golang.org/x/net, x/oauth2, x/sys, go.yaml.in/yaml/v2 and github.com/pandatix/go-abnf moved along by `go mod tidy`. In `go.sum`, `go mod tidy` also moves github.com/klauspost/compress from 1.19.1 to 1.20.1.
