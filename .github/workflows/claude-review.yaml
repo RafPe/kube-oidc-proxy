@@ -583,6 +583,62 @@ jobs:
       pull-requests: write
       issues: read # list the PR comments for the summary of this run
     steps:
+      # Hide the comments of earlier runs, so that the PR shows only the
+      # latest review. A hidden comment stays in the API, so the next
+      # re-review still finds the previous summary. The step hides:
+      #   - each summary of the review bot except the newest one,
+      #   - each notice of review:report and review:label-missing,
+      #   - each "@claude review" comment of the owner except the one that
+      #     started this run.
+      # It runs before the notice step, so it never hides the notice of this
+      # run. A failure here does not stop the report.
+      - name: Hide earlier review comments
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.issue.number }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+          TRIGGER_ID: ${{ github.event.comment.node_id }}
+          REVIEW_BOT: claude
+          ACTIONS_BOT: github-actions
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2016 # GraphQL variables, not shell variables.
+          query='query($owner: String!, $repo: String!, $pr: Int!, $endCursor: String) {
+            repository(owner: $owner, name: $repo) {
+              pullRequest(number: $pr) {
+                comments(first: 100, after: $endCursor) {
+                  pageInfo { hasNextPage endCursor }
+                  nodes { id isMinimized body author { login __typename } }
+                }
+              }
+            }
+          }'
+          ids=$(gh api graphql --paginate -F owner="${OWNER}" -F repo="${REPO}" -F pr="${PR}" -f query="${query}" \
+            | jq -rs --arg review_bot "${REVIEW_BOT}" --arg actions_bot "${ACTIONS_BOT}" \
+                     --arg owner "${OWNER}" --arg trigger "${TRIGGER_ID}" '
+                [.[].data.repository.pullRequest.comments.nodes[]] as $all
+                | ($all | map(select(.author.login == $review_bot and .author.__typename == "Bot"
+                                     and (.body | test("^<!-- claude-review head=[0-9a-f]{40} -->"))))
+                        | .[:-1]) as $old_summaries
+                | ($all | map(select(.author.login == $actions_bot and .author.__typename == "Bot"
+                                     and (.body | startswith("## Review run ended without a summary")
+                                                  or startswith("The review did not start.")))) ) as $notices
+                | ($all | map(select(.author.login == $owner and .id != $trigger
+                                     and (.body | gsub("^\\s+|\\s+$"; "")) == "@claude review"))) as $triggers
+                | ($old_summaries + $notices + $triggers)[]
+                | select(.isMinimized | not) | .id')
+          count=0
+          for id in ${ids}; do
+            # shellcheck disable=SC2016 # GraphQL variables, not shell variables.
+            gh api graphql --silent -f id="${id}" -f query='mutation($id: ID!) {
+              minimizeComment(input: {subjectId: $id, classifier: OUTDATED}) { clientMutationId }
+            }'
+            count=$((count + 1))
+          done
+          echo "::notice title=Earlier review comments::hidden ${count}"
+
       - name: Report a review that left no summary
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
