@@ -327,8 +327,9 @@ kubectl -n kube-oidc-proxy logs deploy/kube-oidc-proxy --since=1h \
   | sort | uniq -c
 ```
 
-The log names the issuer only for an accepted token. A token that the claim
-rules of its issuer refuse has `issuer_name` null in the log. The metric
+The log names the issuer only for an accepted token. The record of a token that
+the claim rules of its issuer refuse has no `issuer_name` field, so the query
+above prints `null` for it. The metric
 `kube_oidc_proxy_oidc_issuer_tokens_total` counts accepted and rejected tokens
 for each issuer.
 
