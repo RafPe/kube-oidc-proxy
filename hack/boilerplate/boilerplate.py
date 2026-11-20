@@ -138,6 +138,8 @@ def file_extension(filename):
 
 skipped_dirs = [
     '.git',
+    # Vendored agent skills keep their upstream headers.
+    ".claude",
     "vendor",
     "hack",
     "pkg/authn/authntest/authenticator.go",
