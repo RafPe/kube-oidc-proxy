@@ -1,0 +1,48 @@
+name: release-readiness
+
+# Runs the checks of release.yaml (release:verify and release:check) on the
+# open release PR, before the merge. Release runs them only after the merge,
+# so a failure there leaves a merged changelog and a draft release with no
+# tag (run 44734800921 for v2.2.0). Keep the steps below in sync with the
+# verify and check jobs in release.yaml.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  readiness:
+    name: "release:readiness"
+    if: >-
+      github.event.pull_request.head.ref == 'release/next' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(github.event.pull_request.labels.*.name, 'autorelease: pending')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # The default pull_request ref is the merge commit, which is the commit
+      # that release.yaml checks after the merge.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: { go-version-file: go.mod }
+
+      - name: Verify release metadata
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          case "${PR_TITLE}" in "chore: release v"*) tag="${PR_TITLE#chore: release }" ;; *) echo "::error::invalid release PR title"; exit 1 ;; esac
+          echo "${tag}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || { echo "::error::invalid release tag"; exit 1; }
+          grep -q "^## \[${tag#v}\]" CHANGELOG.md || { echo "::error::CHANGELOG lacks ${tag}"; exit 1; }
+          find .changes/unreleased -name '*.yaml' -print -quit | grep -q . && { echo "::error::unbatched fragments remain"; exit 1; } || true
+
+      - run: make verify test
+
+      - run: sh scripts/release-contract-check.sh

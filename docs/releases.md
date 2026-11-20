@@ -54,6 +54,8 @@ its repository, branch, and `autorelease: pending` label all match.
    ```
 
 3. Review the generated release PR's version, notes, and `CHANGELOG.md` section.
+   The **release-readiness** check runs `make verify test` and the release
+   metadata checks on that PR. Merge only when it is green.
 4. Merge the PR. That merge is the human publication approval.
 5. Watch **Release** verify the exact merge SHA, run `make verify test`, execute
    all reusable E2E shards, create the tag, publish artifacts, and finally make
