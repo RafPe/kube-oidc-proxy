@@ -93,6 +93,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      issues: read # list the PR comments for the previous review
       actions: read # let Claude read CI results on the PR
       id-token: write
     # The approve job reads these. The approve output is "true" only for a
@@ -540,6 +541,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       pull-requests: write
+      issues: read # list the PR comments for the summary of this run
     steps:
       - name: Report a review that left no summary
         env:

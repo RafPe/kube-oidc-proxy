@@ -2,7 +2,6 @@
 package authn
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -132,19 +131,18 @@ func parseUntrustedClaims(token string) (untrustedClaims, error) {
 }
 
 // audiences returns the aud claim as a list. A JWT aud is one string or an
-// array of strings. Any other value is an error.
+// array of strings. Any other value, and an empty value, is an error.
 func (c untrustedClaims) audiences() ([]string, error) {
-	// json.Unmarshal accepts null for a string and leaves it empty.
-	if bytes.Equal(bytes.TrimSpace(c.aud), []byte("null")) {
-		return nil, errors.New("oidc: the token aud is null")
-	}
+	var many []string
 	var one string
 	if err := json.Unmarshal(c.aud, &one); err == nil {
-		return []string{one}, nil
-	}
-	var many []string
-	if err := json.Unmarshal(c.aud, &many); err != nil {
+		many = []string{one}
+	} else if err := json.Unmarshal(c.aud, &many); err != nil {
 		return nil, err
+	}
+	// json.Unmarshal reads null as "", alone and in a list.
+	if len(many) == 0 || slices.Contains(many, "") {
+		return nil, errors.New("oidc: the token aud is null or holds an empty value")
 	}
 	return many, nil
 }
