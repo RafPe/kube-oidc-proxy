@@ -1,2 +1,0 @@
-kind: Added
-body: 'The ALPHA counter `kube_oidc_proxy_oidc_issuer_tokens_total{issuer_name, outcome}` counts each OIDC token by the issuer that verified it and the result. The proxy creates the series of each configured issuer at 0. A token that selects no issuer is not counted. The security dashboard has an `$issuer` variable and two new panels: tokens per second by issuer and outcome, and the rejection ratio by issuer.'

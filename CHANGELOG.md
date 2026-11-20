@@ -1,6 +1,13 @@
 # Unreleased
 <!-- next-release -->
 
+## [2.2.0] - 2026-11-20
+
+- Bump github.com/prometheus/client_golang from 1.24.1 to 1.25.0, github.com/prometheus/common from 0.73.1 to 0.74.0, github.com/spf13/pflag from 1.0.10 to 1.1.0, golang.org/x/term from 0.47.0 to 0.48.0 and golang.org/x/time from 0.15.0 to 0.16.0, with github.com/prometheus/procfs, golang.org/x/net, x/oauth2, x/sys, go.yaml.in/yaml/v2 and github.com/pandatix/go-abnf moved along by `go mod tidy`. In `go.sum`, `go mod tidy` also moves github.com/klauspost/compress from 1.19.1 to 1.20.1.
+- The ALPHA counter `kube_oidc_proxy_oidc_issuer_tokens_total{issuer_name, outcome}` counts each OIDC token by the issuer that verified it and the result. The proxy creates the series of each configured issuer at 0. A token that selects no issuer is not counted. The security dashboard has an `$issuer` variable and two new panels: tokens per second by issuer and outcome, and the rejection ratio by issuer.
+- `--authentication-config` accepts a second kind, `kube-oidc-proxy.rafpe.github.io/v1alpha1` `AuthenticationConfiguration`. Each issuer has a `name` and an upstream `jwt` entry, and the `name` becomes `issuer_name` in logs and metrics. Two issuers on one host, for example two GKE cluster issuers, can now start with different names. The CEL expressions of an issuer can use `authenticationConfiguration.issuer.name` in place of the name. See ADR-0001.
+- Several issuers of the `kube-oidc-proxy.rafpe.github.io/v1alpha1` kind can have the same issuer URL when their audiences are disjoint. The proxy selects the issuer by the `iss` and `aud` claims of the token. The selected issuer runs the full verification, and no other issuer verifies the token. A token whose `aud` selects no single issuer is rejected with `reason=audience_unrouted`. When several issuers share its `iss`, a token whose `aud` is null or holds an empty value is also rejected as `audience_unrouted`. See ADR-0001.
+
 ## [2.1.0] - 2026-11-18
 
 - The Helm chart adds `extraEnv`, a list of `EnvVar` entries appended to the proxy container, for settings such as `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`; any `OIDC_*` name, which the chart sets from `oidc.*`, fails the render, and so does an `extraEnv` that is not a list.
