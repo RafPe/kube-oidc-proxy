@@ -32,6 +32,7 @@ With one entry for a URL, the router selects that entry without using the audien
 The selected authenticator still checks the audience.
 With several entries, no match or multiple matches cause `audience_unrouted`. No issuer verifies that token.
 A verification failure does not try another issuer entry.
+The metric `kube_oidc_proxy_oidc_issuer_tokens_total` counts each token by the selected entry and the result. The security dashboard shows it per issuer.
 OIDC errors can enter TokenReview fallback when you enable passthrough.
 
 The audience does not prove organization membership. Each entry must restrict its trust group through claim validation.

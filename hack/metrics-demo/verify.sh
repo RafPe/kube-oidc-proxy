@@ -63,7 +63,7 @@ if [ "${targets:-0}" -eq 0 ]; then
 fi
 
 # Substitute the template variables the way Grafana would for the demo.
-expand() { sed -e 's/\$namespace/proxy/g' -e 's/\$pod/.+/g' -e 's/\$__rate_interval/2m/g' -e 's/\${datasource}//g'; }
+expand() { sed -e 's/\$namespace/proxy/g' -e 's/\$pod/.+/g' -e 's/\$issuer/.+/g' -e 's/\$__rate_interval/2m/g' -e 's/\${datasource}//g'; }
 
 # The window the screenshots below are rendered from (from=now-30m), so the
 # proof and the picture are the same data.

@@ -91,7 +91,7 @@ module.exports = {
       "tag": "AUTHENTICATION",
       "subtitle": "withAuthenticateRequest",
       "summary": "OIDC authentication verifies the token and returns a Kubernetes identity. This identity does not grant resource access.",
-      "detail": "The router reads unverified iss and aud claims to select one issuer entry. When entries share an issuer URL, aud must match exactly one entry. Only that entry verifies the signature, expiry, audience, and configured claim rules. No other entry runs after a verification failure. Claim mappings then produce the identity. An OIDC error can enter TokenReview fallback unless the client canceled the request. A missing token returns 401 directly.",
+      "detail": "The router reads unverified iss and aud claims to select one issuer entry. When entries share an issuer URL, aud must match exactly one entry. Only that entry verifies the signature, expiry, audience, and configured claim rules. No other entry runs after a verification failure. The proxy counts the result for that entry in kube_oidc_proxy_oidc_issuer_tokens_total. A token that selects no entry is not counted there. Claim mappings then produce the identity. An OIDC error can enter TokenReview fallback unless the client canceled the request. A missing token returns 401 directly.",
       "input": "Authorization bearer token + configured authenticator",
       "output": "Authenticated user in context, or a branch to fallback / rejection",
       "change": "Change claim mappings in pkg/authn. Preserve the separate paths for cancellation, validation errors, and missing tokens.",
