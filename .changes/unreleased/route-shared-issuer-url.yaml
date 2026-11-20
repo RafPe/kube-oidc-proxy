@@ -1,2 +1,0 @@
-kind: Added
-body: 'Several issuers of the `kube-oidc-proxy.rafpe.github.io/v1alpha1` kind can have the same issuer URL when their audiences are disjoint. The proxy selects the issuer by the `iss` and `aud` claims of the token. The selected issuer runs the full verification, and no other issuer verifies the token. A token whose `aud` selects no single issuer is rejected with `reason=audience_unrouted`. When several issuers share its `iss`, a token whose `aud` is null or holds an empty value is also rejected as `audience_unrouted`. See ADR-0001.'

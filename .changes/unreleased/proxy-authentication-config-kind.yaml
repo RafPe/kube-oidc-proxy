@@ -1,2 +1,0 @@
-kind: Added
-body: '`--authentication-config` accepts a second kind, `kube-oidc-proxy.rafpe.github.io/v1alpha1` `AuthenticationConfiguration`. Each issuer has a `name` and an upstream `jwt` entry, and the `name` becomes `issuer_name` in logs and metrics. Two issuers on one host, for example two GKE cluster issuers, can now start with different names. The CEL expressions of an issuer can use `authenticationConfiguration.issuer.name` in place of the name. See ADR-0001.'
