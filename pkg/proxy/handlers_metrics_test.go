@@ -12,6 +12,7 @@ import (
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	authuser "k8s.io/apiserver/pkg/authentication/user"
 
+	"github.com/rafpe/kube-oidc-proxy/pkg/authn"
 	"github.com/rafpe/kube-oidc-proxy/pkg/logging"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics"
 	"github.com/rafpe/kube-oidc-proxy/pkg/metrics/metricstest"
@@ -22,6 +23,7 @@ import (
 const (
 	metricAuthnAttempts   = "kube_oidc_proxy_authentication_attempts_total"
 	metricAccessDecisions = "kube_oidc_proxy_access_decisions_total"
+	metricIssuerTokens    = "kube_oidc_proxy_oidc_issuer_tokens_total"
 )
 
 func TestRejectedTokenCountsAnOIDCAttemptAndADenial(t *testing.T) {
@@ -122,5 +124,55 @@ func TestOIDCClientGoneIsClassifiedLikeTheReviewers(t *testing.T) {
 	}
 	if v, _ := metricstest.Value(t, p.metrics.Gatherer(), metricAuthnAttempts, map[string]string{"auth_method": "oidc", "outcome": "error"}); v != 1 {
 		t.Errorf("attempts{oidc,error} = %v, want 1", v)
+	}
+	if v, _ := metricstest.Value(t, p.metrics.Gatherer(), metricIssuerTokens, map[string]string{"issuer_name": testIssuerName, "outcome": "error"}); v != 1 {
+		t.Errorf("issuer_tokens{%s,error} = %v, want 1", testIssuerName, v)
+	}
+}
+
+// TestIssuerTokensCountsTheSelectedIssuer pins the per-issuer counter: the
+// issuer that verified the token gets the result of that verification.
+func TestIssuerTokensCountsTheSelectedIssuer(t *testing.T) {
+	tests := map[string]struct {
+		resp    *authenticator.Response
+		ok      bool
+		err     error
+		outcome string
+	}{
+		"accepted": {resp: &authenticator.Response{User: &authuser.DefaultInfo{Name: "alice"}}, ok: true, outcome: "accepted"},
+		"rejected": {err: errors.New("claim validation rule failed"), outcome: "rejected"},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			p := newTestProxy(t)
+			p.fakeToken.EXPECT().AuthenticateToken(gomock.Any(), "tok").Return(test.resp, test.ok, test.err)
+			req := watchRequest()
+			req.Header.Set("Authorization", "bearer tok")
+			serveChain(t, p, req, noopHandler)
+			g := p.metrics.Gatherer()
+			if v, _ := metricstest.Value(t, g, metricIssuerTokens, map[string]string{"issuer_name": testIssuerName, "outcome": test.outcome}); v != 1 {
+				t.Fatalf("issuer_tokens{%s,%s} = %v, want 1", testIssuerName, test.outcome, v)
+			}
+		})
+	}
+}
+
+// TestIssuerTokensSkipsATokenThatSelectedNoIssuer pins that a token the
+// router rejects before an issuer runs is not counted for any issuer.
+func TestIssuerTokensSkipsATokenThatSelectedNoIssuer(t *testing.T) {
+	p := newTestProxy(t, func(a *newArgs) {
+		a.deps.OIDCTokenAuthenticator = authenticator.TokenFunc(
+			func(context.Context, string) (*authenticator.Response, bool, error) {
+				return nil, false, authn.ErrAudienceUnrouted
+			})
+	})
+	req := watchRequest()
+	req.Header.Set("Authorization", "bearer tok")
+	serveChain(t, p, req, noopHandler)
+	if n := metricstest.SeriesCount(t, p.metrics.Gatherer(), metricIssuerTokens); n != 0 {
+		t.Fatalf("issuer_tokens has %d series, want 0", n)
+	}
+	if v, _ := metricstest.Value(t, p.metrics.Gatherer(), metricAuthnAttempts, map[string]string{"auth_method": "oidc", "outcome": "rejected"}); v != 1 {
+		t.Fatalf("attempts{oidc,rejected} = %v, want 1", v)
 	}
 }

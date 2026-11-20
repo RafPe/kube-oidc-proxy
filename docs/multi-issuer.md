@@ -248,11 +248,14 @@ issuers:
         expression: '"gha:" + claims.repository'
 ```
 
-The upstream kind uses the host of the issuer URL as `issuer_name`. To keep the
-old `issuer_name` in logs, metrics and dashboards, set `name` to that host. The
-example above does this. A host with a port, for example `dex.example.com:5556`,
-is not a valid `name`, because `:` is not valid in a DNS-1123 subdomain. Then
-the `issuer_name` changes, and you must update the queries that use it.
+The upstream kind uses the host of the issuer URL as `issuer_name`. The proxy
+kind uses the `name` of each issuer. The bundled dashboards show any issuer
+name, and their `$issuer` variable lists the names that the proxy reports. Only
+your own queries and alerts that filter on the old host see a new value.
+
+The example above sets `name` to the host, so the `issuer_name` does not change.
+A host with a port, for example `dex.example.com:5556`, is not a valid `name`,
+because `:` is not valid in a DNS-1123 subdomain.
 
 The `jwt` entry of the proxy kind has the `apiserver.config.k8s.io/v1` form. A
 `v1beta1` entry has the same fields.

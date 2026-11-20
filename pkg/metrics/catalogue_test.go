@@ -27,6 +27,7 @@ func exerciseEverything(r *Recorder) {
 	r.SetIssuerInitialized("idp.example.com", true)
 	r.SetReady(true)
 	r.AuditBackendFailure(AuditRun)
+	r.IssuerToken("idp.example.com", AuthAccepted)
 }
 
 // TestEveryCollectorIsInTheCatalogue is the contract test: every first-party
@@ -107,6 +108,7 @@ func TestAllowedValuesCoversEveryBoundedLabel(t *testing.T) {
 	unbounded := map[string][]string{
 		nameBuildInfo:         {"version", "revision", "go_version"},
 		nameIssuerInitialized: {"issuer_name"},
+		nameIssuerTokens:      {"issuer_name"},
 	}
 
 	for _, s := range Catalogue() {

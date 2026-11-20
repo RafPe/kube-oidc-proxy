@@ -21,3 +21,25 @@ func (r *Recorder) AccessDecision(method AuthMethod, allowed bool, reason Reason
 	}
 	r.accessDecisions.WithLabelValues(projectAuthMethod(method), string(DecisionFor(allowed)), projectReason(reason)).Inc()
 }
+
+// IssuerToken counts one OIDC token that the issuer issuerName verified, by
+// the result of that verification. issuerName is the name of a configured
+// issuer, never a value from the token.
+func (r *Recorder) IssuerToken(issuerName string, outcome AuthOutcome) {
+	if r == nil {
+		return
+	}
+	r.issuerTokens.WithLabelValues(issuerName, projectAuthOutcome(outcome)).Inc()
+}
+
+// DeclareIssuer creates the token series of the issuer issuerName at 0, so
+// that a dashboard shows the issuer before its first token and rate() does
+// not lose the first increase.
+func (r *Recorder) DeclareIssuer(issuerName string) {
+	if r == nil {
+		return
+	}
+	for _, outcome := range authOutcomes {
+		r.issuerTokens.WithLabelValues(issuerName, projectAuthOutcome(outcome))
+	}
+}
