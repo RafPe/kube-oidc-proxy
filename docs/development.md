@@ -365,6 +365,56 @@ Open `http://127.0.0.1:4321/kube-oidc-proxy/interactive/request-flow/`.
 For browser checks, set `CHROME_PATH` to a local Chromium executable and run `node scripts/interactive-browser.mjs`.
 These checks cover request scenarios, controls, identity rules, and narrow screens.
 
+## Claude review
+
+`.github/workflows/claude-review.yaml` runs an automated review of a pull request. The repository owner starts it with a PR comment `@claude review`.
+
+### Start a review
+
+1. Add the label `review/claude-allowed` to the PR.
+2. Comment `@claude review` on the PR.
+
+Without the label, the review does not start, and the workflow replies with a comment that asks for the label. The review runs only for comments of the repository owner. A PR from a fork gets a review, but never an automatic approval.
+
+### What the jobs do
+
+| Job | Purpose |
+| --- | --- |
+| `review:claude` | Reads the PR diff and posts the findings and one summary comment. Its GitHub token can only read. |
+| `review:approve` | Approves the reviewed head commit when the review verdict is approve. A new push dismisses that approval. |
+| `review:report` | Hides the review comments of earlier runs. Posts a notice when a run ends without a summary. |
+| `review:label-missing` | Asks for the label `review/claude-allowed`. |
+
+A re-review of the same PR reads the previous summary and the change since the reviewed head commit. It marks each earlier finding as fixed or open.
+
+### Hidden comments
+
+`review:report` hides these as outdated, so the PR shows only the latest review:
+
+- each summary of the review except the newest one.
+- each other comment of the review from before the current `@claude review`.
+- each notice of `review:report` and `review:label-missing`.
+- each `@claude review` comment of the owner except the current one.
+- each approval of `review:approve` that GitHub dismissed after a new push.
+
+A hidden comment stays in the GitHub API, so the next re-review still finds the previous summary. Select **Show comment** on GitHub to read a hidden comment.
+
+### Credential
+
+The repository variable `CLAUDE_REVIEW_AUTH` selects the credential of the review:
+
+| Value | Credential | Secrets |
+| --- | --- | --- |
+| `wif`, or the variable is not set | Workload identity federation | `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`. Optional: `ANTHROPIC_SERVICE_ACCOUNT_ID`, `ANTHROPIC_WORKSPACE_ID`. |
+| `token` | OAuth token | `CLAUDE_CODE_OAUTH_TOKEN` |
+
+The value is not case-sensitive. The job stops before the review for any other value, or when a required secret is empty. The `token` mode puts a long-lived token in a job that reads untrusted PR content. Use it only for a short time.
+
+```sh
+gh variable set CLAUDE_REVIEW_AUTH --body token
+gh variable set CLAUDE_REVIEW_AUTH --body wif
+```
+
 ## See also
 
 - [Operations](./operations.md) — running the proxy in production.

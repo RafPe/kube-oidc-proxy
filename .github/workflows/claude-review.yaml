@@ -587,9 +587,14 @@ jobs:
       # latest review. A hidden comment stays in the API, so the next
       # re-review still finds the previous summary. The step hides:
       #   - each summary of the review bot except the newest one,
+      #   - each other comment of the review bot from before the comment
+      #     that started this run, for example a finding that the review
+      #     posted as a PR comment and not as an inline comment,
       #   - each notice of review:report and review:label-missing,
       #   - each "@claude review" comment of the owner except the one that
-      #     started this run.
+      #     started this run,
+      #   - each approval of review:approve that GitHub dismissed after a
+      #     new push. The current approval stays visible.
       # It runs before the notice step, so it never hides the notice of this
       # run. A failure here does not stop the report.
       - name: Hide earlier review comments
@@ -610,7 +615,7 @@ jobs:
               pullRequest(number: $pr) {
                 comments(first: 100, after: $endCursor) {
                   pageInfo { hasNextPage endCursor }
-                  nodes { id isMinimized body author { login __typename } }
+                  nodes { id isMinimized createdAt body author { login __typename } }
                 }
               }
             }
@@ -619,16 +624,36 @@ jobs:
             | jq -rs --arg review_bot "${REVIEW_BOT}" --arg actions_bot "${ACTIONS_BOT}" \
                      --arg owner "${OWNER}" --arg trigger "${TRIGGER_ID}" '
                 [.[].data.repository.pullRequest.comments.nodes[]] as $all
-                | ($all | map(select(.author.login == $review_bot and .author.__typename == "Bot"
-                                     and (.body | test("^<!-- claude-review head=[0-9a-f]{40} -->"))))
-                        | .[:-1]) as $old_summaries
+                | ($all | map(select(.id == $trigger)) | first | .createdAt // "") as $triggered
+                | ($all | map(select(.author.login == $review_bot and .author.__typename == "Bot"))) as $bot
+                | ($bot | map(select(.body | test("^<!-- claude-review head=[0-9a-f]{40} -->")))) as $summaries
+                | ($summaries | .[:-1]) as $old_summaries
+                | ($summaries | last | .id // "") as $newest
+                | ($bot | map(select(.id != $newest and $triggered != "" and .createdAt < $triggered))) as $old_bot
                 | ($all | map(select(.author.login == $actions_bot and .author.__typename == "Bot"
                                      and (.body | startswith("## Review run ended without a summary")
                                                   or startswith("The review did not start.")))) ) as $notices
                 | ($all | map(select(.author.login == $owner and .id != $trigger
                                      and (.body | gsub("^\\s+|\\s+$"; "")) == "@claude review"))) as $triggers
-                | ($old_summaries + $notices + $triggers)[]
+                | ($old_summaries + $old_bot + $notices + $triggers) | unique_by(.id)[]
                 | select(.isMinimized | not) | .id')
+          # shellcheck disable=SC2016 # GraphQL variables, not shell variables.
+          reviews='query($owner: String!, $repo: String!, $pr: Int!, $endCursor: String) {
+            repository(owner: $owner, name: $repo) {
+              pullRequest(number: $pr) {
+                reviews(first: 100, after: $endCursor) {
+                  pageInfo { hasNextPage endCursor }
+                  nodes { id isMinimized state author { login __typename } }
+                }
+              }
+            }
+          }'
+          dismissed=$(gh api graphql --paginate -F owner="${OWNER}" -F repo="${REPO}" -F pr="${PR}" -f query="${reviews}" \
+            | jq -rs --arg actions_bot "${ACTIONS_BOT}" '
+                [.[].data.repository.pullRequest.reviews.nodes[]]
+                | map(select(.author.login == $actions_bot and .author.__typename == "Bot"
+                             and .state == "DISMISSED" and (.isMinimized | not)))[] | .id')
+          ids="${ids} ${dismissed}"
           count=0
           for id in ${ids}; do
             # shellcheck disable=SC2016 # GraphQL variables, not shell variables.
