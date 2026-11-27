@@ -17,12 +17,12 @@
     "archive": "node scripts/docs-archive.mjs"
   },
   "dependencies": {
-    "@astrojs/markdown-remark": "7.3.9",
+    "@astrojs/markdown-remark": "7.3.10",
     "@astrojs/starlight": "0.43.1",
     "@fontsource-variable/bricolage-grotesque": "5.3.0",
     "@fontsource/ibm-plex-mono": "5.3.0",
     "@fontsource/ibm-plex-sans": "5.3.0",
-    "astro": "7.4.12",
+    "astro": "7.4.13",
     "astro-mermaid": "2.2.0",
     "mermaid": "12.3.0",
     "sharp": "0.35.5",
