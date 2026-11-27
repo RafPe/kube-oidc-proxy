@@ -311,7 +311,7 @@ jobs:
       - name: Run Claude review
         id: review
         if: ${{ !contains(join(github.event.issue.labels.*.name, ','), 'autorelease') }}
-        uses: anthropics/claude-code-action@cc98b3ae241b0fcfb6a42a2690751afffecb4452 # v1.0.278
+        uses: anthropics/claude-code-action@eb56b6666facdbd501035f4a0269d8caee2e7a8b # v1.0.289
         with:
           # CLAUDE_REVIEW_AUTH=wif: workload identity federation. The action
           # exchanges the GitHub OIDC token of this job for a Claude API
